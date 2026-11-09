@@ -149,7 +149,7 @@ pub struct AttachArgs {
     /// 표준 입력을 연다.
     #[arg(short = 'i', long)]
     pub interactive: bool,
-    /// 터미널을 할당한다. 아직 없다(오류).
+    /// 터미널을 할당한다.
     #[arg(short = 't', long)]
     pub tty: bool,
 }
@@ -215,7 +215,7 @@ pub struct ExecArgs {
     /// 표준 입력을 연다.
     #[arg(short = 'i', long)]
     pub interactive: bool,
-    /// 터미널을 할당한다. 아직 없다(오류).
+    /// 터미널을 할당한다.
     #[arg(short = 't', long)]
     pub tty: bool,
     /// 환경 변수 K=V.

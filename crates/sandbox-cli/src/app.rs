@@ -33,7 +33,7 @@ use sandbox_rootfs::erofs::ErofsBuilder;
 use sandbox_runtime::{Runtime, RuntimeConfig, RuntimeError, SandboxInfo};
 use sandbox_store::CacheLayout;
 
-use crate::attach::attach;
+use crate::attach::{self, attach};
 use crate::behavior::{self, ImageMatch, LookupError, RmiAction, RmiDecision, Step};
 use crate::cli::{AttachArgs, Cli, Command, ExecArgs, Format, RunArgs};
 use crate::dirs;
@@ -505,15 +505,14 @@ impl Ctx {
     /// `--rm`이면 끝난 뒤(시작에 실패해도) 지운다.
     async fn run_sandbox(&self, attach_args: &AttachArgs, a: &RunArgs) -> AppResult<u8> {
         let fail = |e: Box<dyn Error>| failure(behavior::EXIT_RUN_FAILED, e);
-        if attach_args.tty {
-            return Err(fail(msg("-t is not supported yet")));
-        }
+        let io =
+            attach::io_mode(attach_args.interactive, attach_args.tty).map_err(|e| fail(msg(e)))?;
         let id = self.create(a).await.map_err(fail)?;
         let rt = self.launcher().map_err(fail)?;
         let sandbox = rt.get(&id).await.map_err(|e| fail(e.into()))?;
-        let started = sandbox.start(attach_args.interactive).await;
+        let started = sandbox.start(io).await;
         let result = match started {
-            Ok(p) => attach(p, attach_args.interactive)
+            Ok(p) => attach(p, io)
                 .await
                 .map(behavior::exit_byte)
                 .map_err(|e| fail(e.into())),
@@ -533,20 +532,15 @@ impl Ctx {
 
     /// `start`: 시작하고 붙어서 기본 프로세스가 끝날 때까지 기다린다 (Docker의 `start -a`).
     async fn start(&self, interactive: bool, id: &str) -> AppResult<u8> {
+        let io = attach::io_mode(interactive, false)?;
         let rt = self.launcher()?;
-        let p = rt
-            .get(&SandboxId::new(id)?)
-            .await?
-            .start(interactive)
-            .await?;
-        Ok(behavior::exit_byte(attach(p, interactive).await?))
+        let p = rt.get(&SandboxId::new(id)?).await?.start(io).await?;
+        Ok(behavior::exit_byte(attach(p, io).await?))
     }
 
     /// `exec`: 붙어서 실행한다. 종료 코드는 그 프로세스의 코드다.
     async fn exec(&self, a: &ExecArgs) -> AppResult<u8> {
-        if a.tty {
-            return Err(msg("-t is not supported yet"));
-        }
+        let io = attach::io_mode(a.interactive, a.tty)?;
         let rt = self.runtime()?;
         let sandbox = rt.get(&SandboxId::new(&a.id)?).await?;
         let spec = ExecSpec {
@@ -557,10 +551,10 @@ impl Ctx {
             tty: a.tty,
         };
         let p = sandbox
-            .exec_with(spec, a.interactive)
+            .exec_with(spec, io)
             .await
             .map_err(|e| start_failure(e, 1))?;
-        Ok(behavior::exit_byte(attach(p, a.interactive).await?))
+        Ok(behavior::exit_byte(attach(p, io).await?))
     }
 
     async fn cp(&self, src: &str, dst: &str) -> AppResult<u8> {

@@ -51,6 +51,10 @@ mod unix {
             run_command_not_found_is_127_and_not_executable_is_126,
         ),
         ("run_i_forwards_stdin", run_i_forwards_stdin),
+        (
+            "run_t_gives_the_main_process_a_terminal",
+            run_t_gives_the_main_process_a_terminal,
+        ),
         ("create_start_inspect_rm", create_start_inspect_rm),
         (
             "exec_cp_stop_on_a_running_sandbox",
@@ -267,6 +271,21 @@ mod unix {
         assert!(e.ps().is_empty());
     }
 
+    fn run_t_gives_the_main_process_a_terminal() {
+        let e = Env::new();
+        let o = e.sbx(&[
+            "run",
+            "--rm",
+            "-t",
+            IMAGE,
+            "sh",
+            "-c",
+            "test -t 0 && test -t 1 && echo tty; exit 6",
+        ]);
+        assert_eq!(o.status.code(), Some(6), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "tty\r\n");
+    }
+
     fn run_i_forwards_stdin() {
         let e = Env::new();
         let o = e.sbx_with_stdin(&["run", "--rm", "-i", IMAGE, "cat"], b"hello\nworld\n");
@@ -328,7 +347,11 @@ mod unix {
             e.sbx(&["exec", &id, "no-such-command-xyz"]).status.code(),
             Some(127)
         );
-        assert_eq!(e.sbx(&["exec", "-t", &id, "sh"]).status.code(), Some(1));
+        // 표준 출력이 터미널이 아니면 게스트 기본 크기다. 터미널이 줄 끝을 \r\n으로 바꾼다.
+        let o = e.sbx(&["exec", "-t", &id, "sh", "-c", "stty size; echo e >&2"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "24 80\r\ne\r\n");
+        assert_eq!(e.sbx(&["exec", "-it", &id, "sh"]).status.code(), Some(1));
 
         // 가짜 실행기의 게스트 경로는 호스트 경로다.
         let src = e.path("src.txt");
@@ -413,10 +436,10 @@ mod unix {
             .output()
             .unwrap();
         assert_eq!(o.status.code(), Some(125), "{}", text(&o.stderr));
-        assert_eq!(
-            e.sbx(&["run", "--rm", "-t", IMAGE, "true"]).status.code(),
-            Some(125)
-        );
+        // -it인데 표준 입력이 터미널이 아니다.
+        let o = e.sbx(&["run", "--rm", "-it", IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(125));
+        assert!(text(&o.stderr).contains("not a TTY"), "{}", text(&o.stderr));
         assert_eq!(
             e.sbx(&["run", "-d", IMAGE, "true"]).status.code(),
             Some(125)
