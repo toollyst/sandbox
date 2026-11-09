@@ -1,0 +1,25 @@
+[package]
+name = "sandbox-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "sbx"
+path = "src/main.rs"
+
+[dependencies]
+sandbox-model.workspace = true
+sandbox-store.workspace = true
+clap.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+sandbox-runtime.workspace = true
+sandbox-manage.workspace = true
+sandbox-oci.workspace = true
+sandbox-rootfs = { workspace = true, features = ["erofs"] }
+executor-firecracker.workspace = true
