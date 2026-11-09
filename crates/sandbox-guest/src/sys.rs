@@ -44,6 +44,12 @@ pub fn wait_exited_nowait(pid: u32) -> io::Result<()> {
     }
 }
 
+/// 유효 사용자가 root인지.
+pub fn is_root() -> bool {
+    // SAFETY: geteuid는 인자가 없고 실패하지 않는다.
+    unsafe { libc::geteuid() == 0 }
+}
+
 /// 버퍼에 있는 파일 시스템 쓰기를 디스크로 내린다.
 pub fn sync() {
     // SAFETY: sync는 인자가 없고 실패하지 않는다.

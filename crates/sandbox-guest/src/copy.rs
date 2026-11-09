@@ -5,7 +5,8 @@
 //! - 경로의 중간 구성 요소가 심볼릭 링크이면 오류다. 링크를 따라 대상 밖에 쓰지 않는다.
 //! - 부모 디렉터리는 이미 있어야 한다(보내는 쪽이 디렉터리를 먼저 보낸다).
 //! - 같은 이름의 파일이나 링크는 지우고 새로 만든다. 디렉터리끼리는 합친다. 디렉터리 자리에 파일이 오면 오류다.
-//! - 권한, 소유자, 수정 시각을 그대로 둔다. 디렉터리의 권한과 수정 시각은 끝에, 안쪽부터 맞춘다
+//! - 소유자는 게스트가 root일 때만 그대로 둔다(실제 VM의 게스트는 항상 root다). root가 아니면 지금 사용자 소유로 남는다.
+//! - 권한, 수정 시각을 그대로 둔다. 디렉터리의 권한과 수정 시각은 끝에, 안쪽부터 맞춘다
 //!   (쓰기 권한이 없는 디렉터리 안에도 쓸 수 있게, 안에 쓰면 수정 시각이 바뀌므로).
 //!   심볼릭 링크의 수정 시각은 두지 않는다.
 //!
@@ -145,7 +146,9 @@ fn receive_inner(dest: &str, input: &mut impl Read) -> Result<(), Error> {
             }
         }
         // 소유자를 먼저 바꾼다. chown은 setuid 비트를 지우므로 권한은 그 뒤에 둔다.
-        lchown(&path, Some(entry.uid), Some(entry.gid)).map_err(|e| io_error(rel, &e))?;
+        if crate::sys::is_root() {
+            lchown(&path, Some(entry.uid), Some(entry.gid)).map_err(|e| io_error(rel, &e))?;
+        }
         if matches!(entry.kind, FileKind::File { .. }) {
             fs::set_permissions(&path, fs::Permissions::from_mode(entry.mode))
                 .map_err(|e| io_error(rel, &e))?;
