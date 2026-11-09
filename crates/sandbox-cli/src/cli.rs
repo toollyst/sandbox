@@ -91,14 +91,14 @@ pub enum Command {
         #[command(subcommand)]
         command: ExecutorCommand,
     },
-    #[command(about = about("run"))]
+    #[command(about = about("run"), override_usage = "sbx run [OPTIONS] IMAGE [COMMAND] [ARG...]")]
     Run {
         #[command(flatten)]
         attach: AttachArgs,
         #[command(flatten)]
         args: RunArgs,
     },
-    #[command(about = about("create"))]
+    #[command(about = about("create"), override_usage = "sbx create [OPTIONS] IMAGE [COMMAND] [ARG...]")]
     Create(RunArgs),
     #[command(about = about("start"))]
     Start {
@@ -111,7 +111,7 @@ pub enum Command {
         /// Sandbox ID (or a unique prefix).
         id: String,
     },
-    #[command(about = about("exec"))]
+    #[command(about = about("exec"), override_usage = "sbx exec [OPTIONS] ID COMMAND [ARG...]")]
     Exec(ExecArgs),
     #[command(about = about("cp"))]
     Cp {
@@ -181,6 +181,8 @@ pub enum Command {
         /// Sandbox ID (or a unique prefix).
         id: String,
     },
+    #[command(about = about("mcp"))]
+    Mcp,
 }
 
 /// `executor` 아래 명령.
@@ -326,11 +328,28 @@ pub struct RunArgs {
     /// Destination allowed with --network allow: `HOST:PORT` (`*.example.com:443`, `10.0.0.5:*`, `[::1]:80`). Repeatable.
     #[arg(long = "allow")]
     pub allow: Vec<String>,
-    /// Image reference or ID.
-    pub image: String,
-    /// Command and arguments.
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    pub command: Vec<String>,
+    /// Image reference or ID, then the command and its arguments. Everything after the image belongs to the
+    /// command, even values that look like sbx options.
+    #[arg(
+        value_name = "IMAGE [COMMAND [ARG...]]",
+        required = true,
+        num_args = 1..,
+        trailing_var_arg = true,
+        allow_hyphen_values = true
+    )]
+    pub image_and_command: Vec<String>,
+}
+
+impl RunArgs {
+    /// 이미지 참조나 ID.
+    pub fn image(&self) -> &str {
+        &self.image_and_command[0]
+    }
+
+    /// 이미지 뒤의 명령과 인자. 비었으면 이미지의 기본 명령이다.
+    pub fn command(&self) -> &[String] {
+        &self.image_and_command[1..]
+    }
 }
 
 /// `exec`의 옵션.
@@ -351,11 +370,28 @@ pub struct ExecArgs {
     /// User.
     #[arg(short = 'u', long)]
     pub user: Option<String>,
-    /// Sandbox ID (or a unique prefix).
-    pub id: String,
-    /// Command and arguments.
-    #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
-    pub command: Vec<String>,
+    /// Sandbox ID (or a unique prefix), then the command and its arguments. Everything after the ID belongs to
+    /// the command.
+    #[arg(
+        value_name = "ID COMMAND [ARG...]",
+        required = true,
+        num_args = 2..,
+        trailing_var_arg = true,
+        allow_hyphen_values = true
+    )]
+    pub id_and_command: Vec<String>,
+}
+
+impl ExecArgs {
+    /// 샌드박스 ID(나 앞부분).
+    pub fn id(&self) -> &str {
+        &self.id_and_command[0]
+    }
+
+    /// 실행할 명령과 인자(비어 있지 않다).
+    pub fn command(&self) -> &[String] {
+        &self.id_and_command[1..]
+    }
 }
 
 #[cfg(test)]
@@ -374,12 +410,39 @@ mod tests {
             panic!("expected run");
         };
         assert!(r.interactive && !r.tty && !attach.detach);
-        assert_eq!(r.image, "alpine");
+        assert_eq!(r.image(), "alpine");
         assert_eq!(r.env, vec!["A=1"]);
-        assert_eq!(r.command, vec!["ls", "-l", "-e", "-i"]);
+        assert_eq!(r.command(), ["ls", "-l", "-e", "-i"]);
         assert_eq!(r.pull, PullPolicy::Missing);
         assert_eq!(r.rootfs_format, RootfsFormat::Erofs);
         assert_eq!(r.network, "none");
+    }
+
+    #[test]
+    fn everything_after_the_image_or_id_is_the_command() {
+        // 명령의 첫 인자가 sbx 옵션처럼 생겨도(curl -v, -i) 명령이다. Docker와 같다.
+        let Command::Run { args: r, .. } =
+            parse(&["run", "--rm", "curlimages/curl", "-v", "-i", "https://x"]).command
+        else {
+            panic!("expected run");
+        };
+        assert_eq!(r.image(), "curlimages/curl");
+        assert_eq!(r.command(), ["-v", "-i", "https://x"]);
+        assert!(r.volumes.is_empty() && !r.interactive && r.rm);
+        let Command::Run { args: r, .. } = parse(&["run", "alpine"]).command else {
+            panic!("expected run");
+        };
+        assert!(r.command().is_empty());
+        let Command::Exec(x) = parse(&["exec", "-i", "abc", "-e", "X", "-w"]).command else {
+            panic!("expected exec");
+        };
+        assert_eq!(
+            (x.id(), x.command()),
+            ("abc", &["-e".to_owned(), "X".into(), "-w".into()][..])
+        );
+        assert!(x.interactive && x.env.is_empty());
+        // exec에는 명령이 있어야 한다.
+        assert!(Cli::try_parse_from(["sbx", "exec", "abc"]).is_err());
     }
 
     #[test]

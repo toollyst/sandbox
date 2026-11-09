@@ -13,7 +13,8 @@ use `docker`, and a full boot → run → shutdown → cleanup cycle takes about
 <sub>A real recording (`cargo xtask demo`, macOS on Apple Silicon): every command ran for real, and the output appears
 when it actually arrived. Only the typing is simulated.</sub>
 
-Built for running code you don't trust: AI agents, user-submitted code, CI jobs, plugins.
+Built for running code you don't trust: AI agents (there is a built-in [MCP server](#use-it-from-ai-agents-mcp)),
+user-submitted code, CI jobs, plugins.
 
 > **Status: pre-release.** It works end to end on Apple Silicon Macs and on Linux x86_64 with KVM (real VMs boot in CI
 > on every push). Prebuilt binaries and executor bundles come with the first release. See [Status](#status).
@@ -149,6 +150,32 @@ and prepares on first use (`--pull=missing|always|never`).
 
 **Scripting.** `--format json` on `ps`, `inspect`, `images`, `executor ls`, and `executor search` gives machine-readable
 output.
+
+## Use it from AI agents (MCP)
+
+`sbx mcp` serves sandboxes over the [Model Context Protocol](https://modelcontextprotocol.io) on stdio, so any MCP
+client can run code in a microVM instead of on your machine:
+
+```sh
+claude mcp add sbx -- sbx mcp          # Claude Code
+```
+
+```json
+{ "mcpServers": { "sbx": { "command": "sbx", "args": ["mcp"] } } }
+```
+
+| Tool | What it does |
+| --- | --- |
+| `run` | Run one command in a fresh sandbox, return exit code, stdout and stderr, then delete it |
+| `create` | Start a long-lived sandbox (it survives the MCP server) |
+| `exec` | Run a command in a running sandbox |
+| `write_file` / `read_file` | Move files in and out (text or base64; parent directories are created) |
+| `list` / `remove` | See and clean up sandboxes |
+
+The MCP layer adds no policy. Tool arguments go through the same parser and rules as the CLI. The network stays off
+unless a call passes `allow: ["host:port", ...]`, host folders are never mounted, and arguments can't be turned into
+other `sbx` options. Commands have a timeout (default 300 s); after it, `run` powers the VM off and `exec` kills the
+process.
 
 ## How it works
 

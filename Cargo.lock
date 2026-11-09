@@ -1341,6 +1341,7 @@ dependencies = [
 name = "sandbox-cli"
 version = "0.0.0"
 dependencies = [
+ "base64",
  "clap",
  "crossterm",
  "executor-fake",

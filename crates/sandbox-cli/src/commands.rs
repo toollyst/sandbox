@@ -8,6 +8,8 @@ pub enum Group {
     Manage,
     /// 실행 코어: 샌드박스.
     Run,
+    /// 위 명령들을 AI 에이전트용 규약으로 내보낸다(정책 없이).
+    Agent,
 }
 
 impl Group {
@@ -16,6 +18,7 @@ impl Group {
         match self {
             Group::Manage => "setup",
             Group::Run => "sandbox",
+            Group::Agent => "agent",
         }
     }
 }
@@ -111,6 +114,11 @@ pub const COMMANDS: &[Command] = &[
         "logs",
         Group::Run,
         "Show the main process output of a detached sandbox",
+    ),
+    cmd(
+        "mcp",
+        Group::Agent,
+        "Serve sandboxes to AI agents over the Model Context Protocol (stdio)",
     ),
 ];
 

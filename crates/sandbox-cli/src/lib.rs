@@ -4,6 +4,7 @@
 //!
 //! - 인자 해석과 출력 형식 ([`cli`], [`parse`])
 //! - 구현체 조립과 코어 호출 ([`app`]), 붙어서 실행하기 ([`attach`]), 실행기 설치와 저장소 ([`executors`])
+//! - AI 에이전트용 MCP 서버 ([`mcp`]): 같은 코어를 도구로 내보낸다
 //! - 관리 코어(`sandbox-manage`)와 실행 코어(`sandbox-runtime`)를 차례로 불러 Docker와 같은 동작을 만든다
 //!
 //! 동작은 Docker CLI를 기준으로 한다. 사람들이 이미 익숙하기 때문이다.
@@ -21,4 +22,13 @@ pub mod commands;
 pub mod dirs;
 pub mod executors;
 pub mod guest;
+pub mod mcp;
 pub mod parse;
+
+/// 명령을 실행한다. `mcp`는 [`mcp::serve`]로, 나머지는 [`app::run`]으로 간다.
+pub async fn run(cli: cli::Cli) -> app::AppResult<u8> {
+    match cli.command {
+        cli::Command::Mcp => mcp::serve(&cli).await,
+        _ => app::run(cli).await,
+    }
+}

@@ -9,7 +9,7 @@ use sandbox_cli::{app, cli::Cli};
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
-    match app::run(cli).await {
+    match sandbox_cli::run(cli).await {
         Ok(code) => ExitCode::from(code),
         Err(e) => {
             eprintln!("sbx: {e}");

@@ -99,6 +99,10 @@ mod unix {
             "image_kernel_is_given_to_the_executor",
             image_kernel_is_given_to_the_executor,
         ),
+        (
+            "mcp_serves_sandboxes_to_agents",
+            mcp_serves_sandboxes_to_agents,
+        ),
         ("attach_tty_and_signal_proxy", attach_tty_and_signal_proxy),
         ("volume_is_shared_live", volume_is_shared_live),
         ("network_allow_list", network_allow_list),
@@ -1204,5 +1208,203 @@ mod unix {
             "{}",
             text(&o.stderr)
         );
+    }
+
+    /// `sbx mcp`의 한 연결. 요청을 보내고 그 답 한 줄을 읽는다.
+    struct Mcp {
+        child: Child,
+        out: std::io::BufReader<std::process::ChildStdout>,
+        next: u64,
+    }
+
+    impl Mcp {
+        fn request(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
+            use std::io::BufRead;
+            self.next += 1;
+            let msg = serde_json::json!({"jsonrpc": "2.0", "id": self.next, "method": method, "params": params});
+            let stdin = self.child.stdin.as_mut().unwrap();
+            writeln!(stdin, "{msg}").unwrap();
+            stdin.flush().unwrap();
+            let mut line = String::new();
+            self.out.read_line(&mut line).unwrap();
+            let v: serde_json::Value =
+                serde_json::from_str(&line).unwrap_or_else(|e| panic!("{e}: {line:?}"));
+            assert_eq!(v["id"], self.next, "{v}");
+            v
+        }
+
+        /// 도구를 부르고 `structuredContent`(실패면 글)를 돌려준다.
+        fn call(
+            &mut self,
+            name: &str,
+            args: serde_json::Value,
+        ) -> Result<serde_json::Value, String> {
+            let r = self.request(
+                "tools/call",
+                serde_json::json!({"name": name, "arguments": args}),
+            );
+            let r = &r["result"];
+            if r["isError"] == true {
+                return Err(r["content"][0]["text"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned());
+            }
+            Ok(r["structuredContent"].clone())
+        }
+    }
+
+    fn mcp_serves_sandboxes_to_agents() {
+        let e = Env::new();
+        let mut child = e
+            .cmd(&["mcp"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let out = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut m = Mcp {
+            child,
+            out,
+            next: 0,
+        };
+
+        let init = m.request("initialize", serde_json::json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "e2e", "version": "0"}}));
+        assert_eq!(init["result"]["serverInfo"]["name"], "sbx", "{init}");
+        assert_eq!(init["result"]["protocolVersion"], "2025-06-18");
+        // 알림에는 답하지 않는다(다음 답이 다음 요청의 것이다).
+        writeln!(
+            m.child.stdin.as_mut().unwrap(),
+            r#"{{"jsonrpc":"2.0","method":"notifications/initialized"}}"#
+        )
+        .unwrap();
+        let tools = m.request("tools/list", serde_json::json!({}));
+        assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 7);
+        let unknown = m.request("resources/list", serde_json::json!({}));
+        assert_eq!(unknown["error"]["code"], -32601);
+
+        // run: 종료 코드와 두 출력. 끝나면 지운다.
+        let r = m.call("run", serde_json::json!({"image": IMAGE, "command": ["sh", "-c", "echo out; echo err >&2; exit 3"]})).unwrap();
+        assert_eq!(
+            (
+                r["exit_code"].as_i64(),
+                r["stdout"].as_str(),
+                r["stderr"].as_str()
+            ),
+            (Some(3), Some("out\n"), Some("err\n")),
+            "{r}"
+        );
+        assert_eq!(r["timed_out"], false);
+        let r = m
+            .call(
+                "run",
+                serde_json::json!({"image": IMAGE, "command": ["cat"], "stdin": "piped in"}),
+            )
+            .unwrap();
+        assert_eq!(r["stdout"], "piped in");
+        // 시간이 넘으면 끄고 지운다.
+        let started = Instant::now();
+        let r = m.call("run", serde_json::json!({"image": IMAGE, "command": ["sh", "-c", "echo before; sleep 30"], "timeout_secs": 1})).unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(15),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            (
+                r["timed_out"].as_bool(),
+                r["exit_code"].is_null(),
+                r["stdout"].as_str()
+            ),
+            (Some(true), true, Some("before\n")),
+            "{r}"
+        );
+        assert!(e.ps().is_empty(), "{:?}", e.ps());
+        // 틀린 인자는 도구 오류다.
+        let err = m
+            .call("run", serde_json::json!({"image": "-v"}))
+            .unwrap_err();
+        assert!(err.contains("invalid image"), "{err}");
+
+        // create, exec, write_file, read_file, list, remove.
+        let id = m
+            .call(
+                "create",
+                serde_json::json!({"image": IMAGE, "command": ["sleep", "600"]}),
+            )
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let r = m.call("exec", serde_json::json!({"id": id, "command": ["sh", "-c", "echo $X; exit 5"], "env": {"X": "y"}})).unwrap();
+        assert_eq!(
+            (r["exit_code"].as_i64(), r["stdout"].as_str()),
+            (Some(5), Some("y\n")),
+            "{r}"
+        );
+        let r = m
+            .call(
+                "exec",
+                serde_json::json!({"id": &id[..6], "command": ["sleep", "30"], "timeout_secs": 1}),
+            )
+            .unwrap();
+        assert_eq!(r["timed_out"], true, "{r}");
+        // 가짜 실행기의 게스트 경로는 호스트 경로다.
+        let dir = e.path("g");
+        std::fs::create_dir(&dir).unwrap();
+        let text_path = dir.join("a.txt").to_string_lossy().into_owned();
+        m.call(
+            "write_file",
+            serde_json::json!({"id": id, "path": text_path, "content": "hello"}),
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&text_path).unwrap(), b"hello");
+        let r = m
+            .call(
+                "read_file",
+                serde_json::json!({"id": id, "path": text_path}),
+            )
+            .unwrap();
+        assert_eq!(
+            (r["encoding"].as_str(), r["content"].as_str()),
+            (Some("utf-8"), Some("hello"))
+        );
+        // 없는 부모 디렉터리는 만든다.
+        let nested = dir.join("x/y/z.txt").to_string_lossy().into_owned();
+        m.call(
+            "write_file",
+            serde_json::json!({"id": id, "path": nested, "content": "deep"}),
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&nested).unwrap(), b"deep");
+        let bin_path = dir.join("b.bin").to_string_lossy().into_owned();
+        m.call("write_file", serde_json::json!({"id": id, "path": bin_path, "content": "AP8=", "encoding": "base64"})).unwrap();
+        assert_eq!(std::fs::read(&bin_path).unwrap(), [0u8, 255]);
+        let r = m
+            .call("read_file", serde_json::json!({"id": id, "path": bin_path}))
+            .unwrap();
+        assert_eq!(
+            (r["encoding"].as_str(), r["content"].as_str()),
+            (Some("base64"), Some("AP8="))
+        );
+        let r = m.call("list", serde_json::json!({})).unwrap();
+        let all = r["sandboxes"].as_array().unwrap();
+        assert_eq!(
+            (all.len(), all[0]["id"].as_str(), all[0]["state"].as_str()),
+            (1, Some(id.as_str()), Some("running")),
+            "{r}"
+        );
+        m.call("remove", serde_json::json!({"id": id})).unwrap();
+        assert!(e.ps().is_empty());
+        assert!(
+            m.call("exec", serde_json::json!({"id": id, "command": ["true"]}))
+                .is_err()
+        );
+
+        // 표준 입력을 닫으면 끝난다.
+        drop(m.child.stdin.take());
+        let out = wait_with_timeout(m.child, Duration::from_secs(10));
+        assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
     }
 }

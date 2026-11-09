@@ -165,10 +165,13 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
         } => ctx.attach_cmd(*no_stdin, *sig_proxy, detach_keys, id).await,
         Command::Ps { all } => ctx.ps(*all).await,
         Command::Inspect { id } => ctx.inspect(id).await,
+        // `mcp`는 이 위(`sandbox_cli::run`)에서 [`crate::mcp`]로 간다.
+        Command::Mcp => Err(msg("internal: mcp is served by sandbox_cli::run")),
     }
 }
 
-struct Ctx {
+/// 명령들이 함께 쓰는 설정과 코어. `mcp`도 이것으로 코어를 부른다.
+pub(crate) struct Ctx {
     data_dir: PathBuf,
     cache_dir: PathBuf,
     socket_dir: PathBuf,
@@ -182,7 +185,7 @@ struct Ctx {
 }
 
 impl Ctx {
-    fn new(cli: &Cli) -> AppResult<Self> {
+    pub(crate) fn new(cli: &Cli) -> AppResult<Self> {
         let cache_dir = cli
             .cache_dir
             .clone()
@@ -262,7 +265,11 @@ impl Ctx {
     }
 
     /// shim으로 시작한다(붙지 않는다). 시작이 끝나면 돌아온다.
-    async fn start_detached(&self, id: &SandboxId, remove_on_exit: bool) -> AppResult<()> {
+    pub(crate) async fn start_detached(
+        &self,
+        id: &SandboxId,
+        remove_on_exit: bool,
+    ) -> AppResult<()> {
         // 실행기와 이미지를 먼저 확인한다(shim 안에서 실패하면 이유가 덜 분명하다).
         let sandbox = self.launcher()?.get(id).await?;
         let config = ShimConfig {
@@ -322,12 +329,12 @@ impl Ctx {
     }
 
     /// VM을 띄우지 않는 일에 쓰는 실행 코어. 실행기 실행 파일을 실행하지 않는다.
-    fn runtime(&self) -> AppResult<Runtime> {
+    pub(crate) fn runtime(&self) -> AppResult<Runtime> {
         self.runtime_with(Arc::new(ConnectOnly), false)
     }
 
     /// VM을 띄우는 일(`create`의 기능 확인, `start`)에 쓰는 실행 코어. 실행기의 capability를 받아 둔다.
-    fn launcher(&self) -> AppResult<Runtime> {
+    pub(crate) fn launcher(&self) -> AppResult<Runtime> {
         if let Some(rt) = self.launcher.get() {
             return Ok(rt.clone());
         }
@@ -534,7 +541,7 @@ impl Ctx {
     }
 
     /// `run`과 `create`: 옵션을 먼저 모두 해석하고, [`behavior::create_steps`] 순서로 코어를 부른다.
-    async fn create(&self, a: &RunArgs) -> AppResult<SandboxId> {
+    pub(crate) async fn create(&self, a: &RunArgs) -> AppResult<SandboxId> {
         let network = behavior::network_policy(&a.network, &a.allow)?;
         let user = a.user.as_deref().map(str::parse::<UserSpec>).transpose()?;
         let stop_signal = a
@@ -550,7 +557,7 @@ impl Ctx {
                     vec![e.clone()]
                 }
             }),
-            args: a.command.clone(),
+            args: a.command().to_vec(),
             env: parse::env(&a.env, |k| std::env::var(k).ok()),
             cwd: a.workdir.clone(),
             user,
@@ -582,17 +589,24 @@ impl Ctx {
 
         let m = self.manager()?;
         let format = a.rootfs_format;
-        let found = self.lookup(&m, &a.image)?;
+        let image_name = a.image();
+        if image_name.starts_with('-') {
+            return Err(msg(format!(
+                "unknown option {image_name:?} (options go before the image)"
+            )));
+        }
+        let found = self.lookup(&m, image_name)?;
         let rootfs_present = found
             .as_ref()
             .is_some_and(|f| m.is_prepared(f.id(), format));
         let steps = behavior::create_steps(a.pull, found.is_some(), rootfs_present)
-            .map_err(|e| msg(format!("{}: {e}", a.image)))?;
+            .map_err(|e| msg(format!("{image_name}: {e}")))?;
         let mut image = found.map(|f| f.id().clone());
         for step in steps {
             match step {
                 Step::Pull => {
-                    let info = m.pull(&a.image, Platform { arch: host_arch()? }).await?;
+                    let arch = host_arch()?;
+                    let info = m.pull(image_name, Platform { arch }).await?;
                     eprintln!("{}: pulled {}", info.record.reference, info.record.id);
                     image = Some(info.record.id);
                 }
@@ -733,9 +747,9 @@ impl Ctx {
     async fn exec(&self, a: &ExecArgs) -> AppResult<u8> {
         let io = attach::io_mode(a.interactive, a.tty)?;
         let rt = self.runtime()?;
-        let sandbox = rt.find(&a.id).await?;
+        let sandbox = rt.find(a.id()).await?;
         let spec = ExecSpec {
-            args: a.command.clone(),
+            args: a.command().to_vec(),
             env: parse::env(&a.env, |k| std::env::var(k).ok()),
             cwd: a.workdir.clone(),
             user: a.user.as_deref().map(str::parse::<UserSpec>).transpose()?,
@@ -849,13 +863,8 @@ impl Ctx {
             "{:<14} {:<24} {:<30} STATUS",
             "SANDBOX ID", "IMAGE", "COMMAND"
         );
-        // 이미지는 받을 때 쓴 참조를 Docker처럼 줄여 보여 준다. 이미지가 지워졌으면 ID 앞부분.
-        let store = sandbox_store::Store::open(&self.cache_dir);
         for s in &list {
-            let image = store
-                .image(&s.spec.image)
-                .map(|r| behavior::familiar(&r.reference).to_owned())
-                .unwrap_or_else(|_| short(&s.spec.image).to_owned());
+            let image = self.image_name(&s.spec.image);
             let mut command = s.spec.process.args.join(" ");
             if command.chars().count() > 28 {
                 command = command.chars().take(27).collect::<String>() + "…";
@@ -876,6 +885,14 @@ impl Ctx {
             );
         }
         Ok(0)
+    }
+
+    /// 이미지를 사람이 읽는 이름으로: 받을 때 쓴 참조를 Docker처럼 줄인다. 이미지가 지워졌으면 ID 앞부분.
+    pub(crate) fn image_name(&self, image: &ImageId) -> String {
+        sandbox_store::Store::open(&self.cache_dir)
+            .image(image)
+            .map(|r| behavior::familiar(&r.reference).to_owned())
+            .unwrap_or_else(|_| short(image).to_owned())
     }
 
     async fn inspect(&self, id: &str) -> AppResult<u8> {
