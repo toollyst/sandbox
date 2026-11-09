@@ -29,11 +29,18 @@ sandbox-oci.workspace = true
 sandbox-rootfs = { workspace = true, features = ["erofs"] }
 executor-process.workspace = true
 executor-install.workspace = true
+executor-repo.workspace = true
+executor-proto.workspace = true
 
 [dev-dependencies]
 # 테스트 실행 파일이 곧 가짜 실행기다(tests/e2e.rs).
 executor-fake.workspace = true
 sandbox-store = { workspace = true, features = ["write"] }
+# 실행기 저장소 테스트에서 묶음 압축 파일과 색인을 만든다.
+tar.workspace = true
+flate2.workspace = true
+sha2.workspace = true
+serde_json.workspace = true
 
 [[test]]
 name = "e2e"

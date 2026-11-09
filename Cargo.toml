@@ -43,4 +43,5 @@ executor-fake = { path = "crates/executor-fake" }
 executor-proto = { path = "crates/executor-proto" }
 executor-process = { path = "crates/executor-process" }
 executor-install = { path = "crates/executor-install" }
+executor-repo = { path = "crates/executor-repo" }
 sandbox-shim = { path = "crates/sandbox-shim" }

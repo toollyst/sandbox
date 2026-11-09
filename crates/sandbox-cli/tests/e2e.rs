@@ -91,6 +91,10 @@ mod unix {
             "installed_executor_is_used_by_default",
             installed_executor_is_used_by_default,
         ),
+        (
+            "executor_is_installed_from_a_repository",
+            executor_is_installed_from_a_repository,
+        ),
         ("attach_tty_and_signal_proxy", attach_tty_and_signal_proxy),
         ("volume_is_shared_live", volume_is_shared_live),
         ("network_allow_list", network_allow_list),
@@ -984,5 +988,141 @@ mod unix {
         );
         let o = without(&["run", "--rm", IMAGE, "true"]);
         assert_eq!(o.status.code(), Some(125));
+    }
+
+    /// 이 실행 파일(가짜 실행기)을 `sbx-executor`로 담은 묶음 압축 파일. (내용, SHA-256)
+    fn bundle_of_me() -> (Vec<u8>, String) {
+        use sha2::Digest as _;
+        let me = std::fs::read(std::env::current_exe().unwrap()).unwrap();
+        let mut b = tar::Builder::new(Vec::new());
+        let mut h = tar::Header::new_gnu();
+        h.set_size(me.len() as u64);
+        h.set_mode(0o755);
+        b.append_data(&mut h, "fake/sbx-executor", me.as_slice())
+            .unwrap();
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::none());
+        gz.write_all(&b.into_inner().unwrap()).unwrap();
+        let bytes = gz.finish().unwrap();
+        let sha = sha2::Sha256::digest(&bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        (bytes, sha)
+    }
+
+    fn executor_is_installed_from_a_repository() {
+        let e = Env::new();
+        let without = |args: &[&str]| {
+            let mut c = e.cmd(args);
+            c.env_remove("SBX_EXECUTOR");
+            c.output().unwrap()
+        };
+        // 저장소가 없으면 어떻게 더하는지 알려 준다.
+        let o = without(&["executor", "install", "fake"]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("executor repo add"),
+            "{}",
+            text(&o.stderr)
+        );
+
+        // file:// 저장소: fake 1.0(설치할 것), 0.5(내용이 색인과 다르다), 2.0(다른 규약 버전), 3.0(다른 플랫폼).
+        let repo = e.path("repo");
+        std::fs::create_dir_all(repo.join("fake")).unwrap();
+        let (bytes, sha) = bundle_of_me();
+        std::fs::write(repo.join("fake/1.0.tar.gz"), &bytes).unwrap();
+        let host = executor_repo::Platform::host();
+        let art = |url: &str, sha: &str, os: &str| serde_json::json!([{"os": os, "architecture": host.architecture, "url": url, "sha256": sha, "size": bytes.len()}]);
+        let index = serde_json::json!({"schema": 1, "executors": {"fake": {"versions": {
+            "1.0": {"protocol": executor_proto::VERSION, "artifacts": art("fake/1.0.tar.gz", &sha, &host.os)},
+            "0.5": {"protocol": executor_proto::VERSION, "artifacts": art("fake/1.0.tar.gz", &"0".repeat(64), &host.os)},
+            "2.0": {"protocol": executor_proto::VERSION + 1, "artifacts": art("fake/1.0.tar.gz", &sha, &host.os)},
+            "3.0": {"protocol": executor_proto::VERSION, "artifacts": art("fake/1.0.tar.gz", &sha, "plan9")},
+        }}}});
+        std::fs::write(repo.join("index.json"), index.to_string()).unwrap();
+        let url = format!("file://{}", repo.display());
+        // 앞 저장소는 읽을 수 없다: 경고하고 건너뛴다.
+        let missing = format!("file://{}", e.path("missing").display());
+        for (name, u) in [("broken", missing.as_str()), ("local", url.as_str())] {
+            let o = without(&["executor", "repo", "add", name, u]);
+            assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        }
+        let o = without(&["executor", "repo", "ls"]);
+        assert!(text(&o.stdout).contains("local"), "{}", text(&o.stdout));
+
+        let o = without(&["executor", "search"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(
+            text(&o.stderr).contains("warning: cannot fetch"),
+            "{}",
+            text(&o.stderr)
+        );
+        let rows: Vec<String> = text(&o.stdout)
+            .lines()
+            .skip(1)
+            .map(|l| l.split_whitespace().take(2).collect::<Vec<_>>().join("@"))
+            .collect();
+        assert_eq!(rows, ["fake@1.0", "fake@0.5"]);
+
+        // 이름만: 이 호스트와 규약 버전으로 되는 가장 높은 버전. 처음 설치한 것이 기본이 된다.
+        let o = without(&["executor", "install", "fake"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "fake@1.0\n");
+        assert!(
+            text(&o.stderr).contains("downloading fake@1.0"),
+            "{}",
+            text(&o.stderr)
+        );
+        let o = without(&["run", "--rm", IMAGE, "echo", "from", "repo"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "from repo\n");
+        // 다시 하면 아무것도 하지 않는다.
+        let o = without(&["executor", "install", "fake"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(text(&o.stderr).contains("already installed"));
+        // 색인과 다른 내용은 설치하지 않는다. 받던 것도 남지 않는다.
+        let o = without(&["executor", "install", "fake@0.5"]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(text(&o.stderr).contains("sha256"), "{}", text(&o.stderr));
+        // 이유를 알려 준다.
+        let o = without(&["executor", "install", "fake@2.0"]);
+        assert!(
+            text(&o.stderr).contains("executor protocol"),
+            "{}",
+            text(&o.stderr)
+        );
+        let o = without(&["executor", "install", "fake@3.0"]);
+        assert!(
+            text(&o.stderr).contains("no build for"),
+            "{}",
+            text(&o.stderr)
+        );
+        let downloads = e.path("cache/executor-downloads");
+        let left = std::fs::read_dir(&downloads)
+            .map(|d| d.count())
+            .unwrap_or(0);
+        assert_eq!(left, 0);
+
+        // 묶음 압축 파일을 직접 설치.
+        let o = without(&[
+            "executor",
+            "install",
+            "--from",
+            repo.join("fake/1.0.tar.gz").to_str().unwrap(),
+            "fake@local",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = without(&["executor", "ls"]);
+        let ls = text(&o.stdout);
+        assert!(ls.contains("local") && !ls.contains("0.5"), "{ls}");
+
+        assert_eq!(
+            without(&["executor", "repo", "rm", "broken"]).status.code(),
+            Some(0)
+        );
+        assert_ne!(
+            without(&["executor", "repo", "rm", "broken"]).status.code(),
+            Some(0)
+        );
     }
 }

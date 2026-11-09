@@ -60,7 +60,7 @@ pub const COMMANDS: &[Command] = &[
     cmd(
         "executor",
         Group::Manage,
-        "실행기를 설치하고 고른다 (ls, install, use, rm)",
+        "실행기를 설치하고 고른다 (ls, install, search, use, rm, repo)",
     ),
     cmd(
         "run",

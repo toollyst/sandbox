@@ -184,14 +184,22 @@ pub enum Command {
 pub enum ExecutorCommand {
     /// 설치한 실행기를 보여준다 (기본 실행기에 *).
     Ls,
-    /// 실행기를 설치한다. 설치한 실행기는 규약 버전과 아키텍처를 확인한다.
+    /// 실행기를 설치한다. `--from`이 없으면 실행기 저장소(`executor repo`)에서 받는다 (버전을 빼면 가장 높은 버전).
+    /// 설치한 실행기는 규약 버전과 아키텍처를 확인한다.
     Install {
-        /// 묶음 디렉터리(맨 위에 sbx-executor) 또는 실행 파일 하나.
+        /// 받지 않고 이것을 설치한다: 묶음 디렉터리(맨 위에 sbx-executor), 묶음 압축 파일(.tar.gz), 실행 파일 하나.
+        /// 이때는 버전이 꼭 있어야 한다.
         #[arg(long)]
-        from: PathBuf,
-        /// NAME@VERSION.
+        from: Option<PathBuf>,
+        /// `NAME[@VERSION]`.
         #[arg(value_name = "EXECUTOR")]
         spec: String,
+    },
+    /// 저장소에서 이 호스트에 설치할 수 있는 실행기를 보여준다.
+    Search {
+        /// 이 이름만.
+        #[arg(value_name = "NAME")]
+        name: Option<String>,
     },
     /// 기본 실행기를 정한다. 버전을 빼면 가장 높은 버전.
     Use {
@@ -204,6 +212,31 @@ pub enum ExecutorCommand {
         /// NAME@VERSION.
         #[arg(value_name = "EXECUTOR")]
         spec: String,
+    },
+    /// 실행기 저장소 목록 (앞의 것이 먼저).
+    Repo {
+        /// 하위 명령.
+        #[command(subcommand)]
+        command: RepoCommand,
+    },
+}
+
+/// `executor repo` 아래 명령.
+#[derive(Debug, Subcommand)]
+pub enum RepoCommand {
+    /// 저장소 목록을 보여준다 (우선순위 순).
+    Ls,
+    /// 저장소를 목록 끝에 더한다. 색인은 쓸 때 받는다.
+    Add {
+        /// 저장소 이름.
+        name: String,
+        /// 저장소 URL (https, file, localhost의 http). `<URL>/index.json`이 색인이다.
+        url: String,
+    },
+    /// 저장소를 목록에서 뺀다.
+    Rm {
+        /// 저장소 이름.
+        name: String,
     },
 }
 

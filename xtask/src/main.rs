@@ -85,6 +85,8 @@ const RULES: &[(&str, Allowed)] = &[
     ),
     // 설치된 실행기 관리. std만 쓴다.
     ("executor-install", Allowed::Strict(&[])),
+    // 실행기 저장소 규약과 클라이언트. 실행기 이름 규칙은 executor-install을 따른다. sbx 코어를 모른다.
+    ("executor-repo", Allowed::Workspace(&["executor-install"])),
     (
         "sandbox-shim",
         Allowed::Workspace(&[

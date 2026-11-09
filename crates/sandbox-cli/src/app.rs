@@ -41,7 +41,7 @@ use crate::attach::{self, attach};
 use crate::behavior::{self, ImageMatch, LookupError, RmiAction, RmiDecision, Step};
 use crate::cli::{AttachArgs, Cli, Command, ExecArgs, ExecutorCommand, Format, RunArgs, StopArgs};
 use crate::parse::{self, CpEndpoint};
-use crate::{dirs, guest};
+use crate::{dirs, executors, guest};
 
 /// 명령 결과. 성공하면 종료 코드.
 pub type AppResult<T> = Result<T, Box<dyn Error>>;
@@ -133,7 +133,7 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
     let ctx = Ctx::new(&cli)?;
     match &cli.command {
         Command::Pull { platform, image } => ctx.pull(platform.as_deref(), image).await,
-        Command::Executor { command } => ctx.executor_cmd(command),
+        Command::Executor { command } => ctx.executor_cmd(command).await,
         Command::Prepare {
             rootfs_format,
             image,
@@ -343,86 +343,30 @@ impl Ctx {
         self.runtime_with(Arc::new(ProcessExecutor::new(self.executor()?)?), true)
     }
 
-    /// 설치된 실행기들 (`<data_dir>/executors`).
-    fn executors(&self) -> executor_install::Executors {
-        executor_install::Executors::new(self.data_dir.join("executors"))
-    }
-
     /// 쓸 실행기: `--executor` > 설치한 기본 실행기 > PATH의 `sbx-executor`.
     fn executor(&self) -> AppResult<PathBuf> {
         if let Some(p) = &self.executor {
             return Ok(p.clone());
         }
-        Ok(match self.executors().default()? {
+        Ok(match executors::installed(&self.data_dir).default()? {
             Some(i) => i.executable,
             None => PathBuf::from("sbx-executor"),
         })
     }
 
     /// `executor ...`.
-    fn executor_cmd(&self, c: &ExecutorCommand) -> AppResult<u8> {
-        use executor_install::Spec;
-        let ex = self.executors();
-        match c {
-            ExecutorCommand::Ls => {
-                let default = ex.default()?;
-                let list = ex.list()?;
-                if self.json() {
-                    let v: Vec<_> = list
-                        .iter()
-                        .map(|i| {
-                            serde_json::json!({
-                                "name": i.name,
-                                "version": i.version,
-                                "default": default.as_ref() == Some(i),
-                                "path": i.executable,
-                            })
-                        })
-                        .collect();
-                    println!("{}", serde_json::to_string_pretty(&v)?);
-                    return Ok(0);
-                }
-                println!("{:<2}{:<20} {:<14} PATH", "", "NAME", "VERSION");
-                for i in &list {
-                    let mark = if default.as_ref() == Some(i) { "*" } else { "" };
-                    println!(
-                        "{mark:<2}{:<20} {:<14} {}",
-                        i.name,
-                        i.version,
-                        i.executable.display()
-                    );
-                }
-                Ok(0)
-            }
-            ExecutorCommand::Install { from, spec } => {
-                let spec: Spec = spec.parse()?;
-                let arch = host_arch()?;
-                let installed = ex.install(&spec, from, |exe| {
-                    let p = ProcessExecutor::new(exe).map_err(|e| e.to_string())?;
-                    let caps = p.capabilities();
-                    if caps.arch != arch {
-                        return Err(format!(
-                            "executor {} runs {:?} guests; this host is {arch:?}",
-                            caps.name, caps.arch
-                        ));
-                    }
-                    Ok(())
-                })?;
-                println!("{installed}");
-                Ok(0)
-            }
-            ExecutorCommand::Use { spec } => {
-                println!("{}", ex.set_default(&spec.parse()?)?);
-                Ok(0)
-            }
-            ExecutorCommand::Rm { spec } => {
-                println!("{}", ex.remove(&spec.parse()?)?);
-                Ok(0)
-            }
-        }
+    async fn executor_cmd(&self, c: &ExecutorCommand) -> AppResult<u8> {
+        executors::run(
+            &executors::Ctx {
+                data_dir: &self.data_dir,
+                cache_dir: &self.cache_dir,
+                json: self.json(),
+            },
+            c,
+        )
+        .await
     }
 
-    /// 이미지 이름을 찾는다. 없으면 `None`, 그 밖의 문제는 오류.
     fn lookup(&self, m: &Manager, name: &str) -> AppResult<Option<ImageMatch>> {
         let normalized = Reference::parse(name).ok().map(|r| r.to_string());
         let refs = m.store().refs()?;

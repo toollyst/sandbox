@@ -419,6 +419,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "executor-repo"
+version = "0.0.0"
+dependencies = [
+ "executor-install",
+ "flate2",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "filetime"
 version = "0.2.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1331,6 +1346,9 @@ dependencies = [
  "executor-fake",
  "executor-install",
  "executor-process",
+ "executor-proto",
+ "executor-repo",
+ "flate2",
  "sandbox-executor",
  "sandbox-image",
  "sandbox-manage",
@@ -1342,6 +1360,8 @@ dependencies = [
  "sandbox-shim",
  "sandbox-store",
  "serde_json",
+ "sha2",
+ "tar",
  "tokio",
 ]
 
