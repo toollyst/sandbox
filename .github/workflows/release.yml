@@ -156,7 +156,8 @@ jobs:
   executor-darwin:
     needs: [version, kernel]
     if: vars.FC_FORK_TAG != ''
-    runs-on: macos-14
+    # fork 바이너리는 macOS 15 이상에서만 뜬다(hv_gic_*). 아래 --version 확인을 위해 같은 러너를 쓴다.
+    runs-on: macos-15
     env:
       FC: ${{ vars.FC_FORK_TAG }}
     steps:
@@ -177,6 +178,8 @@ jobs:
           tar xzf "$name.tgz"
           cd ..
           cp "fc/release-$FC-darwin-aarch64/$name" bundle/firecracker
+          codesign --verify --strict bundle/firecracker
+          bundle/firecracker --version
           cp target/release/sbx-executor-firecracker bundle/sbx-executor
           cp kernel/kernel bundle/kernel
           bundle/sbx-executor capabilities | tee capabilities.json
