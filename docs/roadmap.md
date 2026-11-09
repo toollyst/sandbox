@@ -47,6 +47,16 @@ Linux KVM(upstream Firecracker)과 CI 자동 실행은 남았다.
 | 14 | 네트워크 정책 장치 (기본 차단, 허용 방식) | 완료 (`--network allow --allow HOST:PORT`, 게스트 안 HTTP 프록시 + 호스트 허용 목록, 이름이 내부 주소로 풀리면 거부. fake와 curl로 끝-끝 테스트) |
 | 15 | 정책 위반 시나리오 통합 테스트 (외부 접속, 공유 범위 밖 접근) | 정책 단위(허용 목록 거부, 내부 주소 거부, 복사 경로 탈출)는 테스트됨. 장치 없음·읽기 전용 공유의 실제 강제는 VM에서만 확인되므로 외부 실행기 E2E |
 
+## M4. 공개 준비
+
+| 단계 | 내용 | 상태 |
+|---|---|---|
+| 16 | 실행기 저장소 규약과 `sbx executor install NAME[@VERSION]`, `search`, `repo` | 완료 (`executor-repo`: 정적 호스팅 가능한 `index.json` + `.tar.gz` 묶음, SHA-256 확인. file:// 저장소에서 실제 firecracker 묶음 설치 0.18초, 그 뒤 `run --rm alpine` 0.30초) |
+| 17 | 공식 저장소 위치와 묶음 빌드(CI) | 남음: 호스팅 위치는 정하지 않았다(자기 서버, GitHub처럼 정적으로 둘 다 되게) |
+| 18 | 커널 | 방향: 보통 이미지는 실행기 묶음의 기본 리눅스 커널(아키텍처당 하나)로, 커널을 담은 이미지는 그 커널로(실행기 규약에 선택 항목). 남음 |
+| 19 | README, 데모, 설치 한 줄, 벤치마크 | 남음 |
+| 20 | Linux KVM(upstream Firecracker) 끝-끝과 CI | 남음 |
+
 ## 그 뒤
 
 - 다른 외부 실행기 (libkrun 등). 규약(`executor-proto`)만 지키면 된다.
