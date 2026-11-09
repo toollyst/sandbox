@@ -1,0 +1,37 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "xtask"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.89"
+publish = false
+
+[workspace.lints.rust]
+missing_docs = "warn"
+unsafe_code = "forbid"
+
+[workspace.dependencies]
+# 외부
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+flate2 = "1"
+tar = "0.4"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+reqwest = "0.13"
+clap = { version = "4", features = ["derive"] }
+
+# workspace
+sandbox-model = { path = "crates/sandbox-model" }
+sandbox-proto = { path = "crates/sandbox-proto" }
+sandbox-executor = { path = "crates/sandbox-executor" }
+sandbox-image = { path = "crates/sandbox-image" }
+sandbox-rootfs = { path = "crates/sandbox-rootfs" }
+sandbox-store = { path = "crates/sandbox-store" }
+sandbox-runtime = { path = "crates/sandbox-runtime" }
+sandbox-manage = { path = "crates/sandbox-manage" }
+sandbox-oci = { path = "crates/sandbox-oci" }
+executor-fake = { path = "crates/executor-fake" }
+executor-firecracker = { path = "crates/executor-firecracker" }
