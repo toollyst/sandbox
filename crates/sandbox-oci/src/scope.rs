@@ -43,7 +43,14 @@ pub fn layer_compression(media_type: &str) -> Option<Compression> {
 }
 
 /// 적용하는 image config 필드. 나머지는 `ignored_fields`로 간다.
-pub const APPLIED_CONFIG_FIELDS: &[&str] = &["Entrypoint", "Cmd", "Env", "WorkingDir", "User"];
+pub const APPLIED_CONFIG_FIELDS: &[&str] = &[
+    "Entrypoint",
+    "Cmd",
+    "Env",
+    "WorkingDir",
+    "User",
+    "StopSignal",
+];
 
 /// Runtime Spec 중 VM 경계에서는 의미가 없어 적용하지 않는 필드.
 ///

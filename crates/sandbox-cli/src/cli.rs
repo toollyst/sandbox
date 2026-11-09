@@ -116,10 +116,20 @@ pub enum Command {
         dst: String,
     },
     #[command(about = about("stop"))]
-    Stop {
-        /// 종료를 기다리는 시간(초). 넘으면 강제로 끝낸다.
-        #[arg(short = 't', long = "time", default_value_t = 10)]
-        time: u64,
+    Stop(StopArgs),
+    #[command(about = about("restart"))]
+    Restart(StopArgs),
+    #[command(about = about("kill"))]
+    Kill {
+        /// 보낼 시그널 (이름 또는 번호).
+        #[arg(short = 's', long, default_value = "KILL")]
+        signal: String,
+        /// 샌드박스 ID.
+        #[arg(required = true)]
+        ids: Vec<String>,
+    },
+    #[command(about = about("wait"))]
+    Wait {
         /// 샌드박스 ID.
         #[arg(required = true)]
         ids: Vec<String>,
@@ -152,6 +162,20 @@ pub enum Command {
         /// 샌드박스 ID.
         id: String,
     },
+}
+
+/// `stop`과 `restart`의 옵션.
+#[derive(Debug, Args)]
+pub struct StopArgs {
+    /// 먼저 보낼 시그널 (이름 또는 번호). 기본은 샌드박스의 `--stop-signal`, 이미지의 `StopSignal`, SIGTERM 순.
+    #[arg(short = 's', long)]
+    pub signal: Option<String>,
+    /// 기다리는 시간(초). 넘으면 게스트를 끈다. 기본은 샌드박스의 `--stop-timeout`, 없으면 10.
+    #[arg(short = 't', long = "time")]
+    pub time: Option<u64>,
+    /// 샌드박스 ID.
+    #[arg(required = true)]
+    pub ids: Vec<String>,
 }
 
 /// `run`에만 있는 옵션: 붙어서 실행하는 방법.
@@ -213,6 +237,12 @@ pub struct RunArgs {
     /// 네트워크: none(차단) 또는 allow(--allow 목록만, 프록시로).
     #[arg(long, default_value = "none")]
     pub network: String,
+    /// 멈출 때 기본 프로세스에 먼저 보낼 시그널. 기본은 이미지의 `StopSignal`, 없으면 SIGTERM.
+    #[arg(long)]
+    pub stop_signal: Option<String>,
+    /// 멈출 때 시그널 뒤 기다리는 시간(초). 기본은 10.
+    #[arg(long)]
+    pub stop_timeout: Option<u32>,
     /// `--network allow`에서 허용할 `HOST:PORT` (`*.example.com:443`, `10.0.0.5:*`, `[::1]:80`). 여러 번 준다.
     #[arg(long = "allow")]
     pub allow: Vec<String>,

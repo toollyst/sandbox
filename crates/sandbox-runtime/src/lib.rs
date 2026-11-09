@@ -46,8 +46,8 @@ use std::time::Duration;
 
 use sandbox_executor::{ChannelSpec, Disk, DiskRole, Executor, GuestConn, VmConfig, VmHandle};
 use sandbox_model::{
-    ExecSpec, Ident, MountKind, NetworkPolicy, ProcessDefaults, SandboxId, SandboxSpec, State,
-    UserSpec, blocking,
+    ExecSpec, Ident, MountKind, NetworkPolicy, ProcessDefaults, SandboxId, SandboxSpec, Signal,
+    State, UserSpec, blocking,
 };
 use sandbox_proto::{ExitStatus, GuestMsg, HostMsg, WinSize};
 use sandbox_store::{LeaseError, RootfsLease, Store};
@@ -252,6 +252,21 @@ impl Runtime {
             }
         }
         Ok(out)
+    }
+
+    /// `timeout`까지 실행 중이 아니게 되기를(지워진 것도) 기다린다. 그렇게 되면 `true`.
+    fn wait_not_running(&self, id: &SandboxId, timeout: Duration) -> Result<bool, RuntimeError> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            match self.read_info(id)? {
+                Some(i) if i.state == State::Running => {}
+                _ => return Ok(true),
+            }
+            if std::time::Instant::now() >= deadline {
+                return Ok(false);
+            }
+            std::thread::sleep(client::RETRY);
+        }
     }
 
     /// 소유한 VM을 정리하고 `stopped`를 쓴다. 이미 정리했으면 아무것도 하지 않는다.
@@ -665,22 +680,40 @@ impl Sandbox {
         .await
     }
 
-    /// 멈춘다. 게스트에 종료를 요청하고 `timeout`까지 VM이 끝나기를 기다린다. 넘으면 강제로 끝낸다.
+    /// 멈춘다. Docker `stop`과 같다.
     ///
-    /// 다른 프로세스가 소유한 VM이면 종료를 요청하고 `timeout`까지 소유가 풀리기를 기다린다.
-    /// 그래도 끝나지 않으면 [`RuntimeError::OwnedElsewhere`]다(강제로 끝낼 수 있는 것은 소유 프로세스뿐이다).
-    pub async fn stop(&self, timeout: Duration) -> Result<(), RuntimeError> {
+    /// 1. 기본 프로세스에 시그널(`signal`, 없으면 [`StopSpec::signal`](sandbox_model::StopSpec::signal))을
+    ///    보내고 `timeout`까지 샌드박스가 멈추기를 기다린다. 기본 프로세스가 끝나면 샌드박스가 멈추고,
+    ///    종료 코드는 그 프로세스의 것이다(SIGTERM으로 끝나면 143). `timeout`이 0이면 이 단계를 건너뛴다.
+    /// 2. 그래도 실행 중이면 게스트를 끈다(sync 뒤 전원 끄기). [`VM_EXIT_GRACE`] 안에 꺼지지 않으면
+    ///    VM을 강제로 끝낸다. 종료 코드는 [`EXIT_VM_ENDED`]다(Docker에서 SIGKILL로 끝난 것과 같다).
+    ///
+    /// 다른 프로세스가 소유한 VM이면 2에서 게스트를 끄고 [`VM_EXIT_GRACE`]까지 소유가 풀리기를 기다린다.
+    /// 그래도 끝나지 않으면 [`RuntimeError::OwnedElsewhere`]다(VM을 강제로 끝낼 수 있는 것은 소유 프로세스뿐이다).
+    pub async fn stop(
+        &self,
+        signal: Option<Signal>,
+        timeout: Duration,
+    ) -> Result<(), RuntimeError> {
         let (info, guest) = self.require_running("stop")?;
+        let signal = signal.unwrap_or(info.spec.stop.signal);
         let rt = self.rt.clone();
         let id = info.id.clone();
         blocking(move || {
+            if !timeout.is_zero() {
+                // 기본 프로세스가 없으면 이미 끝나는 중이다. 그래도 기다린다.
+                let _ = guest.signal_main(signal.number());
+                if rt.wait_not_running(&id, timeout)? {
+                    return Ok(());
+                }
+            }
             if lock(&rt.inner.owned).contains_key(&id) {
-                rt.finish(&id, Some(EXIT_VM_ENDED), None, timeout);
+                rt.finish(&id, Some(EXIT_VM_ENDED), None, VM_EXIT_GRACE);
                 return Ok(());
             }
             let _ = guest.shutdown();
             let paths = rt.paths(&id);
-            let deadline = std::time::Instant::now() + timeout;
+            let deadline = std::time::Instant::now() + VM_EXIT_GRACE;
             while records::is_owned(&paths)? {
                 if std::time::Instant::now() >= deadline {
                     return Err(RuntimeError::OwnedElsewhere(id));
@@ -688,6 +721,34 @@ impl Sandbox {
                 std::thread::sleep(client::RETRY);
             }
             Ok(())
+        })
+        .await
+    }
+
+    /// 기본 프로세스에 시그널을 보낸다. Docker `kill`과 같다: 프로세스가 그 시그널로 끝나면 샌드박스가 멈춘다.
+    /// 기본 프로세스가 이미 끝나 샌드박스가 멈추는 중이면 아무것도 하지 않는다.
+    pub async fn kill(&self, signal: Signal) -> Result<(), RuntimeError> {
+        let (_, guest) = self.require_running("kill")?;
+        blocking(move || guest.signal_main(signal.number()).map(|_| ())).await
+    }
+
+    /// 멈출 때까지 기다리고 기본 프로세스의 종료 코드를 돌려준다. Docker `wait`과 같다.
+    /// 이미 멈췄으면 곧바로 돌아온다. 아직 시작하지 않았으면 시작해서 멈출 때까지 기다린다.
+    /// 종료 코드가 기록되지 않았으면(소유 프로세스가 사라짐) [`EXIT_VM_ENDED`]다. 기다리는 동안 지워지면
+    /// [`RuntimeError::NotFound`]다.
+    pub async fn wait(&self) -> Result<i32, RuntimeError> {
+        let rt = self.rt.clone();
+        let id = self.info.id.clone();
+        blocking(move || {
+            loop {
+                let info = rt
+                    .read_info(&id)?
+                    .ok_or_else(|| RuntimeError::NotFound(id.clone()))?;
+                if info.state == State::Stopped {
+                    return Ok(info.exit_code.unwrap_or(EXIT_VM_ENDED));
+                }
+                std::thread::sleep(client::RETRY);
+            }
         })
         .await
     }

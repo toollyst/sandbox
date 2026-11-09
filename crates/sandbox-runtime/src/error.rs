@@ -37,6 +37,8 @@ pub enum RuntimeError {
     NoCommand,
     /// 사용자 값이 잘못됨.
     InvalidUser(ParseError),
+    /// 이미지의 `StopSignal`이 잘못됨.
+    InvalidStopSignal(ParseError),
     /// 그 ID의 샌드박스가 없음.
     NotFound(SandboxId),
     /// 지금 상태에서는 할 수 없는 동작.
@@ -98,6 +100,7 @@ impl fmt::Display for RuntimeError {
             ),
             RuntimeError::NoCommand => f.write_str("no command specified"),
             RuntimeError::InvalidUser(e) => e.fmt(f),
+            RuntimeError::InvalidStopSignal(e) => write!(f, "image StopSignal: {e}"),
             RuntimeError::NotFound(id) => write!(f, "no such sandbox: {id}"),
             RuntimeError::InvalidState { current, action } => {
                 write!(f, "cannot {action} a sandbox in state {}", current.as_str())

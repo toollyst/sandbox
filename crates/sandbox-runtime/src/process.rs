@@ -8,6 +8,7 @@
 //! | env | 이미지 `Env`에 호출자 값을 덮어쓴다. 같은 키는 호출자 값이 이긴다. 순서는 이미지 순서 뒤에 새 키. 그래도 `PATH`가 없으면 [`DEFAULT_PATH`] |
 //! | cwd | 호출자 값 > `WorkingDir` > `/` |
 //! | user | 호출자 값 > `User` > root |
+//! | 멈출 때 시그널 ([`stop_signal`]) | 호출자 값 > `StopSignal` > SIGTERM |
 //!
 //! argv가 비면 [`RuntimeError::NoCommand`]다.
 //!
@@ -16,7 +17,7 @@
 //!
 //! 네트워크를 허용한 샌드박스에서는 실행할 때 [`add_proxy_env`]가 프록시 환경 변수를 더한다(이미 있는 키는 두고).
 
-use sandbox_model::{ExecSpec, ImageConfig, ProcessDefaults, ProcessOverrides, UserSpec};
+use sandbox_model::{ExecSpec, ImageConfig, ProcessDefaults, ProcessOverrides, Signal, UserSpec};
 
 use crate::error::RuntimeError;
 
@@ -72,6 +73,15 @@ pub fn for_exec(base: &ProcessDefaults, exec: &ExecSpec) -> Result<ProcessDefaul
         cwd: exec.cwd.clone().unwrap_or_else(|| base.cwd.clone()),
         user: exec.user.clone().unwrap_or_else(|| base.user.clone()),
     })
+}
+
+/// 멈출 때 기본 프로세스에 보낼 시그널. 규칙은 모듈 문서의 표를 따른다. 이미지 값이 잘못되면 오류다(Docker와 같다).
+pub fn stop_signal(image: &ImageConfig, given: Option<Signal>) -> Result<Signal, RuntimeError> {
+    match (given, image.stop_signal.as_deref()) {
+        (Some(s), _) => Ok(s),
+        (None, Some(s)) if !s.is_empty() => s.parse().map_err(RuntimeError::InvalidStopSignal),
+        _ => Ok(Signal::TERM),
+    }
 }
 
 /// 기본 프로세스를 정한다. 규칙은 모듈 문서의 표를 따른다.
@@ -139,7 +149,24 @@ mod tests {
             env: vec![("PATH".into(), "/bin".into()), ("A".into(), "1".into())],
             working_dir: Some("/app".into()),
             user: Some("app".into()),
+            stop_signal: None,
         }
+    }
+
+    #[test]
+    fn stop_signal_given_then_image_then_term() {
+        let mut i = image();
+        assert_eq!(stop_signal(&i, None).unwrap(), Signal::TERM);
+        i.stop_signal = Some("SIGINT".into());
+        assert_eq!(stop_signal(&i, None).unwrap().number(), 2);
+        assert_eq!(stop_signal(&i, Some(Signal::KILL)).unwrap(), Signal::KILL);
+        i.stop_signal = Some(String::new());
+        assert_eq!(stop_signal(&i, None).unwrap(), Signal::TERM);
+        i.stop_signal = Some("SIGNOPE".into());
+        assert!(matches!(
+            stop_signal(&i, None),
+            Err(RuntimeError::InvalidStopSignal(_))
+        ));
     }
 
     #[test]

@@ -208,6 +208,18 @@ impl Guest {
         Ok(c)
     }
 
+    /// 기본 프로세스에 시그널(Linux 번호)을 보낸다. 실행 중인 기본 프로세스가 없으면 `Ok(false)`.
+    pub fn signal_main(&self, signal: i32) -> Result<bool, RuntimeError> {
+        let mut c = self.open()?;
+        send(&mut *c, &HostMsg::SignalMain(signal))?;
+        match recv(&mut *c)? {
+            GuestMsg::Done => Ok(true),
+            GuestMsg::Error(e) if e.kind == sandbox_proto::ErrorKind::NotFound => Ok(false),
+            GuestMsg::Error(e) => Err(RuntimeError::Guest(e)),
+            other => Err(proto_err(format!("expected Done, got {other:?}"))),
+        }
+    }
+
     /// 게스트에 종료를 요청한다. `Done`을 받으면 돌아온다.
     pub fn shutdown(&self) -> Result<(), RuntimeError> {
         let mut c = self.open()?;

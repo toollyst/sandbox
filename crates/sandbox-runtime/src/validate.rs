@@ -92,6 +92,7 @@ mod tests {
             network: NetworkPolicy::Disabled,
             hostname: None,
             labels: BTreeMap::new(),
+            stop: Default::default(),
         }
     }
 

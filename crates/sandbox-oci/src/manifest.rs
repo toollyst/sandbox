@@ -283,6 +283,7 @@ pub fn parse_config(bytes: &[u8]) -> Result<ParsedConfig, ImageError> {
             }
             "WorkingDir" => config.working_dir = string(&key, &value)?,
             "User" => config.user = string(&key, &value)?,
+            "StopSignal" => config.stop_signal = string(&key, &value)?,
             _ if is_empty(&value) => {}
             _ => ignored.push(format!("config.{key}")),
         }
@@ -434,7 +435,8 @@ mod tests {
                 ("BARE".into(), "".into())
             ]
         );
-        assert_eq!(c.ignored_fields, vec!["config.Labels", "config.StopSignal"]);
+        assert_eq!(c.ignored_fields, vec!["config.Labels"]);
+        assert_eq!(c.config.stop_signal.as_deref(), Some("SIGTERM"));
         assert_eq!(c.diff_ids[0].as_str(), d('c'));
     }
 

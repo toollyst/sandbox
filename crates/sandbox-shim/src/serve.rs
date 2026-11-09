@@ -7,7 +7,8 @@
 //! 4. 기본 프로세스가 끝나면(실행 코어가 샌드박스를 멈추고 기록한 뒤) 끝난다. 종료 코드는 0이다.
 //!    `remove_on_exit`이면 그 전에 샌드박스를 지운다.
 //!
-//! 시그널 (Unix): SIGTERM, SIGINT를 받으면 샌드박스를 멈춘다([`STOP_TIMEOUT`]까지 기다린 뒤 강제로).
+//! 시그널 (Unix): SIGTERM, SIGINT를 받으면 샌드박스를 멈춘다(`sbx stop`과 같다. 기다리는 시간은 기록된
+//! `--stop-timeout`, 없으면 [`STOP_TIMEOUT`]).
 //! SIGHUP은 무시한다(터미널이 닫혀도 남는다). shim이 강제로 죽으면 실행기 규약에 따라 VM도 끝나고,
 //! 샌드박스는 소유자가 사라진 것으로 `stopped`가 된다.
 
@@ -90,7 +91,13 @@ async fn serve(config: ShimConfig, id: SandboxId) -> ExitCode {
             () = signals.stop(), if !stopping => {
                 stopping = true;
                 eprintln!("sbx-shim: stop requested");
-                if let Err(e) = sandbox.stop(STOP_TIMEOUT).await {
+                let timeout = sandbox
+                    .info()
+                    .spec
+                    .stop
+                    .timeout_secs
+                    .map_or(STOP_TIMEOUT, |s| Duration::from_secs(s.into()));
+                if let Err(e) = sandbox.stop(None, timeout).await {
                     eprintln!("sbx-shim: stop: {e}");
                 }
             }

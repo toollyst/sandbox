@@ -323,6 +323,8 @@ pub struct ImageConfig {
     pub working_dir: Option<String>,
     /// `User`. 해석 전 원문.
     pub user: Option<String>,
+    /// `StopSignal`. 해석 전 원문.
+    pub stop_signal: Option<String>,
 }
 
 /// 사용자나 그룹을 가리키는 값.
@@ -601,6 +603,156 @@ impl FromStr for AllowRule {
     }
 }
 
+/// 시그널. 게스트가 Linux이므로 Linux 번호로 담는다(호스트 OS의 번호와 다를 수 있다).
+///
+/// 받는 형식(Docker `--signal`, image config `StopSignal`과 같다): 이름(`TERM`, `SIGTERM`, 대소문자 무관),
+/// 번호(`15`), 실시간 시그널(`RTMIN`, `RTMIN+3`, `RTMAX-1`). 번호는 1..=64다.
+/// 쓸 때는 이름(`SIGTERM`)으로, 이름이 없는 번호는 숫자로 쓴다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Signal(i32);
+
+/// (이름, Linux 번호). x86_64와 aarch64에서 같다.
+const SIGNALS: &[(&str, i32)] = &[
+    ("HUP", 1),
+    ("INT", 2),
+    ("QUIT", 3),
+    ("ILL", 4),
+    ("TRAP", 5),
+    ("ABRT", 6),
+    ("BUS", 7),
+    ("FPE", 8),
+    ("KILL", 9),
+    ("USR1", 10),
+    ("SEGV", 11),
+    ("USR2", 12),
+    ("PIPE", 13),
+    ("ALRM", 14),
+    ("TERM", 15),
+    ("STKFLT", 16),
+    ("CHLD", 17),
+    ("CONT", 18),
+    ("STOP", 19),
+    ("TSTP", 20),
+    ("TTIN", 21),
+    ("TTOU", 22),
+    ("URG", 23),
+    ("XCPU", 24),
+    ("XFSZ", 25),
+    ("VTALRM", 26),
+    ("PROF", 27),
+    ("WINCH", 28),
+    ("IO", 29),
+    ("PWR", 30),
+    ("SYS", 31),
+];
+
+/// 다른 이름.
+const SIGNAL_ALIASES: &[(&str, i32)] = &[("IOT", 6), ("CLD", 17), ("POLL", 29)];
+
+impl Signal {
+    /// SIGTERM.
+    pub const TERM: Signal = Signal(15);
+    /// SIGKILL.
+    pub const KILL: Signal = Signal(9);
+    /// 실시간 시그널의 처음 (C 라이브러리가 쓰는 둘을 뺀 값, Docker와 같다).
+    pub const RTMIN: i32 = 34;
+    /// 실시간 시그널의 끝.
+    pub const RTMAX: i32 = 64;
+
+    /// 번호로 만든다. 1..=64가 아니면 `None`.
+    pub fn new(n: i32) -> Option<Self> {
+        (1..=Self::RTMAX).contains(&n).then_some(Self(n))
+    }
+
+    /// Linux 번호.
+    pub fn number(self) -> i32 {
+        self.0
+    }
+}
+
+impl FromStr for Signal {
+    type Err = ParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let bad = || ParseError::new("signal", s);
+        if let Ok(n) = s.parse::<i32>() {
+            return Self::new(n).ok_or_else(bad);
+        }
+        let upper = s.to_ascii_uppercase();
+        let name = upper.strip_prefix("SIG").unwrap_or(&upper);
+        if let Some(&(_, n)) = SIGNALS
+            .iter()
+            .chain(SIGNAL_ALIASES)
+            .find(|(k, _)| *k == name)
+        {
+            return Ok(Self(n));
+        }
+        let rt = |rest: &str, base: i32, sign: i32| -> Option<Signal> {
+            if rest.is_empty() {
+                return Some(Self(base));
+            }
+            let off = rest
+                .strip_prefix(if sign > 0 { '+' } else { '-' })?
+                .parse::<i32>()
+                .ok()?;
+            let n = base + sign * off;
+            (Self::RTMIN..=Self::RTMAX).contains(&n).then_some(Self(n))
+        };
+        let found = if let Some(rest) = name.strip_prefix("RTMIN") {
+            rt(rest, Self::RTMIN, 1)
+        } else if let Some(rest) = name.strip_prefix("RTMAX") {
+            rt(rest, Self::RTMAX, -1)
+        } else {
+            None
+        };
+        found.ok_or_else(bad)
+    }
+}
+
+impl fmt::Display for Signal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match SIGNALS.iter().find(|(_, n)| *n == self.0) {
+            Some((name, _)) => write!(f, "SIG{name}"),
+            None if self.0 >= Self::RTMIN => write!(f, "SIGRTMIN+{}", self.0 - Self::RTMIN),
+            None => write!(f, "{}", self.0),
+        }
+    }
+}
+
+impl TryFrom<String> for Signal {
+    type Error = ParseError;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        s.parse()
+    }
+}
+
+impl From<Signal> for String {
+    fn from(v: Signal) -> String {
+        v.to_string()
+    }
+}
+
+/// 멈추는 방법. Docker의 `StopSignal`, `StopTimeout`과 같다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StopSpec {
+    /// 멈출 때 기본 프로세스에 먼저 보내는 시그널.
+    pub signal: Signal,
+    /// 그 뒤 기다리는 시간(초). 없으면 호출자(표현 계층)가 정한다.
+    pub timeout_secs: Option<u32>,
+}
+
+impl Default for StopSpec {
+    fn default() -> Self {
+        Self {
+            signal: Signal::TERM,
+            timeout_secs: None,
+        }
+    }
+}
+
 /// 샌드박스를 만드는 데 필요한 전부. 생성 후에는 바뀌지 않는다.
 ///
 /// 수명(VM을 띄운 프로세스와 함께 끝나는지, 남는지)은 여기에 없다. Docker처럼 시작할 때 정한다:
@@ -623,6 +775,9 @@ pub struct SandboxSpec {
     pub hostname: Option<String>,
     /// 호출자가 붙이는 라벨.
     pub labels: BTreeMap<String, String>,
+    /// 멈추는 방법. 이 필드가 없던 기록은 기본값(SIGTERM)으로 읽는다.
+    #[serde(default)]
+    pub stop: StopSpec,
 }
 
 /// 샌드박스 상태. 이름은 OCI Runtime Spec의 상태를 따른다.
@@ -672,6 +827,45 @@ impl State {
                 | (State::Running, State::Stopped)
                 | (State::Stopped, State::Running)
         )
+    }
+}
+
+#[cfg(test)]
+mod signal_tests {
+    use super::*;
+
+    #[test]
+    fn signals_parse_like_docker() {
+        let n = |s: &str| s.parse::<Signal>().map(Signal::number);
+        assert_eq!(n("TERM"), Ok(15));
+        assert_eq!(n("sigkill"), Ok(9));
+        assert_eq!(n("SIGUSR1"), Ok(10));
+        assert_eq!(n("9"), Ok(9));
+        assert_eq!(n("IOT"), Ok(6));
+        assert_eq!(n("RTMIN"), Ok(34));
+        assert_eq!(n("SIGRTMIN+3"), Ok(37));
+        assert_eq!(n("RTMAX-1"), Ok(63));
+        for bad in [
+            "", "0", "65", "-1", "NOPE", "RTMIN+31", "RTMAX+1", "RTMIN3", "SIG",
+        ] {
+            assert!(bad.parse::<Signal>().is_err(), "{bad}");
+        }
+        assert_eq!(Signal::TERM.to_string(), "SIGTERM");
+        assert_eq!(Signal::new(37).unwrap().to_string(), "SIGRTMIN+3");
+        assert_eq!(Signal::new(32).unwrap().to_string(), "32");
+        // 쓴 것을 다시 읽으면 같다.
+        for i in 1..=64 {
+            let s = Signal::new(i).unwrap();
+            assert_eq!(s.to_string().parse::<Signal>(), Ok(s), "{i}");
+        }
+    }
+
+    #[test]
+    fn old_specs_without_stop_read_as_sigterm() {
+        let v: StopSpec = serde_json::from_str("{}").unwrap();
+        assert_eq!(v, StopSpec::default());
+        let v: StopSpec = serde_json::from_str(r#"{"signal":"SIGINT","timeout_secs":3}"#).unwrap();
+        assert_eq!((v.signal.number(), v.timeout_secs), (2, Some(3)));
     }
 }
 

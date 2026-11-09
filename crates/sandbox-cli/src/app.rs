@@ -29,7 +29,7 @@ use sandbox_image::Platform;
 use sandbox_manage::Manager;
 use sandbox_model::{
     Arch, ExecSpec, ImageId, ProcessOverrides, Resources, RootfsFormat, SandboxId, SandboxSpec,
-    State, UserSpec,
+    Signal, State, StopSpec, UserSpec,
 };
 use sandbox_oci::{OciImageSource, Reference};
 use sandbox_rootfs::erofs::ErofsBuilder;
@@ -39,7 +39,7 @@ use sandbox_store::CacheLayout;
 
 use crate::attach::{self, attach};
 use crate::behavior::{self, ImageMatch, LookupError, RmiAction, RmiDecision, Step};
-use crate::cli::{AttachArgs, Cli, Command, ExecArgs, Format, RunArgs};
+use crate::cli::{AttachArgs, Cli, Command, ExecArgs, Format, RunArgs, StopArgs};
 use crate::parse::{self, CpEndpoint};
 use crate::{dirs, guest};
 
@@ -166,7 +166,10 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
         Command::Logs { follow, id } => ctx.logs(*follow, id).await,
         Command::Exec(a) => ctx.exec(a).await,
         Command::Cp { src, dst } => ctx.cp(src, dst).await,
-        Command::Stop { time, ids } => ctx.stop(*time, ids).await,
+        Command::Stop(a) => ctx.stop(a).await,
+        Command::Restart(a) => ctx.restart(a).await,
+        Command::Kill { signal, ids } => ctx.kill(signal, ids).await,
+        Command::Wait { ids } => ctx.wait(ids).await,
         Command::Rm { force, ids } => ctx.rm(*force, ids).await,
         Command::Ps { all } => ctx.ps(*all).await,
         Command::Inspect { id } => ctx.inspect(id).await,
@@ -512,6 +515,11 @@ impl Ctx {
     async fn create(&self, a: &RunArgs) -> AppResult<SandboxId> {
         let network = behavior::network_policy(&a.network, &a.allow)?;
         let user = a.user.as_deref().map(str::parse::<UserSpec>).transpose()?;
+        let stop_signal = a
+            .stop_signal
+            .as_deref()
+            .map(str::parse::<Signal>)
+            .transpose()?;
         let overrides = ProcessOverrides {
             entrypoint: a.entrypoint.as_ref().map(|e| {
                 if e.is_empty() {
@@ -580,6 +588,10 @@ impl Ctx {
                         .ok_or_else(|| msg("internal: create without image"))?;
                     let record = m.store().image(&id)?;
                     let process = sandbox_runtime::process::resolve(&record.config, &overrides)?;
+                    let stop = StopSpec {
+                        signal: sandbox_runtime::process::stop_signal(&record.config, stop_signal)?,
+                        timeout_secs: a.stop_timeout,
+                    };
                     let spec = SandboxSpec {
                         image: id,
                         rootfs_format: format,
@@ -589,6 +601,7 @@ impl Ctx {
                         network: network.clone(),
                         hostname: a.hostname.clone(),
                         labels: labels.clone(),
+                        stop,
                     };
                     let sandbox = self.launcher()?.create(spec).await?;
                     return Ok(sandbox.id().clone());
@@ -694,11 +707,48 @@ impl Ctx {
         Ok(0)
     }
 
-    async fn stop(&self, secs: u64, ids: &[String]) -> AppResult<u8> {
+    async fn stop(&self, a: &StopArgs) -> AppResult<u8> {
         let rt = self.runtime()?;
-        each(ids, async |id| {
-            rt.get(&id).await?.stop(Duration::from_secs(secs)).await?;
+        let signal = a.signal.as_deref().map(str::parse::<Signal>).transpose()?;
+        each(&a.ids, async |id| {
+            let s = rt.get(&id).await?;
+            let timeout = behavior::stop_timeout(a.time, s.info().spec.stop.timeout_secs);
+            s.stop(signal, timeout).await?;
             Ok(())
+        })
+        .await
+    }
+
+    /// `restart`: 실행 중이면 `stop`과 같이 멈추고, 붙지 않고 다시 시작한다(Docker와 같다).
+    async fn restart(&self, a: &StopArgs) -> AppResult<u8> {
+        let rt = self.runtime()?;
+        let signal = a.signal.as_deref().map(str::parse::<Signal>).transpose()?;
+        each(&a.ids, async |id| {
+            let s = rt.get(&id).await?;
+            if s.state() == State::Running {
+                let timeout = behavior::stop_timeout(a.time, s.info().spec.stop.timeout_secs);
+                s.stop(signal, timeout).await?;
+            }
+            self.start_detached(&id, false).await
+        })
+        .await
+    }
+
+    async fn kill(&self, signal: &str, ids: &[String]) -> AppResult<u8> {
+        let rt = self.runtime()?;
+        let signal: Signal = signal.parse()?;
+        each(ids, async |id| {
+            rt.get(&id).await?.kill(signal).await?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// `wait`: 샌드박스마다 종료 코드를 한 줄씩 출력한다.
+    async fn wait(&self, ids: &[String]) -> AppResult<u8> {
+        let rt = self.runtime()?;
+        each_print(ids, async |id| {
+            Ok(rt.get(&id).await?.wait().await?.to_string())
         })
         .await
     }
@@ -711,8 +761,8 @@ impl Ctx {
                 if !force {
                     return Err(msg("sandbox is running; stop it first or use -f"));
                 }
-                // 이 프로세스가 소유한 VM이 아니므로(attached) 게스트에 종료를 요청하고 기다린다.
-                sandbox.stop(behavior::RM_FORCE_WAIT).await?;
+                // Docker의 SIGKILL처럼 기다리지 않고 끈다.
+                sandbox.stop(None, Duration::ZERO).await?;
                 rt.get(&id).await?.delete().await?;
             } else {
                 sandbox.delete().await?;
@@ -795,6 +845,18 @@ fn join_ids(ids: &[SandboxId]) -> String {
 
 /// ID 여러 개에 같은 동작을 한다. 하나가 실패해도 나머지를 계속하고, 성공한 ID를 출력한다(Docker와 같다).
 async fn each(ids: &[String], f: impl AsyncFn(SandboxId) -> AppResult<()>) -> AppResult<u8> {
+    each_print(ids, async |id| {
+        let line = id.to_string();
+        f(id).await.map(|()| line)
+    })
+    .await
+}
+
+/// [`each`]와 같고, 성공하면 ID 대신 `f`가 돌려준 줄을 출력한다.
+async fn each_print(
+    ids: &[String],
+    f: impl AsyncFn(SandboxId) -> AppResult<String>,
+) -> AppResult<u8> {
     let mut failed = 0;
     for raw in ids {
         let result = match SandboxId::new(raw) {
@@ -802,7 +864,7 @@ async fn each(ids: &[String], f: impl AsyncFn(SandboxId) -> AppResult<()>) -> Ap
             Err(e) => Err(e.into()),
         };
         match result {
-            Ok(()) => println!("{raw}"),
+            Ok(line) => println!("{line}"),
             Err(e) => {
                 eprintln!("sbx: {raw}: {e}");
                 failed += 1;

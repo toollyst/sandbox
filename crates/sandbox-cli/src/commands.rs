@@ -78,7 +78,22 @@ pub const COMMANDS: &[Command] = &[
         Group::Run,
         "호스트와 샌드박스 사이에 파일을 복사한다 (샌드박스 쪽은 ID:경로)",
     ),
-    cmd("stop", Group::Run, "샌드박스를 멈춘다"),
+    cmd(
+        "stop",
+        Group::Run,
+        "샌드박스를 멈춘다 (기본 프로세스에 시그널, -t초 뒤 게스트를 끈다)",
+    ),
+    cmd("restart", Group::Run, "샌드박스를 멈추고 다시 시작한다"),
+    cmd(
+        "kill",
+        Group::Run,
+        "기본 프로세스에 시그널을 보낸다 (기본 KILL)",
+    ),
+    cmd(
+        "wait",
+        Group::Run,
+        "샌드박스가 멈출 때까지 기다리고 종료 코드를 출력한다",
+    ),
     cmd(
         "rm",
         Group::Run,

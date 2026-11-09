@@ -85,6 +85,7 @@ impl Env {
             network: NetworkPolicy::Disabled,
             hostname: None,
             labels: BTreeMap::new(),
+            stop: Default::default(),
         }
     }
 
@@ -220,13 +221,11 @@ fn exec_while_running_then_stop() {
     p.close_stdin();
     assert_eq!(collect(p).0, "piped");
 
-    block_on(s.stop(Duration::from_secs(5))).unwrap();
+    // stop은 기본 프로세스에 SIGTERM을 먼저 보낸다. 그것으로 끝나면 128+15다(Docker와 같다).
+    block_on(s.stop(None, Duration::from_secs(5))).unwrap();
     let info = e.state(&s);
-    assert_eq!(
-        (info.state, info.exit_code),
-        (State::Stopped, Some(EXIT_VM_ENDED))
-    );
-    assert_eq!(block_on(main.wait()).unwrap(), EXIT_VM_ENDED);
+    assert_eq!((info.state, info.exit_code), (State::Stopped, Some(143)));
+    assert_eq!(block_on(main.wait()).unwrap(), 143);
     assert!(matches!(
         block_on(s.exec(exec(&["true"]))),
         Err(RuntimeError::InvalidState { .. })
@@ -254,7 +253,7 @@ fn exec_failure_kinds_come_from_the_guest() {
         block_on(s.exec(exec(&[]))),
         Err(RuntimeError::NoCommand)
     ));
-    block_on(s.stop(Duration::from_secs(5))).unwrap();
+    block_on(s.stop(None, Duration::from_secs(5))).unwrap();
 }
 
 #[cfg(unix)]
@@ -277,7 +276,7 @@ fn start_guards() {
         block_on(s.clone().delete()),
         Err(RuntimeError::InvalidState { .. })
     ));
-    block_on(s.stop(Duration::from_secs(5))).unwrap();
+    block_on(s.stop(None, Duration::from_secs(5))).unwrap();
 }
 
 #[test]
@@ -369,7 +368,7 @@ fn copy_follows_docker_cp_rules() {
         block_on(s.copy_in(&src, "relative")),
         Err(RuntimeError::Invalid(_))
     ));
-    block_on(s.stop(Duration::from_secs(5))).unwrap();
+    block_on(s.stop(None, Duration::from_secs(5))).unwrap();
 }
 
 #[cfg(unix)]
@@ -586,7 +585,7 @@ fn network_allow_list_is_enforced_through_the_guest_proxy() {
         write!(c, "CONNECT 127.0.0.1:{allowed} HTTP/1.1\r\n\r\n").unwrap();
         assert!(head(&mut c).0.starts_with("HTTP/1.1 200"));
     }
-    block_on(s.stop(Duration::from_secs(5))).unwrap();
+    block_on(s.stop(None, Duration::from_secs(5))).unwrap();
 }
 
 #[test]
@@ -615,4 +614,102 @@ fn list_never_fails_while_sandboxes_are_removed() {
         .unwrap()
         .collect();
     assert!(left.is_empty(), "{left:?}");
+}
+
+/// 시그널을 받으면 `code`로 끝나고, 다른 시그널(TERM 포함)은 무시하는 기본 프로세스.
+#[cfg(unix)]
+fn trapping(sig: &str, code: i32) -> Vec<String> {
+    vec![
+        "sh".into(),
+        "-c".into(),
+        format!("trap '' TERM; trap 'exit {code}' {sig}; echo ready; while :; do sleep 0.02; done"),
+    ]
+}
+
+/// 기본 프로세스가 트랩을 걸 때까지 기다린다.
+#[cfg(unix)]
+fn until_ready(main: &mut Process) {
+    match block_on(main.next()) {
+        Some(Output::Stdout(b)) => assert_eq!(b, b"ready\n"),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn stop_falls_back_to_power_off_after_the_timeout() {
+    let e = Env::new("stopto");
+    let args = trapping("USR2", 1);
+    let s = e.sandbox(&args.iter().map(String::as_str).collect::<Vec<_>>());
+    let mut main = block_on(s.start(IoMode::default())).unwrap();
+    until_ready(&mut main);
+    let t = Instant::now();
+    block_on(s.stop(None, Duration::from_millis(300))).unwrap();
+    assert!(
+        t.elapsed() >= Duration::from_millis(300),
+        "{:?}",
+        t.elapsed()
+    );
+    assert_eq!(e.state(&s).exit_code, Some(EXIT_VM_ENDED));
+    assert_eq!(block_on(main.wait()).unwrap(), EXIT_VM_ENDED);
+}
+
+#[cfg(unix)]
+#[test]
+fn stop_uses_the_given_or_recorded_signal() {
+    let e = Env::new("stopsig");
+    // 기록한 시그널 (이미지 StopSignal이나 --stop-signal).
+    e.prepare_image();
+    let mut spec = e.spec(&[]);
+    spec.process.args = trapping("INT", 9);
+    spec.stop.signal = "SIGINT".parse().unwrap();
+    let s = block_on(e.rt.create(spec)).unwrap();
+    let mut main = block_on(s.start(IoMode::default())).unwrap();
+    until_ready(&mut main);
+    block_on(s.stop(None, Duration::from_secs(5))).unwrap();
+    assert_eq!(e.state(&s).exit_code, Some(9));
+    // 호출자가 준 시그널이 이긴다 (`stop -s`).
+    let mut main = block_on(s.start(IoMode::default())).unwrap();
+    until_ready(&mut main);
+    let usr1 = "USR1".parse().unwrap();
+    assert!(matches!(
+        block_on(s.stop(Some(usr1), Duration::from_millis(200))),
+        Ok(())
+    ));
+    // USR1은 트랩이 없어 기본 동작(끝남)으로 끝난다: 128+10 (Linux 번호).
+    assert_eq!(e.state(&s).exit_code, Some(128 + 10));
+}
+
+#[cfg(unix)]
+#[test]
+fn kill_signals_the_main_process_and_wait_reports_its_code() {
+    let e = Env::new("killwait");
+    let args = trapping("USR1", 42);
+    let s = e.sandbox(&args.iter().map(String::as_str).collect::<Vec<_>>());
+    let mut main = block_on(s.start(IoMode::default())).unwrap();
+    until_ready(&mut main);
+    let waiter = {
+        let s = s.clone();
+        std::thread::spawn(move || block_on(s.wait()))
+    };
+    // TERM은 무시하므로 멈추지 않는다.
+    block_on(s.kill(Signal::TERM)).unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(e.state(&s).state, State::Running);
+    block_on(s.kill("USR1".parse().unwrap())).unwrap();
+    assert_eq!(waiter.join().unwrap().unwrap(), 42);
+    assert_eq!(block_on(main.wait()).unwrap(), 42);
+    // 멈춘 뒤: kill은 오류, wait은 곧바로 기록된 코드.
+    assert!(matches!(
+        block_on(s.kill(Signal::KILL)),
+        Err(RuntimeError::InvalidState { .. })
+    ));
+    assert_eq!(block_on(s.wait()).unwrap(), 42);
+    // 지운 뒤에는 NotFound.
+    let gone = s.clone();
+    block_on(s.delete()).unwrap();
+    assert!(matches!(
+        block_on(gone.wait()),
+        Err(RuntimeError::NotFound(_))
+    ));
 }

@@ -85,7 +85,7 @@ OCI는 입력 형식이다. OCI 자료형은 `sandbox-oci` 밖으로 나가지 �
 | 스펙 | 지금 | 나중 | 하지 않음 |
 |---|---|---|---|
 | Distribution | pull, 익명과 Bearer 토큰 인증, OCI와 Docker v2 manifest, 모든 blob의 digest 검증 | push, 자격 증명 헬퍼, 미러, 서명 검증, 오프라인 가져오기 | Docker schema1 |
-| Image | linux와 호스트 아키텍처 선택, tar와 tar+gzip 레이어, whiteout, config의 `Entrypoint`/`Cmd`/`Env`/`WorkingDir`/`User` | zstd, `StopSignal`, `Labels`, `ExposedPorts`·`Volumes`(정보로만 표시) | 아키텍처 에뮬레이션, `Healthcheck` 등 Docker 확장 |
+| Image | linux와 호스트 아키텍처 선택, tar와 tar+gzip 레이어, whiteout, config의 `Entrypoint`/`Cmd`/`Env`/`WorkingDir`/`User`/`StopSignal` | zstd, `Labels`, `ExposedPorts`·`Volumes`(정보로만 표시) | 아키텍처 에뮬레이션, `Healthcheck` 등 Docker 확장 |
 | Runtime | 입력으로 받지 않는다. 상태 이름과 용어만 맞춘다 | 번들 입력(별도 변환 크레이트) | namespace, seccomp 등 VM 경계에서 의미 없는 필드는 적용하지 않음 (목록은 `scope.rs`) |
 
 ## 4. 검증

@@ -184,9 +184,10 @@ pub const FORWARDED_SIGNALS: &[(&str, i32)] = &[
     ("TERM", 15),
 ];
 
-/// `rm -f`가 다른 프로세스가 소유한 실행 중 샌드박스를 멈출 때 기다리는 시간.
-/// 이 프로세스가 소유한 VM은 기다리지 않고 바로 끝낸다.
-pub const RM_FORCE_WAIT: Duration = Duration::from_secs(10);
+/// `stop`, `restart`에서 시그널 뒤 기다리는 시간: `-t` > 샌드박스의 `--stop-timeout` > 10초 (Docker와 같다).
+pub fn stop_timeout(given: Option<u64>, recorded: Option<u32>) -> Duration {
+    Duration::from_secs(given.or(recorded.map(u64::from)).unwrap_or(10))
+}
 
 /// `--network`와 `--allow`로 네트워크 정책을 정한다.
 ///
@@ -390,13 +391,23 @@ pub const DOCKER_DIFFERENCES: &[(&str, &str, &str)] = &[
         "디스크를 읽고 쓰는 것이 게스트이기 때문이다",
     ),
     (
-        "stop",
-        "기본 프로세스에 SIGTERM을 먼저 보내지 않고 게스트를 끈다 (sync 뒤 전원 끄기). -t가 지나면 강제로 끝낸다",
+        "stop, restart, rm -f",
+        "시그널은 Docker와 같다. -t가 지나면 SIGKILL 대신 게스트를 끈다 (sync 뒤 전원 끄기, 종료 코드 137). rm -f는 시그널 없이 끈다",
         "샌드박스 하나가 VM 하나다. 정지 = VM 종료",
     ),
     (
+        "기본 프로세스와 시그널",
+        "기본 프로세스는 PID 1이 아니다(게스트 init이 PID 1). 그래서 핸들러가 없는 프로세스도 SIGTERM으로 끝난다",
+        "VM 안의 PID 1은 sbx의 게스트 init이다",
+    ),
+    (
+        "stop -t, --stop-timeout",
+        "음수(무한히 기다림)를 받지 않는다",
+        "기다림은 호출한 쪽이 끊을 수 있다(Ctrl+C 뒤 kill)",
+    ),
+    (
         "다른 터미널에서 실행 중인 샌드박스의 stop, rm -f",
-        "게스트에 종료를 요청하고 기다린다. 끝나지 않으면 오류 (강제로 끝낼 수 있는 것은 VM을 띄운 프로세스뿐이다)",
+        "게스트를 끄고 기다린다. 꺼지지 않으면 오류 (VM을 강제로 끝낼 수 있는 것은 VM을 띄운 프로세스뿐이다)",
         "VM은 띄운 프로세스가 소유한다",
     ),
 ];

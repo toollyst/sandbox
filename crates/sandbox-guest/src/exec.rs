@@ -246,7 +246,7 @@ fn run_inner(
     }
     let status = match (status.code(), status.signal()) {
         (Some(c), _) => ExitStatus::Code(c),
-        (None, Some(s)) => ExitStatus::Signal(s),
+        (None, Some(s)) => ExitStatus::Signal(crate::sys::to_linux_signal(s)),
         (None, None) => ExitStatus::Code(-1),
     };
     let _ = out.send(&GuestMsg::Exited(status));

@@ -81,6 +81,11 @@ mod unix {
             detached_run_outlives_sbx_and_keeps_logs,
         ),
         ("detached_rm_and_logs_follow", detached_rm_and_logs_follow),
+        (
+            "stop_sends_the_stop_signal_then_powers_off",
+            stop_sends_the_stop_signal_then_powers_off,
+        ),
+        ("kill_wait_and_restart", kill_wait_and_restart),
         ("volume_is_shared_live", volume_is_shared_live),
         ("network_allow_list", network_allow_list),
         (
@@ -516,10 +521,10 @@ mod unix {
         let o = e.sbx(&["stop", "-t", "10", &id]);
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
         let out = wait_with_timeout(main, Duration::from_secs(20));
-        // VM이 먼저 끝나면 기본 프로세스는 137.
-        assert_eq!(out.status.code(), Some(137), "{}", text(&out.stderr));
+        // stop은 기본 프로세스에 SIGTERM을 보낸다. 그것으로 끝나면 143.
+        assert_eq!(out.status.code(), Some(143), "{}", text(&out.stderr));
         assert_eq!(text(&out.stdout), "up\n");
-        assert_eq!(e.ps()[0]["exit_code"], 137);
+        assert_eq!(e.ps()[0]["exit_code"], 143);
         assert_eq!(e.sbx(&["rm", &id]).status.code(), Some(0));
     }
 
@@ -650,7 +655,7 @@ mod unix {
 
         let o = e.sbx(&["stop", &id]);
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
-        assert_eq!(state_of(&e, &id).unwrap()["exit_code"], 137);
+        assert_eq!(state_of(&e, &id).unwrap()["exit_code"], 143);
         // 멈춘 뒤에도 로그는 남는다.
         wait_logs(&e, &id, "started\n", "e\n");
 
@@ -695,5 +700,84 @@ mod unix {
         let failed =
             |s: &serde_json::Value| s["spec"]["process"]["args"][0] == "no-such-command-xyz";
         assert!(!e.ps().iter().any(failed), "{:?}", e.ps());
+    }
+
+    /// 시그널 `sig`를 받으면 `code`로 끝나고 TERM은 무시하는 기본 프로세스를 detached로 시작한다.
+    /// 트랩을 건 뒤("ready"가 로그에 나온 뒤) ID를 돌려준다.
+    fn run_trapping(e: &Env, extra: &[&str], sig: &str, code: i32) -> String {
+        let script = format!(
+            "trap '' TERM; trap 'exit {code}' {sig}; echo ready; while :; do sleep 0.02; done"
+        );
+        let mut args = vec!["run", "-d"];
+        args.extend_from_slice(extra);
+        args.extend_from_slice(&[IMAGE, "sh", "-c", &script]);
+        let o = e.sbx(&args);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let id = text(&o.stdout).trim().to_owned();
+        wait_logs(e, &id, "ready\n", "");
+        id
+    }
+
+    fn stop_sends_the_stop_signal_then_powers_off() {
+        let e = Env::new();
+        // --stop-signal로 정한 시그널을 보낸다.
+        let id = run_trapping(&e, &["--stop-signal", "SIGINT"], "INT", 3);
+        assert_eq!(e.sbx(&["inspect", &id]).status.code(), Some(0));
+        let o = e.sbx(&["stop", &id]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(state_of(&e, &id).unwrap()["exit_code"], 3);
+
+        // -s가 이긴다. 받지 않으면(TERM은 무시) -t 뒤에 게스트를 끈다: 137.
+        let id = run_trapping(&e, &["--stop-timeout", "30"], "USR2", 4);
+        let t = Instant::now();
+        let o = e.sbx(&["stop", "-s", "TERM", "-t", "1", &id]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let took = t.elapsed();
+        assert!(
+            took >= Duration::from_secs(1) && took < Duration::from_secs(15),
+            "{took:?}"
+        );
+        assert_eq!(state_of(&e, &id).unwrap()["exit_code"], 137);
+
+        // 잘못된 시그널은 아무것도 하지 않고 오류.
+        let o = e.sbx(&["stop", "-s", "NOPE", &id]);
+        assert_ne!(o.status.code(), Some(0));
+        let o = e.sbx(&["run", "-d", "--stop-signal", "NOPE", IMAGE, "true"]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(text(&o.stderr).contains("signal"), "{}", text(&o.stderr));
+    }
+
+    fn kill_wait_and_restart() {
+        let e = Env::new();
+        let id = run_trapping(&e, &[], "USR1", 42);
+        let waiter = e.spawn(&["wait", &id]);
+        // TERM은 무시하므로 멈추지 않는다.
+        let o = e.sbx(&["kill", "-s", "TERM", &id]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout).trim(), id);
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(state_of(&e, &id).unwrap()["state"], "running");
+        assert_eq!(e.sbx(&["kill", "-s", "usr1", &id]).status.code(), Some(0));
+        let out = wait_with_timeout(waiter, Duration::from_secs(20));
+        assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+        assert_eq!(text(&out.stdout), "42\n");
+        // 멈춘 샌드박스: wait은 곧바로, kill은 오류.
+        assert_eq!(text(&e.sbx(&["wait", &id]).stdout), "42\n");
+        assert_ne!(e.sbx(&["kill", &id]).status.code(), Some(0));
+
+        // restart는 멈춘 것도 다시 시작한다(붙지 않고).
+        let o = e.sbx(&["restart", &id]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout).trim(), id);
+        assert_eq!(state_of(&e, &id).unwrap()["state"], "running");
+        // 실행 중이면 멈추고 다시 시작한다. 기본 kill은 KILL: 137.
+        wait_logs(&e, &id, "ready\nready\n", "");
+        let o = e.sbx(&["restart", "-t", "0", &id]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(state_of(&e, &id).unwrap()["state"], "running");
+        wait_logs(&e, &id, "ready\nready\nready\n", "");
+        assert_eq!(e.sbx(&["kill", &id]).status.code(), Some(0));
+        assert_eq!(text(&e.sbx(&["wait", &id]).stdout), "137\n");
+        assert_eq!(e.sbx(&["rm", &id]).status.code(), Some(0));
     }
 }
