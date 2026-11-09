@@ -239,7 +239,9 @@ fn exec_failure_kinds_come_from_the_guest() {
     let s = e.sandbox(&["sh", "-c", "sleep 30"]);
     let _main = block_on(s.start(false)).unwrap();
     match block_on(s.exec(exec(&["no-such-binary-xyz"]))) {
-        Err(RuntimeError::Guest(g)) => assert_eq!(g.kind, sandbox_proto::ErrorKind::NotFound),
+        Err(RuntimeError::CommandFailed(g)) => {
+            assert_eq!(g.kind, sandbox_proto::ErrorKind::NotFound)
+        }
         other => panic!("{other:?}"),
     }
     assert!(matches!(
@@ -383,4 +385,34 @@ fn copy_mounts_are_copied_before_the_main_process() {
     let s = block_on(e.rt.create(spec)).unwrap();
     let main = block_on(s.start(false)).unwrap();
     assert_eq!(collect(main), ("data".into(), "".into(), Some(0)));
+}
+
+#[cfg(unix)]
+#[test]
+fn main_command_that_cannot_start_leaves_the_sandbox_created() {
+    let e = Env::new("mainfail");
+    let s = e.sandbox(&["no-such-binary-xyz"]);
+    match block_on(s.start(false)) {
+        Err(RuntimeError::CommandFailed(g)) => {
+            assert_eq!(g.kind, sandbox_proto::ErrorKind::NotFound)
+        }
+        other => panic!("{other:?}"),
+    }
+    let info = e.state(&s);
+    assert_eq!(info.state, State::Created);
+    assert!(info.error.is_some());
+}
+
+#[cfg(unix)]
+#[test]
+fn main_exit_is_reported_after_the_sandbox_is_stopped() {
+    let e = Env::new("mainorder");
+    let s = e.sandbox(&["sh", "-c", "exit 3"]);
+    let main = block_on(s.start(false)).unwrap();
+    assert_eq!(block_on(main.wait()).unwrap(), 3);
+    // 기다리지 않고 곧바로: 이미 stopped이고 지울 수 있다.
+    let info = e.state(&s);
+    assert_eq!(info.state, State::Stopped);
+    assert_eq!(info.exit_code, Some(3));
+    block_on(block_on(e.rt.get(s.id())).unwrap().delete()).unwrap();
 }

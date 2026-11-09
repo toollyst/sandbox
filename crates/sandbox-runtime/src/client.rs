@@ -98,7 +98,7 @@ impl Guest {
         send(&mut *c, &HostMsg::Exec(x))?;
         match recv(&mut *c)? {
             GuestMsg::Started { pid } => Ok((c, pid)),
-            GuestMsg::Error(e) => Err(RuntimeError::Guest(e)),
+            GuestMsg::Error(e) => Err(RuntimeError::CommandFailed(e)),
             other => Err(proto_err(format!("expected Started, got {other:?}"))),
         }
     }

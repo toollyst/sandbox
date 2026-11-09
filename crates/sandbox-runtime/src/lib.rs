@@ -664,11 +664,42 @@ enum Event {
 type OnEnd = Box<dyn FnOnce(i32, Option<String>) + Send>;
 
 /// 샌드박스 안의 프로세스. 버려도 프로세스는 계속 돈다(출력은 버린다).
+///
+/// 기본 프로세스([`Sandbox::start`])의 끝([`Process::next`]가 `None`)을 받았으면 샌드박스는 이미 `stopped`로 기록되어 있다.
 pub struct Process {
     pid: u32,
     events: chan::Receiver<Event>,
-    input: std::sync::mpsc::Sender<HostMsg>,
+    input: ProcessInput,
     exit: Option<Result<i32, String>>,
+}
+
+/// 프로세스에 보내는 쪽. 복제해서 다른 스레드에서 쓸 수 있다(예: 표준 입력을 읽는 스레드, 시그널 처리).
+/// 보내기는 별도 스레드가 하므로 막히지 않는다. 프로세스가 끝났으면 버린다.
+#[derive(Debug, Clone)]
+pub struct ProcessInput(std::sync::mpsc::Sender<HostMsg>);
+
+impl ProcessInput {
+    /// 표준 입력에 쓴다.
+    pub fn write_stdin(&self, data: &[u8]) {
+        for chunk in data.chunks(sandbox_proto::CHUNK_LEN) {
+            let _ = self.0.send(HostMsg::Stdin(chunk.to_vec()));
+        }
+    }
+
+    /// 표준 입력을 닫는다.
+    pub fn close_stdin(&self) {
+        let _ = self.0.send(HostMsg::StdinClose);
+    }
+
+    /// 시그널을 보낸다. 번호는 게스트(Linux)의 번호다.
+    pub fn signal(&self, signal: i32) {
+        let _ = self.0.send(HostMsg::Signal(signal));
+    }
+
+    /// 터미널 크기를 바꾼다.
+    pub fn resize(&self, rows: u16, cols: u16) {
+        let _ = self.0.send(HostMsg::Resize(WinSize { rows, cols }));
+    }
 }
 
 impl fmt::Debug for Process {
@@ -715,11 +746,13 @@ impl Process {
                 (None, true) => Some(EXIT_VM_ENDED),
                 (None, false) => None,
             };
-            match (code, &error) {
-                (Some(c), _) => tx.send(Event::Exit(c)),
-                (None, Some(e)) => tx.send(Event::Lost(e.clone())),
-                (None, None) => tx.send(Event::Lost("connection closed".into())),
-            }
+            let event = match (code, &error) {
+                (Some(c), _) => Event::Exit(c),
+                (None, Some(e)) => Event::Lost(e.clone()),
+                (None, None) => Event::Lost("connection closed".into()),
+            };
+            // 기본 프로세스는 샌드박스를 멈추고 기록한 뒤에 끝을 알린다.
+            // 그래서 끝을 받은 호출자는 곧바로 그 샌드박스를 지울 수 있다.
             if let Some(f) = on_end {
                 let lost = if code == Some(EXIT_VM_ENDED) {
                     error
@@ -728,11 +761,12 @@ impl Process {
                 };
                 f(code.unwrap_or(EXIT_VM_ENDED), lost);
             }
+            tx.send(event);
         });
         Self {
             pid,
             events,
-            input,
+            input: ProcessInput(input),
             exit: None,
         }
     }
@@ -769,26 +803,29 @@ impl Process {
         self.exit.as_ref().and_then(|e| e.as_ref().ok().copied())
     }
 
-    /// 표준 입력에 쓴다. 보내기는 별도 스레드가 한다.
+    /// 보내는 쪽. 표준 입력, 시그널, 터미널 크기.
+    pub fn input(&self) -> ProcessInput {
+        self.input.clone()
+    }
+
+    /// 표준 입력에 쓴다. [`ProcessInput::write_stdin`]과 같다.
     pub fn write_stdin(&self, data: &[u8]) {
-        for chunk in data.chunks(sandbox_proto::CHUNK_LEN) {
-            let _ = self.input.send(HostMsg::Stdin(chunk.to_vec()));
-        }
+        self.input.write_stdin(data)
     }
 
     /// 표준 입력을 닫는다.
     pub fn close_stdin(&self) {
-        let _ = self.input.send(HostMsg::StdinClose);
+        self.input.close_stdin()
     }
 
-    /// 시그널을 보낸다.
+    /// 시그널을 보낸다. 번호는 게스트(Linux)의 번호다.
     pub fn signal(&self, signal: i32) {
-        let _ = self.input.send(HostMsg::Signal(signal));
+        self.input.signal(signal)
     }
 
     /// 터미널 크기를 바꾼다.
     pub fn resize(&self, rows: u16, cols: u16) {
-        let _ = self.input.send(HostMsg::Resize(WinSize { rows, cols }));
+        self.input.resize(rows, cols)
     }
 
     /// 끝날 때까지 기다려 종료 코드를 돌려준다. 출력은 버린다.

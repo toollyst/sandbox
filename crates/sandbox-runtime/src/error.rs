@@ -57,6 +57,8 @@ pub enum RuntimeError {
     },
     /// 게스트가 오류를 알림 (예: 실행 파일이 없음, 경로가 없음).
     Guest(sandbox_proto::Error),
+    /// 실행할 명령을 시작하지 못함 (실행 파일이 없음, 실행 권한이 없음 등). 종류는 오류의 `kind`다.
+    CommandFailed(sandbox_proto::Error),
     /// 게스트가 규약에 맞지 않는 것을 보냄.
     Protocol(String),
     /// 게스트에 연결할 수 없음.
@@ -106,6 +108,7 @@ impl fmt::Display for RuntimeError {
             }
             RuntimeError::Io(e) => write!(f, "io: {e}"),
             RuntimeError::Guest(e) => write!(f, "{}", e.message),
+            RuntimeError::CommandFailed(e) => write!(f, "cannot start the command: {}", e.message),
             RuntimeError::Protocol(m) => write!(f, "guest protocol violation: {m}"),
             RuntimeError::GuestUnreachable(m) => write!(f, "cannot reach the guest: {m}"),
             RuntimeError::Lost(m) => write!(f, "lost the guest connection: {m}"),
@@ -115,7 +118,7 @@ impl fmt::Display for RuntimeError {
             }
             RuntimeError::SocketPathTooLong(p) => write!(
                 f,
-                "control socket path is too long for a Unix socket: {} (use a shorter data_dir)",
+                "control socket path is too long for a Unix socket: {} (use a shorter socket_dir)",
                 p.display()
             ),
             RuntimeError::OwnedElsewhere(id) => write!(
