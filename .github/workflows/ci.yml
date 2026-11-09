@@ -2,8 +2,10 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    # 작업 브랜치(feat/**)도 PR 없이 실제 VM까지 돌려 본다.
+    branches: [main, 'feat/**']
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
