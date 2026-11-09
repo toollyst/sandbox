@@ -5,7 +5,9 @@
 use std::fmt;
 use std::str::FromStr;
 
-use sandbox_model::{ParseError, SandboxId};
+use std::collections::BTreeMap;
+
+use sandbox_model::{ImageId, ParseError, RootfsFormat, SandboxId};
 
 /// `run`과 `create`의 `--pull`. Docker와 같은 값과 같은 기본값(`missing`)이다.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -118,8 +120,148 @@ pub fn rmi_decision(running: Vec<SandboxId>, stopped: Vec<SandboxId>, force: boo
     }
 }
 
+/// `--rootfs-format`을 주지 않았을 때의 형식.
+pub const DEFAULT_ROOTFS_FORMAT: RootfsFormat = RootfsFormat::Erofs;
+
+/// `--cpus`를 주지 않았을 때의 vCPU 개수.
+pub const DEFAULT_VCPUS: u8 = 1;
+
+/// `--memory`를 주지 않았을 때의 메모리(MiB).
+pub const DEFAULT_MEMORY_MIB: u32 = 512;
+
+/// 샌드박스별 쓰기 가능 디스크 크기(MiB).
+pub const DEFAULT_SCRATCH_MIB: u32 = 1024;
+
+/// 이미지 ID 앞부분으로 찾을 때 필요한 최소 길이. `images`의 IMAGE ID 열과 같은 12자리다.
+/// 짧은 문자열이 우연히 ID 앞부분과 맞아 엉뚱한 이미지를 지우는 일을 막는다.
+pub const MIN_ID_PREFIX: usize = 12;
+
+/// 이미지 이름이 무엇으로 맞았는지.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImageMatch {
+    /// 참조(태그 또는 digest 참조)로 맞음.
+    Ref {
+        /// 정규화된 참조.
+        reference: String,
+        /// 이미지.
+        id: ImageId,
+    },
+    /// 이미지 ID(전체 또는 앞부분)로 맞음.
+    Id(ImageId),
+}
+
+impl ImageMatch {
+    /// 이미지 ID.
+    pub fn id(&self) -> &ImageId {
+        match self {
+            ImageMatch::Ref { id, .. } | ImageMatch::Id(id) => id,
+        }
+    }
+}
+
+/// 이미지를 찾지 못한 이유.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LookupError {
+    /// 없음.
+    NotFound(String),
+    /// ID 앞부분이 여러 이미지와 맞음.
+    Ambiguous(String),
+}
+
+impl std::error::Error for LookupError {}
+
+impl fmt::Display for LookupError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LookupError::NotFound(n) => write!(f, "no such image: {n}"),
+            LookupError::Ambiguous(n) => write!(f, "image ID prefix {n} matches several images"),
+        }
+    }
+}
+
+/// 이미지 이름을 찾는다. Docker와 같은 순서다.
+///
+/// 1. 참조로 해석해 태그 기록에서 찾는다(`normalized`는 정규화된 참조, 해석할 수 없으면 `None`).
+/// 2. `sha256:`으로 시작하거나 hex만으로 된 이름은 이미지 ID로 본다. 전체 또는
+///    [`MIN_ID_PREFIX`]자리 이상의 앞부분이 정확히 하나와 맞아야 한다.
+pub fn match_image(
+    name: &str,
+    normalized: Option<&str>,
+    refs: &BTreeMap<String, ImageId>,
+    ids: &[ImageId],
+) -> Result<ImageMatch, LookupError> {
+    if let Some((reference, id)) = normalized.and_then(|n| refs.get_key_value(n)) {
+        return Ok(ImageMatch::Ref {
+            reference: reference.clone(),
+            id: id.clone(),
+        });
+    }
+    let hex = name.strip_prefix("sha256:").unwrap_or(name);
+    let is_hex = !hex.is_empty()
+        && hex
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    if is_hex && hex.len() >= MIN_ID_PREFIX {
+        let found: Vec<&ImageId> = ids
+            .iter()
+            .filter(|id| id.digest().hex().starts_with(hex))
+            .collect();
+        return match found.as_slice() {
+            [one] => Ok(ImageMatch::Id((*one).clone())),
+            [] => Err(LookupError::NotFound(name.to_owned())),
+            _ => Err(LookupError::Ambiguous(name.to_owned())),
+        };
+    }
+    Err(LookupError::NotFound(name.to_owned()))
+}
+
+/// `rmi` 이름 하나에 대해 할 일.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RmiAction {
+    /// 참조만 지운다. 이미지는 남는다.
+    Untag(String),
+    /// 이미지를 지운다. [`rmi_decision`]의 보호 규칙을 거친다.
+    Delete(ImageId),
+    /// ID로 지정했는데 참조가 여럿이다. `-f`가 필요하다.
+    RefuseMultipleRefs(ImageId),
+}
+
+/// `rmi` 태그 규칙. Docker `rmi`와 같다.
+///
+/// | 이름이 맞은 방식 | 이미지를 가리키는 참조 수 | 기본 | `-f` |
+/// |---|---|---|---|
+/// | 참조 | 2개 이상 | 그 참조만 지움 | 같음 |
+/// | 참조 | 1개 | 이미지 삭제 | 같음 |
+/// | ID | 1개 이하 | 이미지 삭제 | 같음 |
+/// | ID | 2개 이상 | 거부 | 이미지 삭제 |
+///
+/// 이미지 삭제는 [`rmi_decision`]의 샌드박스 보호 규칙을 거친다.
+pub fn rmi_action(m: &ImageMatch, ref_count: usize, force: bool) -> RmiAction {
+    match m {
+        ImageMatch::Ref { reference, .. } if ref_count >= 2 => RmiAction::Untag(reference.clone()),
+        ImageMatch::Ref { id, .. } => RmiAction::Delete(id.clone()),
+        ImageMatch::Id(id) if ref_count >= 2 && !force => RmiAction::RefuseMultipleRefs(id.clone()),
+        ImageMatch::Id(id) => RmiAction::Delete(id.clone()),
+    }
+}
+
 /// Docker와 다른 점: (항목, 이 프로젝트의 동작, 이유).
 pub const DOCKER_DIFFERENCES: &[(&str, &str, &str)] = &[
+    (
+        "--network 기본값",
+        "none (Docker는 bridge). 지금은 none만 받는다",
+        "기획서 원칙: 네트워크는 기본 차단, 허용한 것만 연다",
+    ),
+    (
+        "--cpus, --memory 기본값",
+        "1 vCPU, 512 MiB (Docker는 제한 없음). --cpus는 정수만 받는다",
+        "VM은 크기를 정해서 띄워야 한다",
+    ),
+    (
+        "이미지 ID 앞부분으로 찾기",
+        "12자리 이상만 받는다 (Docker는 더 짧아도 받는다)",
+        "짧은 문자열이 우연히 맞아 엉뚱한 이미지를 지우는 일을 막는다",
+    ),
     (
         "sbx prepare",
         "Docker에 없는 명령",
@@ -127,7 +269,7 @@ pub const DOCKER_DIFFERENCES: &[(&str, &str, &str)] = &[
     ),
     (
         "--rootfs-format",
-        "Docker에 없는 옵션. 생략하면 CLI 설정의 기본값(처음에는 erofs)",
+        "Docker에 없는 옵션. 생략하면 erofs ([`DEFAULT_ROOTFS_FORMAT`])",
         "rootfs 형식을 여러 개 지원한다",
     ),
     (
@@ -205,5 +347,86 @@ mod tests {
             rmi_decision(id(), vec![], true),
             RmiDecision::RefuseRunning(id())
         );
+    }
+    fn id(c: char) -> ImageId {
+        ImageId::new(
+            sandbox_model::Digest::parse(&format!("sha256:{}", c.to_string().repeat(64))).unwrap(),
+        )
+    }
+
+    #[test]
+    fn match_image_order() {
+        let mut refs = BTreeMap::new();
+        refs.insert("docker.io/library/alpine:latest".to_string(), id('a'));
+        let ids = [id('a'), id('b')];
+        assert_eq!(
+            match_image(
+                "alpine",
+                Some("docker.io/library/alpine:latest"),
+                &refs,
+                &ids
+            ),
+            Ok(ImageMatch::Ref {
+                reference: "docker.io/library/alpine:latest".into(),
+                id: id('a')
+            })
+        );
+        assert_eq!(
+            match_image("bbbbbbbbbbbb", None, &refs, &ids),
+            Ok(ImageMatch::Id(id('b')))
+        );
+        assert_eq!(
+            match_image(&format!("sha256:{}", "b".repeat(64)), None, &refs, &ids),
+            Ok(ImageMatch::Id(id('b')))
+        );
+        // 12자리보다 짧은 앞부분은 받지 않는다.
+        assert!(matches!(
+            match_image("bbbb", None, &refs, &ids),
+            Err(LookupError::NotFound(_))
+        ));
+        assert!(matches!(
+            match_image(
+                "ubuntu",
+                Some("docker.io/library/ubuntu:latest"),
+                &refs,
+                &ids
+            ),
+            Err(LookupError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn ambiguous_id_prefix() {
+        let x = ImageId::new(
+            sandbox_model::Digest::parse(&format!("sha256:{}{}", "c".repeat(12), "0".repeat(52)))
+                .unwrap(),
+        );
+        let y = ImageId::new(
+            sandbox_model::Digest::parse(&format!("sha256:{}{}", "c".repeat(12), "1".repeat(52)))
+                .unwrap(),
+        );
+        assert!(matches!(
+            match_image(&"c".repeat(12), None, &BTreeMap::new(), &[x, y]),
+            Err(LookupError::Ambiguous(_))
+        ));
+    }
+
+    #[test]
+    fn rmi_action_table() {
+        let by_ref = ImageMatch::Ref {
+            reference: "r".into(),
+            id: id('a'),
+        };
+        let by_id = ImageMatch::Id(id('a'));
+        assert_eq!(rmi_action(&by_ref, 2, false), RmiAction::Untag("r".into()));
+        assert_eq!(rmi_action(&by_ref, 2, true), RmiAction::Untag("r".into()));
+        assert_eq!(rmi_action(&by_ref, 1, false), RmiAction::Delete(id('a')));
+        assert_eq!(rmi_action(&by_id, 1, false), RmiAction::Delete(id('a')));
+        assert_eq!(rmi_action(&by_id, 0, false), RmiAction::Delete(id('a')));
+        assert_eq!(
+            rmi_action(&by_id, 2, false),
+            RmiAction::RefuseMultipleRefs(id('a'))
+        );
+        assert_eq!(rmi_action(&by_id, 2, true), RmiAction::Delete(id('a')));
     }
 }

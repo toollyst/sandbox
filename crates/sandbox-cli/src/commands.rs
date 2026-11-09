@@ -1,4 +1,5 @@
-//! 명령 목록. `sbx help`는 이 표를 그대로 출력한다.
+//! 명령 목록. 이름과 설명의 정본이다. clap 정의(`cli`)는 설명을 여기서 가져오고,
+//! 테스트가 두 목록이 같은지 확인한다.
 
 /// 명령이 어느 코어를 부르는지.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -9,6 +10,16 @@ pub enum Group {
     Run,
 }
 
+impl Group {
+    /// 도움말에 붙이는 이름.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Group::Manage => "관리",
+            Group::Run => "실행",
+        }
+    }
+}
+
 /// 명령 하나.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Command {
@@ -16,92 +27,61 @@ pub struct Command {
     pub name: &'static str,
     /// 부르는 코어.
     pub group: Group,
-    /// 사용법.
-    pub usage: &'static str,
     /// 설명.
     pub summary: &'static str,
 }
 
+const fn cmd(name: &'static str, group: Group, summary: &'static str) -> Command {
+    Command {
+        name,
+        group,
+        summary,
+    }
+}
+
 /// 모든 명령.
 pub const COMMANDS: &[Command] = &[
-    Command {
-        name: "pull",
-        group: Group::Manage,
-        usage: "sbx pull [--platform linux/ARCH] IMAGE",
-        summary: "이미지를 받는다 (받기만 한다)",
-    },
-    Command {
-        name: "prepare",
-        group: Group::Manage,
-        usage: "sbx prepare [--rootfs-format FORMAT] IMAGE",
-        summary: "이미지로 rootfs 디스크를 만든다 (이미 있으면 아무것도 하지 않는다)",
-    },
-    Command {
-        name: "images",
-        group: Group::Manage,
-        usage: "sbx images",
-        summary: "받아 둔 이미지와 준비된 rootfs 형식을 보여준다",
-    },
-    Command {
-        name: "rmi",
-        group: Group::Manage,
-        usage: "sbx rmi [-f] IMAGE",
-        summary: "이미지를 지운다 (쓰는 샌드박스가 있으면 거부, -f는 정지된 것만 무시)",
-    },
-    Command {
-        name: "run",
-        group: Group::Run,
-        usage: "sbx run [OPTIONS] IMAGE [CMD...]",
-        summary: "샌드박스를 만들고 시작한다 (--pull=missing이 기본)",
-    },
-    Command {
-        name: "create",
-        group: Group::Run,
-        usage: "sbx create [OPTIONS] IMAGE [CMD...]",
-        summary: "샌드박스를 만든다",
-    },
-    Command {
-        name: "start",
-        group: Group::Run,
-        usage: "sbx start ID",
-        summary: "샌드박스를 시작한다",
-    },
-    Command {
-        name: "exec",
-        group: Group::Run,
-        usage: "sbx exec [-i] [-t] [-e K=V] [-w DIR] [-u USER] ID CMD...",
-        summary: "실행 중인 샌드박스 안에서 명령을 실행한다",
-    },
-    Command {
-        name: "cp",
-        group: Group::Run,
-        usage: "sbx cp SRC DST   (샌드박스 쪽은 ID:경로)",
-        summary: "호스트와 샌드박스 사이에 파일을 복사한다",
-    },
-    Command {
-        name: "stop",
-        group: Group::Run,
-        usage: "sbx stop [-t SECONDS] ID",
-        summary: "샌드박스를 멈춘다",
-    },
-    Command {
-        name: "rm",
-        group: Group::Run,
-        usage: "sbx rm [-f] ID",
-        summary: "샌드박스를 지운다 (-f는 실행 중이면 멈추고 지운다)",
-    },
-    Command {
-        name: "ps",
-        group: Group::Run,
-        usage: "sbx ps [-a]",
-        summary: "샌드박스 목록을 보여준다",
-    },
-    Command {
-        name: "inspect",
-        group: Group::Run,
-        usage: "sbx inspect ID",
-        summary: "샌드박스 설정과 상태를 보여준다",
-    },
+    cmd("pull", Group::Manage, "이미지를 받는다 (받기만 한다)"),
+    cmd(
+        "prepare",
+        Group::Manage,
+        "이미지로 rootfs 디스크를 만든다 (이미 있으면 아무것도 하지 않는다)",
+    ),
+    cmd(
+        "images",
+        Group::Manage,
+        "받아 둔 이미지와 준비된 rootfs 형식을 보여준다",
+    ),
+    cmd(
+        "rmi",
+        Group::Manage,
+        "참조를 지우거나 이미지를 지운다 (쓰는 샌드박스가 있으면 거부, -f는 정지된 것만 무시)",
+    ),
+    cmd(
+        "run",
+        Group::Run,
+        "샌드박스를 만들고 시작한다 (--pull=missing이 기본)",
+    ),
+    cmd("create", Group::Run, "샌드박스를 만든다"),
+    cmd("start", Group::Run, "샌드박스를 시작한다"),
+    cmd(
+        "exec",
+        Group::Run,
+        "실행 중인 샌드박스 안에서 명령을 실행한다",
+    ),
+    cmd(
+        "cp",
+        Group::Run,
+        "호스트와 샌드박스 사이에 파일을 복사한다 (샌드박스 쪽은 ID:경로)",
+    ),
+    cmd("stop", Group::Run, "샌드박스를 멈춘다"),
+    cmd(
+        "rm",
+        Group::Run,
+        "샌드박스를 지운다 (-f는 실행 중이면 멈추고 지운다)",
+    ),
+    cmd("ps", Group::Run, "샌드박스 목록을 보여준다"),
+    cmd("inspect", Group::Run, "샌드박스 설정과 상태를 보여준다"),
 ];
 
 /// 이름으로 찾는다.
@@ -109,26 +89,18 @@ pub fn find(name: &str) -> Option<&'static Command> {
     COMMANDS.iter().find(|c| c.name == name)
 }
 
-/// `sbx help` 출력.
-pub fn help_text() -> String {
-    let mut out = String::from(
-        "사용법: sbx [--data-dir DIR] [--cache-dir DIR] [--executor NAME] [--format json] COMMAND\n",
-    );
-    for (group, title) in [(Group::Manage, "관리"), (Group::Run, "실행")] {
-        out.push_str(&format!("\n{title}:\n"));
-        for c in COMMANDS.iter().filter(|c| c.group == group) {
-            out.push_str(&format!(
-                "  {:<9}{}\n           {}\n",
-                c.name, c.summary, c.usage
-            ));
-        }
-    }
-    out
+/// clap 도움말에 쓰는 설명: `[그룹] 설명`.
+///
+/// 목록에 없는 이름이면 패닉한다. 테스트가 모든 clap 명령이 목록에 있는지 확인한다.
+pub fn about(name: &str) -> String {
+    let c = find(name).unwrap_or_else(|| panic!("command {name} is missing from COMMANDS"));
+    format!("[{}] {}", c.group.label(), c.summary)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
 
     #[test]
     fn names_are_unique() {
@@ -142,10 +114,16 @@ mod tests {
     }
 
     #[test]
-    fn help_lists_every_command() {
-        let help = help_text();
-        for c in COMMANDS {
-            assert!(help.contains(c.usage));
+    fn clap_and_table_list_the_same_commands() {
+        let cli = crate::cli::Cli::command();
+        let clap_names: Vec<&str> = cli.get_subcommands().map(|c| c.get_name()).collect();
+        let table_names: Vec<&str> = COMMANDS.iter().map(|c| c.name).collect();
+        assert_eq!(clap_names, table_names);
+        for sub in cli.get_subcommands() {
+            assert_eq!(
+                sub.get_about().map(|a| a.to_string()),
+                Some(about(sub.get_name()))
+            );
         }
     }
 }
