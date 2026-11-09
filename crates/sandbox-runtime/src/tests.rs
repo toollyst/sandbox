@@ -86,6 +86,8 @@ impl Env {
             hostname: None,
             labels: BTreeMap::new(),
             stop: Default::default(),
+            open_stdin: false,
+            tty: false,
         }
     }
 

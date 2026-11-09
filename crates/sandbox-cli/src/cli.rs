@@ -143,6 +143,20 @@ pub enum Command {
         #[arg(required = true)]
         ids: Vec<String>,
     },
+    #[command(about = about("attach"))]
+    Attach {
+        /// 표준 입력을 전하지 않는다.
+        #[arg(long)]
+        no_stdin: bool,
+        /// 터미널이 아닐 때 받은 시그널을 기본 프로세스에 전한다.
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        sig_proxy: bool,
+        /// 떨어지는 키 순서 (예: ctrl-p,ctrl-q).
+        #[arg(long, default_value = crate::attach::DetachKeys::DEFAULT)]
+        detach_keys: String,
+        /// 샌드박스 ID.
+        id: String,
+    },
     #[command(about = about("ps"))]
     Ps {
         /// 멈춘 샌드박스도 보여준다.
@@ -178,18 +192,12 @@ pub struct StopArgs {
     pub ids: Vec<String>,
 }
 
-/// `run`에만 있는 옵션: 붙어서 실행하는 방법.
+/// `run`에만 있는 옵션: 붙어서 실행하는지.
 #[derive(Debug, Args)]
 pub struct AttachArgs {
-    /// 붙지 않고 시작해 ID를 출력한다. 샌드박스는 sbx가 끝나도 남는다(`sandbox-shim`).
+    /// 붙지 않고 시작해 ID를 출력한다. 샌드박스는 sbx가 끝나도 남는다(`sandbox-shim`). `sbx attach`로 붙는다.
     #[arg(short = 'd', long)]
     pub detach: bool,
-    /// 표준 입력을 연다.
-    #[arg(short = 'i', long)]
-    pub interactive: bool,
-    /// 터미널을 할당한다.
-    #[arg(short = 't', long)]
-    pub tty: bool,
 }
 
 /// `run`과 `create`의 옵션. 이미지 이름 뒤의 인자는 모두 명령으로 넘어간다(Docker와 같다).
@@ -204,6 +212,12 @@ pub struct RunArgs {
     /// 끝나면 지운다. run에서만 된다(create에서는 오류).
     #[arg(long)]
     pub rm: bool,
+    /// 기본 프로세스의 표준 입력을 연다. 샌드박스 설정으로 남아 시작할 때마다 연다.
+    #[arg(short = 'i', long)]
+    pub interactive: bool,
+    /// 기본 프로세스에 터미널을 붙인다. 샌드박스 설정으로 남는다.
+    #[arg(short = 't', long)]
+    pub tty: bool,
     /// 환경 변수 K=V.
     #[arg(short = 'e', long = "env")]
     pub env: Vec<String>,
@@ -293,7 +307,7 @@ mod tests {
         else {
             panic!("expected run");
         };
-        assert!(attach.interactive && !attach.tty);
+        assert!(r.interactive && !r.tty && !attach.detach);
         assert_eq!(r.image, "alpine");
         assert_eq!(r.env, vec!["A=1"]);
         assert_eq!(r.command, vec!["ls", "-l", "-e", "-i"]);

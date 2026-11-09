@@ -99,6 +99,11 @@ pub const COMMANDS: &[Command] = &[
         Group::Run,
         "샌드박스를 지운다 (-f는 실행 중이면 멈추고 지운다)",
     ),
+    cmd(
+        "attach",
+        Group::Run,
+        "붙지 않고 시작한 샌드박스의 기본 프로세스에 붙는다 (Ctrl+P Ctrl+Q로 떨어진다)",
+    ),
     cmd("ps", Group::Run, "샌드박스 목록을 보여준다"),
     cmd("inspect", Group::Run, "샌드박스 설정과 상태를 보여준다"),
     cmd(

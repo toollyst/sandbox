@@ -20,7 +20,7 @@ sandbox-store.workspace = true
 sandbox-proto.workspace = true
 clap.workspace = true
 crossterm.workspace = true
-tokio = { workspace = true, features = ["signal", "time"] }
+tokio = { workspace = true, features = ["signal", "time", "net", "io-util", "sync"] }
 serde_json.workspace = true
 sandbox-runtime.workspace = true
 sandbox-shim.workspace = true

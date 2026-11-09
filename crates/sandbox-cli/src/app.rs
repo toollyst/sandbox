@@ -171,6 +171,12 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
         Command::Kill { signal, ids } => ctx.kill(signal, ids).await,
         Command::Wait { ids } => ctx.wait(ids).await,
         Command::Rm { force, ids } => ctx.rm(*force, ids).await,
+        Command::Attach {
+            no_stdin,
+            sig_proxy,
+            detach_keys,
+            id,
+        } => ctx.attach_cmd(*no_stdin, *sig_proxy, detach_keys, id).await,
         Command::Ps { all } => ctx.ps(*all).await,
         Command::Inspect { id } => ctx.inspect(id).await,
     }
@@ -602,6 +608,8 @@ impl Ctx {
                         hostname: a.hostname.clone(),
                         labels: labels.clone(),
                         stop,
+                        open_stdin: a.interactive,
+                        tty: a.tty,
                     };
                     let sandbox = self.launcher()?.create(spec).await?;
                     return Ok(sandbox.id().clone());
@@ -616,9 +624,6 @@ impl Ctx {
     async fn run_sandbox(&self, attach_args: &AttachArgs, a: &RunArgs) -> AppResult<u8> {
         let fail = |e: Box<dyn Error>| failure(behavior::EXIT_RUN_FAILED, e);
         if attach_args.detach {
-            if attach_args.interactive || attach_args.tty {
-                return Err(fail(msg("-d cannot be combined with -i or -t yet")));
-            }
             let id = self.create(a).await.map_err(fail)?;
             if let Err(e) = self.start_detached(&id, a.rm).await {
                 if a.rm
@@ -631,14 +636,13 @@ impl Ctx {
             println!("{id}");
             return Ok(0);
         }
-        let io =
-            attach::io_mode(attach_args.interactive, attach_args.tty).map_err(|e| fail(msg(e)))?;
+        let io = attach::io_mode(a.interactive, a.tty).map_err(|e| fail(msg(e)))?;
         let id = self.create(a).await.map_err(fail)?;
         let rt = self.launcher().map_err(fail)?;
         let sandbox = rt.get(&id).await.map_err(|e| fail(e.into()))?;
         let started = sandbox.start(io).await;
         let result = match started {
-            Ok(p) => attach(p, io)
+            Ok(p) => attach(p, io, a.interactive)
                 .await
                 .map(behavior::exit_byte)
                 .map_err(|e| fail(e.into())),
@@ -656,17 +660,57 @@ impl Ctx {
         result
     }
 
-    /// `start`: 시작하고 붙어서 기본 프로세스가 끝날 때까지 기다린다 (Docker의 `start -a`).
+    /// `start -a`: 시작하고 붙어서 기본 프로세스가 끝날 때까지 기다린다. 표준 입력은 샌드박스가 `-i`이거나
+    /// `start -i`이면 열고, `start -i`일 때만 sbx의 입력을 보낸다. 터미널은 샌드박스 설정대로다(Docker와 같다).
     async fn start(&self, interactive: bool, id: &str) -> AppResult<u8> {
-        let io = attach::io_mode(interactive, false)?;
         let rt = self.launcher()?;
-        let p = rt
-            .get(&SandboxId::new(id)?)
-            .await?
-            .start(io)
-            .await
-            .map_err(explain)?;
-        Ok(behavior::exit_byte(attach(p, io).await?))
+        let sandbox = rt.get(&SandboxId::new(id)?).await?;
+        let spec = &sandbox.info().spec;
+        let mut io = attach::io_mode(interactive, spec.tty)?;
+        io.stdin |= spec.open_stdin;
+        let p = sandbox.start(io).await.map_err(explain)?;
+        Ok(behavior::exit_byte(attach(p, io, interactive).await?))
+    }
+
+    /// `attach`: shim이 소유한 샌드박스의 기본 프로세스에 붙는다. 종료 코드는 그 프로세스의 코드다.
+    /// 떼기 키로 떨어지면 0이다. 연결이 끊기면 샌드박스가 멈출 때까지 기다려 기록된 코드를 쓴다.
+    async fn attach_cmd(
+        &self,
+        no_stdin: bool,
+        sig_proxy: bool,
+        detach_keys: &str,
+        id: &str,
+    ) -> AppResult<u8> {
+        let detach_keys = attach::DetachKeys::parse(detach_keys)?;
+        let rt = self.runtime()?;
+        let sandbox = rt.get(&SandboxId::new(id)?).await?;
+        if sandbox.state() != State::Running {
+            return Err(msg(
+                "cannot attach to a sandbox that is not running; start it first",
+            ));
+        }
+        #[cfg(unix)]
+        {
+            let path = sandbox_shim::attach::socket_path(&self.socket_dir, sandbox.id());
+            let stream = tokio::net::UnixStream::connect(&path).await.map_err(|_| {
+                msg("this sandbox was not started detached (run -d, start); only those can be attached")
+            })?;
+            let opts = attach::ShimAttach {
+                stdin: !no_stdin,
+                sig_proxy,
+                detach_keys,
+            };
+            match attach::attach_shim(stream, opts).await? {
+                attach::ShimEnd::Exit(c) => Ok(behavior::exit_byte(c)),
+                attach::ShimEnd::Detached => Ok(0),
+                attach::ShimEnd::Lost => Ok(behavior::exit_byte(sandbox.wait().await?)),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (no_stdin, sig_proxy, detach_keys, sandbox);
+            Err(msg("attach is not supported on this platform yet"))
+        }
     }
 
     /// `exec`: 붙어서 실행한다. 종료 코드는 그 프로세스의 코드다.
@@ -685,7 +729,7 @@ impl Ctx {
             .exec_with(spec, io)
             .await
             .map_err(|e| start_failure(e, 1))?;
-        Ok(behavior::exit_byte(attach(p, io).await?))
+        Ok(behavior::exit_byte(attach(p, io, a.interactive).await?))
     }
 
     async fn cp(&self, src: &str, dst: &str) -> AppResult<u8> {

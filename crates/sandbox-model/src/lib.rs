@@ -778,6 +778,12 @@ pub struct SandboxSpec {
     /// 멈추는 방법. 이 필드가 없던 기록은 기본값(SIGTERM)으로 읽는다.
     #[serde(default)]
     pub stop: StopSpec,
+    /// 기본 프로세스의 표준 입력을 연다(Docker `-i`, `OpenStdin`). 시작할 때마다 이대로 연다.
+    #[serde(default)]
+    pub open_stdin: bool,
+    /// 기본 프로세스에 터미널을 붙인다(Docker `-t`, `Tty`). 시작할 때마다 이대로 붙인다.
+    #[serde(default)]
+    pub tty: bool,
 }
 
 /// 샌드박스 상태. 이름은 OCI Runtime Spec의 상태를 따른다.

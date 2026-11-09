@@ -86,6 +86,8 @@ mod unix {
             stop_sends_the_stop_signal_then_powers_off,
         ),
         ("kill_wait_and_restart", kill_wait_and_restart),
+        ("attach_to_a_detached_sandbox", attach_to_a_detached_sandbox),
+        ("attach_tty_and_signal_proxy", attach_tty_and_signal_proxy),
         ("volume_is_shared_live", volume_is_shared_live),
         ("network_allow_list", network_allow_list),
         (
@@ -581,10 +583,12 @@ mod unix {
         let o = e.sbx(&["run", "--rm", "-it", IMAGE, "true"]);
         assert_eq!(o.status.code(), Some(125));
         assert!(text(&o.stderr).contains("not a TTY"), "{}", text(&o.stderr));
-        assert_eq!(
-            e.sbx(&["run", "-d", "-i", IMAGE, "true"]).status.code(),
-            Some(125)
-        );
+        // -dit는 터미널이 없어도 된다(붙는 쪽이 없으므로, Docker와 같다).
+        let o = e.sbx(&["run", "-d", "-it", IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let id = text(&o.stdout).trim().to_owned();
+        wait_state(&e, &id, "stopped");
+        assert_eq!(e.sbx(&["rm", &id]).status.code(), Some(0));
         assert_eq!(
             e.sbx(&["run", "--pull", "never", "no-such-image", "true"])
                 .status
@@ -779,5 +783,147 @@ mod unix {
         assert_eq!(e.sbx(&["kill", &id]).status.code(), Some(0));
         assert_eq!(text(&e.sbx(&["wait", &id]).stdout), "137\n");
         assert_eq!(e.sbx(&["rm", &id]).status.code(), Some(0));
+    }
+
+    /// 자식의 표준 출력을 따로 읽어 모은다.
+    struct Reader(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl Reader {
+        fn start(child: &mut Child) -> Self {
+            use std::io::Read;
+            let mut out = child.stdout.take().unwrap();
+            let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let b = buf.clone();
+            std::thread::spawn(move || {
+                let mut chunk = [0u8; 4096];
+                while let Ok(n) = out.read(&mut chunk) {
+                    if n == 0 {
+                        break;
+                    }
+                    b.lock().unwrap().extend_from_slice(&chunk[..n]);
+                }
+            });
+            Self(buf)
+        }
+
+        fn text(&self) -> String {
+            text(&self.0.lock().unwrap())
+        }
+
+        fn wait_for(&self, needle: &str) {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while !self.text().contains(needle) {
+                assert!(
+                    Instant::now() < deadline,
+                    "no {needle:?} in {:?}",
+                    self.text()
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+
+    fn attach_to_a_detached_sandbox() {
+        let e = Env::new();
+        let o = e.sbx(&[
+            "run",
+            "-d",
+            "-i",
+            IMAGE,
+            "sh",
+            "-c",
+            "read a; echo got $a; read b; echo got $b >&2; exit 5",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let id = text(&o.stdout).trim().to_owned();
+        assert_eq!(e.sbx(&["inspect", &id]).status.code(), Some(0));
+        // 붙은 쪽의 입력이 기본 프로세스로 간다. 붙은 쪽의 입력이 끝나도 표준 입력은 닫히지 않는다.
+        let mut first = e
+            .cmd(&["attach", &id])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        first.stdin.take().unwrap().write_all(b"x\n").unwrap();
+        let reader = Reader::start(&mut first);
+        reader.wait_for("got x\n");
+        // 둘째로 붙은 쪽의 입력도 간다. 둘 다 종료 코드를 받는다.
+        let second = e.sbx_with_stdin(&["attach", &id], b"y\n");
+        assert_eq!(second.status.code(), Some(5), "{}", text(&second.stderr));
+        assert_eq!(text(&second.stderr), "got y\n");
+        let first = wait_with_timeout(first, Duration::from_secs(20));
+        assert_eq!(first.status.code(), Some(5), "{}", text(&first.stderr));
+        assert_eq!(reader.text(), "got x\n");
+        assert_eq!(text(&first.stderr), "got y\n");
+        assert_eq!(wait_state(&e, &id, "stopped")["exit_code"], 5);
+        wait_logs(&e, &id, "got x\n", "got y\n");
+
+        // 멈춘 샌드박스에는 붙지 않는다.
+        let o = e.sbx(&["attach", &id]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("not running"),
+            "{}",
+            text(&o.stderr)
+        );
+        // 다른 sbx가 붙어서 실행 중인 샌드박스(shim 없음)에도 붙지 않는다.
+        let mut owner = e.spawn(&["run", IMAGE, "sleep", "30"]);
+        let running = e.wait_running();
+        let o = e.sbx(&["attach", &running]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(text(&o.stderr).contains("detached"), "{}", text(&o.stderr));
+        assert_eq!(e.sbx(&["stop", &running]).status.code(), Some(0));
+        let _ = owner.wait();
+    }
+
+    fn attach_tty_and_signal_proxy() {
+        let e = Env::new();
+        // -t: 터미널을 붙여 시작하고, 붙은 쪽은 터미널 출력을 받는다(\n은 \r\n이 된다).
+        // 붙은 쪽이 끊겨도 샌드박스는 계속 돈다.
+        let o = e.sbx(&[
+            "run",
+            "-d",
+            "-t",
+            IMAGE,
+            "sh",
+            "-c",
+            "while :; do test -t 1 && echo tty; sleep 0.05; done",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let id = text(&o.stdout).trim().to_owned();
+        let mut client = e.spawn(&["attach", &id]);
+        let reader = Reader::start(&mut client);
+        reader.wait_for("tty\r\n");
+        client.kill().unwrap();
+        let _ = client.wait();
+        assert_eq!(state_of(&e, &id).unwrap()["state"], "running");
+        assert_eq!(e.sbx(&["kill", &id]).status.code(), Some(0));
+        assert_eq!(text(&e.sbx(&["wait", &id]).stdout), "137\n");
+
+        // 터미널이 아니면 받은 시그널을 기본 프로세스에 전한다(--sig-proxy).
+        let o = e.sbx(&[
+            "run",
+            "-d",
+            IMAGE,
+            "sh",
+            "-c",
+            "trap 'echo term; exit 7' TERM; while :; do echo tick; sleep 0.05; done",
+        ]);
+        let id = text(&o.stdout).trim().to_owned();
+        let mut client = e.spawn(&["attach", &id]);
+        let reader = Reader::start(&mut client);
+        reader.wait_for("tick\n");
+        let pid = client.id().to_string();
+        assert!(
+            Command::new("kill")
+                .args(["-TERM", &pid])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let out = wait_with_timeout(client, Duration::from_secs(20));
+        assert_eq!(out.status.code(), Some(7), "{}", text(&out.stderr));
+        assert!(reader.text().ends_with("term\n"), "{:?}", reader.text());
     }
 }

@@ -7,13 +7,16 @@
 //! - shim 프로세스: [`main`] (규칙은 [`serve`] 모듈 문서). 명령줄은 [`ShimConfig`].
 //! - 기본 프로세스 출력: [`log`] 형식으로 샌드박스 로그 디렉터리의 [`MAIN_LOG`]에 쓴다. [`LogReader`]로 읽는다.
 //!
-//! 다른 프로세스는 shim을 몰라도 된다. exec, cp, stop은 실행 코어가 게스트 연결로 하고,
-//! stop이 게스트를 끄면 기본 프로세스가 끝나 shim도 끝난다.
+//! 다른 프로세스는 붙기(`attach`) 말고는 shim을 몰라도 된다. exec, cp, stop, kill은 실행 코어가 게스트 연결로 하고,
+//! 기본 프로세스가 끝나면 shim도 끝난다.
 //!
-//! **층**: `lib` → `launch`, `serve` → `config` → `log`.
+//! - 붙기(`sbx attach`): shim이 [`attach`] 규약으로 듣는다.
+//!
+//! **층**: `lib` → `launch`, `serve` → `config` → `log`, `serve` → `attach`.
 //!
 //! - 의존: `sandbox-model`, `sandbox-executor`, `sandbox-runtime`, `executor-process`(shim이 실행기를 고른다)
 
+pub mod attach;
 pub mod config;
 pub mod launch;
 pub mod log;

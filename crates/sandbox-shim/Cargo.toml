@@ -13,7 +13,7 @@ sandbox-model.workspace = true
 sandbox-executor.workspace = true
 sandbox-runtime.workspace = true
 executor-process.workspace = true
-tokio = { workspace = true, features = ["signal"] }
+tokio = { workspace = true, features = ["signal", "net", "io-util", "sync", "time"] }
 
 [[bin]]
 name = "sbx-shim"
