@@ -21,7 +21,7 @@ pub fn env(values: &[String], host: impl Fn(&str) -> Option<String>) -> Vec<(Str
 /// `--env-file` 내용을 `-e` 값들로 바꾼다(Docker와 같다).
 ///
 /// - 줄 앞 공백은 지우고, 빈 줄과 `#`로 시작하는 줄은 건너뛴다. 값은 따옴표를 벗기지 않고 그대로 둔다.
-/// - `=`가 없는 줄은 이름만 남긴다. 값은 [`env`]가 호스트에서 가져온다.
+/// - `=`가 없는 줄은 이름만 남긴다. 값은 [`env()`]가 호스트에서 가져온다.
 /// - 이름이 비었거나 공백이 있으면 오류다.
 pub fn env_file(text: &str) -> ParseResult<Vec<String>> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
