@@ -109,21 +109,6 @@ fn short(id: &ImageId) -> &str {
     &id.digest().hex()[..12]
 }
 
-fn human_size(bytes: u64) -> String {
-    const UNITS: [&str; 4] = ["B", "kB", "MB", "GB"];
-    let mut v = bytes as f64;
-    let mut u = 0;
-    while v >= 1000.0 && u + 1 < UNITS.len() {
-        v /= 1000.0;
-        u += 1;
-    }
-    if u == 0 {
-        format!("{bytes}B")
-    } else {
-        format!("{v:.1}{}", UNITS[u])
-    }
-}
-
 fn host_arch() -> AppResult<Arch> {
     Arch::host().ok_or_else(|| msg("this host architecture is not supported"))
 }
@@ -444,7 +429,7 @@ impl Ctx {
             return Ok(0);
         }
         println!(
-            "{:<48} {:<14} {:<12} {:<10} SIZE",
+            "{:<40} {:<14} {:<12} {:<10} SIZE",
             "REFERENCE", "IMAGE ID", "PLATFORM", "ROOTFS"
         );
         for i in &images {
@@ -457,16 +442,16 @@ impl Ctx {
             let refs: Vec<&str> = if i.refs.is_empty() {
                 vec!["<none>"]
             } else {
-                i.refs.iter().map(String::as_str).collect()
+                i.refs.iter().map(|r| behavior::familiar(r)).collect()
             };
             for r in refs {
                 println!(
-                    "{:<48} {:<14} {:<12} {:<10} {}",
+                    "{:<40} {:<14} {:<12} {:<10} {}",
                     r,
                     short(&i.record.id),
                     format!("linux/{}", i.record.arch.oci_name()),
                     rootfs,
-                    human_size(i.record.compressed_size())
+                    behavior::human_size(i.record.compressed_size())
                 );
             }
         }
@@ -861,10 +846,16 @@ impl Ctx {
             return Ok(0);
         }
         println!(
-            "{:<24} {:<14} {:<30} STATUS",
+            "{:<14} {:<24} {:<30} STATUS",
             "SANDBOX ID", "IMAGE", "COMMAND"
         );
+        // 이미지는 받을 때 쓴 참조를 Docker처럼 줄여 보여 준다. 이미지가 지워졌으면 ID 앞부분.
+        let store = sandbox_store::Store::open(&self.cache_dir);
         for s in &list {
+            let image = store
+                .image(&s.spec.image)
+                .map(|r| behavior::familiar(&r.reference).to_owned())
+                .unwrap_or_else(|_| short(&s.spec.image).to_owned());
             let mut command = s.spec.process.args.join(" ");
             if command.chars().count() > 28 {
                 command = command.chars().take(27).collect::<String>() + "…";
@@ -877,9 +868,9 @@ impl Ctx {
                 status = format!("{status}: {e}");
             }
             println!(
-                "{:<14} {:<14} {:<30} {}",
+                "{:<14} {:<24} {:<30} {}",
                 short_id(&s.id),
-                short(&s.spec.image),
+                image,
                 command,
                 status
             );

@@ -178,7 +178,7 @@ async fn install_remote(cx: &Ctx<'_>, ex: &Executors, spec: &Spec) -> Result<()>
         "downloading {}@{} ({}) from {}",
         c.name,
         c.version,
-        human_size(c.artifact.size),
+        crate::behavior::human_size(c.artifact.size),
         c.repository
     );
     let work = work_dir(cx);
@@ -229,7 +229,7 @@ async fn search(cx: &Ctx<'_>, name: Option<&str>) -> Result<u8> {
             "{:<20} {:<14} {:<10} {}",
             c.name,
             c.version,
-            human_size(c.artifact.size),
+            crate::behavior::human_size(c.artifact.size),
             c.repository
         );
     }
@@ -263,20 +263,4 @@ fn repo(cx: &Ctx<'_>, c: &RepoCommand) -> Result<u8> {
         }
     }
     Ok(0)
-}
-
-/// 사람이 읽는 크기 (Docker처럼 1000 단위).
-fn human_size(n: u64) -> String {
-    const UNITS: [&str; 4] = ["B", "kB", "MB", "GB"];
-    let mut v = n as f64;
-    let mut u = 0;
-    while v >= 1000.0 && u + 1 < UNITS.len() {
-        v /= 1000.0;
-        u += 1;
-    }
-    if u == 0 {
-        format!("{n}B")
-    } else {
-        format!("{v:.1}{}", UNITS[u])
-    }
 }

@@ -412,8 +412,45 @@ pub const DOCKER_DIFFERENCES: &[(&str, &str, &str)] = &[
     ),
 ];
 
+/// 정규화된 참조를 Docker처럼 줄인다: `docker.io/library/alpine:3.20` → `alpine:3.20`,
+/// `docker.io/user/app:1` → `user/app:1`. 다른 레지스트리는 그대로.
+pub fn familiar(reference: &str) -> &str {
+    reference
+        .strip_prefix("docker.io/library/")
+        .or_else(|| reference.strip_prefix("docker.io/"))
+        .unwrap_or(reference)
+}
+
+/// 사람이 읽는 크기. Docker처럼 1000 단위다.
+pub fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "kB", "MB", "GB"];
+    let mut v = bytes as f64;
+    let mut u = 0;
+    while v >= 1000.0 && u + 1 < UNITS.len() {
+        v /= 1000.0;
+        u += 1;
+    }
+    if u == 0 {
+        format!("{bytes}B")
+    } else {
+        format!("{v:.1}{}", UNITS[u])
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::{familiar, human_size};
+
+    #[test]
+    fn familiar_names_and_sizes() {
+        assert_eq!(familiar("docker.io/library/alpine:3.20"), "alpine:3.20");
+        assert_eq!(familiar("docker.io/user/app:1"), "user/app:1");
+        assert_eq!(familiar("ghcr.io/o/r:t"), "ghcr.io/o/r:t");
+        assert_eq!(familiar("localhost:5055/x:1"), "localhost:5055/x:1");
+        assert_eq!(human_size(999), "999B");
+        assert_eq!(human_size(3_456_789), "3.5MB");
+    }
+
     use super::*;
     use Step::*;
 
