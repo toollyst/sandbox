@@ -82,9 +82,19 @@ sbx executor install --from ./firecracker-bundle firecracker@0.1.0
 sbx executor ls
 ```
 
-Until prebuilt bundles are published, you need to build one yourself. Put `sbx-executor-firecracker` (from this repo,
-renamed to `sbx-executor`), a `firecracker` binary, and a guest kernel named `kernel` in one directory. The kernel must
-meet the [guest requirements](crates/executor-proto/src/lib.rs) (virtio-blk, vsock, EROFS, ext4, overlay).
+Until prebuilt bundles are published, build one yourself (this is exactly what CI does on Linux):
+
+```sh
+arch=$(uname -m | sed s/arm64/aarch64/)
+cargo build --release -p executor-firecracker
+cargo xtask kernel --arch "$arch"          # Linux 6.1 + Firecracker's CI config + sbx's needs, built in Docker
+mkdir bundle
+cp target/release/sbx-executor-firecracker bundle/sbx-executor
+cp "target/kernel/$arch/kernel" bundle/kernel
+cp /path/to/firecracker bundle/firecracker   # an upstream Firecracker release on Linux/KVM
+sbx executor install --from bundle firecracker@local
+cargo xtask smoke                          # 16 checks on a real VM
+```
 
 ### 3. Run things
 
@@ -198,7 +208,9 @@ for other languages are planned.
 ```sh
 cargo test --workspace --all-features     # unit, protocol conformance, and CLI end-to-end tests (fake executor, no VM)
 cargo xtask check-deps                    # dependency direction between and inside crates
-cargo xtask dist && cargo xtask bench     # real numbers on your machine (needs an installed executor)
+cargo xtask dist && cargo xtask smoke     # real-VM checks with the installed executor
+cargo xtask bench                         # real numbers on your machine
+cargo xtask kernel --arch x86_64          # the default guest kernel (Docker; cross-compiles if needed)
 ```
 
 Design notes and the roadmap are in [`docs/`](docs/), and per-crate rules are in each crate's docs. Both are written in

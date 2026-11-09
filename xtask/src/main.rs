@@ -6,6 +6,8 @@
 //! - `guest-initramfs --arch <x86_64|aarch64> [--binary <파일>] [--out <파일>]`: 게스트 init initramfs를 만든다.
 //!   내용과 규칙은 [`initramfs`]에 있다.
 //! - `dist`: 게스트 init을 내장한 배포용 `sbx`, `sbx-shim`을 만든다. 규칙은 [`dist`]에 있다.
+//! - `kernel --arch <x86_64|aarch64> [--out <파일>]`: 실행기 묶음에 넣을 기본 게스트 커널을 만든다. [`kernel`]에 있다.
+//! - `smoke [--sbx <파일>] [--no-internet]`: 설치한 실행기로 실제 VM의 기본 동작을 확인한다. [`smoke`]에 있다.
 //! - `bench [--sbx <파일>] [--image <참조>] [--runs <N>] [--parallel <K>]`: `sbx`로 시간을 잰다. [`bench`](mod@bench)에 있다.
 
 use std::collections::BTreeSet;
@@ -15,7 +17,9 @@ use std::process::{Command, ExitCode};
 mod bench;
 mod dist;
 mod initramfs;
+mod kernel;
 mod modules;
+mod smoke;
 
 /// 크레이트가 의존해도 되는 것.
 enum Allowed {
@@ -159,6 +163,36 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("kernel") => {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("xtask lives inside the workspace");
+            match kernel::build(root, &args[1..]) {
+                Ok(out) => {
+                    println!("{}", out.display());
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("kernel: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Some("smoke") => {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("xtask lives inside the workspace");
+            match smoke::run(root, &args[1..]) {
+                Ok(n) => {
+                    println!("smoke: {n} checks passed");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("smoke: FAILED {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Some("bench") => {
             let root = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .parent()
@@ -176,7 +210,7 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "usage: cargo xtask check-deps\n       cargo xtask guest-initramfs --arch <x86_64|aarch64> [--binary <file>] [--out <file>]\n       cargo xtask dist\n       cargo xtask bench [--sbx <file>] [--image <ref>] [--runs <n>] [--parallel <k>]"
+                "usage: cargo xtask check-deps\n       cargo xtask guest-initramfs --arch <x86_64|aarch64> [--binary <file>] [--out <file>]\n       cargo xtask dist\n       cargo xtask kernel --arch <x86_64|aarch64> [--out <file>]\n       cargo xtask smoke [--sbx <file>] [--no-internet]\n       cargo xtask bench [--sbx <file>] [--image <ref>] [--runs <n>] [--parallel <k>]"
             );
             ExitCode::from(2)
         }
