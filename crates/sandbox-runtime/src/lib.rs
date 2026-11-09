@@ -39,6 +39,7 @@ use std::time::Duration;
 use sandbox_executor::{Executor, ExecutorError};
 use sandbox_model::{ExecSpec, ImageId, ParseError, RootfsFormat, SandboxId, SandboxSpec, State};
 use sandbox_store::Store;
+use serde::{Deserialize, Serialize};
 
 pub mod process;
 pub mod validate;
@@ -84,6 +85,13 @@ pub enum RuntimeError {
     },
     /// 실행기 오류.
     Executor(ExecutorError),
+    /// 기록 파일이 깨짐.
+    Corrupt {
+        /// 파일.
+        path: PathBuf,
+        /// 이유.
+        reason: String,
+    },
     /// 입출력 오류.
     Io(io::Error),
     /// 아직 구현하지 않은 기능.
@@ -114,6 +122,9 @@ impl fmt::Display for RuntimeError {
                 write!(f, "cannot {action} a sandbox in state {}", current.as_str())
             }
             RuntimeError::Executor(e) => e.fmt(f),
+            RuntimeError::Corrupt { path, reason } => {
+                write!(f, "corrupt record {}: {reason}", path.display())
+            }
             RuntimeError::Io(e) => write!(f, "io: {e}"),
             RuntimeError::Unimplemented(what) => write!(f, "not implemented yet: {what}"),
         }
@@ -157,6 +168,25 @@ impl fmt::Debug for Runtime {
             .field("executor", &self.executor.capabilities().name)
             .finish()
     }
+}
+
+/// `state.json`에 저장하는 상태.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StateRecord {
+    /// 상태.
+    pub state: State,
+    /// `stopped`에 딸린 오류 정보.
+    pub error: Option<String>,
+    /// 실행기 프로세스 ID (실행 중일 때).
+    pub pid: Option<u32>,
+}
+
+fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, RuntimeError> {
+    let bytes = std::fs::read(path)?;
+    serde_json::from_slice(&bytes).map_err(|e| RuntimeError::Corrupt {
+        path: path.to_owned(),
+        reason: e.to_string(),
+    })
 }
 
 /// 샌드박스 목록의 한 줄.
@@ -209,12 +239,51 @@ impl Runtime {
 
     /// ID로 샌드박스를 찾는다.
     pub async fn get(&self, id: &SandboxId) -> Result<Sandbox, RuntimeError> {
-        Err(RuntimeError::NotFound(id.clone()))
+        let info = self
+            .read_info(id)?
+            .ok_or_else(|| RuntimeError::NotFound(id.clone()))?;
+        Ok(Sandbox {
+            id: info.id,
+            state: info.state,
+        })
+    }
+
+    fn sandboxes_dir(&self) -> PathBuf {
+        self.config.data_dir.join("sandboxes")
+    }
+
+    /// `spec.json`과 `state.json`이 모두 있어야 샌드박스로 본다. 하나라도 없으면 만드는 중이거나 지우는 중이다.
+    fn read_info(&self, id: &SandboxId) -> Result<Option<SandboxInfo>, RuntimeError> {
+        let dir = self.sandboxes_dir().join(id.as_str());
+        let (spec, state) = (dir.join("spec.json"), dir.join("state.json"));
+        if !spec.is_file() || !state.is_file() {
+            return Ok(None);
+        }
+        let spec: SandboxSpec = read_json(&spec)?;
+        let state: StateRecord = read_json(&state)?;
+        Ok(Some(SandboxInfo {
+            id: id.clone(),
+            spec,
+            state: state.state,
+            error: state.error,
+        }))
     }
 
     /// data_dir의 모든 샌드박스.
     pub async fn list(&self) -> Result<Vec<SandboxInfo>, RuntimeError> {
-        Err(RuntimeError::Unimplemented("sandbox listing"))
+        let mut out = Vec::new();
+        for entry in std::fs::read_dir(self.sandboxes_dir())? {
+            let name = entry?.file_name();
+            // 규칙에 맞지 않는 이름은 이 크레이트가 만든 것이 아니다.
+            let Some(id) = name.to_str().and_then(|n| SandboxId::new(n).ok()) else {
+                continue;
+            };
+            if let Some(info) = self.read_info(&id)? {
+                out.push(info);
+            }
+        }
+        out.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(out)
     }
 }
 
@@ -384,6 +453,43 @@ mod tests {
         assert!(matches!(
             ready(rt.create(s)),
             Err(RuntimeError::RootfsNotPrepared { .. })
+        ));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn list_and_get_read_records() {
+        let (rt, root) = runtime("list");
+        assert!(ready(rt.list()).unwrap().is_empty());
+
+        let dir = root.join("data/sandboxes/abc");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("spec.json"), serde_json::to_vec(&spec()).unwrap()).unwrap();
+        // state.json이 아직 없으면 목록에 나오지 않는다.
+        assert!(ready(rt.list()).unwrap().is_empty());
+        let state = StateRecord {
+            state: State::Stopped,
+            error: Some("boom".into()),
+            pid: None,
+        };
+        std::fs::write(dir.join("state.json"), serde_json::to_vec(&state).unwrap()).unwrap();
+        std::fs::create_dir_all(root.join("data/sandboxes/Not-Valid")).unwrap();
+
+        let list = ready(rt.list()).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].spec, spec());
+        assert_eq!(list[0].error.as_deref(), Some("boom"));
+        let id = SandboxId::new("abc").unwrap();
+        assert_eq!(ready(rt.get(&id)).unwrap().state(), State::Stopped);
+        assert!(matches!(
+            ready(rt.get(&SandboxId::new("nope").unwrap())),
+            Err(RuntimeError::NotFound(_))
+        ));
+
+        std::fs::write(dir.join("state.json"), b"{").unwrap();
+        assert!(matches!(
+            ready(rt.list()),
+            Err(RuntimeError::Corrupt { .. })
         ));
         std::fs::remove_dir_all(root).unwrap();
     }
