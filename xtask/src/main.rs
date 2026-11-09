@@ -57,17 +57,20 @@ const RULES: &[(&str, Allowed)] = &[
     ),
     (
         "executor-fake",
-        // 게스트 쪽 연결 처리를 호스트에서 그대로 돌린다.
+        // 게스트 쪽 연결 처리를 호스트에서 그대로 돌리고, 실행기 규약을 말한다.
         Allowed::Workspace(&[
             "sandbox-model",
             "sandbox-executor",
+            "executor-proto",
             "sandbox-proto",
             "sandbox-guest",
         ]),
     ),
+    // 실행기 통신 규약. 외부 실행기 저장소가 가져다 쓰므로 workspace 크레이트에 의존하지 않는다.
+    ("executor-proto", Allowed::Workspace(&[])),
     (
-        "executor-firecracker",
-        Allowed::Workspace(&["sandbox-model", "sandbox-executor"]),
+        "executor-process",
+        Allowed::Workspace(&["sandbox-model", "sandbox-executor", "executor-proto"]),
     ),
     ("sandbox-guest", Allowed::Strict(&["sandbox-proto", "libc"])),
     (
@@ -78,7 +81,8 @@ const RULES: &[(&str, Allowed)] = &[
             "sandbox-executor",
             "sandbox-store",
             "sandbox-runtime",
-            "executor-firecracker",
+            "executor-process",
+            "executor-proto",
         ]),
     ),
     ("sandbox-cli", Allowed::Any),

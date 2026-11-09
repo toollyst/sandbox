@@ -5,7 +5,7 @@
 //!
 //! 의존으로 세는 것: 주석이 아닌 코드의 `crate::경로`, `super::경로`, 그리고 하위 모듈 이름으로 바로 쓰는 `x::경로`.
 //! `mod x;` 선언은 세지 않는다(담는 것이지 쓰는 것이 아니다). `pub use x::...`는 센다.
-//! 파일 안의 `mod tests {` 뒤는 그 파일의 `tests` 하위 모듈로 본다.
+//! 파일 안에 바로 쓴 `mod 이름 { ... }`도 하위 모듈로 본다(중괄호 짝으로 범위를 정한다).
 //! 경로는 알려진 모듈 중 가장 긴 접두사로 정한다. 모듈이 아니면 크레이트 루트에 있는 항목이다.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -55,25 +55,100 @@ fn parent(m: &str) -> String {
         .unwrap_or_default()
 }
 
-/// 주석을 공백으로 바꾼다. 문자열 안의 `//`는 그대로 둔다.
+/// 주석, 문자열, 문자 리터럴의 내용을 공백으로 바꾼다. 줄바꿈과 따옴표는 남긴다.
+/// 그래야 문자열 안의 `crate::`나 `'{'` 같은 것을 코드로 읽지 않는다.
 fn strip_comments(src: &str) -> String {
+    let c: Vec<char> = src.chars().collect();
     let mut out = String::with_capacity(src.len());
-    for line in src.lines() {
-        let mut in_str = false;
-        let mut prev = '\0';
-        let mut cut = line.len();
-        for (i, c) in line.char_indices() {
-            if c == '"' && prev != '\\' {
-                in_str = !in_str;
+    let blank = |out: &mut String, ch: char| out.push(if ch == '\n' { '\n' } else { ' ' });
+    let mut i = 0;
+    while i < c.len() {
+        let next = c.get(i + 1).copied().unwrap_or('\0');
+        if c[i] == '/' && next == '/' {
+            while i < c.len() && c[i] != '\n' {
+                out.push(' ');
+                i += 1;
             }
-            if !in_str && c == '/' && prev == '/' {
-                cut = i - 1;
-                break;
+        } else if c[i] == '/' && next == '*' {
+            let mut depth = 0;
+            while i < c.len() {
+                if c[i] == '/' && c.get(i + 1) == Some(&'*') {
+                    depth += 1;
+                    out.push_str("  ");
+                    i += 2;
+                } else if c[i] == '*' && c.get(i + 1) == Some(&'/') {
+                    depth -= 1;
+                    out.push_str("  ");
+                    i += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    blank(&mut out, c[i]);
+                    i += 1;
+                }
             }
-            prev = c;
+        } else if c[i] == 'r' && (next == '"' || next == '#') && (i == 0 || !is_ident(c[i - 1])) {
+            // 원시 문자열 r"...", r#"..."#
+            let mut j = i + 1;
+            let mut hashes = 0;
+            while c.get(j) == Some(&'#') {
+                hashes += 1;
+                j += 1;
+            }
+            if c.get(j) != Some(&'"') {
+                out.push(c[i]);
+                i += 1;
+                continue;
+            }
+            for _ in i..=j {
+                out.push(' ');
+            }
+            i = j + 1;
+            while i < c.len() {
+                if c[i] == '"' && (0..hashes).all(|k| c.get(i + 1 + k) == Some(&'#')) {
+                    for _ in 0..=hashes {
+                        out.push(' ');
+                    }
+                    i += 1 + hashes;
+                    break;
+                }
+                blank(&mut out, c[i]);
+                i += 1;
+            }
+        } else if c[i] == '"' {
+            out.push('"');
+            i += 1;
+            while i < c.len() && c[i] != '"' {
+                if c[i] == '\\' {
+                    out.push(' ');
+                    i += 1;
+                }
+                if i < c.len() {
+                    blank(&mut out, c[i]);
+                    i += 1;
+                }
+            }
+            out.push('"');
+            i += 1;
+        } else if c[i] == '\'' && (next == '\\' || c.get(i + 2) == Some(&'\'')) {
+            // 문자 리터럴 'x', '\n', '\u{..}'. 수명('a)은 닫는 따옴표가 바로 오지 않으므로 여기 오지 않는다.
+            out.push('\'');
+            i += 1;
+            if c.get(i) == Some(&'\\') {
+                out.push(' ');
+                i += 1;
+            }
+            while i < c.len() && c[i] != '\'' {
+                out.push(' ');
+                i += 1;
+            }
+            out.push('\'');
+            i += 1;
+        } else {
+            out.push(c[i]);
+            i += 1;
         }
-        out.push_str(&line[..cut]);
-        out.push('\n');
     }
     out
 }
@@ -121,6 +196,53 @@ fn read_paths(s: &str, prefix: &str, out: &mut Vec<String>) {
     out.push(path);
 }
 
+/// 파일 안의 `mod 이름 { ... }` 영역들: (시작, 끝, 모듈 경로). 안쪽 모듈도 포함한다.
+fn inline_modules(text: &str, file_module: &str) -> Vec<(usize, usize, String)> {
+    let bytes = text.as_bytes();
+    let mut out: Vec<(usize, usize, String)> = Vec::new();
+    let mut from = 0;
+    while let Some(i) = text[from..].find("mod ") {
+        let at = from + i;
+        from = at + 4;
+        if at > 0 && is_ident(bytes[at - 1] as char) {
+            continue;
+        }
+        let rest = &text[at + 4..];
+        let name_len = rest.find(|c: char| !is_ident(c)).unwrap_or(rest.len());
+        if name_len == 0 {
+            continue;
+        }
+        let after = rest[name_len..].trim_start();
+        if !after.starts_with('{') {
+            continue;
+        }
+        let open = at + 4 + name_len + (rest[name_len..].len() - after.len());
+        let mut depth = 0usize;
+        let mut close = text.len();
+        for (j, c) in text[open..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = open + j;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let parent = out
+            .iter()
+            .filter(|(s, e, _)| *s <= at && at < *e)
+            .max_by_key(|(s, _, _)| *s)
+            .map(|r| r.2.clone())
+            .unwrap_or_else(|| file_module.to_owned());
+        out.push((open, close, join(&parent, &rest[..name_len])));
+    }
+    out
+}
+
 /// 크레이트 하나의 모듈 순환을 찾는다.
 pub fn check(crate_name: &str, src: &Path) -> Vec<String> {
     let mut files = Vec::new();
@@ -139,10 +261,9 @@ pub fn check(crate_name: &str, src: &Path) -> Vec<String> {
     for f in &files {
         let m = module_of(f.strip_prefix(src).unwrap_or(f));
         let text = strip_comments(&std::fs::read_to_string(f).unwrap_or_default());
-        if text.contains("mod tests {") {
-            modules.insert(join(&m, "tests"));
-        }
-        texts.push((m, text));
+        let regions = inline_modules(&text, &m);
+        modules.extend(regions.iter().map(|r| r.2.clone()));
+        texts.push((m, text, regions));
     }
 
     let resolve = |path: &str| -> String {
@@ -155,9 +276,16 @@ pub fn check(crate_name: &str, src: &Path) -> Vec<String> {
     };
 
     let mut edges: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for (m, text) in &texts {
-        let tests_at = text.find("mod tests {").unwrap_or(text.len());
-        for (kw, base) in [("crate::", None), ("super::", Some(()))] {
+    for (m, text, regions) in &texts {
+        let module_at = |pos: usize| -> String {
+            regions
+                .iter()
+                .filter(|(s, e, _)| *s <= pos && pos < *e)
+                .max_by_key(|(s, _, _)| *s)
+                .map(|r| r.2.clone())
+                .unwrap_or_else(|| m.clone())
+        };
+        for (kw, is_super) in [("crate::", false), ("super::", true)] {
             let mut from = 0;
             while let Some(i) = text[from..].find(kw) {
                 let at = from + i;
@@ -165,18 +293,14 @@ pub fn check(crate_name: &str, src: &Path) -> Vec<String> {
                 if at > 0 && is_ident(text[..at].chars().last().unwrap_or(' ')) {
                     continue;
                 }
-                let here = if at > tests_at {
-                    join(m, "tests")
-                } else {
-                    m.clone()
-                };
-                let mut start = if base.is_some() {
+                let here = module_at(at);
+                let mut start = if is_super {
                     parent(&here)
                 } else {
                     String::new()
                 };
                 let mut rest = &text[from..];
-                if base.is_some() {
+                if is_super {
                     while let Some(r) = rest.strip_prefix("super::") {
                         start = parent(&start);
                         rest = r;
@@ -193,25 +317,22 @@ pub fn check(crate_name: &str, src: &Path) -> Vec<String> {
             }
         }
         // 하위 모듈을 이름으로 바로 쓰는 경우 (`layer::read`, `pub use msg::*`).
-        for child in modules.iter().filter(|c| !c.is_empty() && parent(c) == *m) {
-            let short = child.rsplit("::").next().unwrap_or(child);
-            let needle = format!("{short}::");
-            let mut from = 0;
-            while let Some(i) = text[from..].find(&needle) {
-                let at = from + i;
-                from = at + needle.len();
-                let before = text[..at].chars().last().unwrap_or(' ');
-                if is_ident(before) || before == ':' {
-                    continue;
-                }
-                let here = if at > tests_at {
-                    join(m, "tests")
-                } else {
-                    m.clone()
-                };
-                if &here != child {
-                    edges.entry(here).or_default().insert(child.clone());
-                }
+        let bytes = text.as_bytes();
+        let mut from = 0;
+        while let Some(i) = text[from..].find("::") {
+            let at = from + i;
+            from = at + 2;
+            let mut s = at;
+            while s > 0 && is_ident(bytes[s - 1] as char) {
+                s -= 1;
+            }
+            if s == at || (s > 0 && bytes[s - 1] == b':') {
+                continue;
+            }
+            let here = module_at(s);
+            let child = join(&here, &text[s..at]);
+            if modules.contains(&child) && child != here {
+                edges.entry(here).or_default().insert(child);
             }
         }
     }
@@ -282,9 +403,21 @@ mod tests {
     }
 
     #[test]
-    fn comments_are_ignored_but_strings_kept() {
-        assert_eq!(strip_comments("a // crate::x\n"), "a \n");
-        assert_eq!(strip_comments("\"http://x\" // y\n"), "\"http://x\" \n");
+    fn comments_strings_and_chars_are_blanked() {
+        for (src, kept) in [
+            ("a // crate::x\n", "a"),
+            ("\"crate::x\" b", "\"\"b"),
+            ("'{' x '\\n' 'a", "''x'''a"),
+            ("r#\"mod a {\"# z", "z"),
+            ("/* crate::a */b", "b"),
+            ("\"a\\\"crate::\" c", "\"\"c"),
+        ] {
+            // 길이는 그대로, 공백을 빼면 코드와 따옴표만 남는다.
+            let out = strip_comments(src);
+            assert_eq!(out.chars().count(), src.chars().count(), "{src:?}");
+            let squeezed: String = out.split_whitespace().collect();
+            assert_eq!(squeezed, kept, "{src:?} -> {out:?}");
+        }
     }
 
     #[test]
@@ -306,6 +439,17 @@ mod tests {
         std::fs::write(dir.join("b.rs"), "pub struct Out;\n").unwrap();
         std::fs::write(dir.join("a.rs"), "use crate::Error;\n").unwrap();
         assert!(!check("bad", &dir).is_empty());
+
+        // 파일 안 모듈도 본다: 루트가 guest::start를 쓰고 guest가 super의 항목을 쓰면 순환이다.
+        std::fs::write(
+            dir.join("lib.rs"),
+            "struct Vm; fn f() { guest::start() } mod guest { use super::Vm; pub fn start() {} }\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("a.rs"), "").unwrap();
+        let p = check("inline", &dir);
+        assert!(p.iter().any(|p| p.contains("guest")), "{p:?}");
+        std::fs::write(dir.join("a.rs"), "use crate::Error;\n").unwrap();
 
         // 루트가 `crate::` 없이 하위 모듈을 써도 센다.
         std::fs::write(dir.join("lib.rs"), "mod a; mod b; fn f() { a::run() }\n").unwrap();
