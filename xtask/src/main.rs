@@ -1,16 +1,20 @@
 //! 개발용 작업. `cargo xtask <명령>`으로 실행한다.
 //!
-//! - `check-deps`: 크레이트 사이 의존 규칙을 검사한다. 규칙은 [`RULES`]가 정본이다.
+//! - `check-deps`: 의존 방향을 검사한다.
+//!   - 크레이트 사이: [`RULES`]와 [`FORBIDDEN_FEATURES`]가 정본이다.
+//!   - 크레이트 안 모듈 사이: 순환 금지. 규칙은 [`modules`]에 있다.
 
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::{Command, ExitCode};
 
+mod modules;
+
 /// 크레이트가 의존해도 되는 것.
 enum Allowed {
     /// 이 workspace 크레이트들만. 외부 크레이트는 따로 제한하지 않는다.
     Workspace(&'static [&'static str]),
-    /// 이 workspace 크레이트들만, 외부 크레이트도 금지 (게스트 바이너리 크기와 호환성 때문).
+    /// 여기 적힌 크레이트만 (workspace든 외부든). 게스트 바이너리 크기와 호환성 때문.
     Strict(&'static [&'static str]),
     /// 제한 없음. 구현체를 고르고 조립하는 바이너리.
     Any,
@@ -20,7 +24,8 @@ enum Allowed {
 ///
 /// - 실행(`sandbox-runtime`)과 관리(`sandbox-manage`)는 서로 의존하지 않는다.
 /// - 코어는 trait 크레이트에만 의존한다. 구현체(`sandbox-oci`, `executor-*`)를 고르는 것은 바이너리뿐이다.
-/// - `sandbox-proto`와 `sandbox-guest`는 외부 크레이트도 쓰지 않는다.
+/// - `sandbox-proto`는 외부 크레이트를 쓰지 않는다. `sandbox-guest`는 시스템 호출 선언(`libc`)만 쓴다.
+/// - 대상 OS별 의존도 모두 센다(`cargo tree --target all`).
 const RULES: &[(&str, Allowed)] = &[
     ("sandbox-model", Allowed::Workspace(&[])),
     ("sandbox-proto", Allowed::Strict(&[])),
@@ -58,7 +63,7 @@ const RULES: &[(&str, Allowed)] = &[
         "executor-firecracker",
         Allowed::Workspace(&["sandbox-model", "sandbox-executor"]),
     ),
-    ("sandbox-guest", Allowed::Strict(&["sandbox-proto"])),
+    ("sandbox-guest", Allowed::Strict(&["sandbox-proto", "libc"])),
     (
         "sandbox-shim",
         Allowed::Workspace(&[
@@ -153,6 +158,19 @@ fn check_deps() -> Result<(), Vec<String>> {
         }
     }
 
+    for dir in crate_dirs
+        .iter()
+        .map(|d| root.join("crates").join(d))
+        .chain([root.join("xtask")])
+    {
+        let name = dir
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        problems.extend(modules::check(&name, &dir.join("src")));
+    }
+
     for (name, dep, feature) in FORBIDDEN_FEATURES {
         match tree(root, name, &["-e", "features"]) {
             Ok(lines) => {
@@ -177,7 +195,7 @@ fn tree(root: &Path, name: &str, extra: &[&str]) -> Result<Vec<String>, String> 
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let out = Command::new(cargo)
         .current_dir(root)
-        .args(["tree", "-p", name, "--prefix", "none"])
+        .args(["tree", "-p", name, "--prefix", "none", "--target", "all"])
         .args(extra)
         .output()
         .map_err(|e| format!("cannot run cargo tree: {e}"))?;

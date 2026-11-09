@@ -18,7 +18,7 @@ use tar::EntryType;
 
 use sandbox_rootfs::{ContentRef, ContentSource, EntryKind, LayerEntry, Meta};
 
-use crate::ManageError;
+use crate::error::ManageError;
 
 fn spool_name(layer: usize, index: usize) -> String {
     format!("{layer}-{index}")

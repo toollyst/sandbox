@@ -9,8 +9,9 @@ use std::task::{Context, Poll, Waker};
 use flate2::Compression as GzLevel;
 use flate2::write::GzEncoder;
 
-use sandbox_image::ResolvedImage;
+use sandbox_image::{ImageError, ResolvedImage};
 use sandbox_model::{Arch, BoxFuture, Digest, ImageConfig, Layer};
+use sandbox_rootfs::RootfsError;
 use sandbox_rootfs::{ContentSource, NodeKind, WriteSeek};
 use sandbox_store::digest::sha256;
 

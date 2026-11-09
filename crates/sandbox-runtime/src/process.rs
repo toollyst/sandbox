@@ -13,7 +13,7 @@
 
 use sandbox_model::{ImageConfig, ProcessDefaults, ProcessOverrides, UserSpec};
 
-use crate::RuntimeError;
+use crate::error::RuntimeError;
 
 /// 기본 프로세스를 정한다. 규칙은 모듈 문서의 표를 따른다.
 pub fn resolve(

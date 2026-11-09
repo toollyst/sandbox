@@ -10,7 +10,7 @@
 use sandbox_executor::Capabilities;
 use sandbox_model::{MountKind, SandboxSpec};
 
-use crate::RuntimeError;
+use crate::error::RuntimeError;
 
 /// 검사한다. 규칙은 모듈 문서의 표를 따른다.
 pub fn check(spec: &SandboxSpec, caps: &Capabilities) -> Result<(), RuntimeError> {
