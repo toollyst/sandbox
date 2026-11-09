@@ -31,7 +31,7 @@ pub struct Cli {
     /// 게스트 연결 소켓 디렉터리 (짧은 경로여야 한다).
     #[arg(long, global = true, env = "SBX_SOCKET_DIR")]
     pub socket_dir: Option<PathBuf>,
-    /// 게스트 init initramfs.
+    /// 게스트 init initramfs. 기본은 sbx에 내장된 것.
     #[arg(long, global = true, env = "SBX_GUEST_INIT")]
     pub guest_init: Option<PathBuf>,
     /// 실행기 실행 파일 (`executor-proto` 규약). 경로가 아니면 PATH에서 찾는다.

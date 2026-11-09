@@ -16,4 +16,5 @@ pub mod behavior;
 pub mod cli;
 pub mod commands;
 pub mod dirs;
+pub mod guest;
 pub mod parse;

@@ -7,8 +7,9 @@
 //! | Windows | `%LOCALAPPDATA%\sbx\data` | `%LOCALAPPDATA%\sbx\cache` | `%LOCALAPPDATA%\sbx\run` |
 //!
 //! socket_dir은 Unix 소켓 경로 길이 제한 때문에 data_dir 밖의 짧은 경로다.
-//! guest_init 기본값은 `<cache_dir>/guest/<게스트 프로토콜 버전>/<amd64|arm64>/initramfs`다.
-//! 파일은 `cargo xtask guest-initramfs --arch <x86_64|aarch64>`로 만든다.
+//! guest_init 기본값: sbx에 내장된 것(배포 빌드, 캐시의 `guest/sha256-<hex>/<arch>/initramfs`로 꺼낸다).
+//! 내장하지 않은 빌드면 `<cache_dir>/guest/<게스트 프로토콜 버전>/<amd64|arm64>/initramfs`이고,
+//! 그 파일은 `cargo xtask guest-initramfs --arch <x86_64|aarch64>`로 만든다.
 
 use std::env;
 use std::path::PathBuf;

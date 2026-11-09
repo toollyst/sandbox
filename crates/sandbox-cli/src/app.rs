@@ -40,8 +40,8 @@ use sandbox_store::CacheLayout;
 use crate::attach::{self, attach};
 use crate::behavior::{self, ImageMatch, LookupError, RmiAction, RmiDecision, Step};
 use crate::cli::{AttachArgs, Cli, Command, ExecArgs, Format, RunArgs};
-use crate::dirs;
 use crate::parse::{self, CpEndpoint};
+use crate::{dirs, guest};
 
 /// 명령 결과. 성공하면 종료 코드.
 pub type AppResult<T> = Result<T, Box<dyn Error>>;
@@ -91,7 +91,18 @@ fn start_failure(e: RuntimeError, otherwise: u8) -> Box<dyn Error> {
         RuntimeError::CommandFailed(g) => behavior::command_failure_code(g.kind),
         _ => otherwise,
     };
-    failure(code, e)
+    failure(code, explain(e))
+}
+
+/// 고칠 방법을 덧붙인다. 게스트 init이 없으면 이 빌드에 내장되지 않은 것이다.
+fn explain(e: RuntimeError) -> Box<dyn Error> {
+    match &e {
+        RuntimeError::GuestInitMissing(_) => msg(format!(
+            "{e}; this sbx build has no embedded guest init: build one with `cargo xtask guest-initramfs --arch <x86_64|aarch64>` \
+             and pass it with --guest-init, or use a release build (`cargo xtask dist`)"
+        )),
+        _ => Box::new(e),
+    }
 }
 
 fn short(id: &ImageId) -> &str {
@@ -210,27 +221,32 @@ impl Ctx {
         )?)
     }
 
-    /// 게스트 init. 지정하지 않으면 캐시의 `guest/<게스트 프로토콜 버전>/<arch>/initramfs`.
-    fn guest_init(&self) -> AppResult<PathBuf> {
+    /// 게스트 init. 순서: `--guest-init` > sbx에 내장된 것([`guest::embedded`], VM을 띄울 때 관리 코어가 캐시에 꺼낸다)
+    /// > 캐시의 `guest/<게스트 프로토콜 버전>/<arch>/initramfs`(직접 둔 것).
+    fn guest_init(&self, launch: bool) -> AppResult<PathBuf> {
         if let Some(p) = &self.guest_init {
             return Ok(p.clone());
         }
+        let arch = host_arch()?;
+        if launch && let Some(bytes) = guest::embedded(arch) {
+            return Ok(self.manager()?.install_guest_init(arch, bytes)?);
+        }
         Ok(CacheLayout::new(&self.cache_dir)
-            .guest_dir(&sandbox_proto::PROTOCOL_VERSION.to_string(), host_arch()?)
-            .join("initramfs"))
+            .guest_init(&sandbox_proto::PROTOCOL_VERSION.to_string(), arch))
     }
 
-    fn runtime_config(&self) -> AppResult<RuntimeConfig> {
+    /// `launch`면 VM을 띄울 때 쓰는 설정이다(내장 게스트 init을 꺼낸다).
+    fn runtime_config(&self, launch: bool) -> AppResult<RuntimeConfig> {
         Ok(RuntimeConfig {
             data_dir: self.data_dir.clone(),
             cache_dir: self.cache_dir.clone(),
-            guest_init: self.guest_init()?,
+            guest_init: self.guest_init(launch)?,
             socket_dir: self.socket_dir.clone(),
         })
     }
 
-    fn runtime_with(&self, executor: Arc<dyn Executor>) -> AppResult<Runtime> {
-        Ok(Runtime::new(self.runtime_config()?, executor)?)
+    fn runtime_with(&self, executor: Arc<dyn Executor>, launch: bool) -> AppResult<Runtime> {
+        Ok(Runtime::new(self.runtime_config(launch)?, executor)?)
     }
 
     /// shim 실행 파일: `--shim`, 아니면 sbx 옆의 `sbx-shim`, 아니면 PATH의 `sbx-shim`.
@@ -251,10 +267,15 @@ impl Ctx {
         // 실행기와 이미지를 먼저 확인한다(shim 안에서 실패하면 이유가 덜 분명하다).
         let sandbox = self.launcher()?.get(id).await?;
         let config = ShimConfig {
-            runtime: self.runtime_config()?,
+            runtime: self.runtime_config(true)?,
             executor: self.executor.clone(),
             remove_on_exit,
         };
+        if !config.runtime.guest_init.is_file() {
+            return Err(explain(RuntimeError::GuestInitMissing(
+                config.runtime.guest_init.clone(),
+            )));
+        }
         sandbox_shim::start_detached(&self.shim_program(), &config, id, &sandbox.log_dir())
             .await
             .map_err(msg)
@@ -304,12 +325,12 @@ impl Ctx {
 
     /// VM을 띄우지 않는 일에 쓰는 실행 코어. 실행기 실행 파일을 실행하지 않는다.
     fn runtime(&self) -> AppResult<Runtime> {
-        self.runtime_with(Arc::new(ConnectOnly))
+        self.runtime_with(Arc::new(ConnectOnly), false)
     }
 
     /// VM을 띄우는 일(`create`의 기능 확인, `start`)에 쓰는 실행 코어. 실행기의 capability를 받아 둔다.
     fn launcher(&self) -> AppResult<Runtime> {
-        self.runtime_with(Arc::new(ProcessExecutor::new(&self.executor)?))
+        self.runtime_with(Arc::new(ProcessExecutor::new(&self.executor)?), true)
     }
 
     /// 이미지 이름을 찾는다. 없으면 `None`, 그 밖의 문제는 오류.
@@ -626,7 +647,12 @@ impl Ctx {
     async fn start(&self, interactive: bool, id: &str) -> AppResult<u8> {
         let io = attach::io_mode(interactive, false)?;
         let rt = self.launcher()?;
-        let p = rt.get(&SandboxId::new(id)?).await?.start(io).await?;
+        let p = rt
+            .get(&SandboxId::new(id)?)
+            .await?
+            .start(io)
+            .await
+            .map_err(explain)?;
         Ok(behavior::exit_byte(attach(p, io).await?))
     }
 

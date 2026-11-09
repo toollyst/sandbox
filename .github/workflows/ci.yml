@@ -33,11 +33,14 @@ jobs:
           RUSTDOCFLAGS: -D warnings
       - run: cargo xtask check-deps
       # 게스트 init initramfs. 두 아키텍처 모두 어느 호스트에서나 rust-lld로 링크된다.
+      # 호스트 아키텍처의 것을 내장한 sbx로 e2e를 다시 돌리고(내장한 init을 캐시로 꺼내는지), 배포 빌드를 만든다.
       - if: runner.os == 'Linux'
         run: |
           rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
           cargo xtask guest-initramfs --arch x86_64
           cargo xtask guest-initramfs --arch aarch64
+          SBX_EMBED_GUEST="$PWD/target/guest/$(uname -m)/initramfs" cargo test -p sandbox-cli --test e2e
+          cargo xtask dist
 
   # root와 loop 장치가 필요한 테스트 (커널이 scratch를 마운트하고 overlay upper로 쓰는지).
   privileged:

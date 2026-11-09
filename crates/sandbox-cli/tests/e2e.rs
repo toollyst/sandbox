@@ -83,6 +83,10 @@ mod unix {
         ("detached_rm_and_logs_follow", detached_rm_and_logs_follow),
         ("volume_is_shared_live", volume_is_shared_live),
         ("network_allow_list", network_allow_list),
+        (
+            "embedded_guest_init_is_unpacked_into_the_cache",
+            embedded_guest_init_is_unpacked_into_the_cache,
+        ),
     ];
 
     /// 인자: 이름 일부(걸러 내기). `--`로 시작하는 인자(cargo test가 넘기는 것)는 무시한다.
@@ -296,6 +300,35 @@ mod unix {
         ]);
         assert_eq!(o.status.code(), Some(6), "{}", text(&o.stderr));
         assert_eq!(text(&o.stdout), "tty\r\n");
+    }
+
+    /// 게스트 init을 내장해 빌드했을 때만 돈다(`SBX_EMBED_GUEST`, CI의 Linux 작업).
+    fn embedded_guest_init_is_unpacked_into_the_cache() {
+        let Some(bytes) = sandbox_cli::guest::embedded(Arch::host().unwrap()) else {
+            println!("  (skipped: this build has no embedded guest init)");
+            return;
+        };
+        let e = Env::new();
+        let o = e
+            .cmd(&["run", "--rm", IMAGE, "true"])
+            .env_remove("SBX_GUEST_INIT")
+            .output()
+            .unwrap();
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let guest = e.path("cache").join("guest");
+        let found: Vec<PathBuf> = std::fs::read_dir(&guest)
+            .unwrap()
+            .flatten()
+            .map(|d| {
+                d.path()
+                    .join(Arch::host().unwrap().oci_name())
+                    .join("initramfs")
+            })
+            .filter(|p| p.is_file())
+            .collect();
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(std::fs::read(&found[0]).unwrap(), bytes);
+        assert!(found[0].to_string_lossy().contains("sha256-"));
     }
 
     fn network_allow_list() {

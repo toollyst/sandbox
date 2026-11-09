@@ -66,6 +66,10 @@ docs/                   기획과 로드맵만
 이 저장소는 생명주기, 코어, CLI, 게스트 init, 그리고 실행기가 맞춰야 할 통신 규약(`executor-proto`)을 책임진다.
 규약에 맞는 실행기는 그대로 실행한다.
 
+**게스트 init 배포**: 게스트 init initramfs는 `sbx` 실행 파일 안에 들어 있다(`cargo xtask dist`, 빌드 대상 아키텍처의 것 하나).
+사용자의 이미지는 바꾸지 않는다. VM을 켤 때 이미지 rootfs와 별도로 initramfs를 붙이고, 처음 쓸 때 캐시의
+`guest/sha256-<내용 digest>/<arch>/initramfs`로 꺼낸다. `--guest-init`으로 다른 것을 줄 수 있다. 커널은 실행기가 가져온다.
+
 의존 방향은 네 가지로 요약된다.
 - 코어(runtime, manage)는 trait 크레이트에만 의존한다.
 - 구현체를 고르는 것은 바이너리뿐이다.
@@ -98,4 +102,3 @@ OCI는 입력 형식이다. OCI 자료형은 `sandbox-oci` 밖으로 나가지 �
 ## 5. 아직 정하지 않은 것
 
 - 레이어를 병합할 때 파일 내용을 다시 읽을지 임시 저장할지 (`sandbox-rootfs`의 `ContentSource` 뒤에 숨겨 두었다)
-- 게스트 기반 이미지(커널, 게스트 init)의 배포 방식

@@ -5,11 +5,13 @@
 //!   - 크레이트 안 모듈 사이: 순환 금지. 규칙은 [`modules`]에 있다.
 //! - `guest-initramfs --arch <x86_64|aarch64> [--binary <파일>] [--out <파일>]`: 게스트 init initramfs를 만든다.
 //!   내용과 규칙은 [`initramfs`]에 있다.
+//! - `dist`: 게스트 init을 내장한 배포용 `sbx`, `sbx-shim`을 만든다. 규칙은 [`dist`]에 있다.
 
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::{Command, ExitCode};
 
+mod dist;
 mod initramfs;
 mod modules;
 
@@ -141,9 +143,26 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("dist") => {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("xtask lives inside the workspace");
+            match dist::run(root, &args[1..]) {
+                Ok(outs) => {
+                    for o in outs {
+                        println!("{}", o.display());
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("dist: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         _ => {
             eprintln!(
-                "usage: cargo xtask check-deps\n       cargo xtask guest-initramfs --arch <x86_64|aarch64> [--binary <file>] [--out <file>]"
+                "usage: cargo xtask check-deps\n       cargo xtask guest-initramfs --arch <x86_64|aarch64> [--binary <file>] [--out <file>]\n       cargo xtask dist"
             );
             ExitCode::from(2)
         }
