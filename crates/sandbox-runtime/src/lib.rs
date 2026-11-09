@@ -255,12 +255,22 @@ impl Runtime {
     }
 
     /// `timeout`까지 실행 중이 아니게 되기를(지워진 것도) 기다린다. 그렇게 되면 `true`.
+    /// `stopped`가 기록된 뒤 소유 잠금이 풀릴 때까지도 기다린다. 그래야 돌아온 뒤 곧바로 다시 시작할 수 있다.
     fn wait_not_running(&self, id: &SandboxId, timeout: Duration) -> Result<bool, RuntimeError> {
         let deadline = std::time::Instant::now() + timeout;
         loop {
             match self.read_info(id)? {
+                None => return Ok(true),
                 Some(i) if i.state == State::Running => {}
-                _ => return Ok(true),
+                Some(_) => match records::is_owned(&self.paths(id)) {
+                    Ok(false) => return Ok(true),
+                    Ok(true) => {}
+                    // 그사이 지워졌다.
+                    Err(RuntimeError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                        return Ok(true);
+                    }
+                    Err(e) => return Err(e),
+                },
             }
             if std::time::Instant::now() >= deadline {
                 return Ok(false);
