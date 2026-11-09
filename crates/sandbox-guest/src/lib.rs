@@ -21,6 +21,7 @@
 
 pub mod copy;
 pub mod exec;
+pub mod mkfs;
 pub mod passwd;
 pub mod server;
 mod sys;

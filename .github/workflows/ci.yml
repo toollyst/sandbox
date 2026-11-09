@@ -20,17 +20,29 @@ jobs:
       - run: rustup component add rustfmt clippy
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      # Linux에서는 erofs 공식 도구로 만든 이미지를 검증한다. 도구가 없으면 테스트가 실패한다.
+      # Linux에서는 erofs와 ext2 공식 검사기로 만든 이미지를 검증한다. 도구가 없으면 테스트가 실패한다.
       - if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y erofs-utils
+          sudo apt-get install -y erofs-utils e2fsprogs
           echo "SANDBOX_REQUIRE_FSCK_EROFS=1" >> "$GITHUB_ENV"
+          echo "SANDBOX_REQUIRE_E2FSCK=1" >> "$GITHUB_ENV"
       - run: cargo test --workspace --all-features
       - run: cargo doc --workspace --no-deps --all-features
         env:
           RUSTDOCFLAGS: -D warnings
       - run: cargo xtask check-deps
+
+  # root와 loop 장치가 필요한 테스트 (커널이 scratch를 마운트하고 overlay upper로 쓰는지).
+  privileged:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          docker run --rm --privileged -v "$PWD":/src -w /src \
+            -e SANDBOX_PRIVILEGED_TESTS=1 -e SANDBOX_REQUIRE_E2FSCK=1 rust:1 bash -ec '
+              apt-get update -qq && apt-get install -y -qq e2fsprogs
+              cargo test -p sandbox-guest --lib privileged -- --nocapture'
 
   # 실제 VM 부팅이 가능한 러너인지 확인한다. 결과는 기록만 하고 실패시키지 않는다.
   kvm-probe:
