@@ -50,6 +50,7 @@ pub const APPLIED_CONFIG_FIELDS: &[&str] = &[
     "WorkingDir",
     "User",
     "StopSignal",
+    "Labels",
 ];
 
 /// Runtime Spec 중 VM 경계에서는 의미가 없어 적용하지 않는 필드.

@@ -325,6 +325,8 @@ pub struct ImageConfig {
     pub user: Option<String>,
     /// `StopSignal`. 해석 전 원문.
     pub stop_signal: Option<String>,
+    /// `Labels`.
+    pub labels: BTreeMap<String, String>,
 }
 
 /// 사용자나 그룹을 가리키는 값.

@@ -9,6 +9,7 @@
 //! | cwd | 호출자 값 > `WorkingDir` > `/` |
 //! | user | 호출자 값 > `User` > root |
 //! | 멈출 때 시그널 ([`stop_signal`]) | 호출자 값 > `StopSignal` > SIGTERM |
+//! | 라벨 ([`labels`]) | 이미지 `Labels`에 호출자 값을 덮어쓴다. 같은 키는 호출자 값이 이긴다 |
 //!
 //! argv가 비면 [`RuntimeError::NoCommand`]다.
 //!
@@ -73,6 +74,16 @@ pub fn for_exec(base: &ProcessDefaults, exec: &ExecSpec) -> Result<ProcessDefaul
         cwd: exec.cwd.clone().unwrap_or_else(|| base.cwd.clone()),
         user: exec.user.clone().unwrap_or_else(|| base.user.clone()),
     })
+}
+
+/// 샌드박스 라벨. 규칙은 모듈 문서의 표를 따른다.
+pub fn labels(
+    image: &ImageConfig,
+    given: &std::collections::BTreeMap<String, String>,
+) -> std::collections::BTreeMap<String, String> {
+    let mut all = image.labels.clone();
+    all.extend(given.iter().map(|(k, v)| (k.clone(), v.clone())));
+    all
 }
 
 /// 멈출 때 기본 프로세스에 보낼 시그널. 규칙은 모듈 문서의 표를 따른다. 이미지 값이 잘못되면 오류다(Docker와 같다).
@@ -150,7 +161,24 @@ mod tests {
             working_dir: Some("/app".into()),
             user: Some("app".into()),
             stop_signal: None,
+            labels: [
+                ("a".to_owned(), "image".to_owned()),
+                ("b".to_owned(), "image".to_owned()),
+            ]
+            .into(),
         }
+    }
+
+    #[test]
+    fn caller_labels_override_image_labels() {
+        let given = [
+            ("b".to_owned(), "mine".to_owned()),
+            ("c".to_owned(), "mine".to_owned()),
+        ]
+        .into();
+        let all = labels(&image(), &given);
+        let v: Vec<(&str, &str)> = all.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        assert_eq!(v, [("a", "image"), ("b", "mine"), ("c", "mine")]);
     }
 
     #[test]

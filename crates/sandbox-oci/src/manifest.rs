@@ -246,6 +246,24 @@ fn string(key: &str, v: &Value) -> Result<Option<String>, ImageError> {
     }
 }
 
+fn labels(v: &Value) -> Result<std::collections::BTreeMap<String, String>, ImageError> {
+    match v {
+        Value::Null => Ok(Default::default()),
+        Value::Object(m) => m
+            .iter()
+            .map(|(k, v)| match v {
+                Value::String(s) => Ok((k.clone(), s.clone())),
+                _ => Err(ImageError::Invalid(
+                    "config.Labels values must be strings".into(),
+                )),
+            })
+            .collect(),
+        _ => Err(ImageError::Invalid(
+            "config.Labels must be an object".into(),
+        )),
+    }
+}
+
 fn is_empty(v: &Value) -> bool {
     match v {
         Value::Null => true,
@@ -284,6 +302,7 @@ pub fn parse_config(bytes: &[u8]) -> Result<ParsedConfig, ImageError> {
             "WorkingDir" => config.working_dir = string(&key, &value)?,
             "User" => config.user = string(&key, &value)?,
             "StopSignal" => config.stop_signal = string(&key, &value)?,
+            "Labels" => config.labels = labels(&value)?,
             _ if is_empty(&value) => {}
             _ => ignored.push(format!("config.{key}")),
         }
@@ -435,7 +454,8 @@ mod tests {
                 ("BARE".into(), "".into())
             ]
         );
-        assert_eq!(c.ignored_fields, vec!["config.Labels"]);
+        assert!(c.ignored_fields.is_empty(), "{:?}", c.ignored_fields);
+        assert_eq!(c.config.labels.get("a").map(String::as_str), Some("b"));
         assert_eq!(c.config.stop_signal.as_deref(), Some("SIGTERM"));
         assert_eq!(c.diff_ids[0].as_str(), d('c'));
     }

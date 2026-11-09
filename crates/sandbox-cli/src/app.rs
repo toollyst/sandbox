@@ -606,7 +606,7 @@ impl Ctx {
                         mounts: mounts.clone(),
                         network: network.clone(),
                         hostname: a.hostname.clone(),
-                        labels: labels.clone(),
+                        labels: sandbox_runtime::process::labels(&record.config, &labels),
                         stop,
                         open_stdin: a.interactive,
                         tty: a.tty,
