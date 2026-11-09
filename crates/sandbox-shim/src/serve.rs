@@ -155,6 +155,7 @@ impl Clients {
         self.lock().retain(|(tx, _)| tx.try_send(m.clone()).is_ok());
     }
 
+    #[cfg(unix)]
     fn add(&self, tx: mpsc::Sender<ServerMsg>, writer: JoinHandle<()>) {
         self.lock().push((tx, writer));
     }

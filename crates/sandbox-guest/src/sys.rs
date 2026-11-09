@@ -113,13 +113,14 @@ pub fn openpty(rows: u16, cols: u16) -> io::Result<(std::os::fd::OwnedFd, std::o
         ws_ypixel: 0,
     };
     // SAFETY: 출력 인자는 살아 있는 지역 변수다. 이름 버퍼는 넘기지 않고(null), termios는 기본값(null)이다.
+    // 창 크기는 Linux에서 `*const`, macOS에서 `*mut`이라 원시 포인터로 넘긴다(어느 쪽이든 읽기만 한다).
     check(unsafe {
         libc::openpty(
             &mut master,
             &mut slave,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            &mut ws,
+            &raw mut ws,
         )
     })?;
     // SAFETY: openpty가 성공했으므로 둘 다 새로 열린, 이 프로세스만 가진 fd다.

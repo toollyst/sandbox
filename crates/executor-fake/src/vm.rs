@@ -21,7 +21,8 @@ impl Life {
             .clone()
     }
 
-    /// 처음 끝낼 때만 `true`.
+    /// 처음 끝낼 때만 `true`. 게스트 쪽(unix)만 끝낸다.
+    #[cfg(unix)]
     pub(crate) fn end(&self, reason: &str) -> bool {
         let mut r = self.reason.lock().unwrap_or_else(|e| e.into_inner());
         let first = r.is_none();
