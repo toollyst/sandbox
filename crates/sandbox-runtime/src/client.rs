@@ -14,7 +14,7 @@ use crate::error::RuntimeError;
 use crate::hostfs;
 
 /// 연결을 다시 시도하는 간격.
-pub const RETRY: Duration = Duration::from_millis(20);
+pub const RETRY: Duration = Duration::from_millis(5);
 
 fn proto_err(m: impl Into<String>) -> RuntimeError {
     RuntimeError::Protocol(m.into())

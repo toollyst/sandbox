@@ -8,7 +8,7 @@ const UUID: [u8; 16] = *b"sbx-scratch-test";
 fn image(bytes: u64) -> Vec<u8> {
     // 0이 아닌 값으로 채워 둔다. 포맷이 디스크가 0이라고 가정하지 않는지 본다.
     let mut c = Cursor::new(vec![0xA5u8; bytes as usize]);
-    let size = format(&mut c, bytes, UUID).unwrap();
+    let size = format(&mut c, bytes, UUID, Disk::Unknown).unwrap();
     assert!(size <= bytes);
     c.into_inner()
 }
@@ -19,6 +19,17 @@ fn le16(b: &[u8], at: usize) -> u16 {
 
 fn le32(b: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(b[at..at + 4].try_into().unwrap())
+}
+
+#[test]
+fn zeroed_disk_gets_the_same_bytes() {
+    let bytes = 64 << 20;
+    let run = |disk| {
+        let mut c = Cursor::new(vec![0u8; bytes as usize]);
+        format(&mut c, bytes, UUID, disk).unwrap();
+        c.into_inner()
+    };
+    assert!(run(Disk::Zeroed) == run(Disk::Unknown));
 }
 
 #[test]

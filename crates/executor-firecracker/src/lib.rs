@@ -23,8 +23,9 @@
 //! - initrd는 sbx가 준 게스트 init, `root=`는 없다. 디스크는 받은 순서대로(rootfs `vda` 읽기 전용, scratch `vdb`).
 //! - vsock: guest CID 3, `uds_path`는 규약의 `control_socket`. 남아 있는 파일은 지운다(Firecracker는 있으면 실패한다).
 //!   경로는 [`config::MAX_SOCKET_PATH`] 바이트 이하여야 한다(macOS Unix 소켓 한도).
-//! - 커널 명령줄: `console=ttyS0 reboot=k panic=1`(x86_64는 `pci=off`도), `sbx.hostname=`, `sbx.halt=reboot`
-//!   (Firecracker는 게스트의 재시작 요청을 VM 종료로 다룬다).
+//! - 커널 명령줄: `console=ttyS0 quiet reboot=k panic=1`(x86_64는 `pci=off`도), `sbx.hostname=`, `sbx.halt=reboot`
+//!   (Firecracker는 게스트의 재시작 요청을 VM 종료로 다룬다). `quiet`는 부팅 메시지를 시리얼 콘솔에 쓰는 시간
+//!   (약 100ms)을 없앤다. 경고와 오류는 그대로 나온다.
 //! - 네트워크 장치와 공유 폴더(virtio-fs)는 없다(`live_share: false`). 스냅샷도 아직 알리지 않는다.
 //!
 //! # 프로세스 ([`session`])

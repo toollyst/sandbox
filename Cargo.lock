@@ -1437,6 +1437,7 @@ name = "sandbox-runtime"
 version = "0.0.0"
 dependencies = [
  "executor-fake",
+ "rustix",
  "sandbox-executor",
  "sandbox-model",
  "sandbox-proto",

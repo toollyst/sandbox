@@ -192,6 +192,8 @@ struct Ctx {
     executor: Option<PathBuf>,
     shim: Option<PathBuf>,
     format: Format,
+    /// [`Ctx::launcher`]를 한 번만 만든다(실행기 `capabilities`와 게스트 init 확인을 되풀이하지 않는다).
+    launcher: std::sync::OnceLock<Runtime>,
 }
 
 impl Ctx {
@@ -217,6 +219,7 @@ impl Ctx {
             executor: cli.executor.clone(),
             shim: cli.shim.clone(),
             format: cli.format,
+            launcher: std::sync::OnceLock::new(),
         })
     }
 
@@ -340,7 +343,11 @@ impl Ctx {
 
     /// VM을 띄우는 일(`create`의 기능 확인, `start`)에 쓰는 실행 코어. 실행기의 capability를 받아 둔다.
     fn launcher(&self) -> AppResult<Runtime> {
-        self.runtime_with(Arc::new(ProcessExecutor::new(self.executor()?)?), true)
+        if let Some(rt) = self.launcher.get() {
+            return Ok(rt.clone());
+        }
+        let rt = self.runtime_with(Arc::new(ProcessExecutor::new(self.executor()?)?), true)?;
+        Ok(self.launcher.get_or_init(|| rt).clone())
     }
 
     /// 쓸 실행기: `--executor` > 설치한 기본 실행기 > PATH의 `sbx-executor`.

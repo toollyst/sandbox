@@ -45,7 +45,7 @@ pub fn firecracker_config(
             .map(str::to_owned)
             .ok_or_else(|| format!("{what} path is not UTF-8: {}", p.display()))
     };
-    let mut boot_args = String::from("console=ttyS0 reboot=k panic=1");
+    let mut boot_args = String::from("console=ttyS0 quiet reboot=k panic=1");
     if x86_64 {
         boot_args.push_str(" pci=off");
     }
@@ -122,7 +122,7 @@ mod tests {
         assert_eq!(c["boot-source"]["initrd_path"], "/c/initramfs");
         assert_eq!(
             c["boot-source"]["boot_args"],
-            "console=ttyS0 reboot=k panic=1 sbx.hostname=box-1 sbx.halt=reboot"
+            "console=ttyS0 quiet reboot=k panic=1 sbx.hostname=box-1 sbx.halt=reboot"
         );
         let d = c["drives"].as_array().unwrap();
         assert_eq!(

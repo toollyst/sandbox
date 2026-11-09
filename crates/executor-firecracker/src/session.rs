@@ -19,7 +19,7 @@ pub const VMM: &str = "vmm";
 pub const READY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// 프로세스 상태를 다시 보는 간격.
-const POLL: Duration = Duration::from_millis(10);
+const POLL: Duration = Duration::from_millis(2);
 
 /// 이 실행기가 알리는 기능.
 pub fn capabilities_value() -> Capabilities {

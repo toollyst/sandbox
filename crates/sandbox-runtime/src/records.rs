@@ -4,7 +4,7 @@
 //! <data_dir>/sandboxes/<id>/
 //!   spec.json          SandboxSpec (생성 시 고정)
 //!   state.json         StateRecord
-//!   scratch.img        쓰기 가능 디스크 (생성 시 빈 sparse 파일. 게스트가 첫 부팅 때 포맷한다)
+//!   scratch.img        쓰기 가능 디스크 (생성 시 0으로 채운 새 sparse 파일. 게스트가 첫 부팅 때 포맷하며 0이라고 믿는다)
 //!   owner.lock         VM을 띄운 프로세스가 실행 중 배타 잠금을 쥔다
 //!   logs/              로그. 샌드박스를 지우면 함께 지워진다
 //!     executor.log     실행기의 진단 출력
@@ -14,7 +14,9 @@
 //! - 만들기는 임시 디렉터리에 다 쓴 뒤 rename한다. 그래서 반쯤 만든 샌드박스는 목록에 나오지 않는다.
 //! - 지우기는 먼저 ID가 아닌 이름으로 rename하고 지운다. 그래서 반쯤 지운 샌드박스도 목록에 나오지 않고,
 //!   읽는 도중에 지워지면 없는 것으로 본다. 지우다 프로세스가 죽으면 그 이름의 디렉터리가 남는다(목록에는 없다).
-//! - 상태 쓰기는 임시 파일에 쓴 뒤 rename한다.
+//! - 상태 쓰기는 임시 파일에 쓴 뒤 rename한다. rename 전에 `fsync(2)`한다([`sync`]). macOS에서는 `F_FULLFSYNC`
+//!   (디스크 캐시까지 비우기, 한 번에 약 4ms)를 하지 않는다: 기록은 커널이 죽어도 남지만, 전원이 나가는 경우까지는
+//!   보장하지 않는다. 실행 상태는 전원과 함께 어차피 사라지고, 한 번 실행에 기록을 네 번 쓰기 때문이다.
 //! - 게스트 연결 소켓은 여기 두지 않는다. Unix 소켓 경로 길이 제한(약 100바이트) 때문에 짧은 `socket_dir`에 두고,
 //!   실행 중일 때 그 경로를 `state.json`의 `control`에 적는다. 다른 프로세스는 적힌 경로로 연결한다.
 //! - **소유자**: `running` 기록은 `owner.lock`을 누군가 쥐고 있을 때만 믿는다. 잠금이 풀려 있으면
@@ -121,6 +123,14 @@ fn temp(dir: &Path, name: &str) -> PathBuf {
     ))
 }
 
+/// 파일 내용을 커널 밖(장치)으로 내보낸다. macOS에서는 `fsync(2)`만 한다(모듈 문서). 다른 곳은 `sync_all`.
+fn sync(f: &File) -> io::Result<()> {
+    #[cfg(target_vendor = "apple")]
+    return rustix::fs::fsync(f).map_err(io::Error::from);
+    #[cfg(not(target_vendor = "apple"))]
+    f.sync_all()
+}
+
 fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let dir = path.parent().unwrap_or(Path::new("."));
     let name = path
@@ -131,7 +141,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let r = (|| {
         let mut f = File::create(&t)?;
         f.write_all(bytes)?;
-        f.sync_all()?;
+        sync(&f)?;
         fs::rename(&t, path)
     })();
     if r.is_err() {

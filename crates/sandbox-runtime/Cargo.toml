@@ -19,3 +19,7 @@ sandbox-store.workspace = true
 
 [dev-dependencies]
 executor-fake.workspace = true
+
+# macOS의 fsync(2) (records::sync). std의 sync_all은 F_FULLFSYNC다.
+[target.'cfg(target_vendor = "apple")'.dependencies]
+rustix = { version = "1", default-features = false, features = ["fs", "std"] }

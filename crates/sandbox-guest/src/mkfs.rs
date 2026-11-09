@@ -7,7 +7,9 @@
 //! - 블록 4096바이트, 그룹당 32768블록, inode 256바이트, 16KiB당 inode 하나.
 //! - 기능: `filetype`(overlay가 요구하는 d_type), `ext_attr`(overlay가 쓰는 xattr), `sparse_super`, `large_file`.
 //! - 저널이 없다. VM이 강제로 꺼지면 다음 마운트 때 정리되지 않은 상태일 수 있다. 정상 종료는 sync 뒤에 끈다.
-//! - inode 테이블을 포함한 모든 메타데이터를 직접 쓴다. 디스크가 0으로 채워져 있다고 가정하지 않는다.
+//! - 메타데이터를 직접 쓴다. inode 테이블은 [`Disk::Zeroed`]면 쓰지 않는다(이미 0이다). 1GiB면 16MiB를
+//!   쓰지 않으므로 첫 부팅이 빨라지고, 호스트의 sparse 파일도 그만큼 작게 남는다. [`Disk::Unknown`]이면 모두 쓴다.
+//!   어느 쪽이든 결과 바이트는 같다.
 //! - 같은 크기와 `uuid`면 같은 바이트가 나온다. 시각은 모두 0이다.
 //! - 루트(inode 2, 0755)와 `lost+found`(inode 11, 0700)만 있다.
 
@@ -259,8 +261,22 @@ fn write_at(w: &mut (impl Write + Seek), block: u64, offset: u64, data: &[u8]) -
     w.write_all(data)
 }
 
+/// 포맷할 장치의 지금 내용.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Disk {
+    /// 모두 0이다 (sbx가 새로 만든 scratch: 실행기 규약의 약속).
+    Zeroed,
+    /// 모른다. 0이어야 할 곳도 모두 쓴다.
+    Unknown,
+}
+
 /// `bytes` 크기의 장치에 빈 ext2를 만든다. 쓴 파일 시스템 크기(바이트)를 돌려준다.
-pub fn format(w: &mut (impl Write + Seek), bytes: u64, uuid: [u8; 16]) -> io::Result<u64> {
+pub fn format(
+    w: &mut (impl Write + Seek),
+    bytes: u64,
+    uuid: [u8; 16],
+    disk: Disk,
+) -> io::Result<u64> {
     let l = Layout::plan(bytes)?;
     let gdt = group_descriptors(&l);
     let zero = vec![0u8; BLOCK as usize];
@@ -283,8 +299,10 @@ pub fn format(w: &mut (impl Write + Seek), bytes: u64, uuid: [u8; 16]) -> io::Re
             0,
             &bitmap(used_inodes, l.inodes_per_group),
         )?;
-        for b in 0..l.itable_blocks {
-            write_at(w, gr.inode_table + b, 0, &zero)?;
+        if disk == Disk::Unknown {
+            for b in 0..l.itable_blocks {
+                write_at(w, gr.inode_table + b, 0, &zero)?;
+            }
         }
     }
     let itable = l.groups[0].inode_table;

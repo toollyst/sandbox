@@ -46,6 +46,8 @@
 //! - 커널 기능: virtio-blk, vsock(virtio), erofs, ext4(ext2 형식 포함), overlay, devtmpfs, proc, sysfs, tmpfs, devpts(Unix98 pty), 루프백 네트워크.
 //!   커널은 4.7 이상이어야 한다(`newinstance`로 마운트한 `/dev/pts`를 `/dev/ptmx`가 찾는다).
 //! - 디스크는 [`VmSpec::disks`] 순서대로 붙인다. 게스트에서 첫째가 `/dev/vda`(rootfs, 읽기 전용), 둘째가 `/dev/vdb`(scratch)다.
+//!   디스크 파일은 받은 그대로 붙인다(내용을 바꾸지 않는다). 게스트는 처음 보는 scratch가 0으로 채워져 있다고 믿는다
+//!   (sbx가 새 sparse 파일로 만든다).
 //! - 커널 명령줄에 `sbx.hostname=<hostname>`과 `sbx.halt=poweroff|reboot`을 넣는다. `sbx.halt`는 그 VMM에서
 //!   게스트가 VM을 끝내는 방법이다(Firecracker처럼 재시작 요청을 VM 종료로 다루면 `reboot`).
 //! - 공유 폴더([`VmSpec::shares`])는 virtio-fs 장치 하나씩으로 붙이고, 그 태그를 [`ShareSpec::tag`]로 한다.

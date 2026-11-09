@@ -90,7 +90,8 @@ fn prepare_scratch() -> io::Result<()> {
         let size = dev.seek(SeekFrom::End(0))?;
         let mut uuid = [0u8; 16];
         fs::File::open("/dev/urandom")?.read_exact(&mut uuid)?;
-        mkfs::format(&mut dev, size, uuid).map_err(ctx("format scratch"))?;
+        // 포맷되지 않은 scratch는 sbx가 새로 만든 0으로 채운 파일이다(실행기 규약의 약속).
+        mkfs::format(&mut dev, size, uuid, mkfs::Disk::Zeroed).map_err(ctx("format scratch"))?;
         dev.sync_all()?;
     }
     drop(dev);
