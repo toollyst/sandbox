@@ -153,7 +153,7 @@ writable disk, so `start` picks up where it left off.
 and prepares on first use (`--pull=missing|always|never`).
 
 **Scripting.** `--format json` on `ps`, `inspect`, `images`, `executor ls`, and `executor search` gives machine-readable
-output.
+output. `ps -q` and `images -q` print only IDs, so `sbx rm -f $(sbx ps -aq)` cleans up everything.
 
 ## Use it from AI agents (MCP)
 

@@ -123,7 +123,7 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
             rootfs_format,
             image,
         } => ctx.prepare(*rootfs_format, image).await,
-        Command::Images => ctx.images(),
+        Command::Images { quiet } => ctx.images(*quiet),
         Command::Rmi { force, images } => ctx.rmi(*force, images).await,
         Command::Run { attach, args } => ctx.run_sandbox(attach, args).await,
         Command::Create(a) => {
@@ -163,7 +163,7 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
             detach_keys,
             id,
         } => ctx.attach_cmd(*no_stdin, *sig_proxy, detach_keys, id).await,
-        Command::Ps { all } => ctx.ps(*all).await,
+        Command::Ps { all, quiet } => ctx.ps(*all, *quiet).await,
         Command::Inspect { id } => ctx.inspect(id).await,
         // `mcp`는 이 위(`sandbox_cli::run`)에서 [`crate::mcp`]로 간다.
         Command::Mcp => Err(msg("internal: mcp is served by sandbox_cli::run")),
@@ -416,8 +416,14 @@ impl Ctx {
         Ok(0)
     }
 
-    fn images(&self) -> AppResult<u8> {
+    fn images(&self, quiet: bool) -> AppResult<u8> {
         let images = self.manager()?.images()?;
+        if quiet {
+            for i in &images {
+                println!("{}", short(&i.record.id));
+            }
+            return Ok(0);
+        }
         if self.json() {
             let list: Vec<_> = images
                 .iter()
@@ -847,7 +853,7 @@ impl Ctx {
         .await
     }
 
-    async fn ps(&self, all: bool) -> AppResult<u8> {
+    async fn ps(&self, all: bool, quiet: bool) -> AppResult<u8> {
         let list: Vec<SandboxInfo> = self
             .runtime()?
             .list()
@@ -855,6 +861,12 @@ impl Ctx {
             .into_iter()
             .filter(|s| all || s.state == State::Running)
             .collect();
+        if quiet {
+            for s in &list {
+                println!("{}", short_id(&s.id));
+            }
+            return Ok(0);
+        }
         if self.json() {
             let v: Vec<_> = list.iter().map(info_json).collect();
             println!("{}", serde_json::to_string_pretty(&v)?);

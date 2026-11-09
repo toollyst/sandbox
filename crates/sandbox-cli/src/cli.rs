@@ -23,7 +23,9 @@ pub enum Format {
 #[command(
     name = "sbx",
     version,
-    about = "Docker-style sandboxes, each in its own microVM"
+    about = "Docker-style sandboxes, each in its own microVM",
+    // 모든 명령에 붙는 옵션은 명령마다의 옵션과 섞이지 않게 따로 모은다(Docker의 Global Options와 같다).
+    next_help_heading = "Global Options"
 )]
 pub struct Cli {
     /// Directory for sandbox state.
@@ -76,7 +78,11 @@ pub enum Command {
         image: String,
     },
     #[command(about = about("images"))]
-    Images,
+    Images {
+        /// Only show image IDs, one per image.
+        #[arg(short, long)]
+        quiet: bool,
+    },
     #[command(about = about("rmi"))]
     Rmi {
         /// Also remove images used by stopped sandboxes or with several references. Never removes images of running sandboxes.
@@ -167,6 +173,9 @@ pub enum Command {
         /// Show stopped sandboxes too.
         #[arg(short, long)]
         all: bool,
+        /// Only show sandbox IDs (e.g. `sbx rm -f $(sbx ps -aq)`).
+        #[arg(short, long)]
+        quiet: bool,
     },
     #[command(about = about("inspect"))]
     Inspect {

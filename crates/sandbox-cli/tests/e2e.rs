@@ -509,6 +509,19 @@ mod unix {
                 .trim_end()
                 .ends_with(" web")
         );
+        // -q는 ID만(Docker처럼 앞 12자). 실행 중인 것이 없으면 -a 없이는 비어 있다.
+        assert_eq!(
+            text(&e.sbx(&["ps", "-aq"]).stdout),
+            format!("{}\n", &id[..12])
+        );
+        assert_eq!(text(&e.sbx(&["ps", "-q"]).stdout), "");
+        let o = e.sbx(&["images", "-q"]);
+        assert_eq!(
+            text(&o.stdout),
+            format!("{}\n", "e2".repeat(6)),
+            "{}",
+            text(&o.stderr)
+        );
 
         // 같은 이름은 거절된다. run이면 125다.
         let o = e.sbx(&["create", "--name", "web", IMAGE]);
