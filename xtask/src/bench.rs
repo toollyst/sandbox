@@ -1,7 +1,7 @@
 //! `bench`: `sbx` 실행 파일로 시간을 잰다. 누구나 자기 환경에서 같은 숫자를 다시 낼 수 있게 한다.
 //!
 //! ```text
-//! cargo xtask bench [--sbx <파일>] [--image <참조>] [--runs <N>] [--parallel <K>]
+//! cargo xtask bench [--sbx <파일>] [--image <참조>] [--runs <N>] [--parallel <K>] [--docker]
 //! ```
 //!
 //! - `--sbx`: 기본은 `target/release/sbx` (`cargo xtask dist`가 만든 것). 실행기, 디렉터리 같은 설정은 환경 변수
@@ -16,6 +16,10 @@
 //! | exec | `exec <ID> true` × N | 실행 중인 샌드박스 안의 명령 하나 |
 //! | parallel | `run --rm <이미지> true` K개 동시 | K개가 모두 끝날 때까지 |
 //!
+//! `--docker`: 같은 머신에서 같은 일을 `docker run --rm`, `docker exec`로도 잰다(PATH의 `docker`). 머신의 부하가
+//! 한쪽에만 몰리지 않게 run은 sbx와 docker를 한 번씩 번갈아 잰다. Docker는 컨테이너(호스트나 Docker의 VM과 커널을
+//! 나눠 쓴다)이고 sbx는 샌드박스마다 VM이다. 격리 수준이 다르다는 것을 표에 함께 적는다.
+//!
 //! 결과는 Markdown 표로 표준 출력에 쓴다. 실패한 명령이 있으면 그 출력과 함께 멈춘다.
 
 use std::path::{Path, PathBuf};
@@ -27,6 +31,7 @@ struct Options {
     image: String,
     runs: usize,
     parallel: usize,
+    docker: bool,
 }
 
 fn parse(root: &Path, args: &[String]) -> Result<Options, String> {
@@ -35,6 +40,7 @@ fn parse(root: &Path, args: &[String]) -> Result<Options, String> {
         image: "alpine:3.20".into(),
         runs: 20,
         parallel: 10,
+        docker: false,
     };
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -42,6 +48,7 @@ fn parse(root: &Path, args: &[String]) -> Result<Options, String> {
         match a.as_str() {
             "--sbx" => o.sbx = value()?.into(),
             "--image" => o.image = value()?,
+            "--docker" => o.docker = true,
             "--runs" => o.runs = value()?.parse().map_err(|_| "--runs: not a number")?,
             "--parallel" => {
                 o.parallel = value()?.parse().map_err(|_| "--parallel: not a number")?
@@ -55,15 +62,16 @@ fn parse(root: &Path, args: &[String]) -> Result<Options, String> {
     Ok(o)
 }
 
-fn sbx(o: &Options, args: &[&str]) -> Result<Output, String> {
-    let out = Command::new(&o.sbx)
+fn exec(program: &Path, args: &[&str]) -> Result<Output, String> {
+    let out = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
         .output()
-        .map_err(|e| format!("cannot run {}: {e}", o.sbx.display()))?;
+        .map_err(|e| format!("cannot run {}: {e}", program.display()))?;
     if !out.status.success() {
         return Err(format!(
-            "sbx {} failed ({}): {}",
+            "{} {} failed ({}): {}",
+            program.display(),
             args.join(" "),
             out.status,
             String::from_utf8_lossy(&out.stderr).trim()
@@ -72,9 +80,45 @@ fn sbx(o: &Options, args: &[&str]) -> Result<Output, String> {
     Ok(out)
 }
 
-fn timed(o: &Options, args: &[&str]) -> Result<Duration, String> {
+fn sbx(o: &Options, args: &[&str]) -> Result<Output, String> {
+    exec(&o.sbx, args)
+}
+
+fn timed_with(program: &Path, args: &[&str]) -> Result<Duration, String> {
     let t = Instant::now();
-    sbx(o, args)?;
+    exec(program, args)?;
+    Ok(t.elapsed())
+}
+
+fn timed(o: &Options, args: &[&str]) -> Result<Duration, String> {
+    timed_with(&o.sbx, args)
+}
+
+const DOCKER: &str = "docker";
+
+/// `n`개를 동시에 띄워 모두 끝날 때까지.
+fn all_at_once(program: &Path, args: &[&str], n: usize) -> Result<Duration, String> {
+    let t = Instant::now();
+    let children = (0..n)
+        .map(|_| {
+            Command::new(program)
+                .args(args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| format!("cannot run {}: {e}", program.display()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    for c in children {
+        let out = c.wait_with_output().map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            return Err(format!(
+                "parallel run failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+    }
     Ok(t.elapsed())
 }
 
@@ -127,13 +171,30 @@ pub fn run(root: &Path, args: &[String]) -> Result<String, String> {
     sbx(&o, &["prepare", img])?;
     // 한 번 돌려서 캐시(게스트 init 꺼내기 등)를 데운다.
     sbx(&o, &["run", "--rm", img, "true"])?;
+    let docker = Path::new(DOCKER);
+    if o.docker {
+        eprintln!("bench: docker pull {img}");
+        exec(docker, &["pull", "-q", img])?;
+        exec(docker, &["run", "--rm", img, "true"])?;
+    }
 
     let mut rows = Vec::new();
     eprintln!("bench: run x{}", o.runs);
-    let samples = (0..o.runs)
-        .map(|_| timed(&o, &["run", "--rm", img, "true"]))
-        .collect::<Result<Vec<_>, _>>()?;
+    let (mut samples, mut docker_samples) = (Vec::new(), Vec::new());
+    for _ in 0..o.runs {
+        samples.push(timed(&o, &["run", "--rm", img, "true"])?);
+        if o.docker {
+            docker_samples.push(timed_with(docker, &["run", "--rm", img, "true"])?);
+        }
+    }
     rows.push(row("run", &format!("`sbx run --rm {img} true`"), samples));
+    if o.docker {
+        rows.push(row(
+            "docker run",
+            &format!("`docker run --rm {img} true` (container)"),
+            docker_samples,
+        ));
+    }
 
     eprintln!("bench: exec x{}", o.runs);
     let out = sbx(&o, &["run", "-d", img, "sleep", "600"])?;
@@ -146,37 +207,41 @@ pub fn run(root: &Path, args: &[String]) -> Result<String, String> {
         .collect::<Result<Vec<_>, _>>()?;
     rows.push(row("exec", "`sbx exec <ID> true`", samples));
     drop(d);
+    if o.docker {
+        let out = exec(docker, &["run", "-d", img, "sleep", "600"])?;
+        let id = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+        let samples = (0..o.runs)
+            .map(|_| timed_with(docker, &["exec", &id, "true"]))
+            .collect::<Result<Vec<_>, _>>();
+        let _ = exec(docker, &["rm", "-f", &id]);
+        rows.push(row(
+            "docker exec",
+            "`docker exec <ID> true` (container)",
+            samples?,
+        ));
+    }
 
     eprintln!("bench: {} in parallel", o.parallel);
-    let t = Instant::now();
-    let children = (0..o.parallel)
-        .map(|_| {
-            Command::new(&o.sbx)
-                .args(["run", "--rm", img, "true"])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::piped())
-                .spawn()
-                .map_err(|e| format!("cannot run {}: {e}", o.sbx.display()))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    for c in children {
-        let out = c.wait_with_output().map_err(|e| e.to_string())?;
-        if !out.status.success() {
-            return Err(format!(
-                "parallel run failed: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
-        }
-    }
+    let t = all_at_once(&o.sbx, &["run", "--rm", img, "true"], o.parallel)?;
     rows.push(row(
         "parallel",
         &format!(
             "{} × `sbx run --rm {img} true` at once (all done)",
             o.parallel
         ),
-        vec![t.elapsed()],
+        vec![t],
     ));
+    if o.docker {
+        let t = all_at_once(docker, &["run", "--rm", img, "true"], o.parallel)?;
+        rows.push(row(
+            "docker parallel",
+            &format!(
+                "{} × `docker run --rm {img} true` at once (container)",
+                o.parallel
+            ),
+            vec![t],
+        ));
+    }
 
     let host = Command::new("uname")
         .arg("-srm")
