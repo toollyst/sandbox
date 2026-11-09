@@ -27,7 +27,7 @@
 //!
 //! **수명 (attached)**: VM을 띄운 프로세스가 그 VM을 소유한다(`owner.lock`). 소유 프로세스가 끝나면 실행기 규약에 따라
 //! VM도 끝나고, 다른 프로세스는 그 샌드박스를 `stopped`로 본다. 다른 프로세스도 같은 data_dir로 exec, cp, stop을 할 수 있다.
-//! detached(소유 프로세스와 상관없이 사는 VM)는 `sandbox-shim`이 맡는다(로드맵 M3).
+//! 수명은 시작할 때 정한다. 시작한 프로세스와 상관없이 남기려면(detached) `sandbox-shim` 프로세스가 대신 시작해 소유한다.
 //!
 //! 모든 블로킹 입출력은 별도 스레드에서 한다([`sandbox_model::blocking`]). 특정 비동기 런타임에 의존하지 않는다.
 //!
@@ -350,6 +350,12 @@ impl Sandbox {
     /// 얻은 시점의 기록.
     pub fn info(&self) -> &SandboxInfo {
         &self.info
+    }
+
+    /// 로그 디렉터리. 호출자도 여기에 로그를 둘 수 있다(`executor.log`는 실행 코어가 쓴다).
+    /// 샌드박스를 지우면 함께 지워진다. 아직 없을 수 있다.
+    pub fn log_dir(&self) -> PathBuf {
+        self.rt.paths(&self.info.id).log_dir()
     }
 
     fn fresh(&self) -> Result<SandboxInfo, RuntimeError> {

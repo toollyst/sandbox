@@ -6,7 +6,9 @@
 //!   state.json         StateRecord
 //!   scratch.img        쓰기 가능 디스크 (생성 시 빈 sparse 파일. 게스트가 첫 부팅 때 포맷한다)
 //!   owner.lock         VM을 띄운 프로세스가 실행 중 배타 잠금을 쥔다
-//!   logs/executor.log  실행기의 진단 출력
+//!   logs/              로그. 샌드박스를 지우면 함께 지워진다
+//!     executor.log     실행기의 진단 출력
+//!     (그 밖)          호출자가 쓰는 로그 (예: `sandbox-shim`의 기본 프로세스 출력)
 //! ```
 //!
 //! - 만들기는 임시 디렉터리에 다 쓴 뒤 rename한다. 그래서 반쯤 만든 샌드박스는 목록에 나오지 않는다.
@@ -94,7 +96,12 @@ impl Paths {
     }
     /// `logs/executor.log`.
     pub fn executor_log(&self) -> PathBuf {
-        self.dir.join("logs").join("executor.log")
+        self.log_dir().join("executor.log")
+    }
+
+    /// `logs/`.
+    pub fn log_dir(&self) -> PathBuf {
+        self.dir.join("logs")
     }
 }
 
