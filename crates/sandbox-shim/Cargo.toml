@@ -10,8 +10,11 @@ workspace = true
 
 [dependencies]
 sandbox-model.workspace = true
-sandbox-proto.workspace = true
 sandbox-executor.workspace = true
-sandbox-store.workspace = true
 sandbox-runtime.workspace = true
 executor-process.workspace = true
+tokio = { workspace = true, features = ["signal"] }
+
+[[bin]]
+name = "sbx-shim"
+path = "src/bin/sbx-shim.rs"
