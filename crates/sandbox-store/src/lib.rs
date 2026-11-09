@@ -10,10 +10,12 @@
 //! ```text
 //! <cache_dir>/
 //!   blobs/sha256/<hex>          레이어 (내용 주소, digest 검증 후에만 놓인다)
+//!   blobs/.lock                 blob 정리와 pull 표시 생성의 상호 배제
 //!   images/<hex>/image.json     이미지 기록 ([`ImageRecord`])
 //!   images/<hex>/rootfs.<형식>  형식별 읽기 전용 rootfs (prepare한 것만)
 //!   images/<hex>/.lock          사용 중 보호용 잠금 파일
 //!   guest/<version>/<arch>/     게스트 기반 이미지 (커널, 게스트 init)
+//!   pulls/<이름>                진행 중인 pull이 쓸 레이어 목록 (pull이 공유 잠금을 쥔다)
 //!   refs.json                   정규화된 참조 → 이미지 ID
 //!   tmp/                        prepare 작업 공간 (끝나면 지운다)
 //!   .lock                       refs.json 갱신용 잠금
@@ -24,6 +26,9 @@
 //! **사용 중 보호**: 샌드박스가 실행 중인 동안 실행기 프로세스를 붙잡고 있는 쪽이
 //! [`Store::lease`]로 이미지 잠금 파일에 공유 잠금을 건다. 이미지를 지우는 쪽은 배타 잠금을
 //! 잡아야 지울 수 있다. 잠금이 cache_dir에 걸리므로 다른 data_dir의 샌드박스도 보호된다.
+//!
+//! **blob 보호**: blob은 이미지 기록이나 진행 중인 pull 표시가 가리키는 동안 지워지지 않는다.
+//! 규칙과 순서는 [`write::claim_blobs`]와 [`write::collect_blobs`]에 있다.
 //!
 //! - 의존: `sandbox-model`
 
@@ -130,7 +135,7 @@ impl CacheLayout {
 
     /// blob 하나.
     pub fn blob(&self, digest: &Digest) -> PathBuf {
-        self.root.join("blobs").join("sha256").join(digest.hex())
+        self.blobs_dir().join(digest.hex())
     }
 
     /// 이미지 디렉터리.
@@ -177,6 +182,21 @@ impl CacheLayout {
     /// refs.json 갱신용 잠금 파일.
     pub fn cache_lock(&self) -> PathBuf {
         self.root.join(".lock")
+    }
+
+    /// blob 디렉터리.
+    pub fn blobs_dir(&self) -> PathBuf {
+        self.root.join("blobs").join("sha256")
+    }
+
+    /// blob 정리와 pull 표시 생성을 서로 배제하는 잠금 파일.
+    pub fn blobs_lock(&self) -> PathBuf {
+        self.root.join("blobs").join(".lock")
+    }
+
+    /// 진행 중인 pull 표시들.
+    pub fn pulls_dir(&self) -> PathBuf {
+        self.root.join("pulls")
     }
 }
 

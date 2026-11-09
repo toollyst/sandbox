@@ -83,7 +83,7 @@ pub struct BlobWriter {
 impl BlobWriter {
     /// blobs 디렉터리에 임시 파일을 만든다.
     pub fn create(layout: &CacheLayout) -> io::Result<Self> {
-        let dir = layout.root().join("blobs").join("sha256");
+        let dir = layout.blobs_dir();
         fs::create_dir_all(&dir)?;
         let temp = temp_path(&dir, "blob");
         let file = File::create(&temp)?;
@@ -248,6 +248,127 @@ pub fn remove_image(
     fs::remove_dir(&dir)
 }
 
+fn open_lock_file(path: &Path) -> io::Result<File> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    OpenOptions::new().create(true).append(true).open(path)
+}
+
+/// 진행 중인 pull이 쓸 blob 목록. 살아 있는 동안 [`collect_blobs`]가 이 blob들을 지우지 않는다.
+#[derive(Debug)]
+pub struct BlobClaim {
+    file: Option<File>,
+    path: PathBuf,
+}
+
+impl Drop for BlobClaim {
+    fn drop(&mut self) {
+        // 잠금을 먼저 놓고 지운다. 그 사이 정리가 표시를 오래된 것으로 보고 지워도 된다.
+        // 그때는 이미 이미지 기록이 blob을 가리키고 있다.
+        drop(self.file.take());
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+/// pull을 시작할 때 부른다. 돌려받은 표시를 이미지 기록을 쓴 뒤까지 쥐고 있어야 한다.
+///
+/// 순서가 보장하는 것: blob이 있는지 확인하는 일은 이 함수가 끝난 뒤에 한다. 그러면 정리는
+/// (1) 표시가 생기기 전에 끝났거나(그러면 blob이 없다고 보고 다시 받는다), (2) 표시를 보고 그 blob을 남긴다.
+/// 표시를 쓰고 공유 잠금을 거는 동안 `blobs/.lock`을 공유로 쥐므로 정리가 그 사이에 끼지 않는다.
+/// 다운로드 동안에는 `blobs/.lock`을 쥐지 않는다. 그래서 오래 걸리는 pull이 `rmi`를 막지 않는다.
+///
+/// 프로세스가 죽으면 표시 파일이 남지만 잠금은 풀린다. 정리가 그런 표시를 지운다.
+pub fn claim_blobs(layout: &CacheLayout, blobs: &[Digest]) -> io::Result<BlobClaim> {
+    let gate = open_lock_file(&layout.blobs_lock())?;
+    gate.lock_shared()?;
+    let dir = layout.pulls_dir();
+    fs::create_dir_all(&dir)?;
+    let path = temp_path(&dir, "pull");
+    let json = serde_json::to_vec(blobs).map_err(io::Error::other)?;
+    // Windows에서는 공유 잠금이 쓰기를 막으므로 먼저 다 쓰고 잠근다.
+    fs::write(&path, &json)?;
+    let file = File::open(&path)?;
+    file.lock_shared()?;
+    drop(gate);
+    Ok(BlobClaim {
+        file: Some(file),
+        path,
+    })
+}
+
+/// 어떤 이미지 기록도, 살아 있는 pull 표시도 가리키지 않는 blob을 지운다. 지운 blob을 돌려준다.
+///
+/// - `blobs/.lock`을 배타로 쥔 채 참조를 모으고 지운다.
+/// - 이미지 기록을 하나라도 읽지 못하면 아무것도 지우지 않고 오류를 낸다. 그 기록이 가리키는 blob을 모르기 때문이다.
+/// - 배타 잠금을 잡을 수 있는 pull 표시는 죽은 pull이 남긴 것이다. 지우고 참조로 세지 않는다.
+/// - 이름이 `.`으로 시작하는 파일(받는 중인 임시 파일)은 건드리지 않는다.
+/// - prepare 중인 이미지는 이미지 기록이 있으므로 그 blob이 남는다.
+pub fn collect_blobs(layout: &CacheLayout) -> Result<Vec<Digest>, StoreError> {
+    let gate = open_lock_file(&layout.blobs_lock())?;
+    gate.lock()?;
+
+    let mut keep = std::collections::BTreeSet::new();
+    for record in Store::open(layout.root()).images()? {
+        keep.extend(record.layers.into_iter().map(|l| l.digest));
+    }
+    if let Some(entries) = read_dir_if_exists(&layout.pulls_dir())? {
+        for entry in entries {
+            let path = entry?.path();
+            let file = match File::open(&path) {
+                Ok(f) => f,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e.into()),
+            };
+            match file.try_lock() {
+                Ok(()) => {
+                    drop(file);
+                    let _ = fs::remove_file(&path);
+                }
+                Err(TryLockError::WouldBlock) => {
+                    let bytes = fs::read(&path)?;
+                    let claimed: Vec<Digest> =
+                        serde_json::from_slice(&bytes).map_err(|e| StoreError::Corrupt {
+                            path: path.clone(),
+                            reason: e.to_string(),
+                        })?;
+                    keep.extend(claimed);
+                }
+                Err(TryLockError::Error(e)) => return Err(e.into()),
+            }
+        }
+    }
+
+    let mut removed = Vec::new();
+    if let Some(entries) = read_dir_if_exists(&layout.blobs_dir())? {
+        for entry in entries {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with('.') {
+                continue;
+            }
+            let Ok(digest) = Digest::parse(&format!("sha256:{name}")) else {
+                continue;
+            };
+            if !keep.contains(&digest) {
+                fs::remove_file(entry.path())?;
+                removed.push(digest);
+            }
+        }
+    }
+    removed.sort();
+    Ok(removed)
+}
+
+fn read_dir_if_exists(dir: &Path) -> io::Result<Option<fs::ReadDir>> {
+    match fs::read_dir(dir) {
+        Ok(e) => Ok(Some(e)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,7 +413,7 @@ mod tests {
         assert_eq!(fs::read(layout.blob(&good)).unwrap(), b"layer");
 
         // 임시 파일이 남지 않는다.
-        assert_eq!(fs::read_dir(root.join("blobs/sha256")).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(layout.blobs_dir()).unwrap().count(), 1);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -379,6 +500,110 @@ mod tests {
             store.lease(&id, RootfsFormat::Erofs),
             Err(LeaseError::ImageNotFound)
         ));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn put_blob(layout: &CacheLayout, data: &[u8]) -> Digest {
+        let d = crate::digest::sha256(data);
+        let mut w = BlobWriter::create(layout).unwrap();
+        w.write_all(data).unwrap();
+        w.commit(layout, &d).unwrap();
+        d
+    }
+
+    fn record_with(layers: &[&Digest]) -> ImageRecord {
+        use sandbox_model::{Arch, Compression, ImageConfig, Layer};
+        ImageRecord {
+            id: image(),
+            reference: "docker.io/library/x:latest".into(),
+            source: "registry-1.docker.io/library/x".into(),
+            arch: Arch::X86_64,
+            config: ImageConfig::default(),
+            layers: layers
+                .iter()
+                .map(|d| Layer {
+                    digest: (*d).clone(),
+                    diff_id: (*d).clone(),
+                    size: 1,
+                    compression: Compression::None,
+                })
+                .collect(),
+            ignored_fields: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn collect_keeps_blobs_referenced_by_records() {
+        let root = temp_root("gc-records");
+        let layout = CacheLayout::new(&root);
+        let used = put_blob(&layout, b"used");
+        let unused = put_blob(&layout, b"unused");
+        write_image_record(&layout, &record_with(&[&used])).unwrap();
+
+        assert_eq!(collect_blobs(&layout).unwrap(), vec![unused.clone()]);
+        assert!(layout.blob(&used).is_file());
+        assert!(!layout.blob(&unused).exists());
+        assert!(collect_blobs(&layout).unwrap().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn live_claim_protects_blobs_until_dropped() {
+        let root = temp_root("gc-claim");
+        let layout = CacheLayout::new(&root);
+        let blob = put_blob(&layout, b"shared layer");
+
+        // pull이 "이미 있다"고 보고 받기를 건너뛴 상태. 아직 이미지 기록은 없다.
+        let claim = claim_blobs(&layout, std::slice::from_ref(&blob)).unwrap();
+        assert!(collect_blobs(&layout).unwrap().is_empty());
+        assert!(layout.blob(&blob).is_file());
+
+        drop(claim);
+        assert_eq!(fs::read_dir(layout.pulls_dir()).unwrap().count(), 0);
+        assert_eq!(collect_blobs(&layout).unwrap(), vec![blob]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn claims_from_dead_pulls_are_discarded() {
+        let root = temp_root("gc-stale");
+        let layout = CacheLayout::new(&root);
+        let blob = put_blob(&layout, b"orphan");
+        // 죽은 pull이 남긴 표시: 내용은 있지만 아무도 잠그지 않았다.
+        fs::create_dir_all(layout.pulls_dir()).unwrap();
+        let stale = layout.pulls_dir().join(".pull.tmp-1-0");
+        fs::write(&stale, serde_json::to_vec(&[&blob]).unwrap()).unwrap();
+
+        assert_eq!(collect_blobs(&layout).unwrap(), vec![blob]);
+        assert!(!stale.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn collect_leaves_partial_downloads_alone() {
+        let root = temp_root("gc-partial");
+        let layout = CacheLayout::new(&root);
+        let mut w = BlobWriter::create(&layout).unwrap();
+        w.write_all(b"half").unwrap();
+        assert!(collect_blobs(&layout).unwrap().is_empty());
+        assert_eq!(fs::read_dir(layout.blobs_dir()).unwrap().count(), 1);
+        drop(w);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn collect_refuses_when_a_record_is_unreadable() {
+        let root = temp_root("gc-corrupt");
+        let layout = CacheLayout::new(&root);
+        let blob = put_blob(&layout, b"maybe used");
+        create_image_dir(&layout, &image()).unwrap();
+        atomic_write(&layout.image_record(&image()), b"not json").unwrap();
+
+        assert!(matches!(
+            collect_blobs(&layout),
+            Err(StoreError::Corrupt { .. })
+        ));
+        assert!(layout.blob(&blob).is_file());
         fs::remove_dir_all(root).unwrap();
     }
 
