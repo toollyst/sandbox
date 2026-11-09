@@ -28,7 +28,7 @@ user-submitted code, CI jobs, plugins.
   difference is deliberate and [written down](crates/sandbox-cli/src/behavior.rs).
 - **Locked down by default.** There is no network device at all. Outbound access is opt-in, per `host:port`, enforced on
   the host, with names that resolve to private addresses refused. The image's root filesystem is read-only, and every
-  sandbox writes to its own disk.
+  sandbox writes to its own disk. The [threat model](SECURITY.md) spells out what is and isn't covered.
 - **Fast.** Images are converted once into an EROFS disk image. After that, starting a sandbox is just booting a VM.
 - **No daemon, no root.** `sbx` is a single binary. A detached sandbox is owned by a small per-sandbox `sbx-shim`
   process. On macOS no privileges are needed; on Linux you need access to `/dev/kvm`.
@@ -263,6 +263,18 @@ Pre-release. Done: the full Docker-style lifecycle, images, the egress allow lis
 repositories, image-provided kernels, the macOS/HVF end to end, and the release pipeline (static Linux binaries,
 executor bundles with a CI-built kernel, the official repository, and the installer). Next: the first release and
 a Linux aarch64 real-VM run. See the [roadmap](docs/roadmap.md).
+
+## Not Docker Sandboxes
+
+Docker's [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/) also ships a CLI named `sbx`. The two are unrelated.
+Docker Sandboxes is a Docker product for running coding agents in microVMs, used with a Docker account. This `sbx` is
+an independent open-source project: a Docker-compatible CLI (and MCP server) that runs any OCI image in its own
+microVM, with no account, daemon or root, and VMMs plugged in through an open executor protocol.
+
+## Contributing and security
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Please report vulnerabilities privately, as described in
+[SECURITY.md](SECURITY.md).
 
 ## License
 

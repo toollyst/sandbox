@@ -1,0 +1,34 @@
+name: Bug report
+description: Something doesn't work as documented, or differs from Docker without being listed.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: The command you ran, what you expected, and what you got (paste the output).
+      render: console
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: sbx version
+      description: Output of `sbx --version`.
+    validations:
+      required: true
+  - type: input
+    id: executor
+    attributes:
+      label: Executor
+      description: Output of `sbx executor ls`.
+  - type: input
+    id: host
+    attributes:
+      label: Host
+      description: OS, version and CPU, e.g. macOS 15.4 on M2, Ubuntu 24.04 x86_64 with KVM.
+    validations:
+      required: true
+  - type: markdown
+    attributes:
+      value: Security problems go through private reporting (see SECURITY.md), not here.

@@ -1,0 +1,11 @@
+name: Feature request
+description: Something sbx should do.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What you're trying to do
+      description: The problem first, then the solution you have in mind. If Docker does it, say how.
+    validations:
+      required: true
