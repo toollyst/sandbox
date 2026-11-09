@@ -30,9 +30,15 @@ pub fn installed(data_dir: &Path) -> Executors {
     Executors::new(data_dir.join("executors"))
 }
 
-/// 저장소 목록 파일.
+/// 공식 실행기 저장소. 묶음은 GitHub Releases에, `index.json`은 GitHub Pages에 있다(CI가 올린다).
+pub const OFFICIAL_REPOSITORY: (&str, &str) =
+    ("official", "https://toollyst.github.io/sandbox/executors/");
+
+/// 저장소 목록 파일. 파일이 없으면 공식 저장소 하나다(`sbx executor repo rm official`로 뺄 수 있다).
 pub fn sources(data_dir: &Path) -> Sources {
+    let (name, url) = OFFICIAL_REPOSITORY;
     Sources::new(data_dir.join("executor-repositories"))
+        .with_defaults(vec![Repository::new(name, url).expect("valid")])
 }
 
 /// `executor` 명령에 필요한 것.

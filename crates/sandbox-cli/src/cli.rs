@@ -217,7 +217,7 @@ pub enum ExecutorCommand {
         #[arg(value_name = "EXECUTOR")]
         spec: String,
     },
-    /// Manage executor repositories (earlier ones take precedence).
+    /// Manage executor repositories (earlier ones take precedence). The list starts with `official`.
     Repo {
         /// Subcommand.
         #[command(subcommand)]
@@ -237,7 +237,7 @@ pub enum RepoCommand {
         /// Repository URL (https, file, or http on localhost). The index is `<URL>/index.json`.
         url: String,
     },
-    /// Remove a repository from the list.
+    /// Remove a repository from the list (including `official`; the removal is kept).
     Rm {
         /// Repository name.
         name: String,

@@ -1021,7 +1021,17 @@ mod unix {
             c.env_remove("SBX_EXECUTOR");
             c.output().unwrap()
         };
-        // 저장소가 없으면 어떻게 더하는지 알려 준다.
+        // 처음에는 공식 저장소가 있다. 빼면 그대로 남고, 저장소가 없으면 어떻게 더하는지 알려 준다.
+        let o = without(&["executor", "repo", "ls"]);
+        assert!(
+            text(&o.stdout).contains("official  ") && text(&o.stdout).contains("https://"),
+            "{}",
+            text(&o.stdout)
+        );
+        let o = without(&["executor", "repo", "rm", "official"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = without(&["executor", "repo", "ls"]);
+        assert!(!text(&o.stdout).contains("official"), "{}", text(&o.stdout));
         let o = without(&["executor", "install", "fake"]);
         assert_ne!(o.status.code(), Some(0));
         assert!(

@@ -1,4 +1,8 @@
 //! 저장소 목록 파일. 한 줄에 `<이름> <URL>`, `#`로 시작하는 줄과 빈 줄은 무시한다. 줄 순서가 우선순위다.
+//!
+//! 파일이 없을 때의 목록(기본 저장소)은 쓰는 쪽이 [`Sources::with_defaults`]로 정한다. 이 크레이트는 어떤
+//! 저장소도 기본으로 두지 않는다. 목록을 바꾸면(더하기, 지우기) 그때의 목록 전체를 파일에 쓰므로, 기본
+//! 저장소를 지운 것도 그대로 남는다. 빈 파일은 빈 목록이다.
 
 use std::fs;
 use std::io;
@@ -47,12 +51,22 @@ impl Repository {
 #[derive(Debug, Clone)]
 pub struct Sources {
     path: PathBuf,
+    defaults: Vec<Repository>,
 }
 
 impl Sources {
     /// 이 파일을 쓴다. 없으면 빈 목록이다.
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+        Self {
+            path: path.into(),
+            defaults: Vec::new(),
+        }
+    }
+
+    /// 파일이 없을 때의 목록.
+    pub fn with_defaults(mut self, defaults: Vec<Repository>) -> Self {
+        self.defaults = defaults;
+        self
     }
 
     /// 파일 경로.
@@ -64,7 +78,7 @@ impl Sources {
     pub fn list(&self) -> Result<Vec<Repository>, RepoError> {
         let text = match fs::read_to_string(&self.path) {
             Ok(t) => t,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(self.defaults.clone()),
             Err(e) => return Err(e.into()),
         };
         let mut out: Vec<Repository> = Vec::new();
@@ -166,6 +180,28 @@ mod tests {
         for bad in ["", ".x", "a/b", "a b"] {
             assert!(Repository::new(bad, "https://a.b/").is_err(), "{bad}");
         }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn defaults_apply_until_the_list_is_changed() {
+        let dir = std::env::temp_dir().join(format!("sbx-exrepo-def-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let s = Sources::new(dir.join("repositories")).with_defaults(vec![
+            Repository::new("official", "https://o.example/").unwrap(),
+        ]);
+        let names = |s: &Sources| -> Vec<String> {
+            s.list().unwrap().into_iter().map(|r| r.name).collect()
+        };
+        assert_eq!(names(&s), ["official"]);
+        // 더하면 기본 저장소 뒤에 붙고, 파일에 둘 다 남는다.
+        s.add(Repository::new("mine", "https://m.example/").unwrap())
+            .unwrap();
+        assert_eq!(names(&s), ["official", "mine"]);
+        // 기본 저장소를 지운 것도 남는다. 모두 지우면 빈 목록이다(기본으로 돌아가지 않는다).
+        s.remove("official").unwrap();
+        s.remove("mine").unwrap();
+        assert!(names(&s).is_empty());
         fs::remove_dir_all(dir).unwrap();
     }
 }
