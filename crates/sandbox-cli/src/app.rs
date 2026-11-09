@@ -158,8 +158,8 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
             if *attach || *interactive {
                 ctx.start(*interactive, id).await
             } else {
-                let id = SandboxId::new(id)?;
-                ctx.start_detached(&id, false).await?;
+                let resolved = ctx.runtime()?.resolve(id).await?;
+                ctx.start_detached(&resolved, false).await?;
                 println!("{id}");
                 Ok(0)
             }
@@ -296,8 +296,7 @@ impl Ctx {
     /// `-f`면 샌드박스가 실행 중인 동안 새 출력을 기다린다.
     async fn logs(&self, follow: bool, id: &str) -> AppResult<u8> {
         let rt = self.runtime()?;
-        let id = SandboxId::new(id)?;
-        let sandbox = rt.get(&id).await?;
+        let sandbox = rt.find(id).await?;
         let path = sandbox.log_dir().join(MAIN_LOG);
         let mut reader = match LogReader::open(&path) {
             Ok(r) => Some(r),
@@ -314,7 +313,7 @@ impl Ctx {
                     };
                 }
             }
-            if !follow || rt.get(&id).await?.state() != State::Running {
+            if !follow || rt.get(sandbox.id()).await?.state() != State::Running {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -745,7 +744,7 @@ impl Ctx {
     /// `start -i`이면 열고, `start -i`일 때만 sbx의 입력을 보낸다. 터미널은 샌드박스 설정대로다(Docker와 같다).
     async fn start(&self, interactive: bool, id: &str) -> AppResult<u8> {
         let rt = self.launcher()?;
-        let sandbox = rt.get(&SandboxId::new(id)?).await?;
+        let sandbox = rt.find(id).await?;
         let spec = &sandbox.info().spec;
         let mut io = attach::io_mode(interactive, spec.tty)?;
         io.stdin |= spec.open_stdin;
@@ -764,7 +763,7 @@ impl Ctx {
     ) -> AppResult<u8> {
         let detach_keys = attach::DetachKeys::parse(detach_keys)?;
         let rt = self.runtime()?;
-        let sandbox = rt.get(&SandboxId::new(id)?).await?;
+        let sandbox = rt.find(id).await?;
         if sandbox.state() != State::Running {
             return Err(msg(
                 "cannot attach to a sandbox that is not running; start it first",
@@ -798,7 +797,7 @@ impl Ctx {
     async fn exec(&self, a: &ExecArgs) -> AppResult<u8> {
         let io = attach::io_mode(a.interactive, a.tty)?;
         let rt = self.runtime()?;
-        let sandbox = rt.get(&SandboxId::new(&a.id)?).await?;
+        let sandbox = rt.find(&a.id).await?;
         let spec = ExecSpec {
             args: a.command.clone(),
             env: parse::env(&a.env, |k| std::env::var(k).ok()),
@@ -817,10 +816,10 @@ impl Ctx {
         let rt = self.runtime()?;
         match (parse::cp_endpoint(src), parse::cp_endpoint(dst)) {
             (CpEndpoint::Host(h), CpEndpoint::Sandbox { id, path }) => {
-                rt.get(&id).await?.copy_in(&h, &path).await?;
+                rt.find(id.as_str()).await?.copy_in(&h, &path).await?;
             }
             (CpEndpoint::Sandbox { id, path }, CpEndpoint::Host(h)) => {
-                rt.get(&id).await?.copy_out(&path, &h).await?;
+                rt.find(id.as_str()).await?.copy_out(&path, &h).await?;
             }
             (CpEndpoint::Host(_), CpEndpoint::Host(_)) => {
                 return Err(msg("one of SRC or DST must be ID:path"));
@@ -835,7 +834,7 @@ impl Ctx {
     async fn stop(&self, a: &StopArgs) -> AppResult<u8> {
         let rt = self.runtime()?;
         let signal = a.signal.as_deref().map(str::parse::<Signal>).transpose()?;
-        each(&a.ids, async |id| {
+        each(&rt, &a.ids, async |id| {
             let s = rt.get(&id).await?;
             let timeout = behavior::stop_timeout(a.time, s.info().spec.stop.timeout_secs);
             s.stop(signal, timeout).await?;
@@ -848,7 +847,7 @@ impl Ctx {
     async fn restart(&self, a: &StopArgs) -> AppResult<u8> {
         let rt = self.runtime()?;
         let signal = a.signal.as_deref().map(str::parse::<Signal>).transpose()?;
-        each(&a.ids, async |id| {
+        each(&rt, &a.ids, async |id| {
             let s = rt.get(&id).await?;
             if s.state() == State::Running {
                 let timeout = behavior::stop_timeout(a.time, s.info().spec.stop.timeout_secs);
@@ -862,7 +861,7 @@ impl Ctx {
     async fn kill(&self, signal: &str, ids: &[String]) -> AppResult<u8> {
         let rt = self.runtime()?;
         let signal: Signal = signal.parse()?;
-        each(ids, async |id| {
+        each(&rt, ids, async |id| {
             rt.get(&id).await?.kill(signal).await?;
             Ok(())
         })
@@ -872,7 +871,7 @@ impl Ctx {
     /// `wait`: 샌드박스마다 종료 코드를 한 줄씩 출력한다.
     async fn wait(&self, ids: &[String]) -> AppResult<u8> {
         let rt = self.runtime()?;
-        each_print(ids, async |id| {
+        each_print(&rt, ids, async |id| {
             Ok(rt.get(&id).await?.wait().await?.to_string())
         })
         .await
@@ -880,7 +879,7 @@ impl Ctx {
 
     async fn rm(&self, force: bool, ids: &[String]) -> AppResult<u8> {
         let rt = self.runtime()?;
-        each(ids, async |id| {
+        each(&rt, ids, async |id| {
             let sandbox = rt.get(&id).await?;
             if sandbox.state() == State::Running {
                 if !force {
@@ -927,8 +926,8 @@ impl Ctx {
                 status = format!("{status}: {e}");
             }
             println!(
-                "{:<24} {:<14} {:<30} {}",
-                s.id,
+                "{:<14} {:<14} {:<30} {}",
+                short_id(&s.id),
                 short(&s.spec.image),
                 command,
                 status
@@ -938,14 +937,7 @@ impl Ctx {
     }
 
     async fn inspect(&self, id: &str) -> AppResult<u8> {
-        let id = SandboxId::new(id)?;
-        let info = self
-            .runtime()?
-            .list()
-            .await?
-            .into_iter()
-            .find(|s| s.id == id)
-            .ok_or_else(|| msg(format!("no such sandbox: {id}")))?;
+        let info = self.runtime()?.find(id).await?.info().clone();
         println!("{}", serde_json::to_string_pretty(&info_json(&info))?);
         Ok(0)
     }
@@ -968,28 +960,45 @@ fn join_ids(ids: &[SandboxId]) -> String {
         .join(", ")
 }
 
-/// ID 여러 개에 같은 동작을 한다. 하나가 실패해도 나머지를 계속하고, 성공한 ID를 출력한다(Docker와 같다).
-async fn each(ids: &[String], f: impl AsyncFn(SandboxId) -> AppResult<()>) -> AppResult<u8> {
-    each_print(ids, async |id| {
-        let line = id.to_string();
-        f(id).await.map(|()| line)
-    })
-    .await
+/// `ps`에 보이는 ID (앞 12자, Docker와 같다). 명령에는 이것이나 더 짧은 앞부분을 줘도 된다.
+fn short_id(id: &SandboxId) -> &str {
+    let s = id.as_str();
+    &s[..s.len().min(12)]
 }
 
-/// [`each`]와 같고, 성공하면 ID 대신 `f`가 돌려준 줄을 출력한다.
+/// ID(또는 그 앞부분) 여러 개에 같은 동작을 한다. 하나가 실패해도 나머지를 계속하고,
+/// 성공한 것은 받은 그대로 출력한다(Docker와 같다).
+async fn each(
+    rt: &Runtime,
+    ids: &[String],
+    f: impl AsyncFn(SandboxId) -> AppResult<()>,
+) -> AppResult<u8> {
+    each_with(rt, ids, async |id| f(id).await.map(|()| None)).await
+}
+
+/// [`each`]와 같고, 성공하면 받은 ID 대신 `f`가 돌려준 줄을 출력한다.
 async fn each_print(
+    rt: &Runtime,
     ids: &[String],
     f: impl AsyncFn(SandboxId) -> AppResult<String>,
 ) -> AppResult<u8> {
+    each_with(rt, ids, async |id| f(id).await.map(Some)).await
+}
+
+/// `f`가 `None`이면 받은 ID를, `Some`이면 그 줄을 출력한다.
+async fn each_with(
+    rt: &Runtime,
+    ids: &[String],
+    f: impl AsyncFn(SandboxId) -> AppResult<Option<String>>,
+) -> AppResult<u8> {
     let mut failed = 0;
     for raw in ids {
-        let result = match SandboxId::new(raw) {
+        let result = match rt.resolve(raw).await {
             Ok(id) => f(id).await,
             Err(e) => Err(e.into()),
         };
         match result {
-            Ok(line) => println!("{line}"),
+            Ok(line) => println!("{}", line.as_deref().unwrap_or(raw)),
             Err(e) => {
                 eprintln!("sbx: {raw}: {e}");
                 failed += 1;

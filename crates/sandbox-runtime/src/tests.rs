@@ -743,3 +743,31 @@ fn kill_signals_the_main_process_and_wait_reports_its_code() {
         Err(RuntimeError::NotFound(_))
     ));
 }
+
+#[test]
+fn ids_resolve_by_unique_prefix() {
+    let e = Env::new("resolve");
+    let spec = e.spec(&["true"]);
+    for id in ["abc1", "abc2", "abd"] {
+        records::create(&e.root.join("d"), &SandboxId::new(id).unwrap(), &spec, 1).unwrap();
+    }
+    let r = |q: &str| block_on(e.rt.resolve(q));
+    assert_eq!(r("abd").unwrap().as_str(), "abd");
+    assert_eq!(r("abc1").unwrap().as_str(), "abc1");
+    assert_eq!(r("abc2").unwrap().as_str(), "abc2");
+    assert!(matches!(
+        r("abc"),
+        Err(RuntimeError::Ambiguous { matches: 2, .. })
+    ));
+    assert!(matches!(
+        r("ab"),
+        Err(RuntimeError::Ambiguous { matches: 3, .. })
+    ));
+    assert!(matches!(r("x"), Err(RuntimeError::NoMatch(_))));
+    assert!(matches!(r(""), Err(RuntimeError::NoMatch(_))));
+    assert!(matches!(r("ABC"), Err(RuntimeError::NoMatch(_))));
+    // 정확히 같은 ID는 다른 ID의 앞부분이어도 그것이다.
+    records::create(&e.root.join("d"), &SandboxId::new("ab").unwrap(), &spec, 1).unwrap();
+    assert_eq!(r("ab").unwrap().as_str(), "ab");
+    assert_eq!(block_on(e.rt.find("abd")).unwrap().id().as_str(), "abd");
+}

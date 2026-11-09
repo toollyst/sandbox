@@ -231,6 +231,34 @@ impl Runtime {
         })
     }
 
+    /// ID나 그 앞부분으로 샌드박스를 찾는다(Docker와 같다). 정확히 같은 ID가 있으면 그것,
+    /// 아니면 그것으로 시작하는 ID가 하나뿐일 때 그것이다. 없으면 [`RuntimeError::NoMatch`],
+    /// 여럿이면 [`RuntimeError::Ambiguous`].
+    pub async fn resolve(&self, query: &str) -> Result<SandboxId, RuntimeError> {
+        if let Ok(id) = SandboxId::new(query)
+            && self.read_info(&id)?.is_some()
+        {
+            return Ok(id);
+        }
+        let mut found = records::ids(&self.inner.config.data_dir)?
+            .into_iter()
+            .filter(|id| !query.is_empty() && id.as_str().starts_with(query));
+        match (found.next(), found.count()) {
+            (Some(id), 0) => Ok(id),
+            (Some(_), more) => Err(RuntimeError::Ambiguous {
+                prefix: query.to_owned(),
+                matches: more + 1,
+            }),
+            (None, _) => Err(RuntimeError::NoMatch(query.to_owned())),
+        }
+    }
+
+    /// [`Runtime::resolve`]로 찾아 [`Runtime::get`]한다.
+    pub async fn find(&self, query: &str) -> Result<Sandbox, RuntimeError> {
+        let id = self.resolve(query).await?;
+        self.get(&id).await
+    }
+
     fn read_info(&self, id: &SandboxId) -> Result<Option<SandboxInfo>, RuntimeError> {
         Ok(
             records::read(&self.paths(id))?.map(|(spec, state)| SandboxInfo {

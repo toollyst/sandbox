@@ -41,6 +41,15 @@ pub enum RuntimeError {
     InvalidStopSignal(ParseError),
     /// 그 ID의 샌드박스가 없음.
     NotFound(SandboxId),
+    /// 그 앞부분으로 시작하는 샌드박스가 없음 ([`Runtime::resolve`](crate::Runtime::resolve)).
+    NoMatch(String),
+    /// 그 앞부분으로 시작하는 샌드박스가 여럿.
+    Ambiguous {
+        /// 받은 앞부분.
+        prefix: String,
+        /// 맞는 개수.
+        matches: usize,
+    },
     /// 지금 상태에서는 할 수 없는 동작.
     InvalidState {
         /// 지금 상태.
@@ -102,6 +111,11 @@ impl fmt::Display for RuntimeError {
             RuntimeError::InvalidUser(e) => e.fmt(f),
             RuntimeError::InvalidStopSignal(e) => write!(f, "image StopSignal: {e}"),
             RuntimeError::NotFound(id) => write!(f, "no such sandbox: {id}"),
+            RuntimeError::NoMatch(p) => write!(f, "no such sandbox: {p}"),
+            RuntimeError::Ambiguous { prefix, matches } => write!(
+                f,
+                "{matches} sandboxes start with {prefix:?}; give more of the ID"
+            ),
             RuntimeError::InvalidState { current, action } => {
                 write!(f, "cannot {action} a sandbox in state {}", current.as_str())
             }

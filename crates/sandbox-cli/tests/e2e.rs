@@ -760,9 +760,17 @@ mod unix {
         let id = run_trapping(&e, &[], "USR1", 42);
         let waiter = e.spawn(&["wait", &id]);
         // TERM은 무시하므로 멈추지 않는다.
-        let o = e.sbx(&["kill", "-s", "TERM", &id]);
+        // ID 앞부분으로도 된다(ps가 보여주는 12자). 받은 그대로 출력한다.
+        let short = &id[..12];
+        let o = e.sbx(&["kill", "-s", "TERM", short]);
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
-        assert_eq!(text(&o.stdout).trim(), id);
+        assert_eq!(text(&o.stdout).trim(), short);
+        let ps = text(&e.sbx(&["ps"]).stdout);
+        assert!(
+            ps.lines().any(|l| l.starts_with(&format!("{short} "))),
+            "{ps}"
+        );
+        assert!(!ps.contains(&id), "{ps}");
         std::thread::sleep(Duration::from_millis(200));
         assert_eq!(state_of(&e, &id).unwrap()["state"], "running");
         assert_eq!(e.sbx(&["kill", "-s", "usr1", &id]).status.code(), Some(0));
