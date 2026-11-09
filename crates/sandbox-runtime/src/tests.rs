@@ -443,3 +443,44 @@ fn tty_merges_output_and_uses_the_requested_size() {
     assert_eq!(main.exit_code(), Some(0));
     assert_eq!(String::from_utf8(out).unwrap(), "12 34\r\nerr\r\n");
 }
+
+#[cfg(unix)]
+#[test]
+fn bind_mount_is_shared_live() {
+    let e = Env::new("bind");
+    let host = e.root.join("host");
+    std::fs::create_dir(&host).unwrap();
+    std::fs::write(host.join("in.txt"), b"from host").unwrap();
+    // fake 게스트의 경로는 호스트 경로다.
+    let target = e.root.join("guest").join("data");
+    e.prepare_image();
+    let mut spec = e.spec(&[
+        "sh",
+        "-c",
+        &format!(
+            "cat {t}/in.txt; echo from guest > {t}/out.txt",
+            t = target.display()
+        ),
+    ]);
+    spec.mounts = vec![Mount {
+        source: host.clone(),
+        destination: target.display().to_string(),
+        kind: MountKind::Bind,
+        readonly: false,
+    }];
+    let s = block_on(e.rt.create(spec)).unwrap();
+    let mut main = block_on(s.start(IoMode::default())).unwrap();
+    let mut out = Vec::new();
+    while let Some(o) = block_on(main.next()) {
+        if let Output::Stdout(b) = o {
+            out.extend(b);
+        }
+    }
+    assert_eq!(main.exit_code(), Some(0));
+    assert_eq!(out, b"from host");
+    // 실시간 공유: 게스트가 쓴 것이 호스트에 있다.
+    assert_eq!(
+        std::fs::read(host.join("out.txt")).unwrap(),
+        b"from guest\n"
+    );
+}

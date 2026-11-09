@@ -172,6 +172,24 @@ impl Guest {
         hostfs::receive(dest_dir, &from, to, &mut || recv(&mut *c))
     }
 
+    /// 실행기가 붙인 공유 폴더를 게스트 `target`에 마운트하게 한다.
+    pub fn share(&self, tag: &str, target: &str, readonly: bool) -> Result<(), RuntimeError> {
+        let mut c = self.open()?;
+        send(
+            &mut *c,
+            &HostMsg::Share {
+                tag: tag.to_owned(),
+                target: target.to_owned(),
+                readonly,
+            },
+        )?;
+        match recv(&mut *c)? {
+            GuestMsg::Done => Ok(()),
+            GuestMsg::Error(e) => Err(RuntimeError::Guest(e)),
+            other => Err(proto_err(format!("expected Done, got {other:?}"))),
+        }
+    }
+
     /// 게스트에 종료를 요청한다. `Done`을 받으면 돌아온다.
     pub fn shutdown(&self) -> Result<(), RuntimeError> {
         let mut c = self.open()?;

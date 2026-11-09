@@ -21,7 +21,10 @@
 //!   VM이 먼저 끝나면(정지, 강제 종료) 기본 프로세스는 137로 끝난 것으로 본다.
 //! - [`Sandbox::stop`]은 게스트에 종료를 요청하고(sync 뒤 전원 끄기), `timeout`까지 VM이 끝나지 않으면 강제로 끝낸다.
 //!   Docker와 달리 기본 프로세스에 SIGTERM을 먼저 보내지 않는다.
+//! - `bind` 마운트: 실행기에 공유 폴더로 넘기고(태그 `sbx0`, `sbx1`, … 마운트 순서대로), 게스트가 준비되면 그 경로에 마운트하게 한다.
+//!   실행기가 실시간 공유를 지원하지 않으면 만들 때 오류다([`validate`]).
 //! - `copy` 마운트는 시작할 때 기본 프로세스보다 먼저 한 번 복사한다. 대상이 디렉터리로 있으면 그 안에 내용을, 없으면 그 경로로 만든다.
+//!   순서: bind를 모두 마운트한 뒤 copy를 마운트 순서대로.
 //! - 파일 복사([`Sandbox::copy_in`], [`Sandbox::copy_out`])의 대상 규칙은 Docker `cp`와 같다([`cpplan`]).
 //!   Docker와 달리 실행 중인 샌드박스에서만 된다(디스크를 읽는 것이 게스트이기 때문이다).
 //!
@@ -286,6 +289,11 @@ fn to_proto_user(u: &UserSpec) -> sandbox_proto::User {
     }
 }
 
+/// bind 마운트 `i`번째(0부터)의 공유 태그.
+fn share_tag(i: usize) -> String {
+    format!("sbx{i}")
+}
+
 /// `main`이면 기본 프로세스다: 끝나면 남은 자식의 출력을 기다리지 않는다(샌드박스가 곧 멈춘다).
 fn to_proto_exec(p: &ProcessDefaults, io: IoMode, main: bool) -> sandbox_proto::Exec {
     sandbox_proto::Exec {
@@ -428,7 +436,17 @@ impl Sandbox {
             ],
             vcpus: spec.resources.vcpus,
             memory_mib: spec.resources.memory_mib,
-            shares: vec![],
+            shares: spec
+                .mounts
+                .iter()
+                .filter(|m| m.kind == MountKind::Bind)
+                .enumerate()
+                .map(|(i, m)| sandbox_executor::Share {
+                    host_path: m.source.clone(),
+                    tag: share_tag(i),
+                    readonly: m.readonly,
+                })
+                .collect(),
             control_channel: ChannelSpec {
                 host_endpoint: control.clone(),
                 guest_port: sandbox_proto::GUEST_PORT,
@@ -462,6 +480,10 @@ impl Sandbox {
             let r = (|| {
                 let mut alive = || !chan::block_on(vm.wait(Duration::ZERO)).unwrap_or(true);
                 guest.wait_ready(START_TIMEOUT, &mut alive)?;
+                let binds = mounts.iter().filter(|m| m.kind == MountKind::Bind);
+                for (i, m) in binds.enumerate() {
+                    guest.share(&share_tag(i), &m.destination, m.readonly)?;
+                }
                 for m in mounts.iter().filter(|m| m.kind == MountKind::Copy) {
                     let target = guest.stat(&m.destination)?;
                     match target {

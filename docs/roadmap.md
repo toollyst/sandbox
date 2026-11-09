@@ -36,7 +36,7 @@ VM을 실제로 띄우는 실행기(VMM, 게스트 커널)는 이 저장소 밖(
 | 단계 | 내용 | 상태 |
 |---|---|---|
 | 12 | detached 수명과 `sandbox-shim`, 고아 프로세스 정리 | 완료 (수명은 시작할 때 정한다: `run -d`, `start`/`start -a`. `logs`. shim이 죽으면 실행기 규약으로 VM이 끝나고 `stopped`. fake로 끝-끝 테스트) |
-| 13 | 폴더 공유 copy, bind (bind는 실행기 capability가 있을 때) | copy 완료. bind 남음 |
+| 13 | 폴더 공유 copy, bind (bind는 실행기 capability가 있을 때) | 완료 (bind는 virtio-fs 태그로 실행기에 넘기고 게스트가 마운트. fake는 심볼릭 링크로 흉내. 실제 virtio-fs는 외부 실행기 E2E) |
 | 14 | 네트워크 정책 장치 (기본 차단, 허용 방식) | |
 | 15 | 정책 위반 시나리오 통합 테스트 (외부 접속, 공유 범위 밖 접근) | |
 

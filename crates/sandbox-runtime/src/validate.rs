@@ -7,11 +7,10 @@
 //! | rootfs 형식 | `rootfs_formats`에 그 형식 | [`RuntimeError::FormatUnsupported`] |
 //! | `MountKind::Bind` | `live_share` | [`RuntimeError::BindUnsupported`] (`Copy`로 바꾸지 않는다) |
 //!
-//! 아직 구현하지 않은 것도 조용히 무시하지 않고 오류다.
+//! 받을 수 없는 조합도 조용히 무시하지 않고 오류다.
 //!
 //! | 요청 | 결과 |
 //! |---|---|
-//! | `MountKind::Bind` (실행기가 지원해도) | [`RuntimeError::Unimplemented`] (로드맵 M3) |
 //! | `MountKind::Copy` + `readonly` | [`RuntimeError::Invalid`] (복사본이라 읽기 전용을 강제할 수 없다) |
 
 use sandbox_executor::Capabilities;
@@ -34,9 +33,6 @@ pub fn check(spec: &SandboxSpec, caps: &Capabilities) -> Result<(), RuntimeError
             executor: caps.name,
             destination: m.destination.clone(),
         });
-    }
-    if spec.mounts.iter().any(|m| m.kind == MountKind::Bind) {
-        return Err(RuntimeError::Unimplemented("bind mounts"));
     }
     if let Some(m) = spec
         .mounts
@@ -117,11 +113,7 @@ mod tests {
             check(&s, &caps(vec![RootfsFormat::Erofs], false)),
             Err(RuntimeError::BindUnsupported { destination, .. }) if destination == "/work"
         ));
-        // 지원하는 실행기여도 아직 구현하지 않았으므로 명시적으로 거부한다.
-        assert!(matches!(
-            check(&s, &caps(vec![RootfsFormat::Erofs], true)),
-            Err(RuntimeError::Unimplemented(_))
-        ));
+        assert!(check(&s, &caps(vec![RootfsFormat::Erofs], true)).is_ok());
     }
 
     #[test]

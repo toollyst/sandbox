@@ -81,6 +81,7 @@ mod unix {
             detached_run_outlives_sbx_and_keeps_logs,
         ),
         ("detached_rm_and_logs_follow", detached_rm_and_logs_follow),
+        ("volume_is_shared_live", volume_is_shared_live),
     ];
 
     /// 인자: 이름 일부(걸러 내기). `--`로 시작하는 인자(cargo test가 넘기는 것)는 무시한다.
@@ -294,6 +295,31 @@ mod unix {
         ]);
         assert_eq!(o.status.code(), Some(6), "{}", text(&o.stderr));
         assert_eq!(text(&o.stdout), "tty\r\n");
+    }
+
+    fn volume_is_shared_live() {
+        let e = Env::new();
+        let host = e.path("host");
+        std::fs::create_dir(&host).unwrap();
+        std::fs::write(host.join("in.txt"), b"hello").unwrap();
+        // 가짜 실행기의 게스트 경로는 호스트 경로다.
+        let guest = e.path("guest-data");
+        let o = e.sbx(&[
+            "run",
+            "--rm",
+            "-v",
+            &format!("{}:{}", host.display(), guest.display()),
+            IMAGE,
+            "sh",
+            "-c",
+            &format!(
+                "cat {g}/in.txt; echo back > {g}/out.txt",
+                g = guest.display()
+            ),
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "hello");
+        assert_eq!(std::fs::read(host.join("out.txt")).unwrap(), b"back\n");
     }
 
     fn run_i_forwards_stdin() {
