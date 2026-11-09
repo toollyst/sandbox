@@ -77,7 +77,12 @@ fn parse(args: &[String]) -> Result<Options, String> {
         bundle: bundle.ok_or("--bundle is required")?,
         name,
         version,
-        os: os.unwrap_or_else(|| host_os().into()),
+        os: match os {
+            None => host_os().into(),
+            // 색인의 OS 이름은 OCI와 같다(`linux`, `darwin`). 다른 이름은 sbx가 찾지 못하는 묶음이 된다.
+            Some(o) if o == "linux" || o == "darwin" => o,
+            Some(o) => return Err(format!("--os must be linux or darwin (got {o:?})")),
+        },
         capabilities,
         url,
         description,
