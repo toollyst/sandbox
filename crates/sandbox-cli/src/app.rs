@@ -579,6 +579,15 @@ impl Ctx {
 
     /// `run`과 `create`: 옵션을 먼저 모두 해석하고, [`behavior::create_steps`] 순서로 코어를 부른다.
     pub(crate) async fn create(&self, a: &RunArgs) -> AppResult<SandboxId> {
+        self.create_with(a, &|_| {}).await
+    }
+
+    /// [`create`](Self::create)과 같고, 이미지를 받는 동안 진행을 `on_pull`에도 알린다(`sbx mcp`가 쓴다).
+    pub(crate) async fn create_with(
+        &self,
+        a: &RunArgs,
+        on_pull: &(dyn Fn(sandbox_manage::PullProgress) + Sync),
+    ) -> AppResult<SandboxId> {
         let network = behavior::network_policy(&a.network, &a.allow)?;
         let user = a.user.as_deref().map(str::parse::<UserSpec>).transpose()?;
         let stop_signal = a
@@ -646,7 +655,8 @@ impl Ctx {
                     let status = Status::new();
                     let info = m
                         .pull_with(image_name, Platform { arch }, &|p| {
-                            status.pull(image_name, p)
+                            status.pull(image_name, p);
+                            on_pull(p);
                         })
                         .await?;
                     status.clear();

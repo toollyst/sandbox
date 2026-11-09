@@ -183,7 +183,7 @@ claude mcp add sbx -- sbx mcp          # Claude Code
 The MCP layer adds no policy. Tool arguments go through the same parser and rules as the CLI. The network stays off
 unless a call passes `allow: ["host:port", ...]`, host folders are never mounted, and arguments can't be turned into
 other `sbx` options. Commands have a timeout (default 300 s); after it, `run` powers the VM off and `exec` kills the
-process.
+process. The first use of a large image reports pull progress (`notifications/progress`), so clients don't give up on it.
 
 ## How it works
 

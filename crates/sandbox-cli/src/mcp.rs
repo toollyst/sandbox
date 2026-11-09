@@ -14,6 +14,7 @@
 //!   기본 [`DEFAULT_TIMEOUT_SECS`], 최대 [`MAX_TIMEOUT_SECS`].
 //! - 출력은 스트림마다 [`OUTPUT_LIMIT`] 바이트까지 담고, 넘치면 `truncated`로 알린다.
 //! - 도구 호출은 동시에 처리한다(호출마다 작업 하나). 표준 입력이 닫히면 진행 중인 호출을 마치고 끝난다.
+//! - 요청이 `_meta.progressToken`을 주면 이미지를 받는 동안 `notifications/progress`를 보낸다(`Progress`).
 
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -93,7 +94,9 @@ async fn serve_on(ctx: Rc<Ctx>) -> AppResult<u8> {
             "tools/call" => {
                 let (ctx, out) = (ctx.clone(), out.clone());
                 calls.push(tokio::task::spawn_local(async move {
-                    let r = call(&ctx, &params).await;
+                    let progress = Progress::start(&out, &params);
+                    let r = call(&ctx, &params, &progress).await;
+                    progress.finish().await;
                     send(&out, result(id, r)).await;
                 }));
                 calls.retain(|c| !c.is_finished());
@@ -111,6 +114,91 @@ async fn serve_on(ctx: Rc<Ctx>) -> AppResult<u8> {
         let _ = c.await;
     }
     Ok(0)
+}
+
+/// 도구 호출 하나의 진행 알림(`notifications/progress`). 요청이 `_meta.progressToken`을 주었을 때만 보낸다.
+///
+/// 지금은 이미지 받기만 알린다(`progress`는 받은 바이트, `total`은 받을 바이트). 큰 이미지를 처음 받는 동안
+/// 클라이언트가 호출을 끊지 않게 한다. 규약대로 `progress`는 보낼 때마다 커진다.
+struct Progress {
+    tx: Option<tokio::sync::mpsc::UnboundedSender<Value>>,
+    writer: Option<tokio::task::JoinHandle<()>>,
+    /// 마지막으로 보낸 때와 값.
+    last: std::sync::Mutex<Option<(std::time::Instant, u64)>>,
+}
+
+/// 진행 알림의 최소 간격.
+const PROGRESS_EVERY: Duration = Duration::from_millis(250);
+
+impl Progress {
+    fn start(out: &Stdout, params: &Value) -> Self {
+        let Some(token) = params
+            .pointer("/_meta/progressToken")
+            .filter(|t| t.is_string() || t.is_number())
+            .cloned()
+        else {
+            return Self {
+                tx: None,
+                writer: None,
+                last: Default::default(),
+            };
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
+        let out = out.clone();
+        let writer = tokio::task::spawn_local(async move {
+            while let Some(mut p) = rx.recv().await {
+                p["progressToken"] = token.clone();
+                send(
+                    &out,
+                    json!({ "jsonrpc": "2.0", "method": "notifications/progress", "params": p }),
+                )
+                .await;
+            }
+        });
+        Self {
+            tx: Some(tx),
+            writer: Some(writer),
+            last: Default::default(),
+        }
+    }
+
+    fn pull(&self, label: &str, p: sandbox_manage::PullProgress) {
+        let Some(tx) = &self.tx else { return };
+        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        let now = std::time::Instant::now();
+        if !progress_due(*last, now, p) {
+            return;
+        }
+        *last = Some((now, p.bytes_done));
+        let _ = tx.send(json!({
+            "progress": p.bytes_done,
+            "total": p.bytes,
+            "message": crate::progress::render_pull(label, p),
+        }));
+    }
+
+    /// 남은 알림을 다 보낸다. 결과보다 먼저 나가야 한다.
+    async fn finish(mut self) {
+        self.tx = None;
+        if let Some(w) = self.writer.take() {
+            let _ = w.await;
+        }
+    }
+}
+
+/// 진행 알림을 지금 보낼지. 처음은 보내고, 그 뒤로는 값이 커졌고 간격이 지났거나 다 받았을 때만.
+fn progress_due(
+    last: Option<(std::time::Instant, u64)>,
+    now: std::time::Instant,
+    p: sandbox_manage::PullProgress,
+) -> bool {
+    match last {
+        None => true,
+        Some((at, sent)) => {
+            p.bytes_done > sent
+                && (p.bytes_done == p.bytes || now.duration_since(at) >= PROGRESS_EVERY)
+        }
+    }
 }
 
 async fn send(out: &Stdout, msg: Value) {
@@ -224,11 +312,11 @@ pub fn tools() -> Value {
 
 /// 도구 하나를 부르고 MCP `CallToolResult`를 돌려준다. 도구가 실패하면 `isError`다(명령의 0 아닌 종료 코드는
 /// 실패가 아니다).
-async fn call(ctx: &Ctx, params: &Value) -> Value {
+async fn call(ctx: &Ctx, params: &Value, progress: &Progress) -> Value {
     let args = Args(params.get("arguments").unwrap_or(&Value::Null));
     let r = match params["name"].as_str().unwrap_or_default() {
-        "run" => run(ctx, &args).await,
-        "create" => create(ctx, &args).await,
+        "run" => run(ctx, &args, progress).await,
+        "create" => create(ctx, &args, progress).await,
         "exec" => exec(ctx, &args).await,
         "write_file" => write_file(ctx, &args).await,
         "read_file" => read_file(ctx, &args).await,
@@ -422,11 +510,13 @@ fn feed(p: &Process, stdin: Option<&str>) {
     }
 }
 
-async fn run(ctx: &Ctx, a: &Args<'_>) -> AppResult<Value> {
+async fn run(ctx: &Ctx, a: &Args<'_>, progress: &Progress) -> AppResult<Value> {
     let stdin = a.str("stdin")?;
     let timeout = a.timeout()?;
     let spec = run_args(a, stdin.is_some(), &[])?;
-    let id = ctx.create(&spec).await?;
+    let id = ctx
+        .create_with(&spec, &|p| progress.pull(spec.image(), p))
+        .await?;
     let rt = ctx.launcher()?;
     let r: AppResult<Value> = async {
         // `?`가 만드는 값(Send가 아닌 오류를 담는다)이 다음 await까지 남지 않게 문장을 나눈다.
@@ -462,9 +552,11 @@ async fn run(ctx: &Ctx, a: &Args<'_>) -> AppResult<Value> {
     Ok(r?)
 }
 
-async fn create(ctx: &Ctx, a: &Args<'_>) -> AppResult<Value> {
+async fn create(ctx: &Ctx, a: &Args<'_>, progress: &Progress) -> AppResult<Value> {
     let spec = run_args(a, false, KEEP_ALIVE)?;
-    let id = ctx.create(&spec).await?;
+    let id = ctx
+        .create_with(&spec, &|p| progress.pull(spec.image(), p))
+        .await?;
     // 오류(`Box<dyn Error>`)는 Send가 아니라 정리를 기다리는 동안 쥐고 있을 수 없다. 글로 바꿔 둔다.
     let failed = ctx
         .start_detached(&id, false)
@@ -658,6 +750,27 @@ mod tests {
 
     fn parse(v: Value, stdin: bool) -> AppResult<RunArgs> {
         run_args(&Args(&v), stdin, KEEP_ALIVE)
+    }
+
+    #[test]
+    fn progress_is_sent_when_it_grows_and_is_due() {
+        let p = |done| sandbox_manage::PullProgress {
+            layers: 1,
+            layers_done: 0,
+            bytes: 100,
+            bytes_done: done,
+        };
+        let t0 = std::time::Instant::now();
+        let soon = t0 + Duration::from_millis(10);
+        let later = t0 + PROGRESS_EVERY;
+        assert!(progress_due(None, t0, p(0)));
+        assert!(!progress_due(Some((t0, 0)), soon, p(50)), "too soon");
+        assert!(progress_due(Some((t0, 0)), later, p(50)));
+        assert!(
+            progress_due(Some((t0, 50)), soon, p(100)),
+            "done is sent at once"
+        );
+        assert!(!progress_due(Some((t0, 100)), later, p(100)), "must grow");
     }
 
     #[test]
