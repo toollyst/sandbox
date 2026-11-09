@@ -195,7 +195,7 @@ pub enum ExecutorCommand {
         /// or a single executable. Requires NAME@VERSION.
         #[arg(long)]
         from: Option<PathBuf>,
-        /// NAME[@VERSION].
+        /// `NAME[@VERSION]`.
         #[arg(value_name = "EXECUTOR")]
         spec: String,
     },
@@ -207,7 +207,7 @@ pub enum ExecutorCommand {
     },
     /// Set the default executor (latest installed version unless given).
     Use {
-        /// NAME[@VERSION].
+        /// `NAME[@VERSION]`.
         #[arg(value_name = "EXECUTOR")]
         spec: String,
     },
@@ -308,10 +308,10 @@ pub struct RunArgs {
     /// Label k=v.
     #[arg(short = 'l', long = "label")]
     pub labels: Vec<String>,
-    /// Live-share a host directory: SRC:DST[:ro] (short for --mount type=bind; needs executor support).
+    /// Live-share a host directory: `SRC:DST[:ro]` (short for --mount type=bind; needs executor support).
     #[arg(short = 'v', long = "volume")]
     pub volumes: Vec<String>,
-    /// type=bind|copy,source=...,target=...[,readonly] (copy: copied in at start).
+    /// `type=bind|copy,source=...,target=...[,readonly]` (copy: copied in at start).
     #[arg(long = "mount")]
     pub mounts: Vec<String>,
     /// Network: none (no access) or allow (only --allow destinations, through a proxy).
@@ -323,7 +323,7 @@ pub struct RunArgs {
     /// Seconds to wait after the stop signal before powering off (default 10).
     #[arg(long)]
     pub stop_timeout: Option<u32>,
-    /// Destination allowed with --network allow: HOST:PORT (*.example.com:443, 10.0.0.5:*, [::1]:80). Repeatable.
+    /// Destination allowed with --network allow: `HOST:PORT` (`*.example.com:443`, `10.0.0.5:*`, `[::1]:80`). Repeatable.
     #[arg(long = "allow")]
     pub allow: Vec<String>,
     /// Image reference or ID.
