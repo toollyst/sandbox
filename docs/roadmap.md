@@ -52,10 +52,10 @@ Linux KVM(upstream Firecracker)과 CI 자동 실행은 남았다.
 | 단계 | 내용 | 상태 |
 |---|---|---|
 | 16 | 실행기 저장소 규약과 `sbx executor install NAME[@VERSION]`, `search`, `repo` | 완료 (`executor-repo`: 정적 호스팅 가능한 `index.json` + `.tar.gz` 묶음, SHA-256 확인. file:// 저장소에서 실제 firecracker 묶음 설치 0.18초) |
-| 17 | 공식 저장소 위치와 묶음 빌드(CI) | 남음: 호스팅 위치는 정하지 않았다(자기 서버, GitHub처럼 정적으로 둘 다 되게) |
-| 18 | 커널 | 완료: 보통 이미지는 실행기 묶음의 기본 리눅스 커널(아키텍처당 하나)로, 라벨 `io.github.toollyst.sandbox.kernel`로 커널을 알린 이미지는 그 커널로(실행기 규약 2의 `custom_kernel`). 실제 VM으로 확인. 기본 커널을 CI에서 빌드하는 것은 17과 함께 남음 |
+| 17 | 공식 저장소 위치와 묶음 빌드(CI) | 묶음 빌드 완료: `cargo xtask repo-add`(묶음 → 저장소 디렉터리의 `.tar.gz`와 `index.json`), CI `vm` 작업이 Linux 묶음을 만들어 저장소로 올리고 거기서 설치해 확인한 뒤 아티팩트로 남긴다. 남음: 공식 호스팅 위치(자기 서버, GitHub처럼 정적으로 둘 다 되게)와 sbx의 기본 저장소 |
+| 18 | 커널 | 완료: 보통 이미지는 실행기 묶음의 기본 리눅스 커널(아키텍처당 하나)로, 라벨 `io.github.toollyst.sandbox.kernel`로 커널을 알린 이미지는 그 커널로(실행기 규약 2의 `custom_kernel`). 실제 VM으로 확인. 기본 커널은 `cargo xtask kernel`(Linux 6.1.155, upstream Firecracker CI 설정 + `xtask/kernel/sbx.config`)로 CI에서 빌드하고, 이 커널로 macOS HVF smoke 16/16 |
 | 19 | README, 데모, 설치 한 줄, 벤치마크 | 벤치마크 완료(`cargo xtask bench`. macOS arm64 HVF: `run --rm alpine true` p50 121ms, `exec` p50 8ms, 10개 동시 0.50초). README, 데모, 설치 한 줄은 남음 |
-| 20 | Linux KVM(upstream Firecracker) 끝-끝과 CI | 남음 |
+| 20 | Linux KVM(upstream Firecracker) 끝-끝과 CI | CI `vm` 작업 작성(upstream Firecracker v1.17.0 + 빌드한 커널 + `cargo xtask smoke`와 `bench`). 남음: GitHub 러너에서 처음 돌려 확인(아직 push하지 않았다) |
 
 ## 그 뒤
 

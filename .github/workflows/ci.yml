@@ -110,7 +110,17 @@ jobs:
           cp "fc/release-$FIRECRACKER-$ARCH/firecracker-$FIRECRACKER-$ARCH" bundle/firecracker
           cp target/release/sbx-executor-firecracker bundle/sbx-executor
           cp "target/kernel/$ARCH/kernel" bundle/kernel
-          target/release/sbx executor install --from bundle firecracker@ci
+      - if: steps.kvm.outputs.ok == 'true'
+        name: publish the bundle to a repository and install it from there
+        run: |
+          cargo xtask repo-add --repo executors --bundle bundle --name firecracker --version "${FIRECRACKER#v}-ci"
+          target/release/sbx executor repo add ci "file://$PWD/executors"
+          target/release/sbx executor install firecracker
+      - if: steps.kvm.outputs.ok == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: executors-linux-${{ matrix.arch }}
+          path: executors
       - if: steps.kvm.outputs.ok == 'true'
         name: smoke and bench
         run: |

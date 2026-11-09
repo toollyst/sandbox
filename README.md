@@ -189,6 +189,12 @@ sbx executor install firecracker@0.1.0
 sbx executor use firecracker@0.1.0
 ```
 
+To publish your own, add bundles to a directory and upload it as is:
+
+```sh
+cargo xtask repo-add --repo ./executors --bundle ./bundle --name firecracker --version 0.1.0
+```
+
 ## Platforms
 
 | Host | VMM | Status |

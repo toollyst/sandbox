@@ -2207,6 +2207,14 @@ dependencies = [
 [[package]]
 name = "xtask"
 version = "0.0.0"
+dependencies = [
+ "executor-repo",
+ "flate2",
+ "serde_json",
+ "sha2",
+ "tar",
+ "url",
+]
 
 [[package]]
 name = "yoke"

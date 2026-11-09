@@ -8,3 +8,13 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# repo-add: 실행기 저장소에 묶음을 더한다.
+serde_json.workspace = true
+sha2.workspace = true
+flate2.workspace = true
+tar.workspace = true
+
+[dev-dependencies]
+# repo-add가 만든 저장소를 클라이언트로 읽어 본다.
+executor-repo.workspace = true
+url = "2"

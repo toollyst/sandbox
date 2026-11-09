@@ -8,6 +8,8 @@
 //! - `dist`: 게스트 init을 내장한 배포용 `sbx`, `sbx-shim`을 만든다. 규칙은 [`dist`]에 있다.
 //! - `kernel --arch <x86_64|aarch64> [--out <파일>]`: 실행기 묶음에 넣을 기본 게스트 커널을 만든다. [`kernel`]에 있다.
 //! - `smoke [--sbx <파일>] [--no-internet]`: 설치한 실행기로 실제 VM의 기본 동작을 확인한다. [`smoke`]에 있다.
+//! - `repo-add --repo <디렉터리> --bundle <디렉터리> --name <이름> --version <버전>`: 실행기 묶음을 정적 저장소에
+//!   더한다. [`repo`]에 있다.
 //! - `bench [--sbx <파일>] [--image <참조>] [--runs <N>] [--parallel <K>]`: `sbx`로 시간을 잰다. [`bench`](mod@bench)에 있다.
 
 use std::collections::BTreeSet;
@@ -19,6 +21,7 @@ mod dist;
 mod initramfs;
 mod kernel;
 mod modules;
+mod repo;
 mod smoke;
 
 /// 크레이트가 의존해도 되는 것.
@@ -193,6 +196,16 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("repo-add") => match repo::add(&args[1..]) {
+            Ok(file) => {
+                println!("{}", file.display());
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("repo-add: {e}");
+                ExitCode::FAILURE
+            }
+        },
         Some("bench") => {
             let root = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .parent()
@@ -210,7 +223,7 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "usage: cargo xtask check-deps\n       cargo xtask guest-initramfs --arch <x86_64|aarch64> [--binary <file>] [--out <file>]\n       cargo xtask dist\n       cargo xtask kernel --arch <x86_64|aarch64> [--out <file>]\n       cargo xtask smoke [--sbx <file>] [--no-internet]\n       cargo xtask bench [--sbx <file>] [--image <ref>] [--runs <n>] [--parallel <k>]"
+                "usage: cargo xtask check-deps\n       cargo xtask guest-initramfs --arch <x86_64|aarch64> [--binary <file>] [--out <file>]\n       cargo xtask dist\n       cargo xtask kernel --arch <x86_64|aarch64> [--out <file>]\n       cargo xtask smoke [--sbx <file>] [--no-internet]\n       cargo xtask repo-add --repo <dir> --bundle <dir> --name <name> --version <version> [--os <os>] [--description <text>]\n       cargo xtask bench [--sbx <file>] [--image <ref>] [--runs <n>] [--parallel <k>]"
             );
             ExitCode::from(2)
         }
