@@ -78,6 +78,11 @@ const RULES: &[(&str, Allowed)] = &[
         Allowed::Workspace(&["sandbox-model", "sandbox-executor", "executor-proto"]),
     ),
     ("sandbox-guest", Allowed::Strict(&["sandbox-proto", "libc"])),
+    // Firecracker adapter: 실행기 규약과 Firecracker 공개 인터페이스만 안다. sbx 코어를 모른다.
+    (
+        "executor-firecracker",
+        Allowed::Workspace(&["executor-proto"]),
+    ),
     (
         "sandbox-shim",
         Allowed::Workspace(&[

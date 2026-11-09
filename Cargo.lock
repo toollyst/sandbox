@@ -390,6 +390,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "executor-firecracker"
+version = "0.0.0"
+dependencies = [
+ "executor-proto",
+ "serde_json",
+]
+
+[[package]]
 name = "executor-process"
 version = "0.0.0"
 dependencies = [
