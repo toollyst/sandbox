@@ -518,10 +518,13 @@ fn copy_in(f: &Fixture, dest: &Path, msgs: Vec<HostMsg>) -> GuestMsg {
             dest: dest.to_str().unwrap().into(),
         },
     );
-    for m in msgs {
-        send(&mut c, m);
+    // 게스트는 잘못된 항목을 보면 이유를 보내고 곧바로 닫는다. 그 뒤의 보내기는 실패할 수 있다
+    // (실행 코어의 copy_in도 보내기가 실패하면 게스트가 보낸 이유를 먼저 읽는다).
+    for m in msgs.into_iter().chain([HostMsg::End]) {
+        if m.write_to(&mut c).is_err() {
+            break;
+        }
     }
-    send(&mut c, HostMsg::End);
     recv(&mut c)
 }
 
