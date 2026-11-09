@@ -1,0 +1,301 @@
+use super::*;
+
+use std::collections::HashMap;
+use std::future::Future;
+use std::io::Write;
+use std::pin::pin;
+use std::task::{Context, Poll, Waker};
+
+use flate2::Compression as GzLevel;
+use flate2::write::GzEncoder;
+
+use sandbox_image::ResolvedImage;
+use sandbox_model::{Arch, BoxFuture, Digest, ImageConfig, Layer};
+use sandbox_rootfs::{ContentSource, NodeKind, WriteSeek};
+use sandbox_store::digest::sha256;
+
+fn ready<F: Future>(f: F) -> F::Output {
+    let mut f = pin!(f);
+    match f.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
+        Poll::Ready(v) => v,
+        Poll::Pending => panic!("future did not complete immediately"),
+    }
+}
+
+fn temp_root(name: &str) -> PathBuf {
+    let p = std::env::temp_dir().join(format!("sandbox-manage-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&p);
+    p
+}
+
+enum T<'a> {
+    Dir(&'a str),
+    File(&'a str, &'a [u8]),
+    Whiteout(&'a str),
+}
+
+/// (gzip blob, Layer 기술)
+fn layer(entries: &[T<'_>]) -> (Vec<u8>, Layer) {
+    let mut b = tar::Builder::new(Vec::new());
+    for e in entries {
+        let mut h = tar::Header::new_gnu();
+        let (path, data): (&str, &[u8]) = match e {
+            T::Dir(p) => {
+                h.set_entry_type(tar::EntryType::Directory);
+                h.set_mode(0o755);
+                (p, b"")
+            }
+            T::File(p, d) => {
+                h.set_entry_type(tar::EntryType::Regular);
+                h.set_mode(0o644);
+                (p, d)
+            }
+            T::Whiteout(p) => {
+                h.set_entry_type(tar::EntryType::Regular);
+                h.set_mode(0o644);
+                (p, b"")
+            }
+        };
+        h.set_size(data.len() as u64);
+        h.set_uid(0);
+        h.set_gid(0);
+        h.set_mtime(0);
+        b.append_data(&mut h, path, data).unwrap();
+    }
+    let tar = b.into_inner().unwrap();
+    let mut gz = GzEncoder::new(Vec::new(), GzLevel::default());
+    gz.write_all(&tar).unwrap();
+    let blob = gz.finish().unwrap();
+    let l = Layer {
+        digest: sha256(&blob),
+        diff_id: sha256(&tar),
+        size: blob.len() as u64,
+        compression: Compression::Gzip,
+    };
+    (blob, l)
+}
+
+struct FakeSource {
+    image: ResolvedImage,
+    blobs: HashMap<Digest, Vec<u8>>,
+    tamper: bool,
+}
+
+impl FakeSource {
+    fn new(layers: Vec<(Vec<u8>, Layer)>) -> Self {
+        let mut blobs = HashMap::new();
+        let mut descs = Vec::new();
+        for (blob, l) in layers {
+            blobs.insert(l.digest.clone(), blob);
+            descs.push(l);
+        }
+        Self {
+            image: ResolvedImage {
+                id: ImageId::new(sha256(b"manifest")),
+                reference: "docker.io/library/test:latest".into(),
+                source: "docker.io/library/test".into(),
+                platform: Platform { arch: Arch::X86_64 },
+                config: ImageConfig {
+                    cmd: vec!["/bin/sh".into()],
+                    ..Default::default()
+                },
+                layers: descs,
+                ignored_fields: vec![],
+            },
+            blobs,
+            tamper: false,
+        }
+    }
+}
+
+impl ImageSource for FakeSource {
+    fn resolve<'a>(
+        &'a self,
+        _reference: &'a str,
+        _platform: Platform,
+    ) -> BoxFuture<'a, Result<ResolvedImage, ImageError>> {
+        let img = self.image.clone();
+        Box::pin(async move { Ok(img) })
+    }
+
+    fn fetch_blob<'a>(
+        &'a self,
+        _source: &'a str,
+        digest: &'a Digest,
+        sink: &'a mut (dyn Write + Send),
+    ) -> BoxFuture<'a, Result<u64, ImageError>> {
+        Box::pin(async move {
+            let mut data = self.blobs[digest].clone();
+            if self.tamper {
+                data.push(0);
+            }
+            sink.write_all(&data)?;
+            Ok(data.len() as u64)
+        })
+    }
+}
+
+/// 받은 트리를 "경로 종류 내용" 줄로 쓰는 writer. 병합 결과와 내용 전달을 확인한다.
+struct Listing;
+
+impl RootfsBuilder for Listing {
+    fn format(&self) -> RootfsFormat {
+        RootfsFormat::Erofs
+    }
+
+    fn build(
+        &self,
+        tree: &MergedTree,
+        content: &dyn ContentSource,
+        out: &mut dyn WriteSeek,
+    ) -> Result<(), RootfsError> {
+        for (path, node) in tree.iter() {
+            match &node.kind {
+                NodeKind::Dir => writeln!(out, "{path}/")?,
+                NodeKind::File(c) => {
+                    let mut s = String::new();
+                    content.open(c)?.read_to_string(&mut s)?;
+                    writeln!(out, "{path}={s}")?;
+                }
+                other => writeln!(out, "{path} {other:?}")?,
+            }
+        }
+        Ok(())
+    }
+}
+
+fn manager(root: &std::path::Path, source: FakeSource) -> Manager {
+    Manager::new(root, Arc::new(source), vec![Arc::new(Listing)]).unwrap()
+}
+
+#[test]
+fn pull_stores_verified_blobs_then_record_and_ref() {
+    let root = temp_root("pull");
+    let l = layer(&[T::File("a", b"1")]);
+    let digest = l.1.digest.clone();
+    let m = manager(&root, FakeSource::new(vec![l]));
+    let info = ready(m.pull("test", Platform { arch: Arch::X86_64 })).unwrap();
+    assert_eq!(info.refs, vec!["docker.io/library/test:latest"]);
+    assert!(info.prepared.is_empty());
+    assert!(m.store().layout().blob(&digest).is_file());
+    assert_eq!(m.store().image(&info.record.id).unwrap(), info.record);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn pull_rejects_tampered_blob_and_writes_nothing() {
+    let root = temp_root("tamper");
+    let mut src = FakeSource::new(vec![layer(&[T::File("a", b"1")])]);
+    src.tamper = true;
+    let id = src.image.id.clone();
+    let m = manager(&root, src);
+    assert!(matches!(
+        ready(m.pull("test", Platform { arch: Arch::X86_64 })),
+        Err(ManageError::Integrity(_))
+    ));
+    assert!(!m.store().has_image(&id));
+    assert!(m.store().refs().unwrap().is_empty());
+    assert_eq!(
+        std::fs::read_dir(root.join("blobs/sha256"))
+            .unwrap()
+            .count(),
+        0
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn prepare_merges_layers_and_is_idempotent() {
+    let root = temp_root("prepare");
+    let l1 = layer(&[
+        T::Dir("etc"),
+        T::File("etc/hosts", b"old"),
+        T::File("etc/gone", b"x"),
+    ]);
+    let l2 = layer(&[T::File("etc/hosts", b"new"), T::Whiteout("etc/.wh.gone")]);
+    let m = manager(&root, FakeSource::new(vec![l1, l2]));
+    let id = ready(m.pull("test", Platform { arch: Arch::X86_64 }))
+        .unwrap()
+        .record
+        .id;
+
+    assert!(ready(m.prepare(&id, RootfsFormat::Erofs)).unwrap());
+    let listing =
+        std::fs::read_to_string(m.store().layout().rootfs(&id, RootfsFormat::Erofs)).unwrap();
+    assert_eq!(listing, "/\netc/\netc/hosts=new\n");
+    assert!(!ready(m.prepare(&id, RootfsFormat::Erofs)).unwrap());
+    assert_eq!(m.images().unwrap()[0].prepared, vec![RootfsFormat::Erofs]);
+    // 작업 공간이 남지 않는다.
+    assert_eq!(std::fs::read_dir(root.join("tmp")).unwrap().count(), 0);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn prepare_detects_diff_id_mismatch() {
+    let root = temp_root("diffid");
+    let (blob, mut l) = layer(&[T::File("a", b"1")]);
+    l.diff_id = sha256(b"something else");
+    let m = manager(&root, FakeSource::new(vec![(blob, l)]));
+    let id = ready(m.pull("test", Platform { arch: Arch::X86_64 }))
+        .unwrap()
+        .record
+        .id;
+    assert!(matches!(
+        ready(m.prepare(&id, RootfsFormat::Erofs)),
+        Err(ManageError::Integrity(_))
+    ));
+    assert!(!m.store().has_rootfs(&id, RootfsFormat::Erofs));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn prepare_without_builder_or_image() {
+    let root = temp_root("nobuilder");
+    let m = Manager::new(
+        &root,
+        Arc::new(FakeSource::new(vec![layer(&[T::File("a", b"1")])])),
+        vec![],
+    )
+    .unwrap();
+    let id = ImageId::new(sha256(b"missing"));
+    assert!(matches!(
+        ready(m.prepare(&id, RootfsFormat::Erofs)),
+        Err(ManageError::BuilderMissing(RootfsFormat::Erofs))
+    ));
+    let m = manager(&root, FakeSource::new(vec![]));
+    assert!(matches!(
+        ready(m.prepare(&id, RootfsFormat::Erofs)),
+        Err(ManageError::ImageNotFound(_))
+    ));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn remove_and_untag() {
+    let root = temp_root("remove");
+    let m = manager(&root, FakeSource::new(vec![layer(&[T::File("a", b"1")])]));
+    let id = ready(m.pull("test", Platform { arch: Arch::X86_64 }))
+        .unwrap()
+        .record
+        .id;
+    ready(m.prepare(&id, RootfsFormat::Erofs)).unwrap();
+
+    let lease = m.store().lease(&id, RootfsFormat::Erofs).unwrap();
+    assert!(matches!(m.remove(&id), Err(ManageError::InUse(_))));
+    assert!(m.store().has_image(&id));
+    drop(lease);
+
+    let r = m.untag("docker.io/library/test:latest").unwrap();
+    assert_eq!(r.deleted, None);
+    assert!(m.store().has_image(&id));
+    assert!(matches!(
+        m.untag("docker.io/library/test:latest"),
+        Err(ManageError::RefNotFound(_))
+    ));
+
+    let r = m.remove(&id).unwrap();
+    assert_eq!(r.deleted, Some(id.clone()));
+    assert!(!m.store().has_image(&id));
+    assert!(matches!(m.remove(&id), Err(ManageError::ImageNotFound(_))));
+    std::fs::remove_dir_all(root).unwrap();
+}
