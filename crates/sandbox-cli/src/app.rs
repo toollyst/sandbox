@@ -564,7 +564,7 @@ impl Ctx {
                 }
             }),
             args: a.command().to_vec(),
-            env: parse::env(&a.env, |k| std::env::var(k).ok()),
+            env: env_values(&a.env_file, &a.env)?,
             cwd: a.workdir.clone(),
             user,
         };
@@ -757,7 +757,7 @@ impl Ctx {
         let sandbox = rt.find(a.id()).await?;
         let spec = ExecSpec {
             args: a.command().to_vec(),
-            env: parse::env(&a.env, |k| std::env::var(k).ok()),
+            env: env_values(&a.env_file, &a.env)?,
             cwd: a.workdir.clone(),
             user: a.user.as_deref().map(str::parse::<UserSpec>).transpose()?,
             tty: a.tty,
@@ -914,6 +914,20 @@ impl Ctx {
         println!("{}", serde_json::to_string_pretty(&info_json(&info))?);
         Ok(0)
     }
+}
+
+/// `--env-file`의 값들 뒤에 `-e`를 붙여 해석한다. 같은 이름은 뒤의 것(-e)이 이긴다(Docker와 같다).
+fn env_values(files: &[PathBuf], env: &[String]) -> AppResult<Vec<(String, String)>> {
+    let mut all = Vec::new();
+    for f in files {
+        let text = std::fs::read_to_string(f)
+            .map_err(|e| msg(format!("--env-file {}: {e}", f.display())))?;
+        all.extend(
+            parse::env_file(&text).map_err(|e| msg(format!("--env-file {}: {e}", f.display())))?,
+        );
+    }
+    all.extend_from_slice(env);
+    Ok(parse::env(&all, |k| std::env::var(k).ok()))
 }
 
 fn info_json(s: &SandboxInfo) -> serde_json::Value {

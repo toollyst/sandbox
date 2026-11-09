@@ -18,6 +18,34 @@ pub fn env(values: &[String], host: impl Fn(&str) -> Option<String>) -> Vec<(Str
         .collect()
 }
 
+/// `--env-file` 내용을 `-e` 값들로 바꾼다(Docker와 같다).
+///
+/// - 줄 앞 공백은 지우고, 빈 줄과 `#`로 시작하는 줄은 건너뛴다. 값은 따옴표를 벗기지 않고 그대로 둔다.
+/// - `=`가 없는 줄은 이름만 남긴다. 값은 [`env`]가 호스트에서 가져온다.
+/// - 이름이 비었거나 공백이 있으면 오류다.
+pub fn env_file(text: &str) -> ParseResult<Vec<String>> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let mut out = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        let line = line.trim_start();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let name = line.split_once('=').map_or(line, |(k, _)| k);
+        if name.is_empty() {
+            return Err(format!("no variable name on line {}: {line:?}", n + 1));
+        }
+        if name.contains(char::is_whitespace) {
+            return Err(format!(
+                "variable {name:?} contains whitespace (line {})",
+                n + 1
+            ));
+        }
+        out.push(line.to_owned());
+    }
+    Ok(out)
+}
+
 /// `--label k=v`. `=`가 없으면 값은 빈 문자열(Docker와 같다).
 pub fn label(value: &str) -> (String, String) {
     match value.split_once('=') {
@@ -181,6 +209,14 @@ pub fn cp_endpoint(value: &str) -> CpEndpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn env_files_follow_docker() {
+        let v = env_file("\u{feff}# c\n\n  A=1 \nB=\"q\"\nHOME\nC=x=y\r\n").unwrap();
+        assert_eq!(v, ["A=1 ", "B=\"q\"", "HOME", "C=x=y"]);
+        assert!(env_file("=1").unwrap_err().contains("line 1"));
+        assert!(env_file("ok=1\nA B=1").unwrap_err().contains("line 2"));
+    }
 
     #[test]
     fn env_values() {

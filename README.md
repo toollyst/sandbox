@@ -24,7 +24,7 @@ user-submitted code, CI jobs, plugins.
 - **A kernel boundary, not just namespaces.** Containers share the host kernel. Each `sbx` sandbox gets its own
   kernel behind hardware virtualization (KVM on Linux, Hypervisor.framework on macOS).
 - **Docker muscle memory.** `run`, `exec`, `cp`, `logs`, `ps`, `stop`, `kill`, `wait`, `attach`, `rm`, `-i`, `-t`, `-d`,
-  `-e`, `-w`, `-u`, `--rm`, `--name`, ID prefixes, and exit codes 125/126/127 work the way you expect. Where `sbx` differs, the
+  `-e`, `--env-file`, `-w`, `-u`, `--rm`, `--name`, ID prefixes, and exit codes 125/126/127 work the way you expect. Where `sbx` differs, the
   difference is deliberate and [written down](crates/sandbox-cli/src/behavior.rs).
 - **Locked down by default.** There is no network device at all. Outbound access is opt-in, per `host:port`, enforced on
   the host, with names that resolve to private addresses refused. The image's root filesystem is read-only, and every

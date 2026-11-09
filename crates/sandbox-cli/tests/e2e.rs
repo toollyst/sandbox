@@ -548,6 +548,31 @@ mod unix {
         let o = e.sbx(&["rm", "web"]);
         assert_eq!(text(&o.stdout).trim(), "web", "{}", text(&o.stderr));
 
+        // --env-file: 파일 다음에 -e가 덮는다. 파일을 읽을 수 없으면 run 실패(125).
+        let f = e.path("env");
+        std::fs::write(&f, "# c\nA=from-file\nB=b c\n").unwrap();
+        let f = f.to_str().unwrap();
+        let o = e.sbx(&[
+            "run",
+            "--rm",
+            "--env-file",
+            f,
+            "-e",
+            "A=flag",
+            IMAGE,
+            "sh",
+            "-c",
+            "echo \"$A/$B\"",
+        ]);
+        assert_eq!(text(&o.stdout), "flag/b c\n", "{}", text(&o.stderr));
+        let o = e.sbx(&["run", "--rm", "--env-file", "/no/such", IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(125));
+        assert!(
+            text(&o.stderr).contains("--env-file /no/such"),
+            "{}",
+            text(&o.stderr)
+        );
+
         // 지우면 이름을 다시 쓸 수 있다.
         assert_eq!(
             e.sbx(&["create", "--name", "web", IMAGE]).status.code(),

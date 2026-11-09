@@ -295,9 +295,12 @@ pub struct RunArgs {
     /// Allocate a TTY for the main process (kept in the sandbox's settings).
     #[arg(short = 't', long)]
     pub tty: bool,
-    /// Environment variable K=V.
+    /// Environment variable K=V (K alone takes the host's value).
     #[arg(short = 'e', long = "env")]
     pub env: Vec<String>,
+    /// Read environment variables from a file (K=V or K per line, # comments). -e wins.
+    #[arg(long)]
+    pub env_file: Vec<PathBuf>,
     /// Working directory.
     #[arg(short = 'w', long = "workdir")]
     pub workdir: Option<String>,
@@ -373,9 +376,12 @@ pub struct ExecArgs {
     /// Allocate a TTY.
     #[arg(short = 't', long)]
     pub tty: bool,
-    /// Environment variable K=V.
+    /// Environment variable K=V (K alone takes the host's value).
     #[arg(short = 'e', long = "env")]
     pub env: Vec<String>,
+    /// Read environment variables from a file (K=V or K per line, # comments). -e wins.
+    #[arg(long)]
+    pub env_file: Vec<PathBuf>,
     /// Working directory.
     #[arg(short = 'w', long = "workdir")]
     pub workdir: Option<String>,
