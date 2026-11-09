@@ -6,21 +6,57 @@
 //!   실행 권한이 없으면 `PermissionDenied`다. 호스트는 뒤의 둘을 Docker처럼 127, 126으로 바꾼다.
 //! - 출력은 파이프가 닫힐 때까지 보낸다. 그래서 백그라운드 프로세스가 출력을 쥐고 있으면 그 프로세스가
 //!   닫을 때까지 끝나지 않는다(`cmd | cat`과 같다). 출력을 모두 보낸 뒤 `Exited`를 보낸다.
+//! - 예외: `stop_output_at_exit`(기본 프로세스)이면 프로세스가 끝난 뒤 파이프가 [`DRAIN_IDLE`] 동안 조용하면,
+//!   또는 끝난 뒤 [`DRAIN_MAX`]가 지나면 그만 읽고 `Exited`를 보낸다. 이미 쓴 출력은 파이프에 있으므로 빠지지 않는다.
+//!   읽는 쪽을 닫으므로 그 뒤 남은 자식이 쓰면 EPIPE를 받는다.
 //! - 호스트가 연결을 닫으면 프로세스를 SIGKILL로 끝낸다.
 //! - 끝난 프로세스에는 시그널을 보내지 않는다. PID가 재사용되어 다른 프로세스가 맞는 일을 막는다.
 //! - 터미널(`tty`)은 아직 지원하지 않는다. 요청하면 `InvalidArgument`다.
 
 use std::io::{self, Read, Write};
+use std::os::fd::AsFd;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::Path;
 use std::process::{ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use sandbox_proto::{CHUNK_LEN, Error, ErrorKind, Exec, ExitStatus, GuestMsg, HostMsg};
 
 use crate::passwd;
 use crate::wire::{Out, io_error};
+
+/// `stop_output_at_exit`일 때: 프로세스가 끝난 뒤 이만큼 출력이 없으면 그만 읽는다.
+pub const DRAIN_IDLE: Duration = Duration::from_millis(50);
+
+/// `stop_output_at_exit`일 때: 프로세스가 끝난 뒤 남은 자식이 계속 써도 이만큼 지나면 그만 읽는다.
+pub const DRAIN_MAX: Duration = Duration::from_secs(1);
+
+/// 끝을 알리는 표시. 프로세스가 끝난 시각을 한 번 남긴다.
+#[derive(Default)]
+struct Ended {
+    set: AtomicBool,
+    at: Mutex<Option<Instant>>,
+}
+
+impl Ended {
+    fn mark(&self) {
+        *self.at.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+        self.set.store(true, Ordering::Release);
+    }
+
+    fn since(&self) -> Option<Duration> {
+        if !self.set.load(Ordering::Acquire) {
+            return None;
+        }
+        self.at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .map(|t| t.elapsed())
+    }
+}
 
 struct Proc {
     pid: u32,
@@ -109,15 +145,17 @@ fn run_inner(
         proc.signal(libc::SIGKILL);
     }
 
+    // stop_output_at_exit가 아니면 끝을 알리지 않는다: 파이프가 닫힐 때까지 읽는다.
+    let ended = Arc::new(Ended::default());
     let pumps = [
         child
             .stdout
             .take()
-            .map(|s| pump(s, out.clone(), GuestMsg::Stdout)),
+            .map(|s| pump(s, out.clone(), GuestMsg::Stdout, ended.clone())),
         child
             .stderr
             .take()
-            .map(|s| pump(s, out.clone(), GuestMsg::Stderr)),
+            .map(|s| pump(s, out.clone(), GuestMsg::Stderr, ended.clone())),
     ];
     let stdin = child.stdin.take();
     {
@@ -131,6 +169,9 @@ fn run_inner(
         child.wait()
     })()
     .map_err(|e| io_error("wait", &e))?;
+    if x.stop_output_at_exit {
+        ended.mark();
+    }
     for p in pumps.into_iter().flatten() {
         let _ = p.join();
     }
@@ -143,14 +184,28 @@ fn run_inner(
     Ok(())
 }
 
+/// 파이프를 읽어 보낸다. 닫히면 끝난다. `ended`가 표시되면 [`DRAIN_IDLE`], [`DRAIN_MAX`] 규칙으로 일찍 끝난다.
 fn pump(
-    mut r: impl Read + Send + 'static,
+    mut r: impl Read + AsFd + Send + 'static,
     out: Out,
     wrap: fn(Vec<u8>) -> GuestMsg,
+    ended: Arc<Ended>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let mut buf = vec![0; CHUNK_LEN];
         loop {
+            // 막히는 read 대신 기다렸다가 읽는다. 그래야 끝 표시를 볼 수 있다.
+            match crate::sys::poll_readable(r.as_fd(), DRAIN_IDLE) {
+                Ok(true) => {}
+                Ok(false) => match ended.since() {
+                    Some(_) => break,
+                    None => continue,
+                },
+                Err(_) => break,
+            }
+            if ended.since().is_some_and(|d| d >= DRAIN_MAX) {
+                break;
+            }
             match r.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {

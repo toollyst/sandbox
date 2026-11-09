@@ -25,6 +25,7 @@ fn host_samples() -> Vec<HostMsg> {
             tty: true,
             stdin: true,
             size: Some(WinSize { rows: 24, cols: 80 }),
+            stop_output_at_exit: true,
         }),
         HostMsg::Exec(Exec {
             args: vec![],
@@ -37,6 +38,7 @@ fn host_samples() -> Vec<HostMsg> {
             tty: false,
             stdin: false,
             size: None,
+            stop_output_at_exit: false,
         }),
         HostMsg::Stdin(b"in".to_vec()),
         HostMsg::Stdin(vec![]),

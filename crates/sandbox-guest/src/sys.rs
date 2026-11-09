@@ -25,6 +25,32 @@ pub fn kill(pid: u32, signal: i32) -> io::Result<()> {
     check(unsafe { libc::kill(pid, signal) })
 }
 
+/// `fd`에서 막히지 않고 읽을 수 있을 때까지(데이터가 있거나 닫힘) 최대 `timeout` 기다린다. 읽을 수 있으면 `true`.
+pub fn poll_readable(
+    fd: std::os::fd::BorrowedFd<'_>,
+    timeout: std::time::Duration,
+) -> io::Result<bool> {
+    use std::os::fd::AsRawFd;
+    let ms = libc::c_int::try_from(timeout.as_millis()).unwrap_or(libc::c_int::MAX);
+    let mut p = libc::pollfd {
+        fd: fd.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    loop {
+        // SAFETY: p는 살아 있는 pollfd 하나이고 개수는 1이다. fd는 BorrowedFd라 그동안 열려 있다.
+        let n = unsafe { libc::poll(&mut p, 1, ms) };
+        if n == -1 {
+            let e = io::Error::last_os_error();
+            if e.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(e);
+        }
+        return Ok(n > 0);
+    }
+}
+
 /// 자식 프로세스가 끝날 때까지 기다리되 거두지 않는다(`WNOWAIT`).
 ///
 /// 이것이 돌아온 뒤에도 PID는 아직 재사용되지 않는다. 그래서 그 사이에 보내는 시그널이

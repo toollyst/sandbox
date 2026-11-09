@@ -46,6 +46,14 @@ pub struct Exec {
     pub stdin: bool,
     /// 터미널 크기. `tty`일 때만 쓴다.
     pub size: Option<WinSize>,
+    /// 출력을 언제까지 보내는지.
+    ///
+    /// - `false`: 출력 파이프가 닫힐 때까지 보낸다. 프로세스가 끝나도 남은 자식이 파이프를 쥐고 있으면 기다린다
+    ///   (`cmd | cat`, `docker exec`와 같다).
+    /// - `true`: 프로세스가 끝나면 이미 쓴 출력만 보내고 [`GuestMsg::Exited`]를 보낸다. 남은 자식은 기다리지 않는다.
+    ///   샌드박스의 기본 프로세스에 쓴다. 기본 프로세스가 끝나면 샌드박스가 멈추기 때문이다
+    ///   (Docker에서 컨테이너의 첫 프로세스가 끝나면 모두 끝나는 것과 같다).
+    pub stop_output_at_exit: bool,
 }
 
 /// 터미널 크기.
@@ -406,7 +414,8 @@ impl HostMsg {
                 e.opt(x.user.group.as_ref(), enc_ident)
                     .bool(x.tty)
                     .bool(x.stdin)
-                    .opt(x.size.as_ref(), enc_size);
+                    .opt(x.size.as_ref(), enc_size)
+                    .bool(x.stop_output_at_exit);
             }
             HostMsg::Stdin(b) => {
                 e = Encoder::new(tag::STDIN);
@@ -468,6 +477,7 @@ impl HostMsg {
                     tty: d.bool()?,
                     stdin: d.bool()?,
                     size: d.opt(dec_size)?,
+                    stop_output_at_exit: d.bool()?,
                 })
             }
             tag::STDIN => HostMsg::Stdin(d.bytes()?.to_vec()),

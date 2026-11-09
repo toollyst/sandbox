@@ -74,6 +74,7 @@ impl Fixture {
             tty: false,
             stdin,
             size: None,
+            stop_output_at_exit: false,
         }
     }
 }
@@ -170,6 +171,36 @@ fn exec_streams_output_and_exit_code() {
         collect(&mut c),
         ("hi\n".into(), "err\n".into(), ExitStatus::Code(3))
     );
+}
+
+#[test]
+fn stop_output_at_exit_does_not_wait_for_children_holding_the_pipe() {
+    let f = Fixture::new("drain");
+    let run = |stop: bool| {
+        let mut c = f.connect();
+        let mut x = f.exec(
+            &[
+                "sh",
+                "-c",
+                "sleep 3 & head -c 200000 /dev/zero | tr '\\0' a; exit 5",
+            ],
+            false,
+        );
+        x.stop_output_at_exit = stop;
+        send(&mut c, HostMsg::Exec(x));
+        started(&mut c);
+        let t = std::time::Instant::now();
+        let (out, _, status) = collect(&mut c);
+        (out.len(), status, t.elapsed())
+    };
+    // 이미 쓴 출력(파이프 버퍼보다 큰 것도)은 모두 오고, 남은 자식(sleep)은 기다리지 않는다.
+    let (len, status, took) = run(true);
+    assert_eq!((len, status), (200000, ExitStatus::Code(5)));
+    assert!(took < std::time::Duration::from_secs(2), "{took:?}");
+    // 기본은 파이프가 닫힐 때까지 기다린다.
+    let (len, _, took) = run(false);
+    assert_eq!(len, 200000);
+    assert!(took >= std::time::Duration::from_secs(2), "{took:?}");
 }
 
 #[test]

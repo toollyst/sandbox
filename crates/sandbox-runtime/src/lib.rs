@@ -286,7 +286,8 @@ fn to_proto_user(u: &UserSpec) -> sandbox_proto::User {
     }
 }
 
-fn to_proto_exec(p: &ProcessDefaults, tty: bool, stdin: bool) -> sandbox_proto::Exec {
+/// `main`이면 기본 프로세스다: 끝나면 남은 자식의 출력을 기다리지 않는다(샌드박스가 곧 멈춘다).
+fn to_proto_exec(p: &ProcessDefaults, tty: bool, stdin: bool, main: bool) -> sandbox_proto::Exec {
     sandbox_proto::Exec {
         args: p.args.clone(),
         env: p.env.clone(),
@@ -295,6 +296,7 @@ fn to_proto_exec(p: &ProcessDefaults, tty: bool, stdin: bool) -> sandbox_proto::
         tty,
         stdin,
         size: None,
+        stop_output_at_exit: main,
     }
 }
 
@@ -444,7 +446,7 @@ impl Sandbox {
             .map_err(|e| record_failure(e.into()))?;
 
         let guest = rt.guest(&control);
-        let main = to_proto_exec(&spec.process, false, stdin);
+        let main = to_proto_exec(&spec.process, false, stdin, true);
         let mounts = spec.mounts.clone();
         let (vm, started) = blocking(move || {
             let mut vm = vm;
@@ -515,7 +517,7 @@ impl Sandbox {
     pub async fn exec_with(&self, spec: ExecSpec, stdin: bool) -> Result<Process, RuntimeError> {
         let (info, guest) = self.require_running("exec")?;
         let p = process::for_exec(&info.spec.process, &spec)?;
-        let x = to_proto_exec(&p, spec.tty, stdin);
+        let x = to_proto_exec(&p, spec.tty, stdin, false);
         let (conn, pid) = blocking(move || guest.exec(x)).await?;
         Ok(Process::spawn(conn, pid, None))
     }
