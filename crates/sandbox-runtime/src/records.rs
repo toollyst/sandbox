@@ -1,0 +1,267 @@
+//! data_dir의 샌드박스 기록.
+//!
+//! ```text
+//! <data_dir>/sandboxes/<id>/
+//!   spec.json          SandboxSpec (생성 시 고정)
+//!   state.json         StateRecord
+//!   scratch.img        쓰기 가능 디스크 (생성 시 빈 sparse 파일. 게스트가 첫 부팅 때 포맷한다)
+//!   owner.lock         VM을 띄운 프로세스가 실행 중 배타 잠금을 쥔다
+//!   logs/executor.log  실행기의 진단 출력
+//! ```
+//!
+//! - 만들기는 임시 디렉터리에 다 쓴 뒤 rename한다. 그래서 반쯤 만든 샌드박스는 목록에 나오지 않는다.
+//! - 상태 쓰기는 임시 파일에 쓴 뒤 rename한다.
+//! - 게스트 연결 소켓은 여기 두지 않는다. Unix 소켓 경로 길이 제한(약 100바이트) 때문에 짧은 `socket_dir`에 두고,
+//!   실행 중일 때 그 경로를 `state.json`의 `control`에 적는다. 다른 프로세스는 적힌 경로로 연결한다.
+//! - **소유자**: `running` 기록은 `owner.lock`을 누군가 쥐고 있을 때만 믿는다. 잠금이 풀려 있으면
+//!   소유 프로세스가 죽은 것이다(VM도 실행기 규약에 따라 끝났다). 그때는 `stopped`로 보고 이유를 붙인다.
+
+use std::fs::{self, File, OpenOptions, TryLockError};
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use sandbox_model::{SandboxId, SandboxSpec, State};
+use serde::{Deserialize, Serialize};
+
+use crate::error::RuntimeError;
+
+/// `state.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StateRecord {
+    /// 상태.
+    pub state: State,
+    /// `stopped`에 딸린 오류 정보.
+    #[serde(default)]
+    pub error: Option<String>,
+    /// 실행기 프로세스 ID (실행 중일 때, 알면).
+    #[serde(default)]
+    pub pid: Option<u32>,
+    /// 기본 프로세스의 종료 코드 (끝났을 때).
+    #[serde(default)]
+    pub exit_code: Option<i32>,
+    /// 게스트 연결 소켓 (실행 중일 때).
+    #[serde(default)]
+    pub control: Option<PathBuf>,
+}
+
+impl StateRecord {
+    /// 그 상태만 있는 기록.
+    pub fn new(state: State) -> Self {
+        Self {
+            state,
+            error: None,
+            pid: None,
+            exit_code: None,
+            control: None,
+        }
+    }
+}
+
+/// 소유 프로세스가 사라졌을 때 붙이는 이유.
+pub const OWNER_GONE: &str = "the process that started this sandbox exited";
+
+/// 샌드박스 하나의 경로.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Paths {
+    /// 디렉터리.
+    pub dir: PathBuf,
+}
+
+impl Paths {
+    /// data_dir과 ID로.
+    pub fn new(data_dir: &Path, id: &SandboxId) -> Self {
+        Self {
+            dir: data_dir.join("sandboxes").join(id.as_str()),
+        }
+    }
+
+    /// `spec.json`.
+    pub fn spec(&self) -> PathBuf {
+        self.dir.join("spec.json")
+    }
+    /// `state.json`.
+    pub fn state(&self) -> PathBuf {
+        self.dir.join("state.json")
+    }
+    /// `scratch.img`.
+    pub fn scratch(&self) -> PathBuf {
+        self.dir.join("scratch.img")
+    }
+    /// `owner.lock`.
+    pub fn owner_lock(&self) -> PathBuf {
+        self.dir.join("owner.lock")
+    }
+    /// `logs/executor.log`.
+    pub fn executor_log(&self) -> PathBuf {
+        self.dir.join("logs").join("executor.log")
+    }
+}
+
+static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn temp(dir: &Path, name: &str) -> PathBuf {
+    dir.join(format!(
+        ".{name}.tmp-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
+fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let t = temp(dir, &name);
+    let r = (|| {
+        let mut f = File::create(&t)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        fs::rename(&t, path)
+    })();
+    if r.is_err() {
+        let _ = fs::remove_file(&t);
+    }
+    r
+}
+
+fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, RuntimeError> {
+    let bytes = fs::read(path)?;
+    serde_json::from_slice(&bytes).map_err(|e| RuntimeError::Corrupt {
+        path: path.to_owned(),
+        reason: e.to_string(),
+    })
+}
+
+fn to_json<T: Serialize>(v: &T) -> io::Result<Vec<u8>> {
+    serde_json::to_vec_pretty(v).map_err(io::Error::other)
+}
+
+/// 새 ID. 64자리 16진수 (Docker와 같은 모양).
+pub fn new_id() -> SandboxId {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+    let mut out = String::with_capacity(64);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    for i in 0..4u64 {
+        // RandomState는 프로세스마다 무작위 키를 쓴다. 시각, PID, 순번을 더해 섞는다.
+        let mut h = RandomState::new().build_hasher();
+        h.write_u128(now);
+        h.write_u32(std::process::id());
+        h.write_u64(COUNTER.fetch_add(1, Ordering::Relaxed));
+        h.write_u64(i);
+        out.push_str(&format!("{:016x}", h.finish()));
+    }
+    SandboxId::new(&out).expect("hex id is valid")
+}
+
+/// 만든다. 다 쓴 뒤에 제자리로 옮긴다.
+pub fn create(
+    data_dir: &Path,
+    id: &SandboxId,
+    spec: &SandboxSpec,
+    scratch_mib: u32,
+) -> Result<(), RuntimeError> {
+    let parent = data_dir.join("sandboxes");
+    fs::create_dir_all(&parent)?;
+    let staging = temp(&parent, id.as_str());
+    let r = (|| -> Result<(), RuntimeError> {
+        fs::create_dir(&staging)?;
+        let p = Paths {
+            dir: staging.clone(),
+        };
+        atomic_write(&p.spec(), &to_json(spec)?)?;
+        atomic_write(&p.state(), &to_json(&StateRecord::new(State::Created))?)?;
+        File::create(p.scratch())?.set_len(u64::from(scratch_mib) << 20)?;
+        File::create(p.owner_lock())?;
+        fs::create_dir(p.dir.join("logs"))?;
+        fs::rename(&staging, Paths::new(data_dir, id).dir)?;
+        Ok(())
+    })();
+    if r.is_err() {
+        let _ = fs::remove_dir_all(&staging);
+    }
+    r
+}
+
+/// 상태를 쓴다.
+pub fn write_state(paths: &Paths, state: &StateRecord) -> Result<(), RuntimeError> {
+    Ok(atomic_write(&paths.state(), &to_json(state)?)?)
+}
+
+/// 읽는다. 없거나 만드는 중이면 `None`. 소유자가 사라진 `running`은 `stopped`로 고쳐 돌려준다(파일은 바꾸지 않는다).
+pub fn read(paths: &Paths) -> Result<Option<(SandboxSpec, StateRecord)>, RuntimeError> {
+    if !paths.spec().is_file() || !paths.state().is_file() {
+        return Ok(None);
+    }
+    let spec: SandboxSpec = read_json(&paths.spec())?;
+    let mut state: StateRecord = read_json(&paths.state())?;
+    if state.state == State::Running && !is_owned(paths)? {
+        state = StateRecord {
+            state: State::Stopped,
+            error: Some(OWNER_GONE.into()),
+            pid: None,
+            exit_code: state.exit_code,
+            control: None,
+        };
+    }
+    Ok(Some((spec, state)))
+}
+
+/// 지운다.
+pub fn remove(paths: &Paths) -> Result<(), RuntimeError> {
+    Ok(fs::remove_dir_all(&paths.dir)?)
+}
+
+/// 소유자 잠금. 살아 있는 동안 이 프로세스가 VM을 소유한다.
+#[derive(Debug)]
+pub struct OwnerLock {
+    _file: File,
+}
+
+fn open_lock(paths: &Paths) -> io::Result<File> {
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(paths.owner_lock())
+}
+
+/// 소유를 시도한다. 누가 쥐고 있으면 `None`.
+pub fn try_own(paths: &Paths) -> Result<Option<OwnerLock>, RuntimeError> {
+    let file = open_lock(paths)?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(OwnerLock { _file: file })),
+        Err(TryLockError::WouldBlock) => Ok(None),
+        Err(TryLockError::Error(e)) => Err(e.into()),
+    }
+}
+
+/// 누가 소유하고 있는지.
+pub fn is_owned(paths: &Paths) -> Result<bool, RuntimeError> {
+    Ok(try_own(paths)?.is_none())
+}
+
+/// data_dir의 모든 샌드박스 ID.
+pub fn ids(data_dir: &Path) -> Result<Vec<SandboxId>, RuntimeError> {
+    let dir = data_dir.join("sandboxes");
+    let entries = match fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    };
+    let mut out = Vec::new();
+    for entry in entries {
+        let name = entry?.file_name();
+        // 규칙에 맞지 않는 이름(만드는 중인 임시 디렉터리 등)은 건너뛴다.
+        if let Some(id) = name.to_str().and_then(|n| SandboxId::new(n).ok()) {
+            out.push(id);
+        }
+    }
+    out.sort();
+    Ok(out)
+}

@@ -1,10 +1,13 @@
-//! data_dir과 cache_dir 기본 위치. `--data-dir`/`--cache-dir`(또는 `SBX_DATA_DIR`/`SBX_CACHE_DIR`)이 우선한다.
+//! 기본 위치. 옵션(`--data-dir`, `--cache-dir`, `--socket-dir`, `--guest-init`)이나 같은 이름의 `SBX_*` 환경 변수가 우선한다.
 //!
-//! | OS | data_dir | cache_dir |
-//! |---|---|---|
-//! | macOS | `~/Library/Application Support/sbx` | `~/Library/Caches/sbx` |
-//! | Linux | `$XDG_DATA_HOME/sbx` 또는 `~/.local/share/sbx` | `$XDG_CACHE_HOME/sbx` 또는 `~/.cache/sbx` |
-//! | Windows | `%LOCALAPPDATA%\sbx\data` | `%LOCALAPPDATA%\sbx\cache` |
+//! | OS | data_dir | cache_dir | socket_dir |
+//! |---|---|---|---|
+//! | macOS | `~/Library/Application Support/sbx` | `~/Library/Caches/sbx` | `/tmp/sbx-$USER` |
+//! | Linux | `$XDG_DATA_HOME/sbx` 또는 `~/.local/share/sbx` | `$XDG_CACHE_HOME/sbx` 또는 `~/.cache/sbx` | `$XDG_RUNTIME_DIR/sbx` 또는 `/tmp/sbx-$USER` |
+//! | Windows | `%LOCALAPPDATA%\sbx\data` | `%LOCALAPPDATA%\sbx\cache` | `%LOCALAPPDATA%\sbx\run` |
+//!
+//! socket_dir은 Unix 소켓 경로 길이 제한 때문에 data_dir 밖의 짧은 경로다.
+//! guest_init 기본값은 `<cache_dir>/guest/<게스트 프로토콜 버전>/<arch>/initramfs`다.
 
 use std::env;
 use std::path::PathBuf;
@@ -42,4 +45,18 @@ pub fn cache_dir() -> Option<PathBuf> {
     } else {
         xdg("XDG_CACHE_HOME", ".cache").map(|p| p.join("sbx"))
     }
+}
+
+/// 기본 socket_dir.
+pub fn socket_dir() -> Option<PathBuf> {
+    if cfg!(windows) {
+        return env::var_os("LOCALAPPDATA").map(|p| PathBuf::from(p).join("sbx").join("run"));
+    }
+    if cfg!(target_os = "linux")
+        && let Some(run) = env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty())
+    {
+        return Some(PathBuf::from(run).join("sbx"));
+    }
+    let user = env::var("USER").unwrap_or_else(|_| "user".into());
+    Some(PathBuf::from(format!("/tmp/sbx-{user}")))
 }

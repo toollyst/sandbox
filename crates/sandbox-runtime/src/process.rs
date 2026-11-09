@@ -5,15 +5,45 @@
 //! | 결과 | 규칙 |
 //! |---|---|
 //! | argv | `Entrypoint` + `Cmd`. 호출자가 인자를 주면 `Cmd`만 대체한다. 호출자가 entrypoint를 주면 `Entrypoint`를 대체하고 `Cmd`는 비운다 |
-//! | env | 이미지 `Env`에 호출자 값을 덮어쓴다. 같은 키는 호출자 값이 이긴다. 순서는 이미지 순서 뒤에 새 키 |
+//! | env | 이미지 `Env`에 호출자 값을 덮어쓴다. 같은 키는 호출자 값이 이긴다. 순서는 이미지 순서 뒤에 새 키. 그래도 `PATH`가 없으면 [`DEFAULT_PATH`] |
 //! | cwd | 호출자 값 > `WorkingDir` > `/` |
 //! | user | 호출자 값 > `User` > root |
 //!
 //! argv가 비면 [`RuntimeError::NoCommand`]다.
+//!
+//! `exec`([`for_exec`])도 Docker `exec`와 같다: argv는 호출자 값, env는 기본 프로세스 env에 호출자 값을 덮어쓰고,
+//! cwd와 user는 호출자 값이 없으면 기본 프로세스의 값이다.
 
-use sandbox_model::{ImageConfig, ProcessDefaults, ProcessOverrides, UserSpec};
+use sandbox_model::{ExecSpec, ImageConfig, ProcessDefaults, ProcessOverrides, UserSpec};
 
 use crate::error::RuntimeError;
+
+/// 이미지에 `PATH`가 없을 때 넣는 값 (Docker와 같다).
+pub const DEFAULT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+
+fn overlay_env(base: &mut Vec<(String, String)>, over: &[(String, String)]) {
+    for (key, value) in over {
+        match base.iter_mut().find(|(k, _)| k == key) {
+            Some(slot) => slot.1 = value.clone(),
+            None => base.push((key.clone(), value.clone())),
+        }
+    }
+}
+
+/// `exec`로 실행할 프로세스를 정한다.
+pub fn for_exec(base: &ProcessDefaults, exec: &ExecSpec) -> Result<ProcessDefaults, RuntimeError> {
+    if exec.args.is_empty() {
+        return Err(RuntimeError::NoCommand);
+    }
+    let mut env = base.env.clone();
+    overlay_env(&mut env, &exec.env);
+    Ok(ProcessDefaults {
+        args: exec.args.clone(),
+        env,
+        cwd: exec.cwd.clone().unwrap_or_else(|| base.cwd.clone()),
+        user: exec.user.clone().unwrap_or_else(|| base.user.clone()),
+    })
+}
 
 /// 기본 프로세스를 정한다. 규칙은 모듈 문서의 표를 따른다.
 pub fn resolve(
@@ -37,11 +67,9 @@ pub fn resolve(
     }
 
     let mut env = image.env.clone();
-    for (key, value) in &overrides.env {
-        match env.iter_mut().find(|(k, _)| k == key) {
-            Some(slot) => slot.1 = value.clone(),
-            None => env.push((key.clone(), value.clone())),
-        }
+    overlay_env(&mut env, &overrides.env);
+    if !env.iter().any(|(k, _)| k == "PATH") {
+        env.push(("PATH".into(), DEFAULT_PATH.into()));
     }
 
     let cwd = overrides
@@ -180,6 +208,39 @@ mod tests {
         assert!(matches!(
             resolve(&bad, &ProcessOverrides::default()),
             Err(RuntimeError::InvalidUser(_))
+        ));
+    }
+
+    #[test]
+    fn missing_path_gets_docker_default() {
+        let bare = ImageConfig {
+            cmd: s(&["sh"]),
+            ..Default::default()
+        };
+        let env = resolve(&bare, &ProcessOverrides::default()).unwrap().env;
+        assert_eq!(env, vec![("PATH".into(), DEFAULT_PATH.into())]);
+    }
+
+    #[test]
+    fn exec_inherits_then_overrides() {
+        let base = resolve(&image(), &ProcessOverrides::default()).unwrap();
+        let x = ExecSpec {
+            args: s(&["id"]),
+            env: vec![("PATH".into(), "/x".into()), ("N".into(), "1".into())],
+            cwd: None,
+            user: None,
+            tty: false,
+        };
+        let p = for_exec(&base, &x).unwrap();
+        assert_eq!(p.args, s(&["id"]));
+        assert_eq!(p.cwd, base.cwd);
+        assert_eq!(p.user, base.user);
+        assert_eq!(p.env[0], ("PATH".into(), "/x".into()));
+        assert_eq!(p.env.last().unwrap(), &("N".into(), "1".into()));
+        let empty = ExecSpec { args: vec![], ..x };
+        assert!(matches!(
+            for_exec(&base, &empty),
+            Err(RuntimeError::NoCommand)
         ));
     }
 }

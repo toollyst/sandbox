@@ -28,6 +28,7 @@ use sandbox_model::{
 use sandbox_oci::{OciImageSource, Reference};
 use sandbox_rootfs::erofs::ErofsBuilder;
 use sandbox_runtime::{Runtime, RuntimeConfig, SandboxInfo};
+use sandbox_store::CacheLayout;
 
 use crate::behavior::{self, ImageMatch, LookupError, RmiAction, RmiDecision, Step};
 use crate::cli::{Cli, Command, ExecArgs, Format, RunArgs};
@@ -94,7 +95,7 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
         }
         Command::Start { id } => {
             let rt = ctx.runtime()?;
-            rt.get(&SandboxId::new(id)?).await?.start().await?;
+            rt.get(&SandboxId::new(id)?).await?.start(false).await?;
             println!("{id}");
             Ok(0)
         }
@@ -110,23 +111,32 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
 struct Ctx {
     data_dir: PathBuf,
     cache_dir: PathBuf,
+    socket_dir: PathBuf,
+    guest_init: Option<PathBuf>,
     executor: PathBuf,
     format: Format,
 }
 
 impl Ctx {
     fn new(cli: &Cli) -> AppResult<Self> {
+        let cache_dir = cli
+            .cache_dir
+            .clone()
+            .or_else(dirs::cache_dir)
+            .ok_or_else(|| msg("cannot determine a cache directory; use --cache-dir"))?;
         Ok(Self {
+            socket_dir: cli
+                .socket_dir
+                .clone()
+                .or_else(dirs::socket_dir)
+                .ok_or_else(|| msg("cannot determine a socket directory; use --socket-dir"))?,
+            guest_init: cli.guest_init.clone(),
             data_dir: cli
                 .data_dir
                 .clone()
                 .or_else(dirs::data_dir)
                 .ok_or_else(|| msg("cannot determine a data directory; use --data-dir"))?,
-            cache_dir: cli
-                .cache_dir
-                .clone()
-                .or_else(dirs::cache_dir)
-                .ok_or_else(|| msg("cannot determine a cache directory; use --cache-dir"))?,
+            cache_dir,
             executor: cli.executor.clone(),
             format: cli.format,
         })
@@ -148,11 +158,23 @@ impl Ctx {
         Ok(Arc::new(ProcessExecutor::new(&self.executor)?))
     }
 
+    /// 게스트 init. 지정하지 않으면 캐시의 `guest/<게스트 프로토콜 버전>/<arch>/initramfs`.
+    fn guest_init(&self) -> AppResult<PathBuf> {
+        if let Some(p) = &self.guest_init {
+            return Ok(p.clone());
+        }
+        Ok(CacheLayout::new(&self.cache_dir)
+            .guest_dir(&sandbox_proto::PROTOCOL_VERSION.to_string(), host_arch()?)
+            .join("initramfs"))
+    }
+
     fn runtime(&self) -> AppResult<Runtime> {
         Ok(Runtime::new(
             RuntimeConfig {
                 data_dir: self.data_dir.clone(),
                 cache_dir: self.cache_dir.clone(),
+                guest_init: self.guest_init()?,
+                socket_dir: self.socket_dir.clone(),
             },
             self.executor()?,
         )?)
@@ -436,7 +458,7 @@ impl Ctx {
     async fn run_sandbox(&self, a: &RunArgs) -> AppResult<u8> {
         let id = self.create(a).await?;
         let rt = self.runtime()?;
-        rt.get(&id).await?.start().await?;
+        rt.get(&id).await?.start(false).await?;
         if a.detach {
             println!("{id}");
             Ok(0)

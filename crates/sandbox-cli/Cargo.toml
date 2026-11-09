@@ -17,6 +17,7 @@ sandbox-model.workspace = true
 sandbox-executor.workspace = true
 sandbox-image.workspace = true
 sandbox-store.workspace = true
+sandbox-proto.workspace = true
 clap.workspace = true
 tokio.workspace = true
 serde_json.workspace = true

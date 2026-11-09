@@ -1233,6 +1233,7 @@ dependencies = [
  "sandbox-manage",
  "sandbox-model",
  "sandbox-oci",
+ "sandbox-proto",
  "sandbox-rootfs",
  "sandbox-runtime",
  "sandbox-store",

@@ -55,6 +55,22 @@ pub enum RuntimeError {
         /// 이유.
         reason: String,
     },
+    /// 게스트가 오류를 알림 (예: 실행 파일이 없음, 경로가 없음).
+    Guest(sandbox_proto::Error),
+    /// 게스트가 규약에 맞지 않는 것을 보냄.
+    Protocol(String),
+    /// 게스트에 연결할 수 없음.
+    GuestUnreachable(String),
+    /// 게스트 연결이 중간에 끊김 (VM이 끝났거나 멈춤).
+    Lost(String),
+    /// 요청 값이 잘못됨.
+    Invalid(String),
+    /// 게스트 init 파일이 없음.
+    GuestInitMissing(PathBuf),
+    /// 제어 소켓 경로가 Unix 소켓 길이 제한을 넘음.
+    SocketPathTooLong(PathBuf),
+    /// 다른 프로세스가 이 샌드박스의 VM을 소유하고 있어 할 수 없음.
+    OwnedElsewhere(SandboxId),
     /// 입출력 오류.
     Io(io::Error),
     /// 아직 구현하지 않은 기능.
@@ -89,6 +105,23 @@ impl fmt::Display for RuntimeError {
                 write!(f, "corrupt record {}: {reason}", path.display())
             }
             RuntimeError::Io(e) => write!(f, "io: {e}"),
+            RuntimeError::Guest(e) => write!(f, "{}", e.message),
+            RuntimeError::Protocol(m) => write!(f, "guest protocol violation: {m}"),
+            RuntimeError::GuestUnreachable(m) => write!(f, "cannot reach the guest: {m}"),
+            RuntimeError::Lost(m) => write!(f, "lost the guest connection: {m}"),
+            RuntimeError::Invalid(m) => f.write_str(m),
+            RuntimeError::GuestInitMissing(p) => {
+                write!(f, "guest init {} not found", p.display())
+            }
+            RuntimeError::SocketPathTooLong(p) => write!(
+                f,
+                "control socket path is too long for a Unix socket: {} (use a shorter data_dir)",
+                p.display()
+            ),
+            RuntimeError::OwnedElsewhere(id) => write!(
+                f,
+                "sandbox {id} was started by another process; only that process can do this"
+            ),
             RuntimeError::Unimplemented(what) => write!(f, "not implemented yet: {what}"),
         }
     }
