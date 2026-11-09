@@ -63,6 +63,9 @@ executor (VMM, adapter, and guest kernel) from the official executor repository.
 `/dev/kvm`, or an Apple Silicon Mac. Nothing runs as root. Set `SBX_VERSION`, `SBX_INSTALL_DIR`, or
 `SBX_NO_EXECUTOR=1` to change what it does; the script is [short](install.sh).
 
+Tab completion: `sbx completion bash|zsh|fish|powershell` prints a script for your shell (`sbx completion --help`
+shows where to put it).
+
 > The installer works from the first release on. Until then, build from source.
 
 Then skip to [Run things](#run-things).

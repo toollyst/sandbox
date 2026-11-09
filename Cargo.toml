@@ -27,6 +27,8 @@ tar = "0.4"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 reqwest = "0.13"
 clap = { version = "4", features = ["derive", "env"] }
+# sbx completion: clap 정의에서 셸 자동완성 스크립트를 만든다.
+clap_complete = "4"
 # 터미널 raw 모드와 크기 (CLI의 -t). events 기능은 쓰지 않는다.
 crossterm = { version = "0.29", default-features = false, features = ["windows"] }
 

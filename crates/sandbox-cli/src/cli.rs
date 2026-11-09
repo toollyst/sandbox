@@ -192,6 +192,14 @@ pub enum Command {
     },
     #[command(about = about("mcp"))]
     Mcp,
+    #[command(
+        about = about("completion"),
+        after_help = "Examples:\n  sbx completion bash > ~/.local/share/bash-completion/completions/sbx\n  sbx completion zsh > \"${fpath[1]}/_sbx\"\n  sbx completion fish > ~/.config/fish/completions/sbx.fish"
+    )]
+    Completion {
+        /// Shell to generate for.
+        shell: clap_complete::Shell,
+    },
 }
 
 /// `executor` 아래 명령.

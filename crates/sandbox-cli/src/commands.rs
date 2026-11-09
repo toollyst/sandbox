@@ -10,6 +10,8 @@ pub enum Group {
     Run,
     /// 위 명령들을 AI 에이전트용 규약으로 내보낸다(정책 없이).
     Agent,
+    /// 어느 코어도 부르지 않는다: 셸 연동.
+    Shell,
 }
 
 impl Group {
@@ -19,6 +21,7 @@ impl Group {
             Group::Manage => "setup",
             Group::Run => "sandbox",
             Group::Agent => "agent",
+            Group::Shell => "shell",
         }
     }
 }
@@ -119,6 +122,11 @@ pub const COMMANDS: &[Command] = &[
         "mcp",
         Group::Agent,
         "Serve sandboxes to AI agents over the Model Context Protocol (stdio)",
+    ),
+    cmd(
+        "completion",
+        Group::Shell,
+        "Print a shell completion script (bash, zsh, fish, powershell, elvish)",
     ),
 ];
 

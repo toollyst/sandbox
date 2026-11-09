@@ -21,6 +21,7 @@ sandbox-image.workspace = true
 sandbox-store.workspace = true
 sandbox-proto.workspace = true
 clap.workspace = true
+clap_complete.workspace = true
 crossterm.workspace = true
 tokio = { workspace = true, features = ["signal", "time", "net", "io-util", "io-std", "sync"] }
 serde_json.workspace = true

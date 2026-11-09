@@ -676,6 +676,9 @@ mod unix {
         };
         ok(&["ps", "-a"]);
         ok(&["images"]);
+        ok(&["completion", "bash"]);
+        let o = e.sbx(&["completion", "zsh"]);
+        assert!(text(&o.stdout).starts_with("#compdef sbx"), "{}", text(&o.stderr));
         let o = e.sbx(&["create", IMAGE]);
         let id = text(&o.stdout).trim().to_owned();
         ok(&["inspect", &id]);
