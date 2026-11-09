@@ -60,7 +60,10 @@ fn messages_roundtrip() {
     write_line(&mut buf, &Request::Kill {}).unwrap();
     let mut r = Cursor::new(buf);
     assert_eq!(read_line::<Request>(&mut r).unwrap(), Some(launch));
-    assert_eq!(read_line::<Request>(&mut r).unwrap(), Some(Request::Kill {}));
+    assert_eq!(
+        read_line::<Request>(&mut r).unwrap(),
+        Some(Request::Kill {})
+    );
     assert_eq!(read_line::<Request>(&mut r).unwrap(), None);
 }
 

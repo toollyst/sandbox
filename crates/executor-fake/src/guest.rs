@@ -34,14 +34,19 @@ mod unix {
         let _ = std::fs::remove_file(&path);
         let listener = UnixListener::bind(&path)?;
         let life = Arc::new(Life::default());
+        // 열린 연결. VM이 끝나면 모두 닫는다(실제 VM에서 전원이 꺼지면 연결이 사라지는 것과 같다).
+        let open: Arc<std::sync::Mutex<Vec<UnixStream>>> = Arc::default();
 
         let stop: Arc<dyn Fn(&str) + Send + Sync> = {
-            let (life, path) = (life.clone(), path.clone());
+            let (life, path, open) = (life.clone(), path.clone(), open.clone());
             Arc::new(move |reason: &str| {
                 if life.end(reason) {
                     // 기다리는 accept를 깨운다.
                     let _ = UnixStream::connect(&path);
                     let _ = std::fs::remove_file(&path);
+                    for c in open.lock().unwrap_or_else(|e| e.into_inner()).drain(..) {
+                        let _ = c.shutdown(std::net::Shutdown::Both);
+                    }
                 }
             })
         };
@@ -61,11 +66,16 @@ mod unix {
                     }
                     let Ok(mut conn) = conn else { continue };
                     let ctx = ctx.clone();
+                    let open = open.clone();
                     thread::spawn(move || {
                         match vsock::accept(&mut conn) {
                             Ok(port) if port == sandbox_proto::GUEST_PORT => {}
                             // 그 포트를 듣는 게스트가 없다: 답 없이 닫는다.
                             _ => return,
+                        }
+                        // 받아들인 연결만 VM 종료 때 닫을 목록에 넣는다.
+                        if let Ok(c) = conn.try_clone() {
+                            open.lock().unwrap_or_else(|e| e.into_inner()).push(c);
                         }
                         if vsock::ack(&mut conn, port_ack()).is_ok() {
                             server::serve(conn, &ctx);
