@@ -28,8 +28,15 @@
 | 10 | 실행 코어: create, start, exec, cp, stop, rm (attached) | fake 실행기로 통과 (실제 VM은 외부 실행기로 E2E) | 완료 (fake, macOS·Linux) |
 | 11 | CLI `run`, `create`, `start`, `exec`, `cp`, `stop`, `rm`, `ps`, `inspect` (뒤에 `restart`, `kill`, `wait`) | `sbx run alpine echo hi`가 `hi`를 출력 | fake 실행기로 끝-끝 완료 (`sandbox-cli/tests/e2e.rs`: 출력, 종료 코드 125/126/127, `-i`, 시그널 전달, cp, Docker식 stop(StopSignal → `-t` 뒤 끄기), kill, wait, restart). 실제 이미지·VM은 외부 실행기 E2E |
 
-VM을 실제로 띄우는 실행기(VMM, 게스트 커널)는 이 저장소 밖(fc-fork)의 책임이다. 여기서는 규약과 fake로 검증하고,
-실제 VM 검증은 규약을 지키는 외부 실행기로 하는 E2E에서 한다. 그것이 끝나면 성공 기준 1을 충족한다.
+VMM은 이 저장소 밖(Firecracker, 또는 같은 인터페이스를 구현한 fc-fork)의 것이다. 이 저장소에는 실행기 규약과,
+규약을 Firecracker 공개 인터페이스로 잇는 adapter(`executor-firecracker`)가 있다.
+
+**성공 기준 1 충족 (2026-11-09, macOS arm64 HVF, fc-fork + `executor-firecracker` + erofs·vsock을 켠 6.1 커널)**:
+`sbx run --rm alpine:3.20 echo hi`가 실제 microVM에서 `hi`를 출력했다(처음 pull·prepare 포함 3.0초, 이후 `run --rm ... true` 0.55초).
+같은 환경에서 확인: 종료 코드(7, 127), `-i`, `--cpus`·`-m`, overlay 루트, `run -d`·`ps`·`exec`·`cp`(양방향)·`logs`,
+`stop`(SIGTERM을 받아 0으로 끝남, 0.16초), 네트워크 차단(`lo`만), `--network allow`(허용 호스트로 apk·curl 200, 그 밖은 차단).
+알려진 차이: busybox `wget`은 HTTPS를 프록시에 `GET https://…`(절대 형식)로 보내 400을 받는다(`CONNECT`를 쓰는 curl, apk는 된다).
+Linux KVM(upstream Firecracker)과 CI 자동 실행은 남았다.
 
 ## M3. 격리와 수명
 
