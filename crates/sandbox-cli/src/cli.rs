@@ -12,39 +12,43 @@ use crate::commands::about;
 /// 출력 형식.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Format {
-    /// 사람이 읽는 표.
+    /// Human-readable table.
     Text,
-    /// 스크립트용 JSON.
+    /// JSON for scripts.
     Json,
 }
 
 /// `sbx`.
 #[derive(Debug, Parser)]
-#[command(name = "sbx", version, about = "microVM 샌드박스")]
+#[command(
+    name = "sbx",
+    version,
+    about = "Docker-style sandboxes, each in its own microVM"
+)]
 pub struct Cli {
-    /// 샌드박스 상태 디렉터리.
+    /// Directory for sandbox state.
     #[arg(long, global = true, env = "SBX_DATA_DIR")]
     pub data_dir: Option<PathBuf>,
-    /// 이미지 캐시 디렉터리.
+    /// Directory for the image cache.
     #[arg(long, global = true, env = "SBX_CACHE_DIR")]
     pub cache_dir: Option<PathBuf>,
-    /// 게스트 연결 소켓 디렉터리 (짧은 경로여야 한다).
+    /// Directory for guest connection sockets (must be a short path).
     #[arg(long, global = true, env = "SBX_SOCKET_DIR")]
     pub socket_dir: Option<PathBuf>,
-    /// 게스트 init initramfs. 기본은 sbx에 내장된 것.
+    /// Guest init initramfs. Defaults to the one embedded in sbx.
     #[arg(long, global = true, env = "SBX_GUEST_INIT")]
     pub guest_init: Option<PathBuf>,
-    /// 실행기 실행 파일 (`executor-proto` 규약). 경로가 아니면 PATH에서 찾는다.
-    /// 기본은 설치한 기본 실행기(`sbx executor use`), 없으면 PATH의 `sbx-executor`.
+    /// Executor program (speaks the executor protocol). Looked up on PATH unless it is a path.
+    /// Defaults to the installed default executor (`sbx executor use`), then `sbx-executor` on PATH.
     #[arg(long, global = true, env = "SBX_EXECUTOR")]
     pub executor: Option<PathBuf>,
-    /// detached 샌드박스를 소유할 shim 실행 파일. 기본은 sbx 옆의 `sbx-shim`, 없으면 PATH의 `sbx-shim`.
+    /// Shim program that owns detached sandboxes. Defaults to `sbx-shim` next to sbx, then on PATH.
     #[arg(long, global = true, env = "SBX_SHIM")]
     pub shim: Option<PathBuf>,
-    /// 출력 형식.
+    /// Output format.
     #[arg(long, global = true, value_enum, default_value_t = Format::Text)]
     pub format: Format,
-    /// 명령.
+    /// Command.
     #[command(subcommand)]
     pub command: Command,
 }
@@ -57,28 +61,28 @@ pub struct Cli {
 pub enum Command {
     #[command(about = about("pull"))]
     Pull {
-        /// linux/amd64 또는 linux/arm64. 기본은 호스트 아키텍처.
+        /// linux/amd64 or linux/arm64. Defaults to the host architecture.
         #[arg(long)]
         platform: Option<String>,
-        /// 이미지 참조.
+        /// Image reference.
         image: String,
     },
     #[command(about = about("prepare"))]
     Prepare {
-        /// rootfs 형식.
+        /// Root filesystem format.
         #[arg(long, default_value = DEFAULT_ROOTFS_FORMAT.as_str())]
         rootfs_format: RootfsFormat,
-        /// 이미지 참조 또는 ID.
+        /// Image reference or ID.
         image: String,
     },
     #[command(about = about("images"))]
     Images,
     #[command(about = about("rmi"))]
     Rmi {
-        /// 정지된 샌드박스가 쓰는 이미지, 참조가 여럿인 이미지도 지운다. 실행 중인 샌드박스의 이미지는 지우지 않는다.
+        /// Also remove images used by stopped sandboxes or with several references. Never removes images of running sandboxes.
         #[arg(short, long)]
         force: bool,
-        /// 이미지 참조 또는 ID.
+        /// Image references or IDs.
         #[arg(required = true)]
         images: Vec<String>,
     },
@@ -98,22 +102,22 @@ pub enum Command {
     Create(RunArgs),
     #[command(about = about("start"))]
     Start {
-        /// 붙어서 출력을 받고 기본 프로세스가 끝날 때까지 기다린다. 없으면 shim으로 시작하고 ID를 출력한다.
+        /// Attach: stream output and wait for the main process. Without it, start detached and print the ID.
         #[arg(short = 'a', long)]
         attach: bool,
-        /// 표준 입력을 연다 (붙는다).
+        /// Attach stdin.
         #[arg(short = 'i', long)]
         interactive: bool,
-        /// 샌드박스 ID.
+        /// Sandbox ID (or a unique prefix).
         id: String,
     },
     #[command(about = about("exec"))]
     Exec(ExecArgs),
     #[command(about = about("cp"))]
     Cp {
-        /// 원본 (호스트 경로 또는 ID:경로).
+        /// Source (host path or ID:PATH).
         src: String,
-        /// 대상 (호스트 경로 또는 ID:경로).
+        /// Destination (host path or ID:PATH).
         dst: String,
     },
     #[command(about = about("stop"))]
@@ -122,59 +126,59 @@ pub enum Command {
     Restart(StopArgs),
     #[command(about = about("kill"))]
     Kill {
-        /// 보낼 시그널 (이름 또는 번호).
+        /// Signal to send (name or number).
         #[arg(short = 's', long, default_value = "KILL")]
         signal: String,
-        /// 샌드박스 ID.
+        /// Sandbox ID (or a unique prefix).
         #[arg(required = true)]
         ids: Vec<String>,
     },
     #[command(about = about("wait"))]
     Wait {
-        /// 샌드박스 ID.
+        /// Sandbox ID (or a unique prefix).
         #[arg(required = true)]
         ids: Vec<String>,
     },
     #[command(about = about("rm"))]
     Rm {
-        /// 실행 중이면 멈추고 지운다.
+        /// Stop running sandboxes before removing them.
         #[arg(short, long)]
         force: bool,
-        /// 샌드박스 ID.
+        /// Sandbox ID (or a unique prefix).
         #[arg(required = true)]
         ids: Vec<String>,
     },
     #[command(about = about("attach"))]
     Attach {
-        /// 표준 입력을 전하지 않는다.
+        /// Do not forward stdin.
         #[arg(long)]
         no_stdin: bool,
-        /// 터미널이 아닐 때 받은 시그널을 기본 프로세스에 전한다.
+        /// Forward received signals to the main process (when it has no TTY).
         #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
         sig_proxy: bool,
-        /// 떨어지는 키 순서 (예: ctrl-p,ctrl-q).
+        /// Key sequence for detaching (e.g. ctrl-p,ctrl-q).
         #[arg(long, default_value = crate::attach::DetachKeys::DEFAULT)]
         detach_keys: String,
-        /// 샌드박스 ID.
+        /// Sandbox ID (or a unique prefix).
         id: String,
     },
     #[command(about = about("ps"))]
     Ps {
-        /// 멈춘 샌드박스도 보여준다.
+        /// Show stopped sandboxes too.
         #[arg(short, long)]
         all: bool,
     },
     #[command(about = about("inspect"))]
     Inspect {
-        /// 샌드박스 ID.
+        /// Sandbox ID (or a unique prefix).
         id: String,
     },
     #[command(about = about("logs"))]
     Logs {
-        /// 샌드박스가 멈출 때까지 새 출력을 계속 보여준다.
+        /// Keep streaming new output until the sandbox stops.
         #[arg(short, long)]
         follow: bool,
-        /// 샌드박스 ID.
+        /// Sandbox ID (or a unique prefix).
         id: String,
     },
 }
@@ -182,40 +186,40 @@ pub enum Command {
 /// `executor` 아래 명령.
 #[derive(Debug, Subcommand)]
 pub enum ExecutorCommand {
-    /// 설치한 실행기를 보여준다 (기본 실행기에 *).
+    /// List installed executors (* marks the default).
     Ls,
-    /// 실행기를 설치한다. `--from`이 없으면 실행기 저장소(`executor repo`)에서 받는다 (버전을 빼면 가장 높은 버전).
-    /// 설치한 실행기는 규약 버전과 아키텍처를 확인한다.
+    /// Install an executor. Without --from, download it from the executor repositories (latest version unless given).
+    /// The protocol version and architecture are checked before installing.
     Install {
-        /// 받지 않고 이것을 설치한다: 묶음 디렉터리(맨 위에 sbx-executor), 묶음 압축 파일(.tar.gz), 실행 파일 하나.
-        /// 이때는 버전이 꼭 있어야 한다.
+        /// Install this instead of downloading: a bundle directory (sbx-executor at the top), a .tar.gz bundle,
+        /// or a single executable. Requires NAME@VERSION.
         #[arg(long)]
         from: Option<PathBuf>,
-        /// `NAME[@VERSION]`.
+        /// NAME[@VERSION].
         #[arg(value_name = "EXECUTOR")]
         spec: String,
     },
-    /// 저장소에서 이 호스트에 설치할 수 있는 실행기를 보여준다.
+    /// List executors in the repositories that can be installed on this host.
     Search {
-        /// 이 이름만.
+        /// Only this name.
         #[arg(value_name = "NAME")]
         name: Option<String>,
     },
-    /// 기본 실행기를 정한다. 버전을 빼면 가장 높은 버전.
+    /// Set the default executor (latest installed version unless given).
     Use {
-        /// `NAME[@VERSION]`.
+        /// NAME[@VERSION].
         #[arg(value_name = "EXECUTOR")]
         spec: String,
     },
-    /// 실행기를 지운다.
+    /// Remove an installed executor.
     Rm {
         /// NAME@VERSION.
         #[arg(value_name = "EXECUTOR")]
         spec: String,
     },
-    /// 실행기 저장소 목록 (앞의 것이 먼저).
+    /// Manage executor repositories (earlier ones take precedence).
     Repo {
-        /// 하위 명령.
+        /// Subcommand.
         #[command(subcommand)]
         command: RepoCommand,
     },
@@ -224,18 +228,18 @@ pub enum ExecutorCommand {
 /// `executor repo` 아래 명령.
 #[derive(Debug, Subcommand)]
 pub enum RepoCommand {
-    /// 저장소 목록을 보여준다 (우선순위 순).
+    /// List repositories in priority order.
     Ls,
-    /// 저장소를 목록 끝에 더한다. 색인은 쓸 때 받는다.
+    /// Add a repository at the end of the list. Its index is fetched when used.
     Add {
-        /// 저장소 이름.
+        /// Repository name.
         name: String,
-        /// 저장소 URL (https, file, localhost의 http). `<URL>/index.json`이 색인이다.
+        /// Repository URL (https, file, or http on localhost). The index is `<URL>/index.json`.
         url: String,
     },
-    /// 저장소를 목록에서 뺀다.
+    /// Remove a repository from the list.
     Rm {
-        /// 저장소 이름.
+        /// Repository name.
         name: String,
     },
 }
@@ -243,13 +247,13 @@ pub enum RepoCommand {
 /// `stop`과 `restart`의 옵션.
 #[derive(Debug, Args)]
 pub struct StopArgs {
-    /// 먼저 보낼 시그널 (이름 또는 번호). 기본은 샌드박스의 `--stop-signal`, 이미지의 `StopSignal`, SIGTERM 순.
+    /// Signal to send first (name or number). Defaults to the sandbox's --stop-signal, the image's StopSignal, then SIGTERM.
     #[arg(short = 's', long)]
     pub signal: Option<String>,
-    /// 기다리는 시간(초). 넘으면 게스트를 끈다. 기본은 샌드박스의 `--stop-timeout`, 없으면 10.
+    /// Seconds to wait before powering the guest off. Defaults to the sandbox's --stop-timeout, then 10.
     #[arg(short = 't', long = "time")]
     pub time: Option<u64>,
-    /// 샌드박스 ID.
+    /// Sandbox ID (or a unique prefix).
     #[arg(required = true)]
     pub ids: Vec<String>,
 }
@@ -257,7 +261,7 @@ pub struct StopArgs {
 /// `run`에만 있는 옵션: 붙어서 실행하는지.
 #[derive(Debug, Args)]
 pub struct AttachArgs {
-    /// 붙지 않고 시작해 ID를 출력한다. 샌드박스는 sbx가 끝나도 남는다(`sandbox-shim`). `sbx attach`로 붙는다.
+    /// Run in the background and print the ID. The sandbox outlives sbx; use `sbx attach` to attach.
     #[arg(short = 'd', long)]
     pub detach: bool,
 }
@@ -265,66 +269,66 @@ pub struct AttachArgs {
 /// `run`과 `create`의 옵션. 이미지 이름 뒤의 인자는 모두 명령으로 넘어간다(Docker와 같다).
 #[derive(Debug, Args)]
 pub struct RunArgs {
-    /// 이미지 준비: missing, always, never.
+    /// Pull policy: missing, always, never.
     #[arg(long, default_value = "missing")]
     pub pull: PullPolicy,
-    /// rootfs 형식.
+    /// Root filesystem format.
     #[arg(long, default_value = DEFAULT_ROOTFS_FORMAT.as_str())]
     pub rootfs_format: RootfsFormat,
-    /// 끝나면 지운다. run에서만 된다(create에서는 오류).
+    /// Remove the sandbox when it exits (run only).
     #[arg(long)]
     pub rm: bool,
-    /// 기본 프로세스의 표준 입력을 연다. 샌드박스 설정으로 남아 시작할 때마다 연다.
+    /// Keep stdin open for the main process (kept in the sandbox's settings for every start).
     #[arg(short = 'i', long)]
     pub interactive: bool,
-    /// 기본 프로세스에 터미널을 붙인다. 샌드박스 설정으로 남는다.
+    /// Allocate a TTY for the main process (kept in the sandbox's settings).
     #[arg(short = 't', long)]
     pub tty: bool,
-    /// 환경 변수 K=V.
+    /// Environment variable K=V.
     #[arg(short = 'e', long = "env")]
     pub env: Vec<String>,
-    /// 작업 디렉터리.
+    /// Working directory.
     #[arg(short = 'w', long = "workdir")]
     pub workdir: Option<String>,
-    /// 사용자 (name, uid, name:group, uid:gid).
+    /// User (name, uid, name:group, uid:gid).
     #[arg(short = 'u', long)]
     pub user: Option<String>,
-    /// 이미지 ENTRYPOINT를 대체한다. 빈 문자열이면 지운다.
+    /// Override the image's ENTRYPOINT (an empty string clears it).
     #[arg(long)]
     pub entrypoint: Option<String>,
-    /// vCPU 개수.
+    /// Number of vCPUs (default 1).
     #[arg(long)]
     pub cpus: Option<String>,
-    /// 메모리 (예: 512m, 1g).
+    /// Memory (e.g. 512m, 1g; default 512m).
     #[arg(short = 'm', long)]
     pub memory: Option<String>,
-    /// hostname.
+    /// Hostname (defaults to the short sandbox ID).
     #[arg(long)]
     pub hostname: Option<String>,
-    /// 라벨 k=v.
+    /// Label k=v.
     #[arg(short = 'l', long = "label")]
     pub labels: Vec<String>,
-    /// `SRC:DST[:ro]` (type=bind의 줄임말).
+    /// Live-share a host directory: SRC:DST[:ro] (short for --mount type=bind; needs executor support).
     #[arg(short = 'v', long = "volume")]
     pub volumes: Vec<String>,
-    /// `type=bind|copy,source=...,target=...[,readonly]`
+    /// type=bind|copy,source=...,target=...[,readonly] (copy: copied in at start).
     #[arg(long = "mount")]
     pub mounts: Vec<String>,
-    /// 네트워크: none(차단) 또는 allow(--allow 목록만, 프록시로).
+    /// Network: none (no access) or allow (only --allow destinations, through a proxy).
     #[arg(long, default_value = "none")]
     pub network: String,
-    /// 멈출 때 기본 프로세스에 먼저 보낼 시그널. 기본은 이미지의 `StopSignal`, 없으면 SIGTERM.
+    /// Signal sent to the main process on stop. Defaults to the image's StopSignal, then SIGTERM.
     #[arg(long)]
     pub stop_signal: Option<String>,
-    /// 멈출 때 시그널 뒤 기다리는 시간(초). 기본은 10.
+    /// Seconds to wait after the stop signal before powering off (default 10).
     #[arg(long)]
     pub stop_timeout: Option<u32>,
-    /// `--network allow`에서 허용할 `HOST:PORT` (`*.example.com:443`, `10.0.0.5:*`, `[::1]:80`). 여러 번 준다.
+    /// Destination allowed with --network allow: HOST:PORT (*.example.com:443, 10.0.0.5:*, [::1]:80). Repeatable.
     #[arg(long = "allow")]
     pub allow: Vec<String>,
-    /// 이미지 참조 또는 ID.
+    /// Image reference or ID.
     pub image: String,
-    /// 실행할 명령과 인자.
+    /// Command and arguments.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub command: Vec<String>,
 }
@@ -332,24 +336,24 @@ pub struct RunArgs {
 /// `exec`의 옵션.
 #[derive(Debug, Args)]
 pub struct ExecArgs {
-    /// 표준 입력을 연다.
+    /// Keep stdin open.
     #[arg(short = 'i', long)]
     pub interactive: bool,
-    /// 터미널을 할당한다.
+    /// Allocate a TTY.
     #[arg(short = 't', long)]
     pub tty: bool,
-    /// 환경 변수 K=V.
+    /// Environment variable K=V.
     #[arg(short = 'e', long = "env")]
     pub env: Vec<String>,
-    /// 작업 디렉터리.
+    /// Working directory.
     #[arg(short = 'w', long = "workdir")]
     pub workdir: Option<String>,
-    /// 사용자.
+    /// User.
     #[arg(short = 'u', long)]
     pub user: Option<String>,
-    /// 샌드박스 ID.
+    /// Sandbox ID (or a unique prefix).
     pub id: String,
-    /// 실행할 명령과 인자.
+    /// Command and arguments.
     #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
     pub command: Vec<String>,
 }

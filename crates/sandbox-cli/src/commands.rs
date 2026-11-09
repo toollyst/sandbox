@@ -14,8 +14,8 @@ impl Group {
     /// 도움말에 붙이는 이름.
     pub const fn label(self) -> &'static str {
         match self {
-            Group::Manage => "관리",
-            Group::Run => "실행",
+            Group::Manage => "setup",
+            Group::Run => "sandbox",
         }
     }
 }
@@ -41,80 +41,76 @@ const fn cmd(name: &'static str, group: Group, summary: &'static str) -> Command
 
 /// 모든 명령.
 pub const COMMANDS: &[Command] = &[
-    cmd("pull", Group::Manage, "이미지를 받는다 (받기만 한다)"),
+    cmd("pull", Group::Manage, "Download an image (only downloads)"),
     cmd(
         "prepare",
         Group::Manage,
-        "이미지로 rootfs 디스크를 만든다 (이미 있으면 아무것도 하지 않는다)",
+        "Build the root filesystem disk for an image (no-op if it exists)",
     ),
     cmd(
         "images",
         Group::Manage,
-        "받아 둔 이미지와 준비된 rootfs 형식을 보여준다",
+        "List downloaded images and their prepared root filesystems",
     ),
     cmd(
         "rmi",
         Group::Manage,
-        "참조를 지우거나 이미지를 지운다 (쓰는 샌드박스가 있으면 거부, -f는 정지된 것만 무시)",
+        "Remove image references or images (refused while in use; -f ignores stopped sandboxes)",
     ),
     cmd(
         "executor",
         Group::Manage,
-        "실행기를 설치하고 고른다 (ls, install, search, use, rm, repo)",
+        "Install and choose executors (ls, install, search, use, rm, repo)",
     ),
     cmd(
         "run",
         Group::Run,
-        "샌드박스를 만들고 시작한다 (--pull=missing이 기본)",
+        "Create and start a sandbox (pulls missing images by default)",
     ),
-    cmd("create", Group::Run, "샌드박스를 만든다"),
+    cmd("create", Group::Run, "Create a sandbox"),
     cmd(
         "start",
         Group::Run,
-        "샌드박스를 시작한다 (-a는 붙어서 끝날 때까지 기다린다)",
+        "Start a sandbox (-a attaches and waits for it to exit)",
     ),
-    cmd(
-        "exec",
-        Group::Run,
-        "실행 중인 샌드박스 안에서 명령을 실행한다",
-    ),
+    cmd("exec", Group::Run, "Run a command in a running sandbox"),
     cmd(
         "cp",
         Group::Run,
-        "호스트와 샌드박스 사이에 파일을 복사한다 (샌드박스 쪽은 ID:경로)",
+        "Copy files between the host and a sandbox (ID:PATH on the sandbox side)",
     ),
     cmd(
         "stop",
         Group::Run,
-        "샌드박스를 멈춘다 (기본 프로세스에 시그널, -t초 뒤 게스트를 끈다)",
+        "Stop sandboxes (signal the main process, power off after -t seconds)",
     ),
-    cmd("restart", Group::Run, "샌드박스를 멈추고 다시 시작한다"),
+    cmd("restart", Group::Run, "Stop and start sandboxes again"),
     cmd(
         "kill",
         Group::Run,
-        "기본 프로세스에 시그널을 보낸다 (기본 KILL)",
+        "Send a signal to the main process (default KILL)",
     ),
     cmd(
         "wait",
         Group::Run,
-        "샌드박스가 멈출 때까지 기다리고 종료 코드를 출력한다",
+        "Wait for sandboxes to stop and print their exit codes",
     ),
     cmd(
         "rm",
         Group::Run,
-        "샌드박스를 지운다 (-f는 실행 중이면 멈추고 지운다)",
+        "Remove sandboxes (-f stops running ones first)",
     ),
     cmd(
         "attach",
         Group::Run,
-        "붙지 않고 시작한 샌드박스의 기본 프로세스에 붙는다 (Ctrl+P Ctrl+Q로 떨어진다)",
+        "Attach to the main process of a detached sandbox (detach with Ctrl-P Ctrl-Q)",
     ),
-    cmd("ps", Group::Run, "샌드박스 목록을 보여준다"),
-    cmd("inspect", Group::Run, "샌드박스 설정과 상태를 보여준다"),
+    cmd("ps", Group::Run, "List sandboxes"),
+    cmd("inspect", Group::Run, "Show a sandbox's settings and state"),
     cmd(
         "logs",
         Group::Run,
-        "detached로 시작한 샌드박스의 기본 프로세스 출력을 보여준다",
+        "Show the main process output of a detached sandbox",
     ),
 ];
 
