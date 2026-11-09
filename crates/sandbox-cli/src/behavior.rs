@@ -426,6 +426,60 @@ pub fn familiar(reference: &str) -> &str {
         .unwrap_or(reference)
 }
 
+/// 지난 시간을 Docker `ps`의 CREATED처럼 쓴다 ("3 minutes ago"). 기준은 Docker(go-units `HumanDuration`)와 같다.
+pub fn human_ago(elapsed: std::time::Duration) -> String {
+    let s = elapsed.as_secs();
+    let (m, h) = (s / 60, (s as f64 / 3600.0).round() as u64);
+    let plural = |n: u64, unit: &str| format!("{n} {unit}{}", if n == 1 { "" } else { "s" });
+    let d = if s < 1 {
+        "Less than a second".to_owned()
+    } else if s < 60 {
+        plural(s, "second")
+    } else if m == 1 {
+        "About a minute".to_owned()
+    } else if m < 60 {
+        plural(m, "minute")
+    } else if h == 1 {
+        "About an hour".to_owned()
+    } else if h < 48 {
+        plural(h, "hour")
+    } else if h < 24 * 7 * 2 {
+        plural(h / 24, "day")
+    } else if h < 24 * 30 * 2 {
+        plural(h / 24 / 7, "week")
+    } else if h < 24 * 365 * 2 {
+        plural(h / 24 / 30, "month")
+    } else {
+        plural(h / 24 / 365, "year")
+    };
+    format!("{d} ago")
+}
+
+/// UTC RFC 3339 (`2026-11-10T03:04:05Z`). JSON 출력에 쓴다.
+pub fn rfc3339(t: std::time::SystemTime) -> String {
+    let secs = t
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    // 일 수를 그레고리력 날짜로 (Howard Hinnant의 civil_from_days).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        rem / 3600,
+        rem / 60 % 60,
+        rem % 60
+    )
+}
+
 /// 사람이 읽는 크기. Docker처럼 1000 단위다.
 pub fn human_size(bytes: u64) -> String {
     const UNITS: [&str; 4] = ["B", "kB", "MB", "GB"];
@@ -444,7 +498,28 @@ pub fn human_size(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{familiar, human_size};
+    use super::{familiar, human_ago, human_size, rfc3339};
+    use std::time::{Duration, UNIX_EPOCH};
+
+    #[test]
+    fn times_read_like_docker() {
+        let ago = |s: u64| human_ago(Duration::from_secs(s));
+        assert_eq!(ago(0), "Less than a second ago");
+        assert_eq!(ago(1), "1 second ago");
+        assert_eq!(ago(59), "59 seconds ago");
+        assert_eq!(ago(90), "About a minute ago");
+        assert_eq!(ago(45 * 60), "45 minutes ago");
+        assert_eq!(ago(3600), "About an hour ago");
+        assert_eq!(ago(5 * 3600), "5 hours ago");
+        assert_eq!(ago(3 * 86_400), "3 days ago");
+        assert_eq!(ago(20 * 86_400), "2 weeks ago");
+        assert_eq!(ago(90 * 86_400), "3 months ago");
+        assert_eq!(ago(800 * 86_400), "2 years ago");
+        let at = |s: u64| rfc3339(UNIX_EPOCH + Duration::from_secs(s));
+        assert_eq!(at(0), "1970-01-01T00:00:00Z");
+        assert_eq!(at(951_782_400), "2000-02-29T00:00:00Z");
+        assert_eq!(at(1_793_574_245), "2026-11-01T23:04:05Z");
+    }
 
     #[test]
     fn familiar_names_and_sizes() {

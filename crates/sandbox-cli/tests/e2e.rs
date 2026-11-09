@@ -498,9 +498,15 @@ mod unix {
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
         let id = text(&o.stdout).trim().to_owned();
         assert_eq!(e.ps()[0]["name"], "web");
+        assert!(
+            e.ps()[0]["created"].as_str().unwrap().ends_with('Z'),
+            "{:?}",
+            e.ps()
+        );
         let o = e.sbx(&["ps", "-a"]);
         let header = text(&o.stdout).lines().next().unwrap().to_owned();
         assert!(header.trim_end().ends_with("NAMES"), "{header}");
+        assert!(text(&o.stdout).contains(" ago "), "{}", text(&o.stdout));
         assert!(
             text(&o.stdout)
                 .lines()

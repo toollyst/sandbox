@@ -139,6 +139,8 @@ pub struct SandboxInfo {
     pub control: Option<PathBuf>,
     /// 게스트 안 나가는 연결 프록시의 포트 (실행 중이고 네트워크를 허용했을 때).
     pub egress_port: Option<u16>,
+    /// 만든 시각. 만든 뒤 바뀌지 않는 설정 파일의 수정 시각이다. 파일 시스템이 주지 않으면 `None`.
+    pub created: Option<std::time::SystemTime>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -277,17 +279,19 @@ impl Runtime {
     }
 
     fn read_info(&self, id: &SandboxId) -> Result<Option<SandboxInfo>, RuntimeError> {
-        Ok(
-            records::read(&self.paths(id))?.map(|(spec, state)| SandboxInfo {
-                id: id.clone(),
-                spec,
-                state: state.state,
-                error: state.error,
-                exit_code: state.exit_code,
-                control: state.control,
-                egress_port: state.egress_port,
-            }),
-        )
+        let paths = self.paths(id);
+        Ok(records::read(&paths)?.map(|(spec, state)| SandboxInfo {
+            id: id.clone(),
+            spec,
+            state: state.state,
+            error: state.error,
+            exit_code: state.exit_code,
+            control: state.control,
+            egress_port: state.egress_port,
+            created: std::fs::metadata(paths.spec())
+                .and_then(|m| m.modified())
+                .ok(),
+        }))
     }
 
     /// data_dir의 모든 샌드박스. ID 순서.

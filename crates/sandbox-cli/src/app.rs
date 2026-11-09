@@ -861,6 +861,9 @@ impl Ctx {
             .into_iter()
             .filter(|s| all || s.state == State::Running)
             .collect();
+        // 새로 만든 것이 위로 (Docker와 같다).
+        let mut list = list;
+        list.sort_by_key(|s| std::cmp::Reverse(s.created));
         if quiet {
             for s in &list {
                 println!("{}", short_id(&s.id));
@@ -873,9 +876,10 @@ impl Ctx {
             return Ok(0);
         }
         println!(
-            "{:<14} {:<24} {:<30} {:<20} NAMES",
-            "SANDBOX ID", "IMAGE", "COMMAND", "STATUS"
+            "{:<14} {:<24} {:<30} {:<20} {:<20} NAMES",
+            "SANDBOX ID", "IMAGE", "COMMAND", "CREATED", "STATUS"
         );
+        let now = std::time::SystemTime::now();
         for s in &list {
             let image = self.image_name(&s.spec.image);
             let mut command = s.spec.process.args.join(" ");
@@ -889,11 +893,16 @@ impl Ctx {
             if let Some(e) = &s.error {
                 status = format!("{status}: {e}");
             }
+            let created = s
+                .created
+                .map(|t| behavior::human_ago(now.duration_since(t).unwrap_or_default()))
+                .unwrap_or_default();
             println!(
-                "{:<14} {:<24} {:<30} {:<20} {}",
+                "{:<14} {:<24} {:<30} {:<20} {:<20} {}",
                 short_id(&s.id),
                 image,
                 command,
+                created,
                 status,
                 s.spec.name.as_deref().unwrap_or("")
             );
@@ -934,6 +943,7 @@ fn info_json(s: &SandboxInfo) -> serde_json::Value {
     json!({
         "id": s.id,
         "name": s.spec.name,
+        "created": s.created.map(behavior::rfc3339),
         "state": s.state,
         "exit_code": s.exit_code,
         "error": s.error,
