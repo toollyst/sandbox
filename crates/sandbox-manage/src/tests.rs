@@ -37,6 +37,10 @@ enum T<'a> {
 
 /// (gzip blob, Layer 기술)
 fn layer(entries: &[T<'_>]) -> (Vec<u8>, Layer) {
+    layer_with(Compression::Gzip, entries)
+}
+
+fn layer_with(compression: Compression, entries: &[T<'_>]) -> (Vec<u8>, Layer) {
     let mut b = tar::Builder::new(Vec::new());
     for e in entries {
         let mut h = tar::Header::new_gnu();
@@ -64,14 +68,23 @@ fn layer(entries: &[T<'_>]) -> (Vec<u8>, Layer) {
         b.append_data(&mut h, path, data).unwrap();
     }
     let tar = b.into_inner().unwrap();
-    let mut gz = GzEncoder::new(Vec::new(), GzLevel::default());
-    gz.write_all(&tar).unwrap();
-    let blob = gz.finish().unwrap();
+    let blob = match compression {
+        Compression::None => tar.clone(),
+        Compression::Gzip => {
+            let mut gz = GzEncoder::new(Vec::new(), GzLevel::default());
+            gz.write_all(&tar).unwrap();
+            gz.finish().unwrap()
+        }
+        Compression::Zstd => ruzstd::encoding::compress_to_vec(
+            tar.as_slice(),
+            ruzstd::encoding::CompressionLevel::Fastest,
+        ),
+    };
     let l = Layer {
         digest: sha256(&blob),
         diff_id: sha256(&tar),
         size: blob.len() as u64,
-        compression: Compression::Gzip,
+        compression,
     };
     (blob, l)
 }
@@ -213,8 +226,13 @@ fn prepare_merges_layers_and_is_idempotent() {
         T::File("etc/hosts", b"old"),
         T::File("etc/gone", b"x"),
     ]);
-    let l2 = layer(&[T::File("etc/hosts", b"new"), T::Whiteout("etc/.wh.gone")]);
-    let m = manager(&root, FakeSource::new(vec![l1, l2]));
+    // 압축이 섞인 레이어도 차례로 합친다 (gzip, zstd, 압축 없음).
+    let l2 = layer_with(
+        Compression::Zstd,
+        &[T::File("etc/hosts", b"new"), T::Whiteout("etc/.wh.gone")],
+    );
+    let l3 = layer_with(Compression::None, &[T::Dir("etc")]);
+    let m = manager(&root, FakeSource::new(vec![l1, l2, l3]));
     let id = ready(m.pull("test", Platform { arch: Arch::X86_64 }))
         .unwrap()
         .record

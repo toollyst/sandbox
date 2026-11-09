@@ -221,6 +221,8 @@ pub enum Compression {
     None,
     /// gzip (tar+gzip).
     Gzip,
+    /// zstd (tar+zstd).
+    Zstd,
 }
 
 /// 이미지 레이어 하나.

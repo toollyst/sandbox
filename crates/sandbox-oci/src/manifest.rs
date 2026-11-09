@@ -413,16 +413,16 @@ mod tests {
             parse_document(None, schema1),
             Err(ImageError::Unsupported(_))
         ));
-        let zstd = format!(
+        let lz4 = format!(
             r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json",
               "config":{{"digest":"{}","size":1}},
-              "layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar+zstd","digest":"{}","size":1}}]}}"#,
+              "layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar+lz4","digest":"{}","size":1}}]}}"#,
             d('a'),
             d('b')
         );
         assert!(matches!(
-            parse_document(None, zstd.as_bytes()),
-            Err(ImageError::Unsupported(m)) if m.contains("zstd")
+            parse_document(None, lz4.as_bytes()),
+            Err(ImageError::Unsupported(m)) if m.contains("lz4")
         ));
         assert!(matches!(
             parse_document(None, b"not json"),

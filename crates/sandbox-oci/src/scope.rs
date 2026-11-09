@@ -32,6 +32,10 @@ pub const LAYER_MEDIA_TYPES: &[(&str, Compression)] = &[
         "application/vnd.docker.image.rootfs.diff.tar.gzip",
         Compression::Gzip,
     ),
+    (
+        "application/vnd.oci.image.layer.v1.tar+zstd",
+        Compression::Zstd,
+    ),
 ];
 
 /// 레이어 형식의 압축. 받지 않는 형식이면 `None`.
@@ -80,6 +84,10 @@ mod tests {
         );
         assert_eq!(
             layer_compression("application/vnd.oci.image.layer.v1.tar+zstd"),
+            Some(Compression::Zstd)
+        );
+        assert_eq!(
+            layer_compression("application/vnd.oci.image.layer.nondistributable.v1.tar"),
             None
         );
     }

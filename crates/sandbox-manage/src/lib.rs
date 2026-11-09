@@ -36,6 +36,7 @@ use sandbox_store::{ImageRecord, LeaseError, Store};
 
 mod error;
 mod layer;
+mod zstd;
 pub use error::ManageError;
 
 /// 받아 둔 이미지 하나.
@@ -177,6 +178,7 @@ impl Manager {
             let decoded: Box<dyn Read> = match l.compression {
                 Compression::None => Box::new(BufReader::new(file)),
                 Compression::Gzip => Box::new(GzDecoder::new(BufReader::new(file))),
+                Compression::Zstd => Box::new(zstd::ZstdReader::new(BufReader::new(file))),
             };
             let mut hashing = HashingReader::new(decoded);
             let entries = layer::read(index, &mut hashing, work.path())?;
