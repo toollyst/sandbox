@@ -174,6 +174,11 @@ pub enum HostMsg {
     End,
     /// 파일 시스템을 동기화하고 VM을 끈다. 게스트가 [`GuestMsg::Done`]을 보낸 뒤 끈다.
     Shutdown,
+    /// 경로 정보. 심볼릭 링크는 따라간다(`stat(2)`). 흐름: 게스트가 [`GuestMsg::Stat`].
+    Stat {
+        /// 절대 경로.
+        path: String,
+    },
 }
 
 /// 게스트 → 호스트.
@@ -205,6 +210,8 @@ pub enum GuestMsg {
     Done,
     /// 실패. 연결의 마지막 메시지.
     Error(Error),
+    /// [`HostMsg::Stat`]의 답. 없으면 `None`. 있으면 `path`가 마지막 이름인 항목이다.
+    Stat(Option<Entry>),
 }
 
 /// 복사 항목의 경로가 안전한 상대 경로인지 본다.
@@ -245,6 +252,7 @@ mod tag {
     pub const DATA: u8 = 0x0A;
     pub const END: u8 = 0x0B;
     pub const SHUTDOWN: u8 = 0x0C;
+    pub const STAT: u8 = 0x0D;
 
     pub const HELLO_ACK: u8 = 0x81;
     pub const STARTED: u8 = 0x82;
@@ -256,6 +264,7 @@ mod tag {
     pub const G_END: u8 = 0x88;
     pub const DONE: u8 = 0x89;
     pub const ERROR: u8 = 0x8A;
+    pub const G_STAT: u8 = 0x8B;
 }
 
 fn bad<T>(m: impl Into<String>) -> DecodeResult<T> {
@@ -430,6 +439,10 @@ impl HostMsg {
             }
             HostMsg::End => e = Encoder::new(tag::END),
             HostMsg::Shutdown => e = Encoder::new(tag::SHUTDOWN),
+            HostMsg::Stat { path } => {
+                e = Encoder::new(tag::STAT);
+                e.str(path);
+            }
         }
         e.finish()
     }
@@ -467,6 +480,7 @@ impl HostMsg {
             tag::DATA => HostMsg::Data(d.bytes()?.to_vec()),
             tag::END => HostMsg::End,
             tag::SHUTDOWN => HostMsg::Shutdown,
+            tag::STAT => HostMsg::Stat { path: d.string()? },
             t => return bad(format!("unknown host message {t:#04x}")),
         };
         d.end()?;
@@ -526,6 +540,10 @@ impl GuestMsg {
                 e = Encoder::new(tag::ERROR);
                 e.u8(x.kind.code()).str(&x.message);
             }
+            GuestMsg::Stat(x) => {
+                e = Encoder::new(tag::G_STAT);
+                e.opt(x.as_ref(), enc_entry);
+            }
         }
         e.finish()
     }
@@ -551,6 +569,7 @@ impl GuestMsg {
                 kind: ErrorKind::from_code(d.u8()?)?,
                 message: d.string()?,
             }),
+            tag::G_STAT => GuestMsg::Stat(d.opt(dec_entry)?),
             t => return bad(format!("unknown guest message {t:#04x}")),
         };
         d.end()?;

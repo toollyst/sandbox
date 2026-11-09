@@ -9,6 +9,8 @@
 //!   (쓰기 권한이 없는 디렉터리 안에도 쓸 수 있게, 안에 쓰면 수정 시각이 바뀌므로).
 //!   심볼릭 링크의 수정 시각은 두지 않는다.
 //!
+//! 정보(`Stat`): 심볼릭 링크를 따라간 결과다. 없으면 `None`. 이름이 없는 경로(`/`)는 이름 `/`로 답한다.
+//!
 //! 보내기(`CopyOut`)
 //! - 첫 항목은 요청 경로의 마지막 이름이다. 그 경로가 링크여도 따라가지 않는다.
 //! - 디렉터리 안은 이름 순서로 보낸다. 링크는 따라가지 않는다.
@@ -156,6 +158,44 @@ fn receive_inner(dest: &str, input: &mut impl Read) -> Result<(), Error> {
             .map_err(|e| io_error(&dir.display().to_string(), &e))?;
     }
     Ok(())
+}
+
+/// 경로 정보를 보낸다.
+pub fn stat(path: &str, out: &Out) {
+    let reply = (|| {
+        if !path.starts_with('/') {
+            return Err(invalid(format!("path must be absolute: {path:?}")));
+        }
+        let meta = match fs::metadata(path) {
+            Ok(m) => m,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(io_error(path, &e)),
+        };
+        let name = Path::new(path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("/")
+            .to_owned();
+        let kind = if meta.is_dir() {
+            FileKind::Dir
+        } else {
+            FileKind::File { size: meta.len() }
+        };
+        Ok(Some(Entry {
+            path: name,
+            kind,
+            mode: meta.mode() & 0o7777,
+            uid: meta.uid(),
+            gid: meta.gid(),
+            mtime: meta.mtime(),
+        }))
+    })();
+    match reply {
+        Ok(s) => {
+            let _ = out.send(&GuestMsg::Stat(s));
+        }
+        Err(e) => out.error(e),
+    }
 }
 
 /// `path`를 보낸다.

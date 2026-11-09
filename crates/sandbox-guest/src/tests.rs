@@ -513,3 +513,27 @@ fn copy_out_of_missing_path_is_not_found() {
     send(&mut c, HostMsg::CopyOut { path: "/".into() });
     assert_eq!(error_kind(&mut c), ErrorKind::InvalidArgument);
 }
+
+#[test]
+fn stat_follows_links_and_reports_missing() {
+    let f = Fixture::new("stat");
+    fs::create_dir(f.dir.join("d")).unwrap();
+    symlink(f.dir.join("d"), f.dir.join("l")).unwrap();
+    let stat = |p: &Path| {
+        let mut c = f.connect();
+        send(
+            &mut c,
+            HostMsg::Stat {
+                path: p.to_str().unwrap().into(),
+            },
+        );
+        match recv(&mut c) {
+            GuestMsg::Stat(s) => s,
+            other => panic!("{other:?}"),
+        }
+    };
+    let l = stat(&f.dir.join("l")).unwrap();
+    assert_eq!((l.path.as_str(), l.kind), ("l", FileKind::Dir));
+    assert_eq!(stat(&f.dir.join("nope")), None);
+    assert_eq!(stat(Path::new("/")).unwrap().path, "/");
+}

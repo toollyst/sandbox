@@ -58,6 +58,7 @@ fn host_samples() -> Vec<HostMsg> {
         HostMsg::Data(vec![0, 1, 2]),
         HostMsg::End,
         HostMsg::Shutdown,
+        HostMsg::Stat { path: "/w".into() },
     ]
 }
 
@@ -75,6 +76,8 @@ fn guest_samples() -> Vec<GuestMsg> {
         GuestMsg::Done,
         GuestMsg::Error(Error::new(ErrorKind::NotFound, "no such file")),
         GuestMsg::Error(Error::new(ErrorKind::Version, "")),
+        GuestMsg::Stat(None),
+        GuestMsg::Stat(Some(entry("w", FileKind::Dir))),
     ]
 }
 

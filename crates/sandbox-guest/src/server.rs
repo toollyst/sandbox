@@ -47,6 +47,7 @@ pub fn serve<C: Conn>(conn: C, ctx: &Ctx) {
         Ok(HostMsg::Exec(x)) => exec::run(x, &ctx.root, input, out),
         Ok(HostMsg::CopyIn { dest }) => copy::receive(&dest, &mut input, &out),
         Ok(HostMsg::CopyOut { path }) => copy::send(&path, &out),
+        Ok(HostMsg::Stat { path }) => copy::stat(&path, &out),
         Ok(HostMsg::Shutdown) => {
             sys::sync();
             let _ = out.send(&GuestMsg::Done);
