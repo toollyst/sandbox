@@ -327,6 +327,7 @@ impl Ctx {
                             .map(|u| format!("Untagged: {u}"))
                             .collect();
                         lines.push(format!("Deleted: {id}"));
+                        lines.extend(r.deleted_layers.iter().map(|d| format!("Deleted: {d}")));
                         Ok(lines)
                     }
                     RmiDecision::RefuseRunning(ids) => Err(msg(format!(

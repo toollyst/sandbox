@@ -299,3 +299,47 @@ fn remove_and_untag() {
     assert!(matches!(m.remove(&id), Err(ManageError::ImageNotFound(_))));
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn remove_deletes_only_layers_no_other_image_uses() {
+    let root = temp_root("remove-layers");
+    let base = layer(&[T::File("base", b"shared")]);
+    let only_a = layer(&[T::File("a", b"a")]);
+    let only_b = layer(&[T::File("b", b"b")]);
+    let (base_d, a_d, b_d) = (
+        base.1.digest.clone(),
+        only_a.1.digest.clone(),
+        only_b.1.digest.clone(),
+    );
+
+    let a = manager(&root, FakeSource::new(vec![base.clone(), only_a]));
+    let id_a = ready(a.pull("a", Platform { arch: Arch::X86_64 }))
+        .unwrap()
+        .record
+        .id;
+    let mut src_b = FakeSource::new(vec![base, only_b]);
+    src_b.image.id = ImageId::new(sha256(b"manifest b"));
+    src_b.image.reference = "docker.io/library/b:latest".into();
+    let b = manager(&root, src_b);
+    let id_b = ready(b.pull("b", Platform { arch: Arch::X86_64 }))
+        .unwrap()
+        .record
+        .id;
+
+    let r = a.remove(&id_a).unwrap();
+    assert_eq!(r.deleted_layers, vec![a_d.clone()]);
+    let layout = a.store().layout();
+    assert!(!layout.blob(&a_d).exists());
+    assert!(layout.blob(&base_d).is_file());
+
+    // 남은 이미지는 레이어가 다 있으므로 prepare된다.
+    assert!(ready(b.prepare(&id_b, RootfsFormat::Erofs)).unwrap());
+
+    let r = b.remove(&id_b).unwrap();
+    let mut expected = vec![base_d, b_d];
+    expected.sort();
+    assert_eq!(r.deleted_layers, expected);
+    assert_eq!(std::fs::read_dir(layout.blobs_dir()).unwrap().count(), 0);
+    assert_eq!(std::fs::read_dir(layout.pulls_dir()).unwrap().count(), 0);
+    std::fs::remove_dir_all(root).unwrap();
+}

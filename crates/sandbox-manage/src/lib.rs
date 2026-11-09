@@ -10,6 +10,8 @@
 //! - `prepare`는 이미 그 형식의 rootfs가 있으면 아무것도 하지 않는다. 레이어의 diff_id도 직접 계산해 대조한다.
 //!   만드는 동안 이미지에 공유 잠금을 쥐므로 그사이 이미지가 지워지지 않는다.
 //! - 자동 정리는 없다. 무엇을 언제 지울지는 관리하는 쪽(임베드한 앱이나 사람)이 정하고 `remove`를 부른다.
+//! - `remove`는 이미지를 지운 뒤 다른 이미지도, 진행 중인 pull도 쓰지 않는 레이어 blob을 지운다(Docker `rmi`와 같다).
+//!   동시에 같은 레이어를 쓰는 이미지를 받고 있어도 그 blob은 남는다([`write::claim_blobs`]).
 //! - `remove`는 실행 중인 샌드박스가 쓰는 이미지를 지우지 않는다. 강제할 수도 없다.
 //!   실행 중인지는 cache_dir의 잠금으로 알 수 있으므로 어느 data_dir의 샌드박스든 보호된다.
 //! - 정지된 샌드박스가 쓰는 이미지를 지울지는 이 크레이트가 판단하지 않는다. data_dir을 모르기 때문이다.
@@ -26,7 +28,7 @@ use std::sync::Arc;
 use flate2::read::GzDecoder;
 
 use sandbox_image::{ImageError, ImageSource, Platform};
-use sandbox_model::{Compression, ImageId, RootfsFormat};
+use sandbox_model::{Compression, Digest, ImageId, RootfsFormat};
 use sandbox_rootfs::{MergedTree, RootfsBuilder, RootfsError};
 use sandbox_store::digest::HashingReader;
 use sandbox_store::write::{self, BlobWriter, WorkDir};
@@ -122,6 +124,8 @@ pub struct Removal {
     pub untagged: Vec<String>,
     /// 이미지 자체를 지웠으면 그 ID.
     pub deleted: Option<ImageId>,
+    /// 함께 지운 레이어 blob. 다른 이미지가 쓰는 레이어는 남는다.
+    pub deleted_layers: Vec<Digest>,
 }
 
 /// 관리 코어.
@@ -176,6 +180,9 @@ impl Manager {
             .await
             .map_err(ManageError::Source)?;
         let layout = self.store.layout();
+        let digests: Vec<Digest> = resolved.layers.iter().map(|l| l.digest.clone()).collect();
+        // 이미지 기록을 쓸 때까지 쥔다. 그동안 rmi의 blob 정리가 이 레이어들을 지우지 않는다.
+        let _claim = write::claim_blobs(layout, &digests)?;
         for layer in &resolved.layers {
             if layout.blob(&layer.digest).is_file() {
                 continue;
@@ -304,13 +311,16 @@ impl Manager {
             Some(_) => Ok(Removal {
                 untagged: vec![reference.to_owned()],
                 deleted: None,
+                deleted_layers: Vec::new(),
             }),
             None => Err(ManageError::RefNotFound(reference.to_owned())),
         }
     }
 
-    /// 이미지와 그 이미지를 가리키는 참조를 모두 지운다.
+    /// 이미지와 그 이미지를 가리키는 참조를 모두 지우고, 더 쓰이지 않는 레이어 blob도 지운다.
     /// 실행 중인 샌드박스가 쓰고 있으면 [`ManageError::InUse`]다.
+    ///
+    /// blob 정리가 실패하면 오류를 돌려준다. 그때 이미지와 참조는 이미 지워졌다.
     pub fn remove(&self, image: &ImageId) -> Result<Removal, ManageError> {
         let layout = self.store.layout();
         if !layout.image_dir(image).is_dir() {
@@ -322,9 +332,11 @@ impl Manager {
             .ok_or_else(|| ManageError::InUse(image.clone()))?;
         let untagged = write::remove_refs_to(layout, image)?;
         write::remove_image(layout, image, lock)?;
+        let deleted_layers = write::collect_blobs(layout)?;
         Ok(Removal {
             untagged,
             deleted: Some(image.clone()),
+            deleted_layers,
         })
     }
 }
