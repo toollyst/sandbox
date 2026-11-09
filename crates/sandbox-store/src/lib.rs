@@ -14,7 +14,8 @@
 //!   images/<hex>/image.json     이미지 기록 ([`ImageRecord`])
 //!   images/<hex>/rootfs.<형식>  형식별 읽기 전용 rootfs (prepare한 것만)
 //!   images/<hex>/.lock          사용 중 보호용 잠금 파일
-//!   guest/<version>/<arch>/     게스트 기반 이미지 (커널, 게스트 init)
+//!   guest/<version>/<arch>/initramfs  게스트 init. version은 `sha256-<hex>`(sbx에 내장된 것을 관리 코어가
+//!                               꺼낸 것, 내용 digest) 또는 게스트 프로토콜 버전(사용자가 직접 둔 것)
 //!   pulls/<이름>                진행 중인 pull이 쓸 레이어 목록 (pull이 공유 잠금을 쥔다)
 //!   refs.json                   정규화된 참조 → 이미지 ID
 //!   tmp/                        prepare 작업 공간 (끝나면 지운다)
@@ -162,6 +163,11 @@ impl CacheLayout {
     /// 게스트 기반 이미지 디렉터리.
     pub fn guest_dir(&self, version: &str, arch: Arch) -> PathBuf {
         self.root.join("guest").join(version).join(arch.oci_name())
+    }
+
+    /// 게스트 init 파일.
+    pub fn guest_init(&self, version: &str, arch: Arch) -> PathBuf {
+        self.guest_dir(version, arch).join("initramfs")
     }
 
     /// 태그 기록.

@@ -28,7 +28,7 @@ use std::sync::Arc;
 use flate2::read::GzDecoder;
 
 use sandbox_image::{ImageSource, Platform};
-use sandbox_model::{Compression, Digest, ImageId, RootfsFormat};
+use sandbox_model::{Arch, Compression, Digest, ImageId, RootfsFormat};
 use sandbox_rootfs::{MergedTree, RootfsBuilder};
 use sandbox_store::digest::HashingReader;
 use sandbox_store::write::{self, BlobWriter, WorkDir};
@@ -247,6 +247,23 @@ impl Manager {
             }),
             None => Err(ManageError::RefNotFound(reference.to_owned())),
         }
+    }
+
+    /// 게스트 init 내용을 캐시에 둔다(sbx에 내장된 것을 꺼낼 때). 경로는 내용 digest로 정한다
+    /// (`guest/sha256-<hex>/<arch>/initramfs`). 같은 내용이 이미 있으면 그대로 두고, 깨져 있으면 다시 쓴다.
+    /// 쓰기는 임시 파일에 쓴 뒤 rename한다.
+    pub fn install_guest_init(&self, arch: Arch, bytes: &[u8]) -> Result<PathBuf, ManageError> {
+        let layout = self.store.layout();
+        let digest = sandbox_store::digest::sha256(bytes);
+        let path = layout.guest_init(&format!("sha256-{}", digest.hex()), arch);
+        if std::fs::read(&path).is_ok_and(|have| sandbox_store::digest::sha256(&have) == digest) {
+            return Ok(path);
+        }
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        write::atomic_write(&path, bytes)?;
+        Ok(path)
     }
 
     /// 이미지와 그 이미지를 가리키는 참조를 모두 지우고, 더 쓰이지 않는 레이어 blob도 지운다.
