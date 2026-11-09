@@ -287,15 +287,18 @@ fn to_proto_user(u: &UserSpec) -> sandbox_proto::User {
 }
 
 /// `main`이면 기본 프로세스다: 끝나면 남은 자식의 출력을 기다리지 않는다(샌드박스가 곧 멈춘다).
-fn to_proto_exec(p: &ProcessDefaults, tty: bool, stdin: bool, main: bool) -> sandbox_proto::Exec {
+fn to_proto_exec(p: &ProcessDefaults, io: IoMode, main: bool) -> sandbox_proto::Exec {
     sandbox_proto::Exec {
         args: p.args.clone(),
         env: p.env.clone(),
         cwd: p.cwd.clone(),
         user: to_proto_user(&p.user),
-        tty,
-        stdin,
-        size: None,
+        tty: io.tty.is_some(),
+        stdin: io.stdin,
+        size: io.tty.map(|t| WinSize {
+            rows: t.rows,
+            cols: t.cols,
+        }),
         stop_output_at_exit: main,
     }
 }
@@ -371,8 +374,8 @@ impl Sandbox {
     /// 순서: 소유 잠금 → 게스트 init 확인 → rootfs 잠금(이미지 삭제 방지) → VM 띄우기 → 게스트 준비 대기
     /// → copy 마운트 복사 → 기본 프로세스 실행 → `running` 기록.
     /// 중간에 실패하면 VM을 끝내고, 상태는 그대로 두고 오류를 기록한다.
-    /// `stdin`이면 기본 프로세스의 표준 입력을 연다.
-    pub async fn start(&self, stdin: bool) -> Result<Process, RuntimeError> {
+    /// 기본 프로세스의 입출력은 `io`대로 연다.
+    pub async fn start(&self, io: IoMode) -> Result<Process, RuntimeError> {
         let info = self.fresh()?;
         if !info.state.can_transition_to(State::Running) {
             return Err(RuntimeError::InvalidState {
@@ -446,7 +449,7 @@ impl Sandbox {
             .map_err(|e| record_failure(e.into()))?;
 
         let guest = rt.guest(&control);
-        let main = to_proto_exec(&spec.process, false, stdin, true);
+        let main = to_proto_exec(&spec.process, io, true);
         let mounts = spec.mounts.clone();
         let (vm, started) = blocking(move || {
             let mut vm = vm;
@@ -509,15 +512,20 @@ impl Sandbox {
     }
 
     /// 안에서 프로세스를 하나 더 실행한다. `running`에서만 할 수 있다. 규칙은 [`process::for_exec`].
+    /// 입출력은 [`IoMode::default`]에 `spec.tty`를 더한 것이다.
     pub async fn exec(&self, spec: ExecSpec) -> Result<Process, RuntimeError> {
-        self.exec_with(spec, false).await
+        self.exec_with(spec, IoMode::default()).await
     }
 
-    /// [`Sandbox::exec`]와 같고, `stdin`이면 표준 입력을 연다.
-    pub async fn exec_with(&self, spec: ExecSpec, stdin: bool) -> Result<Process, RuntimeError> {
+    /// [`Sandbox::exec`]와 같고, 입출력은 `io`대로 연다. `spec.tty`이고 `io.tty`가 없으면 터미널 크기는 게스트 기본값이다.
+    pub async fn exec_with(&self, spec: ExecSpec, io: IoMode) -> Result<Process, RuntimeError> {
         let (info, guest) = self.require_running("exec")?;
         let p = process::for_exec(&info.spec.process, &spec)?;
-        let x = to_proto_exec(&p, spec.tty, stdin, false);
+        let io = IoMode {
+            tty: io.tty.or(spec.tty.then_some(TtySize::GUEST_DEFAULT)),
+            ..io
+        };
+        let x = to_proto_exec(&p, io, false);
         let (conn, pid) = blocking(move || guest.exec(x)).await?;
         Ok(Process::spawn(conn, pid, None))
     }
@@ -646,6 +654,30 @@ impl Sandbox {
         }
         records::remove(&self.rt.paths(&info.id))
     }
+}
+
+/// 프로세스의 입출력 방식. 기본값은 표준 입력을 닫고 터미널 없이(출력은 stdout, stderr 따로)다.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IoMode {
+    /// 표준 입력을 연다. 아니면 처음부터 닫혀 있다.
+    pub stdin: bool,
+    /// 터미널을 붙인다. 값은 처음 크기다. 그러면 출력은 하나로 합쳐져 [`Output::Stdout`]으로만 온다.
+    /// 크기는 [`ProcessInput::resize`]로 바꾼다.
+    pub tty: Option<TtySize>,
+}
+
+/// 터미널 크기.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TtySize {
+    /// 줄 수.
+    pub rows: u16,
+    /// 열 수.
+    pub cols: u16,
+}
+
+impl TtySize {
+    /// 크기를 모를 때 게스트가 쓰는 크기 (24x80).
+    pub const GUEST_DEFAULT: TtySize = TtySize { rows: 24, cols: 80 };
 }
 
 /// 프로세스 출력 한 조각.

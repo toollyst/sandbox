@@ -185,13 +185,13 @@ fn create_writes_records_and_sparse_scratch() {
 fn main_process_exit_stops_the_sandbox_with_its_code() {
     let e = Env::new("mainexit");
     let s = e.sandbox(&["sh", "-c", "echo hi; exit 3"]);
-    let main = block_on(s.start(false)).unwrap();
+    let main = block_on(s.start(IoMode::default())).unwrap();
     assert_eq!(collect(main), ("hi\n".into(), "".into(), Some(3)));
     let info = e.wait_state(&s, State::Stopped);
     assert_eq!(info.exit_code, Some(3));
     assert_eq!(info.error, None);
     // 멈춘 뒤에는 다시 시작할 수 있다(Docker와 같다).
-    let main = block_on(s.start(false)).unwrap();
+    let main = block_on(s.start(IoMode::default())).unwrap();
     assert_eq!(block_on(main.wait()).unwrap(), 3);
 }
 
@@ -200,7 +200,7 @@ fn main_process_exit_stops_the_sandbox_with_its_code() {
 fn exec_while_running_then_stop() {
     let e = Env::new("exec");
     let s = e.sandbox(&["sh", "-c", "sleep 30"]);
-    let main = block_on(s.start(false)).unwrap();
+    let main = block_on(s.start(IoMode::default())).unwrap();
     assert_eq!(e.state(&s).state, State::Running);
 
     let mut x = exec(&["sh", "-c", "echo $FOO; echo err >&2; exit 4"]);
@@ -209,7 +209,14 @@ fn exec_while_running_then_stop() {
     assert_eq!(collect(p), ("bar\n".into(), "err\n".into(), Some(4)));
 
     // 표준 입력.
-    let p = block_on(s.exec_with(exec(&["cat"]), true)).unwrap();
+    let p = block_on(s.exec_with(
+        exec(&["cat"]),
+        IoMode {
+            stdin: true,
+            tty: None,
+        },
+    ))
+    .unwrap();
     p.write_stdin(b"piped");
     p.close_stdin();
     assert_eq!(collect(p).0, "piped");
@@ -237,7 +244,7 @@ fn exec_while_running_then_stop() {
 fn exec_failure_kinds_come_from_the_guest() {
     let e = Env::new("execfail");
     let s = e.sandbox(&["sh", "-c", "sleep 30"]);
-    let _main = block_on(s.start(false)).unwrap();
+    let _main = block_on(s.start(IoMode::default())).unwrap();
     match block_on(s.exec(exec(&["no-such-binary-xyz"]))) {
         Err(RuntimeError::CommandFailed(g)) => {
             assert_eq!(g.kind, sandbox_proto::ErrorKind::NotFound)
@@ -258,13 +265,13 @@ fn start_guards() {
     let s = e.sandbox(&["sh", "-c", "sleep 30"]);
     std::fs::remove_file(e.root.join("initramfs")).unwrap();
     assert!(matches!(
-        block_on(s.start(false)),
+        block_on(s.start(IoMode::default())),
         Err(RuntimeError::GuestInitMissing(_))
     ));
     std::fs::write(e.root.join("initramfs"), b"guest").unwrap();
-    let _main = block_on(s.start(false)).unwrap();
+    let _main = block_on(s.start(IoMode::default())).unwrap();
     assert!(matches!(
-        block_on(s.start(false)),
+        block_on(s.start(IoMode::default())),
         Err(RuntimeError::InvalidState { .. })
     ));
     assert!(matches!(
@@ -302,7 +309,7 @@ fn corrupt_records_are_errors() {
 fn copy_follows_docker_cp_rules() {
     let e = Env::new("cp");
     let s = e.sandbox(&["sh", "-c", "sleep 30"]);
-    let _main = block_on(s.start(false)).unwrap();
+    let _main = block_on(s.start(IoMode::default())).unwrap();
     // 호스트 원본.
     let src = e.root.join("src");
     std::fs::create_dir_all(src.join("sub")).unwrap();
@@ -383,7 +390,7 @@ fn copy_mounts_are_copied_before_the_main_process() {
         readonly: false,
     }];
     let s = block_on(e.rt.create(spec)).unwrap();
-    let main = block_on(s.start(false)).unwrap();
+    let main = block_on(s.start(IoMode::default())).unwrap();
     assert_eq!(collect(main), ("data".into(), "".into(), Some(0)));
 }
 
@@ -392,7 +399,7 @@ fn copy_mounts_are_copied_before_the_main_process() {
 fn main_command_that_cannot_start_leaves_the_sandbox_created() {
     let e = Env::new("mainfail");
     let s = e.sandbox(&["no-such-binary-xyz"]);
-    match block_on(s.start(false)) {
+    match block_on(s.start(IoMode::default())) {
         Err(RuntimeError::CommandFailed(g)) => {
             assert_eq!(g.kind, sandbox_proto::ErrorKind::NotFound)
         }
@@ -408,11 +415,32 @@ fn main_command_that_cannot_start_leaves_the_sandbox_created() {
 fn main_exit_is_reported_after_the_sandbox_is_stopped() {
     let e = Env::new("mainorder");
     let s = e.sandbox(&["sh", "-c", "exit 3"]);
-    let main = block_on(s.start(false)).unwrap();
+    let main = block_on(s.start(IoMode::default())).unwrap();
     assert_eq!(block_on(main.wait()).unwrap(), 3);
     // 기다리지 않고 곧바로: 이미 stopped이고 지울 수 있다.
     let info = e.state(&s);
     assert_eq!(info.state, State::Stopped);
     assert_eq!(info.exit_code, Some(3));
     block_on(block_on(e.rt.get(s.id())).unwrap().delete()).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn tty_merges_output_and_uses_the_requested_size() {
+    let e = Env::new("tty");
+    let s = e.sandbox(&["sh", "-c", "stty size; echo err >&2"]);
+    let tty = IoMode {
+        stdin: false,
+        tty: Some(TtySize { rows: 12, cols: 34 }),
+    };
+    let mut main = block_on(s.start(tty)).unwrap();
+    let mut out = Vec::new();
+    while let Some(o) = block_on(main.next()) {
+        match o {
+            Output::Stdout(b) => out.extend(b),
+            Output::Stderr(b) => panic!("stderr with a tty: {b:?}"),
+        }
+    }
+    assert_eq!(main.exit_code(), Some(0));
+    assert_eq!(String::from_utf8(out).unwrap(), "12 34\r\nerr\r\n");
 }
