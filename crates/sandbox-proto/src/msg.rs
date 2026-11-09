@@ -197,6 +197,20 @@ pub enum HostMsg {
         /// 읽기 전용으로 마운트한다.
         readonly: bool,
     },
+    /// 게스트 안의 나가는 연결 프록시를 `127.0.0.1`의 빈 포트에서 듣게 한다(이미 듣고 있으면 그대로).
+    /// 흐름: 게스트가 [`GuestMsg::Listening`].
+    EgressListen,
+    /// 이 연결을 나가는 연결 하나에 쓰라고 맡긴다. 게스트는 프록시 클라이언트가 올 때까지 쥐고 있다가
+    /// [`GuestMsg::Connect`]를 보낸다. 호스트는 [`HostMsg::Connected`]나 [`HostMsg::Refused`]로 답하고,
+    /// `Connected` 뒤로 이 연결은 프레임 없는 바이트 스트림이 된다(양쪽이 그대로 이어 붙인다).
+    EgressSlot,
+    /// [`GuestMsg::Connect`]의 답: 연결했다.
+    Connected,
+    /// [`GuestMsg::Connect`]의 답: 허용하지 않거나 연결하지 못했다. 연결의 마지막 메시지.
+    Refused {
+        /// 이유.
+        reason: String,
+    },
 }
 
 /// 게스트 → 호스트.
@@ -230,6 +244,18 @@ pub enum GuestMsg {
     Error(Error),
     /// [`HostMsg::Stat`]의 답. 없으면 `None`. 있으면 `path`가 마지막 이름인 항목이다.
     Stat(Option<Entry>),
+    /// [`HostMsg::EgressListen`]의 답: 프록시가 듣는 포트.
+    Listening {
+        /// `127.0.0.1`의 포트.
+        port: u16,
+    },
+    /// [`HostMsg::EgressSlot`]으로 맡긴 연결로 이 목적지에 연결해 달라는 요청.
+    Connect {
+        /// 프록시 클라이언트가 요청한 호스트(이름 또는 IP).
+        host: String,
+        /// 포트.
+        port: u16,
+    },
 }
 
 /// 복사 항목의 경로가 안전한 상대 경로인지 본다.
@@ -272,6 +298,10 @@ mod tag {
     pub const SHUTDOWN: u8 = 0x0C;
     pub const STAT: u8 = 0x0D;
     pub const SHARE: u8 = 0x0E;
+    pub const EGRESS_LISTEN: u8 = 0x0F;
+    pub const EGRESS_SLOT: u8 = 0x10;
+    pub const CONNECTED: u8 = 0x11;
+    pub const REFUSED: u8 = 0x12;
 
     pub const HELLO_ACK: u8 = 0x81;
     pub const STARTED: u8 = 0x82;
@@ -284,6 +314,8 @@ mod tag {
     pub const DONE: u8 = 0x89;
     pub const ERROR: u8 = 0x8A;
     pub const G_STAT: u8 = 0x8B;
+    pub const LISTENING: u8 = 0x8C;
+    pub const CONNECT: u8 = 0x8D;
 }
 
 fn bad<T>(m: impl Into<String>) -> DecodeResult<T> {
@@ -471,6 +503,13 @@ impl HostMsg {
                 e = Encoder::new(tag::SHARE);
                 e.str(tag).str(target).bool(*readonly);
             }
+            HostMsg::EgressListen => e = Encoder::new(tag::EGRESS_LISTEN),
+            HostMsg::EgressSlot => e = Encoder::new(tag::EGRESS_SLOT),
+            HostMsg::Connected => e = Encoder::new(tag::CONNECTED),
+            HostMsg::Refused { reason } => {
+                e = Encoder::new(tag::REFUSED);
+                e.str(reason);
+            }
         }
         e.finish()
     }
@@ -514,6 +553,12 @@ impl HostMsg {
                 tag: d.string()?,
                 target: d.string()?,
                 readonly: d.bool()?,
+            },
+            tag::EGRESS_LISTEN => HostMsg::EgressListen,
+            tag::EGRESS_SLOT => HostMsg::EgressSlot,
+            tag::CONNECTED => HostMsg::Connected,
+            tag::REFUSED => HostMsg::Refused {
+                reason: d.string()?,
             },
             t => return bad(format!("unknown host message {t:#04x}")),
         };
@@ -578,6 +623,14 @@ impl GuestMsg {
                 e = Encoder::new(tag::G_STAT);
                 e.opt(x.as_ref(), enc_entry);
             }
+            GuestMsg::Listening { port } => {
+                e = Encoder::new(tag::LISTENING);
+                e.u16(*port);
+            }
+            GuestMsg::Connect { host, port } => {
+                e = Encoder::new(tag::CONNECT);
+                e.str(host).u16(*port);
+            }
         }
         e.finish()
     }
@@ -604,6 +657,11 @@ impl GuestMsg {
                 message: d.string()?,
             }),
             tag::G_STAT => GuestMsg::Stat(d.opt(dec_entry)?),
+            tag::LISTENING => GuestMsg::Listening { port: d.u16()? },
+            tag::CONNECT => GuestMsg::Connect {
+                host: d.string()?,
+                port: d.u16()?,
+            },
             t => return bad(format!("unknown guest message {t:#04x}")),
         };
         d.end()?;

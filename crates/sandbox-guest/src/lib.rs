@@ -10,7 +10,7 @@
 //! ```text
 //! boot                          PID 1과 연결 처리 프로세스 (Linux)
 //! server                        연결 하나: 버전 확인, 요청을 나눠 보냄
-//! exec   copy                   요청별 처리
+//! exec   copy   egress          요청별 처리 (egress: 나가는 연결 프록시)
 //! wire   passwd  mkfs  cmdline  메시지 주고받기, 사용자 해석, scratch 포맷, 부팅 인자
 //! sys                           시스템 호출 (unsafe는 여기만)
 //! ```
@@ -24,6 +24,7 @@
 pub mod boot;
 pub mod cmdline;
 pub mod copy;
+pub mod egress;
 pub mod exec;
 pub mod mkfs;
 pub mod passwd;

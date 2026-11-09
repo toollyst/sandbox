@@ -51,6 +51,14 @@ pub fn poll_readable(
     }
 }
 
+/// 소켓의 보내는 쪽(`both`면 양쪽)을 닫는다.
+pub fn shutdown(fd: std::os::fd::BorrowedFd<'_>, both: bool) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let how = if both { libc::SHUT_RDWR } else { libc::SHUT_WR };
+    // SAFETY: fd는 BorrowedFd라 열려 있다. shutdown은 메모리를 건드리지 않는다.
+    check(unsafe { libc::shutdown(fd.as_raw_fd(), how) })
+}
+
 /// 의사 터미널 한 쌍 (주, 종)을 그 크기로 연다. 둘 다 exec할 때 닫히게(`FD_CLOEXEC`) 해 둔다.
 pub fn openpty(rows: u16, cols: u16) -> io::Result<(std::os::fd::OwnedFd, std::os::fd::OwnedFd)> {
     use std::os::fd::{FromRawFd, OwnedFd};

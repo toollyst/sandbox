@@ -176,12 +176,19 @@ impl From<io::Error> for ExecutorError {
 pub trait GuestConn: Read + Write + Send {
     /// 같은 연결을 가리키는 다른 핸들.
     fn try_clone_conn(&self) -> io::Result<Box<dyn GuestConn>>;
+
+    /// 보내는 쪽을 닫는다. 상대는 읽기에서 끝(EOF)을 보고, 이쪽은 계속 읽을 수 있다.
+    fn shutdown_write(&self) -> io::Result<()>;
 }
 
 #[cfg(unix)]
 impl GuestConn for std::os::unix::net::UnixStream {
     fn try_clone_conn(&self) -> io::Result<Box<dyn GuestConn>> {
         Ok(Box::new(self.try_clone()?))
+    }
+
+    fn shutdown_write(&self) -> io::Result<()> {
+        self.shutdown(std::net::Shutdown::Write)
     }
 }
 

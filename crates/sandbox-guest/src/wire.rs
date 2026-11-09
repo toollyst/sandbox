@@ -7,14 +7,26 @@ use std::sync::{Arc, Mutex};
 use sandbox_proto::{Error, ErrorKind, GuestMsg, HostMsg};
 
 /// 양방향 연결. 읽는 쪽과 쓰는 쪽을 다른 스레드에서 쓰려고 복제할 수 있어야 한다.
-pub trait Conn: Read + Write + Send + Sized + 'static {
+pub trait Conn: Read + Write + Send + Sync + Sized + 'static {
     /// 같은 연결을 가리키는 다른 핸들.
     fn try_clone(&self) -> io::Result<Self>;
+    /// 보내는 쪽만 닫는다(`shutdown(SHUT_WR)`). 다른 핸들로 계속 읽을 수 있다.
+    fn shutdown_write(&self) -> io::Result<()>;
+    /// 양쪽을 닫는다. 다른 핸들에서 막혀 있는 읽기도 끝난다.
+    fn shutdown_both(&self) -> io::Result<()>;
 }
 
 impl Conn for UnixStream {
     fn try_clone(&self) -> io::Result<Self> {
         UnixStream::try_clone(self)
+    }
+
+    fn shutdown_write(&self) -> io::Result<()> {
+        self.shutdown(std::net::Shutdown::Write)
+    }
+
+    fn shutdown_both(&self) -> io::Result<()> {
+        self.shutdown(std::net::Shutdown::Both)
     }
 }
 
@@ -22,6 +34,16 @@ impl Conn for UnixStream {
 impl Conn for std::fs::File {
     fn try_clone(&self) -> io::Result<Self> {
         std::fs::File::try_clone(self)
+    }
+
+    fn shutdown_write(&self) -> io::Result<()> {
+        use std::os::fd::AsFd;
+        crate::sys::shutdown(self.as_fd(), false)
+    }
+
+    fn shutdown_both(&self) -> io::Result<()> {
+        use std::os::fd::AsFd;
+        crate::sys::shutdown(self.as_fd(), true)
     }
 }
 

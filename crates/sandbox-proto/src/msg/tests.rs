@@ -66,6 +66,12 @@ fn host_samples() -> Vec<HostMsg> {
             target: "/data".into(),
             readonly: true,
         },
+        HostMsg::EgressListen,
+        HostMsg::EgressSlot,
+        HostMsg::Connected,
+        HostMsg::Refused {
+            reason: "not allowed".into(),
+        },
     ]
 }
 
@@ -85,6 +91,11 @@ fn guest_samples() -> Vec<GuestMsg> {
         GuestMsg::Error(Error::new(ErrorKind::Version, "")),
         GuestMsg::Stat(None),
         GuestMsg::Stat(Some(entry("w", FileKind::Dir))),
+        GuestMsg::Listening { port: 3128 },
+        GuestMsg::Connect {
+            host: "pypi.org".into(),
+            port: 443,
+        },
     ]
 }
 

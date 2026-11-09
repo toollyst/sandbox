@@ -46,6 +46,7 @@ impl Fixture {
                     root,
                     on_shutdown: Box::new(|| {}),
                     share: None,
+                    egress: Default::default(),
                 },
             )
         });
@@ -138,6 +139,7 @@ fn version_mismatch_is_reported() {
                 root: "/".into(),
                 on_shutdown: Box::new(|| {}),
                 share: None,
+                egress: Default::default(),
             },
         )
     });
@@ -155,6 +157,7 @@ fn request_before_hello_is_a_protocol_error() {
                 root: "/".into(),
                 on_shutdown: Box::new(|| {}),
                 share: None,
+                egress: Default::default(),
             },
         )
     });
@@ -391,6 +394,7 @@ fn shutdown_syncs_replies_then_calls_back() {
                 root: "/".into(),
                 on_shutdown: Box::new(move || flag.store(true, Ordering::SeqCst)),
                 share: None,
+                egress: Default::default(),
             },
         )
     });

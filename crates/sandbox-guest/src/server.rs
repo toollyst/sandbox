@@ -2,9 +2,11 @@
 
 use std::io;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use sandbox_proto::{Error, ErrorKind, GuestMsg, HostMsg, PROTOCOL_VERSION};
 
+use crate::egress::{Egress, Slot};
 use crate::wire::{Conn, Out, protocol};
 use crate::{copy, exec, sys};
 
@@ -17,6 +19,8 @@ pub struct Ctx {
     /// `Share` 요청을 처리한다: (태그, 대상 경로, 읽기 전용). 게스트에서는 virtio-fs를 마운트한다.
     /// 없으면 `Share`는 `InvalidArgument` 오류다.
     pub share: Option<ShareFn>,
+    /// 나가는 연결 프록시. 게스트 안에서 하나를 함께 쓴다.
+    pub egress: Arc<Egress>,
 }
 
 /// 공유 폴더를 붙이는 방법.
@@ -77,6 +81,17 @@ pub fn serve<C: Conn>(conn: C, ctx: &Ctx) {
                 ErrorKind::InvalidArgument,
                 "shares are not supported by this guest",
             )),
+        },
+        Ok(HostMsg::EgressListen) => match ctx.egress.listen() {
+            Ok(port) => {
+                let _ = out.send(&GuestMsg::Listening { port });
+            }
+            Err(e) => out.error(crate::wire::io_error("egress proxy", &e)),
+        },
+        Ok(HostMsg::EgressSlot) => match Slot::new(input) {
+            // 이 연결은 이제 프록시가 쓴다. 답은 쓸 때 보낸다.
+            Ok(slot) => ctx.egress.offer(slot),
+            Err(e) => out.error(crate::wire::io_error("egress slot", &e)),
         },
         Ok(HostMsg::Shutdown) => {
             sys::sync();
