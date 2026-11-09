@@ -9,7 +9,7 @@
 //! **터미널 없이**: [`FORWARDED_SIGNALS`]를 받으면 프로세스에 전한다.
 //!
 //! **`-t` (터미널)**, Docker와 같다:
-//! - 게스트 터미널의 처음 크기는 sbx 표준 출력 터미널의 크기다(터미널이 아니면 게스트 기본값).
+//! - 게스트 터미널의 처음 크기는 sbx 표준 출력 터미널의 크기다(터미널이 아니거나 크기가 0이면 게스트 기본값).
 //!   sbx 터미널의 크기가 바뀌면(SIGWINCH) 게스트에도 알린다.
 //! - `-i`이면 sbx의 터미널을 raw 모드로 바꾸고, 끝나면 되돌린다. 그래서 Ctrl+C 같은 키는 바이트로 게스트 터미널에 가고,
 //!   시그널은 게스트 터미널이 만든다. `-i`인데 표준 입력이 터미널이 아니면 오류다("the input device is not a TTY").
@@ -33,13 +33,13 @@ pub fn io_mode(interactive: bool, tty: bool) -> Result<IoMode, String> {
     })
 }
 
-/// sbx 표준 출력 터미널의 크기.
+/// sbx 표준 출력 터미널의 크기. 터미널이 아니거나 크기를 0으로 알리면(모름) `None`.
 fn host_size() -> Option<TtySize> {
     if !io::stdout().is_terminal() {
         return None;
     }
     let (cols, rows) = crossterm::terminal::size().ok()?;
-    Some(TtySize { rows, cols })
+    (rows > 0 && cols > 0).then_some(TtySize { rows, cols })
 }
 
 /// raw 모드를 켜 두고, 버려지면 되돌린다.
