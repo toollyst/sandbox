@@ -504,13 +504,101 @@ pub struct Mount {
 
 /// 네트워크 정책.
 ///
-/// 무엇을 허용할지는 호출자가 정하고, 샌드박스는 강제만 한다.
-/// 지금은 차단만 있다. 허용 방식은 로드맵에서 추가한다.
+/// 무엇을 허용할지는 호출자가 정하고, 샌드박스는 강제만 한다. 어느 경우든 VM에는 네트워크 장치가 없다.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NetworkPolicy {
     /// 네트워크 없음.
     Disabled,
+    /// 허용 목록에 맞는 TCP 연결만 호스트가 대신 연다(게스트 안의 HTTP 프록시를 거친다).
+    /// 목록은 비어 있지 않다. 규칙은 [`AllowRule`].
+    Allow(Vec<AllowRule>),
+}
+
+/// 허용 규칙 하나: `호스트:포트`.
+///
+/// - 호스트: 이름(대소문자 무시), `*.접미사`(그 아래 이름만, 접미사 자체는 아님), IP 주소(IPv6은 `[...]`로 감싼다).
+/// - 포트: 숫자, 또는 `*`(모든 포트). 생략할 수 없다.
+///
+/// 이름이 루프백, 사설, 링크 로컬 주소로 풀리면 거부한다(규칙이 그 주소를 IP로 직접 적었거나 이름이 `localhost`면 허용).
+/// 이것은 실행 코어가 연결할 때 강제한다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AllowRule {
+    /// 소문자 이름, `*.접미사`, 또는 IP 주소 문자열(IPv6은 괄호 없이).
+    pub host: String,
+    /// 포트. `None`이면 모든 포트.
+    pub port: Option<u16>,
+}
+
+impl AllowRule {
+    /// 규칙이 IP 주소를 직접 적었는지.
+    pub fn is_ip(&self) -> bool {
+        self.host.parse::<std::net::IpAddr>().is_ok()
+    }
+
+    /// 요청한 호스트(이름 또는 IP 문자열)와 포트가 이 규칙에 맞는지. 호스트는 대소문자를 무시한다.
+    pub fn matches(&self, host: &str, port: u16) -> bool {
+        if self.port.is_some_and(|p| p != port) {
+            return false;
+        }
+        let host = host.trim_end_matches('.').to_ascii_lowercase();
+        match self.host.strip_prefix("*.") {
+            Some(suffix) => host
+                .strip_suffix(suffix)
+                .is_some_and(|rest| rest.len() > 1 && rest.ends_with('.')),
+            None => host == self.host,
+        }
+    }
+}
+
+impl fmt::Display for AllowRule {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.host.contains(':') {
+            write!(f, "[{}]", self.host)?;
+        } else {
+            f.write_str(&self.host)?;
+        }
+        match self.port {
+            Some(p) => write!(f, ":{p}"),
+            None => f.write_str(":*"),
+        }
+    }
+}
+
+impl FromStr for AllowRule {
+    type Err = ParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let bad = || ParseError::new("allow rule (HOST:PORT or HOST:*)", s);
+        let (host, port) = if let Some(rest) = s.strip_prefix('[') {
+            let (h, p) = rest.split_once("]:").ok_or_else(bad)?;
+            h.parse::<std::net::Ipv6Addr>().map_err(|_| bad())?;
+            (h.to_owned(), p)
+        } else {
+            let (h, p) = s.rsplit_once(':').ok_or_else(bad)?;
+            if h.contains(':') {
+                return Err(bad());
+            }
+            (h.trim_end_matches('.').to_ascii_lowercase(), p)
+        };
+        let name = host.strip_prefix("*.").unwrap_or(&host);
+        let label_ok = |l: &str| {
+            !l.is_empty()
+                && l.len() <= 63
+                && l.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        };
+        let valid = host.parse::<std::net::IpAddr>().is_ok()
+            || (!name.is_empty() && name.len() <= 253 && name.split('.').all(label_ok));
+        if !valid {
+            return Err(bad());
+        }
+        let port = match port {
+            "*" => None,
+            p => Some(p.parse::<u16>().ok().filter(|&n| n != 0).ok_or_else(bad)?),
+        };
+        Ok(Self { host, port })
+    }
 }
 
 /// 샌드박스를 만드는 데 필요한 전부. 생성 후에는 바뀌지 않는다.
@@ -590,6 +678,46 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn allow_rules_parse_and_match() {
+        let r = |s: &str| s.parse::<AllowRule>().unwrap();
+        assert_eq!(
+            r("PyPI.org:443"),
+            AllowRule {
+                host: "pypi.org".into(),
+                port: Some(443)
+            }
+        );
+        assert_eq!(r("*.github.com:*").port, None);
+        assert_eq!(r("[::1]:8080").host, "::1");
+        assert_eq!(r("10.0.0.1:22").to_string(), "10.0.0.1:22");
+        assert_eq!(r("[::1]:*").to_string(), "[::1]:*");
+        for bad in [
+            "pypi.org",
+            "pypi.org:0",
+            "pypi.org:x",
+            ":443",
+            "a b:1",
+            "::1:80",
+            "[zz]:1",
+            "*.:1",
+        ] {
+            assert!(bad.parse::<AllowRule>().is_err(), "{bad}");
+        }
+
+        let exact = r("pypi.org:443");
+        assert!(exact.matches("PYPI.ORG", 443));
+        assert!(exact.matches("pypi.org.", 443));
+        assert!(!exact.matches("pypi.org", 80));
+        assert!(!exact.matches("files.pypi.org", 443));
+        let wild = r("*.github.com:*");
+        assert!(wild.matches("api.github.com", 1));
+        assert!(wild.matches("a.b.github.com", 443));
+        assert!(!wild.matches("github.com", 443));
+        assert!(!wild.matches("evilgithub.com", 443));
+        assert!(r("10.0.0.1:22").is_ip() && !exact.is_ip());
+    }
 
     #[test]
     fn sandbox_id_rules() {
