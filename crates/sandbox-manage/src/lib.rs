@@ -23,7 +23,7 @@
 
 use std::fmt;
 use std::fs::File;
-use std::io::{self, BufReader, Read};
+use std::io::{self, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -82,6 +82,39 @@ impl fmt::Debug for Manager {
     }
 }
 
+/// 받기 진행. 이미 있는 레이어는 세지 않는다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PullProgress {
+    /// 받을 레이어 수.
+    pub layers: usize,
+    /// 받은 레이어 수.
+    pub layers_done: usize,
+    /// 받을 바이트 (압축된 크기의 합).
+    pub bytes: u64,
+    /// 받은 바이트.
+    pub bytes_done: u64,
+}
+
+/// 쓴 바이트를 세어 알리는 `Write`.
+struct Counting<'a> {
+    inner: &'a mut (dyn Write + Send),
+    done: u64,
+    report: &'a (dyn Fn(u64) + Sync),
+}
+
+impl Write for Counting<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        self.done += n as u64;
+        (self.report)(self.done);
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
 impl Manager {
     /// 만든다. cache_dir이 없으면 만든다.
     pub fn new(
@@ -109,6 +142,17 @@ impl Manager {
         reference: &str,
         platform: Platform,
     ) -> Result<ImageInfo, ManageError> {
+        self.pull_with(reference, platform, &|_| {}).await
+    }
+
+    /// [`pull`](Self::pull)과 같고, 받는 동안 `progress`에 진행을 알린다. 받을 레이어 목록이 정해지면 한 번,
+    /// 그 뒤 바이트가 들어올 때마다 부른다. 보여주는 방식은 부르는 쪽이 정한다.
+    pub async fn pull_with(
+        &self,
+        reference: &str,
+        platform: Platform,
+        progress: &(dyn Fn(PullProgress) + Sync),
+    ) -> Result<ImageInfo, ManageError> {
         let resolved = self
             .source
             .resolve(reference, platform)
@@ -118,15 +162,38 @@ impl Manager {
         let digests: Vec<Digest> = resolved.layers.iter().map(|l| l.digest.clone()).collect();
         // 이미지 기록을 쓸 때까지 쥔다. 그동안 rmi의 blob 정리가 이 레이어들을 지우지 않는다.
         let _claim = write::claim_blobs(layout, &digests)?;
-        for layer in &resolved.layers {
-            if layout.blob(&layer.digest).is_file() {
-                continue;
-            }
+        let missing: Vec<_> = resolved
+            .layers
+            .iter()
+            .filter(|l| !layout.blob(&l.digest).is_file())
+            .collect();
+        let mut state = PullProgress {
+            layers: missing.len(),
+            layers_done: 0,
+            bytes: missing.iter().map(|l| l.size).sum(),
+            bytes_done: 0,
+        };
+        progress(state);
+        for layer in missing {
             let mut blob = BlobWriter::create(layout)?;
+            let start = state.bytes_done;
+            let mut counting = Counting {
+                inner: &mut blob,
+                done: 0,
+                report: &|n| {
+                    progress(PullProgress {
+                        bytes_done: start + n,
+                        ..state
+                    })
+                },
+            };
             self.source
-                .fetch_blob(&resolved.source, &layer.digest, &mut blob)
+                .fetch_blob(&resolved.source, &layer.digest, &mut counting)
                 .await
                 .map_err(ManageError::Source)?;
+            state.layers_done += 1;
+            state.bytes_done = start + layer.size;
+            progress(state);
             blob.commit(layout, &layer.digest).map_err(|e| {
                 if e.kind() == io::ErrorKind::InvalidData {
                     ManageError::Integrity(e.to_string())

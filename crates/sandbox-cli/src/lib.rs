@@ -24,6 +24,7 @@ pub mod executors;
 pub mod guest;
 pub mod mcp;
 pub mod parse;
+pub mod progress;
 
 /// 명령을 실행한다. `mcp`는 [`mcp::serve`]로, `completion`은 여기서, 나머지는 [`app::run`]으로 간다.
 pub async fn run(cli: cli::Cli) -> app::AppResult<u8> {

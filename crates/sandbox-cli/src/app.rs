@@ -41,6 +41,7 @@ use crate::attach::{self, attach};
 use crate::behavior::{self, ImageMatch, LookupError, RmiAction, RmiDecision, Step};
 use crate::cli::{AttachArgs, Cli, Command, ExecArgs, ExecutorCommand, Format, RunArgs, StopArgs};
 use crate::parse::{self, CpEndpoint};
+use crate::progress::Status;
 use crate::{dirs, executors, guest};
 
 /// 명령 결과. 성공하면 종료 코드.
@@ -409,7 +410,12 @@ impl Ctx {
             Some(p) => parse::platform(p)?,
             None => host_arch()?,
         };
-        let info = self.manager()?.pull(image, Platform { arch }).await?;
+        let status = Status::new();
+        let info = self
+            .manager()?
+            .pull_with(image, Platform { arch }, &|p| status.pull(image, p))
+            .await?;
+        status.clear();
         if self.json() {
             println!(
                 "{}",
@@ -424,7 +430,10 @@ impl Ctx {
     async fn prepare(&self, format: RootfsFormat, image: &str) -> AppResult<u8> {
         let m = self.manager()?;
         let found = self.require(&m, image)?;
+        let status = Status::new();
+        status.text(&format!("Preparing {format} rootfs for {image}…"));
         let built = m.prepare(found.id(), format).await?;
+        status.clear();
         if self.json() {
             println!(
                 "{}",
@@ -634,7 +643,13 @@ impl Ctx {
             match step {
                 Step::Pull => {
                     let arch = host_arch()?;
-                    let info = m.pull(image_name, Platform { arch }).await?;
+                    let status = Status::new();
+                    let info = m
+                        .pull_with(image_name, Platform { arch }, &|p| {
+                            status.pull(image_name, p)
+                        })
+                        .await?;
+                    status.clear();
                     eprintln!("{}: pulled {}", info.record.reference, info.record.id);
                     image = Some(info.record.id);
                 }
@@ -642,7 +657,11 @@ impl Ctx {
                     let id = image
                         .as_ref()
                         .ok_or_else(|| msg("internal: prepare before pull"))?;
-                    if m.prepare(id, format).await? {
+                    let status = Status::new();
+                    status.text(&format!("Preparing {format} rootfs for {image_name}…"));
+                    let built = m.prepare(id, format).await?;
+                    status.clear();
+                    if built {
                         eprintln!("{}: {format} rootfs prepared", short(id));
                     }
                 }

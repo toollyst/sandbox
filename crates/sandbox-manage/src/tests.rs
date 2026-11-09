@@ -204,6 +204,52 @@ fn pull_stores_verified_blobs_then_record_and_ref() {
 }
 
 #[test]
+fn pull_reports_progress_for_missing_layers_only() {
+    let root = temp_root("progress");
+    let a = layer(&[T::File("a", b"1")]);
+    let b = layer(&[T::File("b", b"22")]);
+    let (size_a, size_b) = (a.1.size, b.1.size);
+    let events = std::sync::Mutex::new(Vec::new());
+    let m = manager(&root, FakeSource::new(vec![a.clone(), b]));
+    let record = |p: PullProgress| events.lock().unwrap().push(p);
+    ready(m.pull_with("test", Platform { arch: Arch::X86_64 }, &record)).unwrap();
+    let got = std::mem::take(&mut *events.lock().unwrap());
+    let total = size_a + size_b;
+    assert_eq!(
+        got.first().copied(),
+        Some(PullProgress {
+            layers: 2,
+            layers_done: 0,
+            bytes: total,
+            bytes_done: 0
+        })
+    );
+    assert_eq!(
+        got.last().copied(),
+        Some(PullProgress {
+            layers: 2,
+            layers_done: 2,
+            bytes: total,
+            bytes_done: total
+        })
+    );
+    assert!(
+        got.windows(2).all(|w| w[0].bytes_done <= w[1].bytes_done),
+        "{got:?}"
+    );
+
+    // 이미 있는 레이어는 세지 않는다.
+    let m = manager(
+        &root,
+        FakeSource::new(vec![a, layer(&[T::File("c", b"3")])]),
+    );
+    ready(m.pull_with("test", Platform { arch: Arch::X86_64 }, &record)).unwrap();
+    let got = events.lock().unwrap();
+    assert_eq!(got.first().map(|p| p.layers), Some(1));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn pull_rejects_tampered_blob_and_writes_nothing() {
     let root = temp_root("tamper");
     let mut src = FakeSource::new(vec![layer(&[T::File("a", b"1")])]);
