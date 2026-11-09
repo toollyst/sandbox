@@ -20,6 +20,12 @@ jobs:
       - run: rustup component add rustfmt clippy
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      # Linux에서는 erofs 공식 도구로 만든 이미지를 검증한다. 도구가 없으면 테스트가 실패한다.
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y erofs-utils
+          echo "SANDBOX_REQUIRE_FSCK_EROFS=1" >> "$GITHUB_ENV"
       - run: cargo test --workspace --all-features
       - run: cargo doc --workspace --no-deps --all-features
         env:
