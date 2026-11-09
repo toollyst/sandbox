@@ -588,3 +588,31 @@ fn network_allow_list_is_enforced_through_the_guest_proxy() {
     }
     block_on(s.stop(Duration::from_secs(5))).unwrap();
 }
+
+#[test]
+fn list_never_fails_while_sandboxes_are_removed() {
+    let e = Env::new("listrm");
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let rt = e.rt.clone();
+    let flag = stop.clone();
+    let reader = std::thread::spawn(move || {
+        let mut n = 0;
+        while !flag.load(std::sync::atomic::Ordering::Relaxed) {
+            block_on(rt.list()).unwrap();
+            n += 1;
+        }
+        n
+    });
+    for _ in 0..200 {
+        let s = e.sandbox(&["true"]);
+        block_on(s.delete()).unwrap();
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert!(reader.join().unwrap() > 0);
+    assert!(block_on(e.rt.list()).unwrap().is_empty());
+    // 지운 디렉터리가 남지 않는다.
+    let left: Vec<_> = std::fs::read_dir(e.root.join("d").join("sandboxes"))
+        .unwrap()
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+}

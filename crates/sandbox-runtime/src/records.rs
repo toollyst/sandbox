@@ -12,6 +12,8 @@
 //! ```
 //!
 //! - 만들기는 임시 디렉터리에 다 쓴 뒤 rename한다. 그래서 반쯤 만든 샌드박스는 목록에 나오지 않는다.
+//! - 지우기는 먼저 ID가 아닌 이름으로 rename하고 지운다. 그래서 반쯤 지운 샌드박스도 목록에 나오지 않고,
+//!   읽는 도중에 지워지면 없는 것으로 본다. 지우다 프로세스가 죽으면 그 이름의 디렉터리가 남는다(목록에는 없다).
 //! - 상태 쓰기는 임시 파일에 쓴 뒤 rename한다.
 //! - 게스트 연결 소켓은 여기 두지 않는다. Unix 소켓 경로 길이 제한(약 100바이트) 때문에 짧은 `socket_dir`에 두고,
 //!   실행 중일 때 그 경로를 `state.json`의 `control`에 적는다. 다른 프로세스는 적힌 경로로 연결한다.
@@ -207,6 +209,14 @@ pub fn write_state(paths: &Paths, state: &StateRecord) -> Result<(), RuntimeErro
 
 /// 읽는다. 없거나 만드는 중이면 `None`. 소유자가 사라진 `running`은 `stopped`로 고쳐 돌려준다(파일은 바꾸지 않는다).
 pub fn read(paths: &Paths) -> Result<Option<(SandboxSpec, StateRecord)>, RuntimeError> {
+    match read_present(paths) {
+        // 읽는 도중에 지워졌다.
+        Err(RuntimeError::Io(e)) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        r => r,
+    }
+}
+
+fn read_present(paths: &Paths) -> Result<Option<(SandboxSpec, StateRecord)>, RuntimeError> {
     if !paths.spec().is_file() || !paths.state().is_file() {
         return Ok(None);
     }
@@ -227,7 +237,12 @@ pub fn read(paths: &Paths) -> Result<Option<(SandboxSpec, StateRecord)>, Runtime
 
 /// 지운다.
 pub fn remove(paths: &Paths) -> Result<(), RuntimeError> {
-    Ok(fs::remove_dir_all(&paths.dir)?)
+    let (Some(parent), Some(name)) = (paths.dir.parent(), paths.dir.file_name()) else {
+        return Ok(fs::remove_dir_all(&paths.dir)?);
+    };
+    let doomed = temp(parent, &format!("{}.rm", name.to_string_lossy()));
+    fs::rename(&paths.dir, &doomed)?;
+    Ok(fs::remove_dir_all(&doomed)?)
 }
 
 /// 소유자 잠금. 살아 있는 동안 이 프로세스가 VM을 소유한다.
