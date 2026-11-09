@@ -183,13 +183,16 @@ pub fn run(root: &Path, args: &[String]) -> Result<usize, String> {
         Some("x\n"),
     ))?;
 
-    // detached: exec, cp, logs, stop(SIGTERM → 143), rm.
+    // detached: exec, cp(이름으로), logs, stop(SIGTERM → 143), rm.
+    let name = format!("sbx-smoke-{}", std::process::id());
     let id = check(expect(
         &s,
         "run -d",
         &[
             "run",
             "-d",
+            "--name",
+            &name,
             IMAGE,
             "sh",
             "-c",
@@ -216,8 +219,8 @@ pub fn run(root: &Path, args: &[String]) -> Result<usize, String> {
         let local_s = local.to_string_lossy().into_owned();
         check(expect(
             &s,
-            "cp out",
-            &["cp", &format!("{short}:/out.txt"), &local_s],
+            "cp out (by name)",
+            &["cp", &format!("{name}:/out.txt"), &local_s],
             None,
             0,
             None,
