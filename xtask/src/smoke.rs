@@ -79,7 +79,7 @@ fn expect(
 
 /// 확인하고 몇 개를 확인했는지 돌려준다.
 pub fn run(root: &Path, args: &[String]) -> Result<usize, String> {
-    let mut sbx = root.join("target/release/sbx");
+    let mut sbx = crate::paths::target_dir(root).join("release/sbx");
     let mut internet = true;
     let mut it = args.iter();
     while let Some(a) = it.next() {

@@ -31,7 +31,7 @@ struct Options {
 
 fn parse(root: &Path, args: &[String]) -> Result<Options, String> {
     let mut o = Options {
-        sbx: root.join("target/release/sbx"),
+        sbx: crate::paths::target_dir(root).join("release/sbx"),
         image: "alpine:3.20".into(),
         runs: 20,
         parallel: 10,

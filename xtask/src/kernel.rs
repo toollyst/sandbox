@@ -126,7 +126,7 @@ pub fn build(root: &Path, args: &[String]) -> Result<PathBuf, String> {
         }
     }
     let t = target(&arch.ok_or("--arch is required (x86_64 or aarch64)")?)?;
-    let src = root.join("target/kernel");
+    let src = crate::paths::target_dir(root).join("kernel");
     let work = src.join(t.arch);
     std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
     let tarball = src.join(format!("linux-{VERSION}.tar.xz"));

@@ -85,7 +85,7 @@ pub fn run(root: &Path, args: &[String]) -> Result<PathBuf, String> {
     let elf = std::fs::read(&binary).map_err(|e| format!("{}: {e}", binary.display()))?;
     check_static_elf(&elf, arch).map_err(|e| format!("{}: {e}", binary.display()))?;
     let out = out.unwrap_or_else(|| {
-        root.join("target")
+        crate::paths::target_dir(root)
             .join("guest")
             .join(arch.name())
             .join("initramfs")
@@ -125,8 +125,7 @@ fn build_guest(root: &Path, arch: Arch) -> Result<PathBuf, String> {
             "building sandbox-guest for {triple} failed (is the target installed? `rustup target add {triple}`)"
         ));
     }
-    Ok(root
-        .join("target")
+    Ok(crate::paths::target_dir(root)
         .join(triple)
         .join("release")
         .join("sandbox-guest"))
