@@ -588,7 +588,15 @@ mod unix {
 
     fn exec_cp_stop_on_a_running_sandbox() {
         let e = Env::new();
-        let main = e.spawn(&["run", IMAGE, "sh", "-c", "echo up; sleep 60"]);
+        let main = e.spawn(&[
+            "run",
+            "--name",
+            "Box.1",
+            IMAGE,
+            "sh",
+            "-c",
+            "echo up; sleep 60",
+        ]);
         let id = e.wait_running();
 
         let o = e.sbx(&["exec", &id, "sh", "-c", "echo in; echo e >&2; exit 4"]);
@@ -619,10 +627,11 @@ mod unix {
         ]);
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
         assert_eq!(std::fs::read(guest_dir.join("src.txt")).unwrap(), b"copied");
+        // 꺼낼 때는 이름으로(ID 규칙에 맞지 않는 이름도 된다).
         let back = e.path("back.txt");
         let o = e.sbx(&[
             "cp",
-            &format!("{id}:{}/src.txt", guest_dir.display()),
+            &format!("Box.1:{}/src.txt", guest_dir.display()),
             back.to_str().unwrap(),
         ]);
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));

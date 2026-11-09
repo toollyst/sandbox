@@ -83,7 +83,7 @@ pub const COMMANDS: &[Command] = &[
     cmd(
         "cp",
         Group::Run,
-        "Copy files between the host and a sandbox (ID:PATH on the sandbox side)",
+        "Copy files between the host and a sandbox (SANDBOX:PATH on the sandbox side)",
     ),
     cmd(
         "stop",

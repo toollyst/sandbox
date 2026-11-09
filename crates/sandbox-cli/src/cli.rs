@@ -114,16 +114,16 @@ pub enum Command {
         /// Attach stdin.
         #[arg(short = 'i', long)]
         interactive: bool,
-        /// Sandbox ID (or a unique prefix).
+        /// Sandbox name, ID, or unique ID prefix.
         id: String,
     },
-    #[command(about = about("exec"), override_usage = "sbx exec [OPTIONS] ID COMMAND [ARG...]")]
+    #[command(about = about("exec"), override_usage = "sbx exec [OPTIONS] SANDBOX COMMAND [ARG...]")]
     Exec(ExecArgs),
     #[command(about = about("cp"))]
     Cp {
-        /// Source (host path or ID:PATH).
+        /// Source (host path, or SANDBOX:PATH where SANDBOX is a name or ID).
         src: String,
-        /// Destination (host path or ID:PATH).
+        /// Destination (host path, or SANDBOX:PATH where SANDBOX is a name or ID).
         dst: String,
     },
     #[command(about = about("stop"))]
@@ -135,13 +135,13 @@ pub enum Command {
         /// Signal to send (name or number).
         #[arg(short = 's', long, default_value = "KILL")]
         signal: String,
-        /// Sandbox ID (or a unique prefix).
+        /// Sandbox name, ID, or unique ID prefix.
         #[arg(required = true)]
         ids: Vec<String>,
     },
     #[command(about = about("wait"))]
     Wait {
-        /// Sandbox ID (or a unique prefix).
+        /// Sandbox name, ID, or unique ID prefix.
         #[arg(required = true)]
         ids: Vec<String>,
     },
@@ -150,7 +150,7 @@ pub enum Command {
         /// Stop running sandboxes before removing them.
         #[arg(short, long)]
         force: bool,
-        /// Sandbox ID (or a unique prefix).
+        /// Sandbox name, ID, or unique ID prefix.
         #[arg(required = true)]
         ids: Vec<String>,
     },
@@ -165,7 +165,7 @@ pub enum Command {
         /// Key sequence for detaching (e.g. ctrl-p,ctrl-q).
         #[arg(long, default_value = crate::attach::DetachKeys::DEFAULT)]
         detach_keys: String,
-        /// Sandbox ID (or a unique prefix).
+        /// Sandbox name, ID, or unique ID prefix.
         id: String,
     },
     #[command(about = about("ps"))]
@@ -179,7 +179,7 @@ pub enum Command {
     },
     #[command(about = about("inspect"))]
     Inspect {
-        /// Sandbox ID (or a unique prefix).
+        /// Sandbox name, ID, or unique ID prefix.
         id: String,
     },
     #[command(about = about("logs"))]
@@ -190,7 +190,7 @@ pub enum Command {
         /// Show only the last N lines of what is already there (`all` for everything).
         #[arg(short = 'n', long, default_value = "all")]
         tail: String,
-        /// Sandbox ID (or a unique prefix).
+        /// Sandbox name, ID, or unique ID prefix.
         id: String,
     },
     #[command(about = about("mcp"))]
@@ -275,7 +275,7 @@ pub struct StopArgs {
     /// Seconds to wait before powering the guest off. Defaults to the sandbox's --stop-timeout, then 10.
     #[arg(short = 't', long = "time")]
     pub time: Option<u64>,
-    /// Sandbox ID (or a unique prefix).
+    /// Sandbox name, ID, or unique ID prefix.
     #[arg(required = true)]
     pub ids: Vec<String>,
 }
@@ -399,10 +399,10 @@ pub struct ExecArgs {
     /// User.
     #[arg(short = 'u', long)]
     pub user: Option<String>,
-    /// Sandbox ID (or a unique prefix), then the command and its arguments. Everything after the ID belongs to
+    /// Sandbox name, ID, or unique ID prefix, then the command and its arguments. Everything after the sandbox belongs to
     /// the command.
     #[arg(
-        value_name = "ID COMMAND [ARG...]",
+        value_name = "SANDBOX COMMAND [ARG...]",
         required = true,
         num_args = 2..,
         trailing_var_arg = true,

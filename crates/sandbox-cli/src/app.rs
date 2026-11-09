@@ -795,10 +795,10 @@ impl Ctx {
         let rt = self.runtime()?;
         match (parse::cp_endpoint(src), parse::cp_endpoint(dst)) {
             (CpEndpoint::Host(h), CpEndpoint::Sandbox { id, path }) => {
-                rt.find(id.as_str()).await?.copy_in(&h, &path).await?;
+                rt.find(&id).await?.copy_in(&h, &path).await?;
             }
             (CpEndpoint::Sandbox { id, path }, CpEndpoint::Host(h)) => {
-                rt.find(id.as_str()).await?.copy_out(&path, &h).await?;
+                rt.find(&id).await?.copy_out(&path, &h).await?;
             }
             (CpEndpoint::Host(_), CpEndpoint::Host(_)) => {
                 return Err(msg("one of SRC or DST must be ID:path"));

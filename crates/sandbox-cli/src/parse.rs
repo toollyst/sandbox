@@ -182,27 +182,28 @@ pub enum CpEndpoint {
     Host(PathBuf),
     /// 샌드박스 안의 경로.
     Sandbox {
-        /// 샌드박스.
-        id: SandboxId,
+        /// 샌드박스 ID(나 그 앞부분) 또는 이름.
+        id: String,
         /// 게스트 경로.
         path: String,
     },
 }
 
-/// `cp`의 인자 하나. 절대 경로이거나 `.`으로 시작하면 호스트, `ID:경로`이면 샌드박스다(Docker와 같다).
+/// `cp`의 인자 하나. 절대 경로이거나 `.`으로 시작하면 호스트, `ID:경로`나 `이름:경로`이면 샌드박스다(Docker와 같다).
 pub fn cp_endpoint(value: &str) -> CpEndpoint {
     if Path::new(value).is_absolute() || value.starts_with('.') {
         return CpEndpoint::Host(value.into());
     }
     match value.split_once(':') {
-        Some((id, path)) => match SandboxId::new(id) {
-            Ok(id) => CpEndpoint::Sandbox {
-                id,
+        Some((id, path))
+            if SandboxId::new(id).is_ok() || sandbox_model::check_sandbox_name(id).is_ok() =>
+        {
+            CpEndpoint::Sandbox {
+                id: id.to_owned(),
                 path: path.to_owned(),
-            },
-            Err(_) => CpEndpoint::Host(value.into()),
-        },
-        None => CpEndpoint::Host(value.into()),
+            }
+        }
+        _ => CpEndpoint::Host(value.into()),
     }
 }
 
@@ -302,12 +303,21 @@ mod tests {
         assert_eq!(
             cp_endpoint("abc:/etc/hosts"),
             CpEndpoint::Sandbox {
-                id: SandboxId::new("abc").unwrap(),
+                id: "abc".into(),
                 path: "/etc/hosts".into()
+            }
+        );
+        // 이름도 된다.
+        assert_eq!(
+            cp_endpoint("App.v2_x:out"),
+            CpEndpoint::Sandbox {
+                id: "App.v2_x".into(),
+                path: "out".into()
             }
         );
         assert_eq!(cp_endpoint("/tmp/x"), CpEndpoint::Host("/tmp/x".into()));
         assert_eq!(cp_endpoint("./a:b"), CpEndpoint::Host("./a:b".into()));
-        assert_eq!(cp_endpoint("Not_Id:x"), CpEndpoint::Host("Not_Id:x".into()));
+        assert_eq!(cp_endpoint("a b:x"), CpEndpoint::Host("a b:x".into()));
+        assert_eq!(cp_endpoint("a/b:c"), CpEndpoint::Host("a/b:c".into()));
     }
 }
