@@ -48,7 +48,7 @@ Built for running code you don't trust: AI agents, user-submitted code, CI jobs,
 Measured with `cargo xtask bench` on an Apple Silicon Mac (macOS, Hypervisor.framework), 1 vCPU / 512 MiB per sandbox:
 
 | What | p50 | p90 |
-|---|---|---|
+| --- | --- | --- |
 | `sbx run --rm alpine:3.20 true` (boot, run, shut down, delete) | **121 ms** | 139 ms |
 | `sbx exec <id> true` (in a running sandbox) | **8 ms** | 10 ms |
 | 10 × `sbx run --rm alpine:3.20 true` at once, until all are done | **0.50 s** | |
@@ -182,7 +182,7 @@ sbx executor use firecracker@0.1.0
 ## Platforms
 
 | Host | VMM | Status |
-|---|---|---|
+| --- | --- | --- |
 | macOS, Apple Silicon | Firecracker ported to Hypervisor.framework ([toollyst/firecracker](https://github.com/toollyst/firecracker)) | works end to end |
 | Linux x86_64 / aarch64 | upstream Firecracker on KVM | test suite passes; real-VM verification in progress |
 | Windows | – | not yet |
