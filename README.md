@@ -61,7 +61,7 @@ curl -fsSL https://toollyst.github.io/sandbox/install.sh | sh
 
 This puts `sbx` and `sbx-shim` in `~/.local/bin` (checked against their SHA-256) and installs the `firecracker`
 executor (VMM, adapter, and guest kernel) from the official executor repository. It needs Linux x86_64/aarch64 with
-`/dev/kvm`, or an Apple Silicon Mac. Nothing runs as root. Set `SBX_VERSION`, `SBX_INSTALL_DIR`, or
+`/dev/kvm`, or an Apple Silicon Mac with macOS 15 or later. Nothing runs as root. Set `SBX_VERSION`, `SBX_INSTALL_DIR`, or
 `SBX_NO_EXECUTOR=1` to change what it does; the script is [short](install.sh).
 
 `sbx info` checks the result: it shows the host, whether hardware virtualization is usable, the executor and what it
@@ -241,7 +241,7 @@ cargo xtask repo-add --repo ./executors --bundle ./bundle --name firecracker --v
 
 | Host | VMM | Status |
 | --- | --- | --- |
-| macOS, Apple Silicon | Firecracker ported to Hypervisor.framework ([toollyst/firecracker](https://github.com/toollyst/firecracker)) | works end to end |
+| macOS 15+, Apple Silicon | Firecracker ported to Hypervisor.framework ([toollyst/firecracker](https://github.com/toollyst/firecracker)) | works end to end |
 | Linux x86_64 | upstream Firecracker on KVM | works end to end (real-VM checks in CI) |
 | Linux aarch64 | upstream Firecracker on KVM | test suite passes; real-VM checks wait for an arm runner with KVM |
 | Windows | – | not yet |

@@ -33,6 +33,13 @@ esac
 if [ "$os" = darwin ] && [ "$arch" != aarch64 ]; then
     die "macOS needs Apple Silicon (Hypervisor.framework on arm64)"
 fi
+# The macOS VMM uses the in-kernel GIC (hv_gic_*), which arrived in macOS 15.
+if [ "$os" = darwin ]; then
+    major=$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)
+    if [ -n "$major" ] && [ "$major" -lt 15 ]; then
+        die "macOS 15 or later is needed (this is $(sw_vers -productVersion))"
+    fi
+fi
 
 if [ -n "${SBX_DOWNLOAD_URL:-}" ]; then
     base=${SBX_DOWNLOAD_URL%/}
