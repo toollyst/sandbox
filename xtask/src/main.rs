@@ -3,11 +3,14 @@
 //! - `check-deps`: 의존 방향을 검사한다.
 //!   - 크레이트 사이: [`RULES`]와 [`FORBIDDEN_FEATURES`]가 정본이다.
 //!   - 크레이트 안 모듈 사이: 순환 금지. 규칙은 [`modules`]에 있다.
+//! - `guest-initramfs --arch <x86_64|aarch64> [--binary <파일>] [--out <파일>]`: 게스트 init initramfs를 만든다.
+//!   내용과 규칙은 [`initramfs`]에 있다.
 
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::{Command, ExitCode};
 
+mod initramfs;
 mod modules;
 
 /// 크레이트가 의존해도 되는 것.
@@ -111,8 +114,25 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Some("guest-initramfs") => {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("xtask lives inside the workspace");
+            match initramfs::run(root, &args[1..]) {
+                Ok(out) => {
+                    println!("{}", out.display());
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("guest-initramfs: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         _ => {
-            eprintln!("usage: cargo xtask check-deps");
+            eprintln!(
+                "usage: cargo xtask check-deps\n       cargo xtask guest-initramfs --arch <x86_64|aarch64> [--binary <file>] [--out <file>]"
+            );
             ExitCode::from(2)
         }
     }
