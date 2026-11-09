@@ -103,13 +103,15 @@ impl ProcessExecutor {
     /// 실행 파일로 만든다. `<실행기> capabilities`를 실행해 본다(블로킹).
     pub fn new(binary: impl Into<PathBuf>) -> Result<Self, ExecutorError> {
         let binary = binary.into();
-        let out = Command::new(&binary)
-            .arg("capabilities")
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|e| {
-                ExecutorError::Launch(format!("cannot run executor {}: {e}", binary.display()))
-            })?;
+        let out = retry_busy(|| {
+            Command::new(&binary)
+                .arg("capabilities")
+                .stdin(Stdio::null())
+                .output()
+        })
+        .map_err(|e| {
+            ExecutorError::Launch(format!("cannot run executor {}: {e}", binary.display()))
+        })?;
         if !out.status.success() {
             return Err(ExecutorError::Launch(format!(
                 "{} capabilities failed ({}): {}",
@@ -208,18 +210,36 @@ impl Executor for ConnectOnly {
     }
 }
 
+/// 실행 파일이 막 쓰여 다른 프로세스가 아직 쓰기로 쥐고 있으면(Linux `ETXTBSY`, 예: 방금 내려받은 실행기,
+/// 다른 스레드가 fork한 자식이 잠깐 물려받은 파일) 실행이 실패한다. 잠깐씩 기다리며 몇 번 다시 해 본다.
+fn retry_busy<T>(mut f: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    let mut wait = std::time::Duration::from_millis(5);
+    for _ in 0..8 {
+        match f() {
+            Err(e) if e.kind() == io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(wait);
+                wait *= 2;
+            }
+            r => return r,
+        }
+    }
+    f()
+}
+
 fn launch_blocking(binary: &Path, vm: &VmConfig) -> Result<ProcessVm, ExecutorError> {
     if let Some(dir) = vm.log.parent() {
         std::fs::create_dir_all(dir)?;
     }
     let log = OpenOptions::new().create(true).append(true).open(&vm.log)?;
-    let mut child = Command::new(binary)
-        .arg("run")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(log)
-        .spawn()
-        .map_err(|e| ExecutorError::Launch(format!("cannot run {}: {e}", binary.display())))?;
+    let mut child = retry_busy(|| {
+        Command::new(binary)
+            .arg("run")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(log.try_clone()?)
+            .spawn()
+    })
+    .map_err(|e| ExecutorError::Launch(format!("cannot run {}: {e}", binary.display())))?;
     let mut stdin = child.stdin.take().expect("piped");
     let mut stdout = BufReader::new(child.stdout.take().expect("piped"));
 
