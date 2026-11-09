@@ -90,18 +90,6 @@ const RULES: &[(&str, Allowed)] = &[
             "executor-proto",
         ]),
     ),
-    (
-        "sandbox-shim",
-        Allowed::Workspace(&[
-            "sandbox-model",
-            "sandbox-executor",
-            "sandbox-runtime",
-            "executor-process",
-            "sandbox-proto",
-            "sandbox-store",
-            "executor-proto",
-        ]),
-    ),
     ("sandbox-cli", Allowed::Any),
 ];
 
