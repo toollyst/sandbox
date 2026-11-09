@@ -7,6 +7,7 @@
 //! - [`VmHandle`]이 살아 있는 동안 실행기의 표준 입력을 쥐고 있다. 버려지면 `Kill`을 보내고, 끝나지 않으면 프로세스를 죽인다.
 //!   sbx 프로세스가 죽어도 표준 입력이 닫히므로 실행기가 VM을 끝낸다(규약 5).
 //! - `connect`는 채널의 Unix 소켓에 vsock 방식으로 연결한다. Unix에서만 된다.
+//! - [`ConnectOnly`]는 실행 파일 없이 연결만 한다. VM을 띄우지 않는 일에 쓴다.
 //! - 모든 블로킹 입출력은 별도 스레드에서 한다. 호출자의 비동기 스레드를 막지 않는다.
 //!
 //! - 의존: `sandbox-model`, `sandbox-executor`, `executor-proto`
@@ -148,21 +149,62 @@ impl Executor for ProcessExecutor {
     }
 
     fn connect(&self, channel: &ChannelSpec) -> io::Result<Box<dyn GuestConn>> {
-        #[cfg(unix)]
-        {
-            Ok(Box::new(proto::vsock::connect(
-                &channel.host_endpoint,
-                channel.guest_port,
-            )?))
+        connect_channel(channel)
+    }
+}
+
+/// 채널의 Unix 소켓에 vsock 방식으로 연결한다.
+fn connect_channel(channel: &ChannelSpec) -> io::Result<Box<dyn GuestConn>> {
+    #[cfg(unix)]
+    {
+        Ok(Box::new(proto::vsock::connect(
+            &channel.host_endpoint,
+            channel.guest_port,
+        )?))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = channel;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "guest connections need Unix sockets",
+        ))
+    }
+}
+
+/// 이미 떠 있는 VM의 게스트에 연결만 하는 실행기. 실행기 실행 파일을 실행하지 않는다.
+///
+/// 연결은 규약(제어 소켓 + vsock 방식 handshake)만으로 되므로 실행기가 필요 없다.
+/// VM을 띄우지 않는 일(목록, 정지, 삭제, exec, cp)에 쓴다.
+/// capability는 비어 있고(아무 형식도 받지 않는다) `launch`는 언제나 오류다.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ConnectOnly;
+
+/// [`ConnectOnly`]의 이름.
+pub const CONNECT_ONLY: &str = "connect-only";
+
+impl Executor for ConnectOnly {
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            name: CONNECT_ONLY,
+            arch: Arch::host().unwrap_or(Arch::X86_64),
+            rootfs_formats: Vec::new(),
+            live_share: false,
+            snapshot: false,
+            max_disks: 0,
         }
-        #[cfg(not(unix))]
-        {
-            let _ = channel;
-            Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "guest connections need Unix sockets",
+    }
+
+    fn launch(&self, _vm: VmConfig) -> BoxFuture<'_, Result<Box<dyn VmHandle>, ExecutorError>> {
+        Box::pin(async {
+            Err(ExecutorError::Unsupported(
+                "this executor only connects to running VMs".into(),
             ))
-        }
+        })
+    }
+
+    fn connect(&self, channel: &ChannelSpec) -> io::Result<Box<dyn GuestConn>> {
+        connect_channel(channel)
     }
 }
 
