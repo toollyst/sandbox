@@ -339,6 +339,81 @@ pub fn is_owned(paths: &Paths) -> Result<bool, RuntimeError> {
     Ok(try_own(paths)?.is_none())
 }
 
+/// 이름 파일: `<data_dir>/names/<이름>`. 내용은 그 이름을 가진 샌드박스의 ID다.
+///
+/// - 만들기는 기록을 먼저 만들고 이름을 잡는다([`claim_name`]). 지우기는 이름을 먼저 놓고([`release_name`]) 기록을
+///   지운다. 그래서 이름 파일은 있는 샌드박스를 가리킨다. 그렇지 않은 것(중간에 죽은 경우)은 남은 것으로 보고
+///   다음에 잡는 쪽이 넘겨받는다.
+/// - 잡기는 임시 파일에 ID를 다 쓴 뒤 `hard_link`로 놓는다. 이름이 이미 있으면 실패하므로 동시에 잡아도 하나만
+///   잡고, 읽는 쪽은 반쯤 쓴 파일을 보지 않는다.
+fn name_path(data_dir: &Path, name: &str) -> PathBuf {
+    data_dir.join("names").join(name)
+}
+
+/// 이름을 가진 샌드박스. 이름 파일이 없거나 없는 샌드박스를 가리키면 `None`.
+pub fn name_owner(data_dir: &Path, name: &str) -> Result<Option<SandboxId>, RuntimeError> {
+    let text = match transient(|| fs::read_to_string(name_path(data_dir, name)), io_denied) {
+        Ok(t) => t,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    Ok(SandboxId::new(text.trim())
+        .ok()
+        .filter(|id| Paths::new(data_dir, id).spec().is_file()))
+}
+
+/// 이름을 `id`에게 준다. 다른 샌드박스가 쓰고 있으면 [`RuntimeError::NameInUse`].
+pub fn claim_name(data_dir: &Path, name: &str, id: &SandboxId) -> Result<(), RuntimeError> {
+    let dir = data_dir.join("names");
+    fs::create_dir_all(&dir)?;
+    let path = name_path(data_dir, name);
+    let staged = temp(&dir, name);
+    atomic_write(&staged, id.as_str().as_bytes())?;
+    let r = (|| {
+        // 남은 이름 파일을 한 번 넘겨받을 수 있다.
+        for _ in 0..2 {
+            match fs::hard_link(&staged, &path) {
+                Ok(()) => return Ok(()),
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                    match name_owner(data_dir, name)? {
+                        Some(owner) if owner == *id => return Ok(()),
+                        Some(owner) => {
+                            return Err(RuntimeError::NameInUse {
+                                name: name.to_owned(),
+                                id: owner,
+                            });
+                        }
+                        None => {
+                            let _ = fs::remove_file(&path);
+                        }
+                    }
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Err(RuntimeError::Io(io::Error::other(format!(
+            "cannot claim the name {name:?}"
+        ))))
+    })();
+    let _ = fs::remove_file(&staged);
+    r
+}
+
+/// `id`가 가진 이름을 놓는다. 다른 샌드박스의 것이면 건드리지 않는다.
+pub fn release_name(data_dir: &Path, name: &str, id: &SandboxId) -> Result<(), RuntimeError> {
+    let path = name_path(data_dir, name);
+    match fs::read_to_string(&path) {
+        Ok(t) if t.trim() == id.as_str() => match transient(|| fs::remove_file(&path), io_denied) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        },
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// data_dir의 모든 샌드박스 ID.
 pub fn ids(data_dir: &Path) -> Result<Vec<SandboxId>, RuntimeError> {
     let dir = data_dir.join("sandboxes");

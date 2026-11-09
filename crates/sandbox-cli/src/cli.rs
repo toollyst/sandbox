@@ -304,6 +304,9 @@ pub struct RunArgs {
     /// Memory (e.g. 512m, 1g; default 512m).
     #[arg(short = 'm', long)]
     pub memory: Option<String>,
+    /// Name the sandbox; other commands accept it in place of the ID.
+    #[arg(long)]
+    pub name: Option<String>,
     /// Hostname (defaults to the short sandbox ID).
     #[arg(long)]
     pub hostname: Option<String>,

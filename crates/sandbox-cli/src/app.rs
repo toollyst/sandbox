@@ -640,6 +640,7 @@ impl Ctx {
                         stop,
                         open_stdin: a.interactive,
                         tty: a.tty,
+                        name: a.name.clone(),
                     };
                     let sandbox = self.launcher()?.create(spec).await?;
                     return Ok(sandbox.id().clone());
@@ -860,8 +861,8 @@ impl Ctx {
             return Ok(0);
         }
         println!(
-            "{:<14} {:<24} {:<30} STATUS",
-            "SANDBOX ID", "IMAGE", "COMMAND"
+            "{:<14} {:<24} {:<30} {:<20} NAMES",
+            "SANDBOX ID", "IMAGE", "COMMAND", "STATUS"
         );
         for s in &list {
             let image = self.image_name(&s.spec.image);
@@ -877,11 +878,12 @@ impl Ctx {
                 status = format!("{status}: {e}");
             }
             println!(
-                "{:<14} {:<24} {:<30} {}",
+                "{:<14} {:<24} {:<30} {:<20} {}",
                 short_id(&s.id),
                 image,
                 command,
-                status
+                status,
+                s.spec.name.as_deref().unwrap_or("")
             );
         }
         Ok(0)
@@ -905,6 +907,7 @@ impl Ctx {
 fn info_json(s: &SandboxInfo) -> serde_json::Value {
     json!({
         "id": s.id,
+        "name": s.spec.name,
         "state": s.state,
         "exit_code": s.exit_code,
         "error": s.error,

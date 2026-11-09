@@ -161,7 +161,8 @@ pub fn tools() -> Value {
     let cpus = json!({ "type": "number", "description": "vCPUs (default 1)." });
     let memory =
         json!({ "type": "string", "description": "Memory, e.g. 512m or 2g (default 512m)." });
-    let id = json!({ "type": "string", "description": "Sandbox ID (or a unique prefix) from create or list." });
+    let id = json!({ "type": "string", "description": "Sandbox ID (or a unique prefix), or the name given to create." });
+    let name = json!({ "type": "string", "description": "Optional unique name (letters, digits, _ . -) to use in place of the ID." });
     let path = json!({ "type": "string", "description": "Absolute path inside the sandbox." });
     let encoding = json!({ "type": "string", "enum": ["utf-8", "base64"], "description": "Encoding of content (default utf-8)." });
     let output = json!({ "type": "object", "properties": {
@@ -182,7 +183,7 @@ pub fn tools() -> Value {
             "title": "Create a long-lived sandbox",
             "description": "Start a microVM that keeps running (by default its main process is `sleep infinity`) for exec, write_file and read_file. It stays until remove, even after this server exits.",
             "inputSchema": { "type": "object", "required": ["image"], "properties": {
-                "image": image, "command": command, "env": env, "workdir": workdir, "allow": allow,
+                "image": image, "name": name, "command": command, "env": env, "workdir": workdir, "allow": allow,
                 "cpus": cpus, "memory": memory } },
         },
         {
@@ -209,7 +210,7 @@ pub fn tools() -> Value {
         {
             "name": "list",
             "title": "List sandboxes",
-            "description": "List all sandboxes with their image, command and state.",
+            "description": "List all sandboxes with their name, image, command and state.",
             "inputSchema": { "type": "object", "properties": {} },
         },
         {
@@ -359,6 +360,9 @@ fn run_args(a: &Args, stdin: bool, default_command: &[&str]) -> AppResult<RunArg
     }
     if let Some(m) = a.str("memory")? {
         argv.push(format!("--memory={m}"));
+    }
+    if let Some(n) = a.str("name")? {
+        argv.push(format!("--name={n}"));
     }
     if stdin {
         argv.push("--interactive".into());
@@ -621,6 +625,7 @@ async fn list(ctx: &Ctx) -> AppResult<Value> {
         .map(|s| {
             json!({
                 "id": s.id,
+                "name": s.spec.name,
                 "image": ctx.image_name(&s.spec.image),
                 "command": s.spec.process.args,
                 "state": s.state,
@@ -683,6 +688,13 @@ mod tests {
             (Some("2"), Some("1g"))
         );
         assert!(r.interactive && !r.rm && r.volumes.is_empty() && r.mounts.is_empty());
+        assert_eq!(
+            parse(json!({ "image": "alpine", "name": "w1" }), false)
+                .unwrap()
+                .name
+                .as_deref(),
+            Some("w1")
+        );
         // 명령이 없으면 기본 프로세스.
         assert_eq!(
             parse(json!({ "image": "alpine" }), false)

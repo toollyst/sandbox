@@ -96,6 +96,7 @@ mod tests {
             stop: Default::default(),
             open_stdin: false,
             tty: false,
+            name: None,
         }
     }
 

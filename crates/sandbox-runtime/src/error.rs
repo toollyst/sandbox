@@ -52,6 +52,15 @@ pub enum RuntimeError {
         /// 맞는 개수.
         matches: usize,
     },
+    /// 이름이 잘못됨([`sandbox_model::check_sandbox_name`]).
+    InvalidName(ParseError),
+    /// 그 이름을 다른 샌드박스가 쓰고 있음.
+    NameInUse {
+        /// 이름.
+        name: String,
+        /// 쓰고 있는 샌드박스.
+        id: SandboxId,
+    },
     /// 지금 상태에서는 할 수 없는 동작.
     InvalidState {
         /// 지금 상태.
@@ -123,6 +132,12 @@ impl fmt::Display for RuntimeError {
             RuntimeError::Ambiguous { prefix, matches } => write!(
                 f,
                 "{matches} sandboxes start with {prefix:?}; give more of the ID"
+            ),
+            RuntimeError::InvalidName(e) => e.fmt(f),
+            RuntimeError::NameInUse { name, id } => write!(
+                f,
+                "the name {name:?} is already in use by sandbox {}; remove it or choose another name",
+                &id.as_str()[..12.min(id.as_str().len())]
             ),
             RuntimeError::InvalidState { current, action } => {
                 write!(f, "cannot {action} a sandbox in state {}", current.as_str())

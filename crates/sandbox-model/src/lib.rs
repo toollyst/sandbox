@@ -800,6 +800,25 @@ pub struct SandboxSpec {
     /// 기본 프로세스에 터미널을 붙인다(Docker `-t`, `Tty`). 시작할 때마다 이대로 붙인다.
     #[serde(default)]
     pub tty: bool,
+    /// 이름(Docker `--name`). 모든 샌드박스 사이에서 하나뿐이고, ID 대신 쓸 수 있다. 규칙은 [`check_sandbox_name`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// 샌드박스 이름 규칙(Docker와 같다): 영문자나 숫자로 시작하고, 영문자, 숫자, `_`, `.`, `-`로 이어지는
+/// 2자 이상 128자 이하.
+pub fn check_sandbox_name(name: &str) -> Result<(), ParseError> {
+    let b = name.as_bytes();
+    let ok = (2..=128).contains(&b.len())
+        && b[0].is_ascii_alphanumeric()
+        && b[1..]
+            .iter()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'-'));
+    if ok {
+        Ok(())
+    } else {
+        Err(ParseError::new("sandbox name", name))
+    }
 }
 
 /// 샌드박스 상태. 이름은 OCI Runtime Spec의 상태를 따른다.
@@ -894,6 +913,26 @@ mod signal_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sandbox_names_follow_docker() {
+        for ok in ["web", "a1", "my_box.v2-test", "0x"] {
+            assert!(check_sandbox_name(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "",
+            "a",
+            "-a",
+            "_a",
+            ".a",
+            "a/b",
+            "a b",
+            "한글",
+            &"a".repeat(129),
+        ] {
+            assert!(check_sandbox_name(bad).is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn allow_rules_parse_and_match() {

@@ -60,6 +60,7 @@ mod unix {
             run_t_gives_the_main_process_a_terminal,
         ),
         ("create_start_inspect_rm", create_start_inspect_rm),
+        ("names_work_in_place_of_ids", names_work_in_place_of_ids),
         (
             "exec_cp_stop_on_a_running_sandbox",
             exec_cp_stop_on_a_running_sandbox,
@@ -489,6 +490,56 @@ mod unix {
 
         // create --rm은 받지 않는다.
         assert_eq!(e.sbx(&["create", "--rm", IMAGE]).status.code(), Some(1));
+    }
+
+    fn names_work_in_place_of_ids() {
+        let e = Env::new();
+        let o = e.sbx(&["create", "--name", "web", IMAGE, "sh", "-c", "echo hi"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let id = text(&o.stdout).trim().to_owned();
+        assert_eq!(e.ps()[0]["name"], "web");
+        let o = e.sbx(&["ps", "-a"]);
+        let header = text(&o.stdout).lines().next().unwrap().to_owned();
+        assert!(header.trim_end().ends_with("NAMES"), "{header}");
+        assert!(
+            text(&o.stdout)
+                .lines()
+                .nth(1)
+                .unwrap()
+                .trim_end()
+                .ends_with(" web")
+        );
+
+        // 같은 이름은 거절된다. run이면 125다.
+        let o = e.sbx(&["create", "--name", "web", IMAGE]);
+        assert_eq!(o.status.code(), Some(1), "{}", text(&o.stderr));
+        let o = e.sbx(&["run", "--name", "web", IMAGE]);
+        assert_eq!(o.status.code(), Some(125), "{}", text(&o.stderr));
+        assert!(
+            text(&o.stderr).contains("already in use"),
+            "{}",
+            text(&o.stderr)
+        );
+        assert_eq!(e.ps().len(), 1);
+        assert_ne!(
+            e.sbx(&["create", "--name", "a b", IMAGE]).status.code(),
+            Some(0)
+        );
+
+        // 이름은 ID 대신 쓸 수 있다.
+        let o = e.sbx(&["start", "-a", "web"]);
+        assert_eq!(text(&o.stdout), "hi\n", "{}", text(&o.stderr));
+        let o = e.sbx(&["inspect", "web"]);
+        let info: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(info["id"], id.as_str());
+        let o = e.sbx(&["rm", "web"]);
+        assert_eq!(text(&o.stdout).trim(), "web", "{}", text(&o.stderr));
+
+        // 지우면 이름을 다시 쓸 수 있다.
+        assert_eq!(
+            e.sbx(&["create", "--name", "web", IMAGE]).status.code(),
+            Some(0)
+        );
     }
 
     fn exec_cp_stop_on_a_running_sandbox() {

@@ -104,6 +104,7 @@ impl Env {
             stop: Default::default(),
             open_stdin: false,
             tty: false,
+            name: None,
         }
     }
 
@@ -786,4 +787,49 @@ fn ids_resolve_by_unique_prefix() {
     records::create(&e.root.join("d"), &SandboxId::new("ab").unwrap(), &spec, 1).unwrap();
     assert_eq!(r("ab").unwrap().as_str(), "ab");
     assert_eq!(block_on(e.rt.find("abd")).unwrap().id().as_str(), "abd");
+}
+
+#[test]
+fn names_are_unique_resolve_and_free_on_delete() {
+    let e = Env::new("names");
+    e.prepare_image();
+    let named = |name: &str| {
+        let mut spec = e.spec(&["true"]);
+        spec.name = Some(name.into());
+        block_on(e.rt.create(spec))
+    };
+    let a = named("web").unwrap();
+    assert_eq!(a.info().spec.name.as_deref(), Some("web"));
+    let r = |q: &str| block_on(e.rt.resolve(q));
+    assert_eq!(r("web").unwrap(), *a.id());
+
+    // 같은 이름은 거절되고, 만들던 것은 남지 않는다.
+    let before = block_on(e.rt.list()).unwrap().len();
+    match named("web") {
+        Err(RuntimeError::NameInUse { name, id }) => {
+            assert_eq!(name, "web");
+            assert_eq!(id, *a.id());
+        }
+        other => panic!("{:?}", other.map(|s| s.id().clone())),
+    }
+    assert_eq!(block_on(e.rt.list()).unwrap().len(), before);
+    assert!(matches!(named("-x"), Err(RuntimeError::InvalidName(_))));
+
+    // 이름은 ID 앞부분보다 먼저 본다(Docker와 같다).
+    let prefix = &a.id().as_str()[..4];
+    let b = named(prefix).unwrap();
+    assert_eq!(r(prefix).unwrap(), *b.id());
+
+    // 지우면 이름이 풀리고 다시 쓸 수 있다.
+    block_on(a.delete()).unwrap();
+    assert!(matches!(r("web"), Err(RuntimeError::NoMatch(_))));
+    let c = named("web").unwrap();
+    assert_eq!(r("web").unwrap(), *c.id());
+
+    // 없는 샌드박스를 가리키는 남은 이름 파일은 넘겨받는다.
+    let names = e.root.join("d").join("names");
+    std::fs::write(names.join("stale"), "0123456789ab").unwrap();
+    assert!(matches!(r("stale"), Err(RuntimeError::NoMatch(_))));
+    let d = named("stale").unwrap();
+    assert_eq!(r("stale").unwrap(), *d.id());
 }

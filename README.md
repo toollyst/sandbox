@@ -24,7 +24,7 @@ user-submitted code, CI jobs, plugins.
 - **A kernel boundary, not just namespaces.** Containers share the host kernel. Each `sbx` sandbox gets its own
   kernel behind hardware virtualization (KVM on Linux, Hypervisor.framework on macOS).
 - **Docker muscle memory.** `run`, `exec`, `cp`, `logs`, `ps`, `stop`, `kill`, `wait`, `attach`, `rm`, `-i`, `-t`, `-d`,
-  `-e`, `-w`, `-u`, `--rm`, ID prefixes, and exit codes 125/126/127 work the way you expect. Where `sbx` differs, the
+  `-e`, `-w`, `-u`, `--rm`, `--name`, ID prefixes, and exit codes 125/126/127 work the way you expect. Where `sbx` differs, the
   difference is deliberate and [written down](crates/sandbox-cli/src/behavior.rs).
 - **Locked down by default.** There is no network device at all. Outbound access is opt-in, per `host:port`, enforced on
   the host, with names that resolve to private addresses refused. The image's root filesystem is read-only, and every
@@ -115,6 +115,10 @@ sbx ps
 sbx exec "${id:0:6}" cat /etc/alpine-release           # any unique ID prefix works
 sbx logs -f "$id"
 sbx stop "$id" && sbx rm "$id"
+
+sbx run -d --name dev alpine sleep 600
+sbx exec dev uname -r                                # names work wherever IDs do
+sbx rm -f dev
 ```
 
 ## A tour
@@ -167,7 +171,7 @@ claude mcp add sbx -- sbx mcp          # Claude Code
 | Tool | What it does |
 | --- | --- |
 | `run` | Run one command in a fresh sandbox, return exit code, stdout and stderr, then delete it |
-| `create` | Start a long-lived sandbox (it survives the MCP server) |
+| `create` | Start a long-lived sandbox, optionally named (it survives the MCP server) |
 | `exec` | Run a command in a running sandbox |
 | `write_file` / `read_file` | Move files in and out (text or base64; parent directories are created) |
 | `list` / `remove` | See and clean up sandboxes |

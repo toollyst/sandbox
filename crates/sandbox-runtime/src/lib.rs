@@ -200,6 +200,16 @@ impl Runtime {
     /// 어느 것이든 없으면 받거나 만들지 않고 오류를 낸다.
     pub async fn create(&self, spec: SandboxSpec) -> Result<Sandbox, RuntimeError> {
         validate::check(&spec, &self.inner.executor.capabilities())?;
+        let data_dir = &self.inner.config.data_dir;
+        if let Some(name) = &spec.name {
+            sandbox_model::check_sandbox_name(name).map_err(RuntimeError::InvalidName)?;
+            if let Some(id) = records::name_owner(data_dir, name)? {
+                return Err(RuntimeError::NameInUse {
+                    name: name.clone(),
+                    id,
+                });
+            }
+        }
         let store = &self.inner.store;
         if !store.has_image(&spec.image) {
             return Err(RuntimeError::ImageNotPulled(spec.image));
@@ -211,12 +221,14 @@ impl Runtime {
             });
         }
         let id = records::new_id();
-        records::create(
-            &self.inner.config.data_dir,
-            &id,
-            &spec,
-            spec.resources.scratch_disk_mib,
-        )?;
+        records::create(data_dir, &id, &spec, spec.resources.scratch_disk_mib)?;
+        // 기록을 만든 뒤 이름을 잡는다. 그사이 다른 쪽이 잡았으면 만든 것을 지운다.
+        if let Some(name) = &spec.name
+            && let Err(e) = records::claim_name(data_dir, name, &id)
+        {
+            let _ = records::remove(&self.paths(&id));
+            return Err(e);
+        }
         self.get(&id).await
     }
 
@@ -231,12 +243,17 @@ impl Runtime {
         })
     }
 
-    /// ID나 그 앞부분으로 샌드박스를 찾는다(Docker와 같다). 정확히 같은 ID가 있으면 그것,
-    /// 아니면 그것으로 시작하는 ID가 하나뿐일 때 그것이다. 없으면 [`RuntimeError::NoMatch`],
-    /// 여럿이면 [`RuntimeError::Ambiguous`].
+    /// ID, 이름, ID 앞부분으로 샌드박스를 찾는다(Docker와 같은 순서다). 정확히 같은 ID가 있으면 그것,
+    /// 그 이름의 샌드박스가 있으면 그것, 아니면 그것으로 시작하는 ID가 하나뿐일 때 그것이다.
+    /// 없으면 [`RuntimeError::NoMatch`], 여럿이면 [`RuntimeError::Ambiguous`].
     pub async fn resolve(&self, query: &str) -> Result<SandboxId, RuntimeError> {
         if let Ok(id) = SandboxId::new(query)
             && self.read_info(&id)?.is_some()
+        {
+            return Ok(id);
+        }
+        if sandbox_model::check_sandbox_name(query).is_ok()
+            && let Some(id) = records::name_owner(&self.inner.config.data_dir, query)?
         {
             return Ok(id);
         }
@@ -804,6 +821,10 @@ impl Sandbox {
                 current: info.state,
                 action: "delete",
             });
+        }
+        // 이름을 먼저 놓는다(이름 파일이 없는 샌드박스를 가리키지 않게).
+        if let Some(name) = &info.spec.name {
+            records::release_name(&self.rt.inner.config.data_dir, name, &info.id)?;
         }
         records::remove(&self.rt.paths(&info.id))
     }
