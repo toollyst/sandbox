@@ -77,8 +77,24 @@ struct TokenResponse {
     access_token: Option<String>,
 }
 
-fn transport(e: impl std::fmt::Display) -> ImageError {
-    ImageError::Transport(e.to_string())
+/// 오류와 그 원인들을 `: `로 이은 한 줄. HTTP 클라이언트의 맨 위 오류("error sending request", "builder error")만으로는
+/// 무엇이 잘못됐는지(연결 거부, 인증서 없음) 알 수 없다.
+fn chain(e: &dyn std::error::Error) -> String {
+    let mut s = e.to_string();
+    let mut cur = e.source();
+    while let Some(c) = cur {
+        let c_s = c.to_string();
+        if !s.ends_with(&c_s) {
+            s.push_str(": ");
+            s.push_str(&c_s);
+        }
+        cur = c.source();
+    }
+    s
+}
+
+fn transport(e: impl std::error::Error) -> ImageError {
+    ImageError::Transport(chain(&e))
 }
 
 /// 레지스트리 클라이언트.

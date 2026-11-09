@@ -18,6 +18,22 @@ pub struct Fetcher {
     http: reqwest::Client,
 }
 
+/// 오류와 그 원인들을 `: `로 이은 한 줄. HTTP 클라이언트의 맨 위 오류("error sending request", "builder error")만으로는
+/// 무엇이 잘못됐는지(연결 거부, 인증서 없음) 알 수 없다.
+fn chain(e: &dyn std::error::Error) -> String {
+    let mut s = e.to_string();
+    let mut cur = e.source();
+    while let Some(c) = cur {
+        let c_s = c.to_string();
+        if !s.ends_with(&c_s) {
+            s.push_str(": ");
+            s.push_str(&c_s);
+        }
+        cur = c.source();
+    }
+    s
+}
+
 fn fetch_err(url: &Url, reason: impl ToString) -> RepoError {
     RepoError::Fetch {
         url: url.to_string(),
@@ -52,7 +68,9 @@ impl Fetcher {
         let http = reqwest::Client::builder()
             .user_agent(concat!("sbx-executor-repo/", env!("CARGO_PKG_VERSION")))
             .build()
-            .map_err(|e| RepoError::Config(format!("cannot create an HTTP client: {e}")))?;
+            .map_err(|e| {
+                RepoError::Config(format!("cannot create an HTTP client: {}", chain(&e)))
+            })?;
         Ok(Self { http })
     }
 
@@ -90,13 +108,13 @@ impl Fetcher {
             .get(url.clone())
             .send()
             .await
-            .map_err(|e| fetch_err(url, e))?;
+            .map_err(|e| fetch_err(url, chain(&e)))?;
         // redirect 뒤의 URL도 같은 규칙을 따라야 한다 (https가 http로 내려가지 않게).
         location::check(resp.url()).map_err(|e| fetch_err(url, format!("redirected: {e}")))?;
         if !resp.status().is_success() {
             return Err(fetch_err(url, resp.status()));
         }
-        while let Some(chunk) = resp.chunk().await.map_err(|e| fetch_err(url, e))? {
+        while let Some(chunk) = resp.chunk().await.map_err(|e| fetch_err(url, chain(&e)))? {
             sink.push(&chunk)?;
         }
         Ok(sink.got)
