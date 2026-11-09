@@ -89,6 +89,7 @@ mod unix {
                 link_share(&host, Path::new(target))
             })),
             egress: Default::default(),
+            main: Default::default(),
         });
         {
             let life = life.clone();

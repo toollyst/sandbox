@@ -21,6 +21,8 @@ pub struct Ctx {
     pub share: Option<ShareFn>,
     /// 나가는 연결 프록시. 게스트 안에서 하나를 함께 쓴다.
     pub egress: Arc<Egress>,
+    /// 실행 중인 기본 프로세스 (`SignalMain`이 시그널을 보낼 곳).
+    pub main: Arc<exec::Main>,
 }
 
 /// 공유 폴더를 붙이는 방법.
@@ -55,7 +57,7 @@ pub fn serve<C: Conn>(conn: C, ctx: &Ctx) {
     }
 
     match HostMsg::read_from(&mut input) {
-        Ok(HostMsg::Exec(x)) => exec::run(x, &ctx.root, input, out),
+        Ok(HostMsg::Exec(x)) => exec::run(x, &ctx.root, input, out, &ctx.main),
         Ok(HostMsg::CopyIn { dest }) => copy::receive(&dest, &mut input, &out),
         Ok(HostMsg::CopyOut { path }) => copy::send(&path, &out),
         Ok(HostMsg::Stat { path }) => copy::stat(&path, &out),
@@ -93,6 +95,16 @@ pub fn serve<C: Conn>(conn: C, ctx: &Ctx) {
             Ok(slot) => ctx.egress.offer(slot),
             Err(e) => out.error(crate::wire::io_error("egress slot", &e)),
         },
+        Ok(HostMsg::SignalMain(n)) => {
+            if ctx.main.signal(n) {
+                let _ = out.send(&GuestMsg::Done);
+            } else {
+                out.error(Error::new(
+                    ErrorKind::NotFound,
+                    "no main process is running",
+                ));
+            }
+        }
         Ok(HostMsg::Shutdown) => {
             sys::sync();
             let _ = out.send(&GuestMsg::Done);

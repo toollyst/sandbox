@@ -25,7 +25,7 @@ fn host_samples() -> Vec<HostMsg> {
             tty: true,
             stdin: true,
             size: Some(WinSize { rows: 24, cols: 80 }),
-            stop_output_at_exit: true,
+            main: true,
         }),
         HostMsg::Exec(Exec {
             args: vec![],
@@ -38,7 +38,7 @@ fn host_samples() -> Vec<HostMsg> {
             tty: false,
             stdin: false,
             size: None,
-            stop_output_at_exit: false,
+            main: false,
         }),
         HostMsg::Stdin(b"in".to_vec()),
         HostMsg::Stdin(vec![]),
@@ -72,6 +72,7 @@ fn host_samples() -> Vec<HostMsg> {
         HostMsg::Refused {
             reason: "not allowed".into(),
         },
+        HostMsg::SignalMain(15),
     ]
 }
 

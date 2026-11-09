@@ -20,6 +20,8 @@ struct Fixture {
     dir: PathBuf,
     uid: u32,
     gid: u32,
+    /// 연결끼리 함께 쓰는 기본 프로세스 (게스트 안에서와 같다).
+    main: Arc<crate::exec::Main>,
 }
 
 impl Fixture {
@@ -32,6 +34,7 @@ impl Fixture {
             dir,
             uid: m.uid(),
             gid: m.gid(),
+            main: Default::default(),
         }
     }
 
@@ -39,6 +42,7 @@ impl Fixture {
     fn connect(&self) -> UnixStream {
         let (host, guest) = UnixStream::pair().unwrap();
         let root = self.dir.clone();
+        let main = self.main.clone();
         thread::spawn(move || {
             server::serve(
                 guest,
@@ -47,6 +51,7 @@ impl Fixture {
                     on_shutdown: Box::new(|| {}),
                     share: None,
                     egress: Default::default(),
+                    main,
                 },
             )
         });
@@ -77,7 +82,7 @@ impl Fixture {
             tty: false,
             stdin,
             size: None,
-            stop_output_at_exit: false,
+            main: false,
         }
     }
 }
@@ -140,6 +145,7 @@ fn version_mismatch_is_reported() {
                 on_shutdown: Box::new(|| {}),
                 share: None,
                 egress: Default::default(),
+                main: Default::default(),
             },
         )
     });
@@ -158,6 +164,7 @@ fn request_before_hello_is_a_protocol_error() {
                 on_shutdown: Box::new(|| {}),
                 share: None,
                 egress: Default::default(),
+                main: Default::default(),
             },
         )
     });
@@ -181,7 +188,7 @@ fn exec_streams_output_and_exit_code() {
 }
 
 #[test]
-fn stop_output_at_exit_does_not_wait_for_children_holding_the_pipe() {
+fn main_does_not_wait_for_children_holding_the_pipe() {
     let f = Fixture::new("drain");
     let run = |stop: bool| {
         let mut c = f.connect();
@@ -193,7 +200,7 @@ fn stop_output_at_exit_does_not_wait_for_children_holding_the_pipe() {
             ],
             false,
         );
-        x.stop_output_at_exit = stop;
+        x.main = stop;
         send(&mut c, HostMsg::Exec(x));
         started(&mut c);
         let t = std::time::Instant::now();
@@ -208,6 +215,44 @@ fn stop_output_at_exit_does_not_wait_for_children_holding_the_pipe() {
     let (len, _, took) = run(false);
     assert_eq!(len, 200000);
     assert!(took >= std::time::Duration::from_secs(2), "{took:?}");
+}
+
+#[test]
+fn signal_main_reaches_the_main_process_from_another_connection() {
+    let f = Fixture::new("sigmain");
+    let signal_main = |n: i32| {
+        let mut c = f.connect();
+        send(&mut c, HostMsg::SignalMain(n));
+        recv(&mut c)
+    };
+    // 기본 프로세스가 없으면 NotFound.
+    assert!(matches!(signal_main(15), GuestMsg::Error(e) if e.kind == ErrorKind::NotFound));
+    // 기본 프로세스가 아닌 프로세스는 맞지 않는다.
+    let mut other = f.connect();
+    send(&mut other, HostMsg::Exec(f.exec(&["sleep", "30"], false)));
+    started(&mut other);
+    assert!(matches!(signal_main(15), GuestMsg::Error(e) if e.kind == ErrorKind::NotFound));
+
+    let mut c = f.connect();
+    let mut x = f.exec(
+        &[
+            "sh",
+            "-c",
+            "trap 'echo got; exit 7' USR1; while :; do sleep 0.05; done",
+        ],
+        false,
+    );
+    x.main = true;
+    send(&mut c, HostMsg::Exec(x));
+    started(&mut c);
+    // 트랩을 걸 시간. Linux 번호 10(USR1)을 이 OS의 USR1로 바꿔 보낸다.
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(signal_main(10), GuestMsg::Done);
+    let (out, _, status) = collect(&mut c);
+    assert_eq!((out.as_str(), status), ("got\n", ExitStatus::Code(7)));
+    // 끝났으면 다시 없다.
+    assert!(matches!(signal_main(15), GuestMsg::Error(e) if e.kind == ErrorKind::NotFound));
+    drop(other);
 }
 
 /// 끝(Exited)까지 받는다. 출력은 모두 Stdout이어야 한다(tty).
@@ -395,6 +440,7 @@ fn shutdown_syncs_replies_then_calls_back() {
                 on_shutdown: Box::new(move || flag.store(true, Ordering::SeqCst)),
                 share: None,
                 egress: Default::default(),
+                main: Default::default(),
             },
         )
     });

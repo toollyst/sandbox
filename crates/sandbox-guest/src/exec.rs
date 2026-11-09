@@ -6,11 +6,13 @@
 //!   실행 권한이 없으면 `PermissionDenied`다. 호스트는 뒤의 둘을 Docker처럼 127, 126으로 바꾼다.
 //! - 출력은 파이프가 닫힐 때까지 보낸다. 그래서 백그라운드 프로세스가 출력을 쥐고 있으면 그 프로세스가
 //!   닫을 때까지 끝나지 않는다(`cmd | cat`과 같다). 출력을 모두 보낸 뒤 `Exited`를 보낸다.
-//! - 예외: `stop_output_at_exit`(기본 프로세스)이면 프로세스가 끝난 뒤 파이프가 [`DRAIN_IDLE`] 동안 조용하면,
+//! - 예외: `main`(기본 프로세스)이면 프로세스가 끝난 뒤 파이프가 [`DRAIN_IDLE`] 동안 조용하면,
 //!   또는 끝난 뒤 [`DRAIN_MAX`]가 지나면 그만 읽고 `Exited`를 보낸다. 이미 쓴 출력은 파이프에 있으므로 빠지지 않는다.
 //!   읽는 쪽을 닫으므로 그 뒤 남은 자식이 쓰면 EPIPE를 받는다.
 //! - 호스트가 연결을 닫으면 프로세스를 SIGKILL로 끝낸다.
 //! - 끝난 프로세스에는 시그널을 보내지 않는다. PID가 재사용되어 다른 프로세스가 맞는 일을 막는다.
+//! - 호스트가 보내는 시그널 번호는 Linux 번호다(`sys::from_linux_signal`이 이 OS의 번호로 바꾼다).
+//! - `main`이면 [`Main`]에 등록해 `SignalMain`이 찾게 한다. 끝나면 지운다.
 //! - 터미널(`tty`): 의사 터미널을 열어 표준 입력, 출력, 오류를 모두 거기에 붙이고, 프로세스는 새 세션을 만들어
 //!   그 터미널을 제어 터미널로 삼는다. 출력은 하나로 합쳐져 `Stdout`으로만 간다(터미널이 바꾼 그대로, 예: `\n` → `\r\n`).
 //!   크기는 `size`(없으면 24x80)로 시작하고 `Resize`로 바꾼다. `stdin`이 아니면 받은 입력을 버린다.
@@ -33,10 +35,10 @@ use sandbox_proto::{CHUNK_LEN, Error, ErrorKind, Exec, ExitStatus, GuestMsg, Hos
 use crate::passwd;
 use crate::wire::{Out, io_error};
 
-/// `stop_output_at_exit`일 때: 프로세스가 끝난 뒤 이만큼 출력이 없으면 그만 읽는다.
+/// `main`일 때: 프로세스가 끝난 뒤 이만큼 출력이 없으면 그만 읽는다.
 pub const DRAIN_IDLE: Duration = Duration::from_millis(50);
 
-/// `stop_output_at_exit`일 때: 프로세스가 끝난 뒤 남은 자식이 계속 써도 이만큼 지나면 그만 읽는다.
+/// `main`일 때: 프로세스가 끝난 뒤 남은 자식이 계속 써도 이만큼 지나면 그만 읽는다.
 pub const DRAIN_MAX: Duration = Duration::from_secs(1);
 
 /// 끝을 알리는 표시. 프로세스가 끝난 시각을 한 번 남긴다.
@@ -69,17 +71,42 @@ struct Proc {
 }
 
 impl Proc {
-    fn signal(&self, n: i32) {
+    /// 호스트 번호의 시그널을 보낸다. 이미 끝났으면 보내지 않고 `false`.
+    fn signal(&self, n: i32) -> bool {
         let alive = self.alive.lock().unwrap_or_else(|e| e.into_inner());
         if *alive {
             let _ = crate::sys::kill(self.pid, n);
+        }
+        *alive
+    }
+}
+
+/// 실행 중인 기본 프로세스. 게스트 안에서 하나를 함께 쓴다.
+#[derive(Default)]
+pub struct Main(Mutex<Option<Arc<Proc>>>);
+
+impl Main {
+    /// Linux 번호의 시그널을 보낸다. 실행 중인 기본 프로세스가 없으면 `false`.
+    pub fn signal(&self, linux: i32) -> bool {
+        let current = self.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        current.is_some_and(|p| p.signal(crate::sys::from_linux_signal(linux)))
+    }
+
+    fn set(&self, p: &Arc<Proc>) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(p.clone());
+    }
+
+    fn clear(&self, p: &Arc<Proc>) {
+        let mut current = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if current.as_ref().is_some_and(|c| Arc::ptr_eq(c, p)) {
+            *current = None;
         }
     }
 }
 
 /// 실행하고 끝날 때까지 처리한다.
-pub fn run(x: Exec, root: &Path, input: impl Read + Send + 'static, out: Out) {
-    if let Err(e) = run_inner(x, root, input, &out) {
+pub fn run(x: Exec, root: &Path, input: impl Read + Send + 'static, out: Out, main: &Main) {
+    if let Err(e) = run_inner(x, root, input, &out, main) {
         out.error(e);
     }
 }
@@ -89,6 +116,7 @@ fn run_inner(
     root: &Path,
     mut input: impl Read + Send + 'static,
     out: &Out,
+    main: &Main,
 ) -> Result<(), Error> {
     let Some(program) = x.args.first() else {
         return Err(Error::new(ErrorKind::InvalidArgument, "empty argv"));
@@ -157,11 +185,14 @@ fn run_inner(
         pid: child.id(),
         alive: Mutex::new(true),
     });
+    if x.main {
+        main.set(&proc);
+    }
     if out.send(&GuestMsg::Started { pid: proc.pid }).is_err() {
         proc.signal(libc::SIGKILL);
     }
 
-    // stop_output_at_exit가 아니면 끝을 알리지 않는다: 파이프가 닫힐 때까지 읽는다.
+    // main이 아니면 끝을 알리지 않는다: 파이프가 닫힐 때까지 읽는다.
     let ended = Arc::new(Ended::default());
     let (pumps, stdin) = match tty {
         Some(master) => {
@@ -202,8 +233,12 @@ fn run_inner(
         *proc.alive.lock().unwrap_or_else(|e| e.into_inner()) = false;
         child.wait()
     })()
-    .map_err(|e| io_error("wait", &e))?;
-    if x.stop_output_at_exit {
+    .map_err(|e| io_error("wait", &e));
+    if x.main {
+        main.clear(&proc);
+    }
+    let status = status?;
+    if x.main {
         ended.mark();
     }
     for p in pumps.into_iter().flatten() {
@@ -304,7 +339,9 @@ fn control(input: &mut impl Read, mut stdin: Input, proc: &Proc) {
         match HostMsg::read_from(input) {
             Ok(HostMsg::Stdin(b)) => stdin.write(&b),
             Ok(HostMsg::StdinClose) => stdin.close(),
-            Ok(HostMsg::Signal(n)) => proc.signal(n),
+            Ok(HostMsg::Signal(n)) => {
+                proc.signal(crate::sys::from_linux_signal(n));
+            }
             Ok(HostMsg::Resize(s)) => stdin.resize(s),
             Ok(_) | Err(_) => {
                 proc.signal(libc::SIGKILL);

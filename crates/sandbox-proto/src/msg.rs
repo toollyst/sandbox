@@ -46,14 +46,14 @@ pub struct Exec {
     pub stdin: bool,
     /// 터미널 크기. `tty`일 때만 쓴다.
     pub size: Option<WinSize>,
-    /// 출력을 언제까지 보내는지.
+    /// 샌드박스의 기본 프로세스인지. 두 가지가 달라진다.
     ///
-    /// - `false`: 출력 파이프가 닫힐 때까지 보낸다. 프로세스가 끝나도 남은 자식이 파이프를 쥐고 있으면 기다린다
-    ///   (`cmd | cat`, `docker exec`와 같다).
-    /// - `true`: 프로세스가 끝나면 이미 쓴 출력만 보내고 [`GuestMsg::Exited`]를 보낸다. 남은 자식은 기다리지 않는다.
-    ///   샌드박스의 기본 프로세스에 쓴다. 기본 프로세스가 끝나면 샌드박스가 멈추기 때문이다
-    ///   (Docker에서 컨테이너의 첫 프로세스가 끝나면 모두 끝나는 것과 같다).
-    pub stop_output_at_exit: bool,
+    /// - 출력: `false`면 출력 파이프가 닫힐 때까지 보낸다. 프로세스가 끝나도 남은 자식이 파이프를 쥐고 있으면
+    ///   기다린다(`cmd | cat`, `docker exec`와 같다). `true`면 프로세스가 끝나면 이미 쓴 출력만 보내고
+    ///   [`GuestMsg::Exited`]를 보낸다. 남은 자식은 기다리지 않는다. 기본 프로세스가 끝나면 샌드박스가 멈추기
+    ///   때문이다(Docker에서 컨테이너의 첫 프로세스가 끝나면 모두 끝나는 것과 같다).
+    /// - [`HostMsg::SignalMain`]이 이 프로세스에 시그널을 보낸다. 나중에 시작한 기본 프로세스가 앞의 것을 대신한다.
+    pub main: bool,
 }
 
 /// 터미널 크기.
@@ -211,6 +211,9 @@ pub enum HostMsg {
         /// 이유.
         reason: String,
     },
+    /// 기본 프로세스([`Exec::main`])에 시그널을 보낸다. 그 프로세스의 연결이 없는 쪽(다른 호스트 프로세스)도 보낼 수 있다.
+    /// 번호는 Linux 번호다. 흐름: 게스트가 [`GuestMsg::Done`]. 실행 중인 기본 프로세스가 없으면 `NotFound` 오류.
+    SignalMain(i32),
 }
 
 /// 게스트 → 호스트.
@@ -302,6 +305,7 @@ mod tag {
     pub const EGRESS_SLOT: u8 = 0x10;
     pub const CONNECTED: u8 = 0x11;
     pub const REFUSED: u8 = 0x12;
+    pub const SIGNAL_MAIN: u8 = 0x13;
 
     pub const HELLO_ACK: u8 = 0x81;
     pub const STARTED: u8 = 0x82;
@@ -458,7 +462,7 @@ impl HostMsg {
                     .bool(x.tty)
                     .bool(x.stdin)
                     .opt(x.size.as_ref(), enc_size)
-                    .bool(x.stop_output_at_exit);
+                    .bool(x.main);
             }
             HostMsg::Stdin(b) => {
                 e = Encoder::new(tag::STDIN);
@@ -510,6 +514,10 @@ impl HostMsg {
                 e = Encoder::new(tag::REFUSED);
                 e.str(reason);
             }
+            HostMsg::SignalMain(n) => {
+                e = Encoder::new(tag::SIGNAL_MAIN);
+                e.i32(*n);
+            }
         }
         e.finish()
     }
@@ -535,7 +543,7 @@ impl HostMsg {
                     tty: d.bool()?,
                     stdin: d.bool()?,
                     size: d.opt(dec_size)?,
-                    stop_output_at_exit: d.bool()?,
+                    main: d.bool()?,
                 })
             }
             tag::STDIN => HostMsg::Stdin(d.bytes()?.to_vec()),
@@ -560,6 +568,7 @@ impl HostMsg {
             tag::REFUSED => HostMsg::Refused {
                 reason: d.string()?,
             },
+            tag::SIGNAL_MAIN => HostMsg::SignalMain(d.i32()?),
             t => return bad(format!("unknown host message {t:#04x}")),
         };
         d.end()?;

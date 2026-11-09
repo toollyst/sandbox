@@ -25,6 +25,38 @@ pub fn kill(pid: u32, signal: i32) -> io::Result<()> {
     check(unsafe { libc::kill(pid, signal) })
 }
 
+/// 호스트가 보낸 Linux 시그널 번호를 이 OS의 번호로. 게스트(Linux)에서는 그대로다.
+/// 다른 OS(호스트에서 게스트 처리를 돌리는 fake 실행기)에서는 이름이 같은 시그널로 바꾸고, 모르는 번호는 그대로 둔다.
+pub fn from_linux_signal(n: i32) -> i32 {
+    #[cfg(target_os = "linux")]
+    {
+        n
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        match n {
+            7 => libc::SIGBUS,
+            10 => libc::SIGUSR1,
+            12 => libc::SIGUSR2,
+            17 => libc::SIGCHLD,
+            18 => libc::SIGCONT,
+            19 => libc::SIGSTOP,
+            20 => libc::SIGTSTP,
+            21 => libc::SIGTTIN,
+            22 => libc::SIGTTOU,
+            23 => libc::SIGURG,
+            24 => libc::SIGXCPU,
+            25 => libc::SIGXFSZ,
+            26 => libc::SIGVTALRM,
+            27 => libc::SIGPROF,
+            28 => libc::SIGWINCH,
+            29 => libc::SIGIO,
+            31 => libc::SIGSYS,
+            other => other,
+        }
+    }
+}
+
 /// `fd`에서 막히지 않고 읽을 수 있을 때까지(데이터가 있거나 닫힘) 최대 `timeout` 기다린다. 읽을 수 있으면 `true`.
 pub fn poll_readable(
     fd: std::os::fd::BorrowedFd<'_>,

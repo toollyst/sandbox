@@ -226,6 +226,7 @@ pub fn agent() -> ! {
         on_shutdown: Box::new(move || halt(halt_how)),
         share: Some(Box::new(mount_share)),
         egress: Default::default(),
+        main: Default::default(),
     }));
     loop {
         match sys::accept(&listener) {

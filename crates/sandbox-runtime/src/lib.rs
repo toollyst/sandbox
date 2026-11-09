@@ -313,7 +313,7 @@ fn to_proto_exec(p: &ProcessDefaults, io: IoMode, main: bool) -> sandbox_proto::
             rows: t.rows,
             cols: t.cols,
         }),
-        stop_output_at_exit: main,
+        main,
     }
 }
 
