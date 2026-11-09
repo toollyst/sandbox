@@ -28,7 +28,7 @@ pub use frame::{MAX_FRAME_LEN, read_frame, write_frame};
 pub use msg::*;
 
 /// 프로토콜 버전. [`HostMsg::Hello`]로 확인한다.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// 게스트가 듣는 vsock 포트.
 pub const GUEST_PORT: u32 = 1024;

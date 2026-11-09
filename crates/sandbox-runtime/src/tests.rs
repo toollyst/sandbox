@@ -505,10 +505,24 @@ fn network_allow_list_is_enforced_through_the_guest_proxy() {
         }
     });
 
+    // 목적지 2: 클라이언트가 보내기를 끝낼 때(반쯤 닫기)까지 읽고 받은 바이트 수를 답한다.
+    let counter = TcpListener::bind("127.0.0.1:0").unwrap();
+    let counted = counter.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for mut c in counter.incoming().flatten() {
+            let mut all = Vec::new();
+            c.read_to_end(&mut all).unwrap();
+            let _ = c.write_all(format!("got {}", all.len()).as_bytes());
+        }
+    });
+
     let e = Env::new("egress");
     e.prepare_image();
     let mut spec = e.spec(&["sh", "-c", "sleep 30"]);
-    spec.network = NetworkPolicy::Allow(vec![format!("127.0.0.1:{allowed}").parse().unwrap()]);
+    spec.network = NetworkPolicy::Allow(vec![
+        format!("127.0.0.1:{allowed}").parse().unwrap(),
+        format!("127.0.0.1:{counted}").parse().unwrap(),
+    ]);
     let s = block_on(e.rt.create(spec)).unwrap();
     let _main = block_on(s.start(IoMode::default())).unwrap();
     let port = e.state(&s).egress_port.expect("egress port");
@@ -553,12 +567,26 @@ fn network_allow_list_is_enforced_through_the_guest_proxy() {
     r.read_line(&mut reply).unwrap();
     assert_eq!(reply, "echo:ping\n");
 
+    // 반쯤 닫기는 터널을 지나 목적지에 닿고, 그 뒤에도 답을 받는다. 터널 조각보다 큰 데이터.
+    let mut c = proxy();
+    write!(c, "CONNECT 127.0.0.1:{counted} HTTP/1.1\r\n\r\n").unwrap();
+    let (status, mut r) = head(&mut c);
+    assert!(status.starts_with("HTTP/1.1 200"), "{status}");
+    c.write_all(&vec![7u8; 3 * 1024 * 1024 + 5]).unwrap();
+    c.shutdown(std::net::Shutdown::Write).unwrap();
+    let mut reply = String::new();
+    r.read_to_string(&mut reply).unwrap();
+    assert_eq!(reply, format!("got {}", 3 * 1024 * 1024 + 5));
+
     // 목록에 없는 포트: 403과 이유.
     let mut c = proxy();
     write!(
         c,
         "CONNECT 127.0.0.1:{} HTTP/1.1\r\n\r\n",
-        allowed.wrapping_add(1)
+        (1..)
+            .map(|d| allowed.wrapping_add(d))
+            .find(|p| *p != counted)
+            .unwrap()
     )
     .unwrap();
     let (status, mut r) = head(&mut c);

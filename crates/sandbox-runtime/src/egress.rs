@@ -3,8 +3,10 @@
 //! - 게스트에 연결을 [`POOL`]개 맡겨 둔다(`HostMsg::EgressSlot`). 하나가 쓰이면 곧바로 하나를 더 맡긴다.
 //!   게스트에 연결할 수 없으면(VM이 끝남) 멈춘다.
 //! - 게스트가 `Connect { host, port }`를 보내면 [`check`]로 허용 목록을 확인하고, 허용되면 [`DIAL_TIMEOUT`] 안에
-//!   TCP로 연결해 `Connected` 뒤로 바이트를 그대로 잇는다. 아니면 `Refused`와 이유를 보낸다.
-//! - 한쪽이 보내기를 끝내면 다른 쪽의 보내는 쪽을 닫는다.
+//!   TCP로 연결해 `Connected`를 보낸다. 아니면 `Refused`와 이유를 보낸다.
+//! - `Connected` 뒤로 목적지에서 받은 바이트는 `HostMsg::Data`로 보내고, 목적지가 보내기를 끝내면 `HostMsg::End`.
+//!   게스트가 보낸 `GuestMsg::Data`는 목적지에 쓰고, `GuestMsg::End`면 목적지 쪽 보내기를 닫는다(반쯤 닫기).
+//!   양쪽이 끝나면(또는 어느 쪽이든 오류면) 둘 다 닫는다.
 //!
 //! **허용 규칙** ([`check`]):
 //! 1. 요청한 호스트와 포트에 맞는 규칙([`AllowRule::matches`])이 하나도 없으면 거부.
@@ -146,13 +148,47 @@ fn splice(conn: Box<dyn GuestConn>, tcp: TcpStream) {
     };
     let mut conn_in = conn;
     let mut tcp_out = tcp;
+    // 목적지 → 게스트.
     let down = thread::spawn(move || {
-        let _ = io::copy(&mut tcp_in, &mut conn_out);
-        let _ = conn_out.shutdown_write();
+        let mut buf = vec![0u8; sandbox_proto::CHUNK_LEN];
+        loop {
+            match io::Read::read(&mut tcp_in, &mut buf) {
+                Ok(0) => break HostMsg::End.write_to(&mut *conn_out).is_ok(),
+                Ok(n) => {
+                    if HostMsg::Data(buf[..n].to_vec())
+                        .write_to(&mut *conn_out)
+                        .is_err()
+                    {
+                        break false;
+                    }
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(_) => break false,
+            }
+        }
     });
-    let _ = io::copy(&mut conn_in, &mut tcp_out);
-    let _ = tcp_out.shutdown(Shutdown::Write);
+    // 게스트 → 목적지.
+    let up_ok = loop {
+        match GuestMsg::read_from(&mut *conn_in) {
+            Ok(GuestMsg::Data(b)) => {
+                if io::Write::write_all(&mut tcp_out, &b).is_err() {
+                    break false;
+                }
+            }
+            Ok(GuestMsg::End) => {
+                let _ = tcp_out.shutdown(Shutdown::Write);
+                break true;
+            }
+            _ => break false,
+        }
+    };
+    if !up_ok {
+        // 게스트 쪽이 끊겼다. 목적지를 닫아 내려가는 쪽도 끝나게 한다.
+        let _ = tcp_out.shutdown(Shutdown::Both);
+    }
     let _ = down.join();
+    let _ = tcp_out.shutdown(Shutdown::Both);
+    let _ = conn_in.shutdown();
 }
 
 #[cfg(test)]

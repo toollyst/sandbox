@@ -177,8 +177,9 @@ pub trait GuestConn: Read + Write + Send {
     /// 같은 연결을 가리키는 다른 핸들.
     fn try_clone_conn(&self) -> io::Result<Box<dyn GuestConn>>;
 
-    /// 보내는 쪽을 닫는다. 상대는 읽기에서 끝(EOF)을 보고, 이쪽은 계속 읽을 수 있다.
-    fn shutdown_write(&self) -> io::Result<()>;
+    /// 연결을 닫는다(양쪽). 다른 핸들에서 막혀 있는 읽기도 끝난다.
+    /// 반쯤 닫기는 없다. 반쯤 닫기가 없는 vsock 구현이 있으므로(Firecracker), 끝은 메시지로 알린다.
+    fn shutdown(&self) -> io::Result<()>;
 }
 
 #[cfg(unix)]
@@ -187,8 +188,8 @@ impl GuestConn for std::os::unix::net::UnixStream {
         Ok(Box::new(self.try_clone()?))
     }
 
-    fn shutdown_write(&self) -> io::Result<()> {
-        self.shutdown(std::net::Shutdown::Write)
+    fn shutdown(&self) -> io::Result<()> {
+        std::os::unix::net::UnixStream::shutdown(self, std::net::Shutdown::Both)
     }
 }
 

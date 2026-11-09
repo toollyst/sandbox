@@ -201,8 +201,12 @@ pub enum HostMsg {
     /// 흐름: 게스트가 [`GuestMsg::Listening`].
     EgressListen,
     /// 이 연결을 나가는 연결 하나에 쓰라고 맡긴다. 게스트는 프록시 클라이언트가 올 때까지 쥐고 있다가
-    /// [`GuestMsg::Connect`]를 보낸다. 호스트는 [`HostMsg::Connected`]나 [`HostMsg::Refused`]로 답하고,
-    /// `Connected` 뒤로 이 연결은 프레임 없는 바이트 스트림이 된다(양쪽이 그대로 이어 붙인다).
+    /// [`GuestMsg::Connect`]를 보낸다. 호스트는 [`HostMsg::Connected`]나 [`HostMsg::Refused`]로 답한다.
+    ///
+    /// `Connected` 뒤로 양쪽은 목적지와 주고받는 바이트를 `Data`([`HostMsg::Data`], [`GuestMsg::Data`])로 보내고,
+    /// 보내기를 끝내면 `End`를 보낸다(TCP 반쯤 닫기). 양쪽 다 `End`를 보내면 연결을 닫는다.
+    /// 끝을 전송의 반쯤 닫기에 맡기지 않는다. 반쯤 닫기가 없는 vsock 구현이 있기 때문이다
+    /// (Firecracker는 한쪽이 EOF면 연결 전체를 닫는다).
     EgressSlot,
     /// [`GuestMsg::Connect`]의 답: 연결했다.
     Connected,

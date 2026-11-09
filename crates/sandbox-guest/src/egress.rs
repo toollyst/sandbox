@@ -10,7 +10,9 @@
 //!     (서버는 절대 형식을 받아야 한다, RFC 9112 3.2.2). 포트를 생략하면 80이다.
 //!   - 그 밖은 400. 머리가 [`MAX_HEAD`]를 넘으면 431.
 //! - 거부되면 403과 이유를 본문으로, 호스트가 연결하지 못했으면 502다.
-//! - 한쪽이 보내기를 끝내면 다른 쪽의 보내는 쪽을 닫는다(반쯤 닫기를 이어 준다). 양쪽이 끝나면 닫는다.
+//! - 허용된 뒤로 클라이언트에서 받은 바이트는 `GuestMsg::Data`로 보내고, 클라이언트가 보내기를 끝내면 `GuestMsg::End`.
+//!   호스트가 보낸 `HostMsg::Data`는 클라이언트에 쓰고, `HostMsg::End`면 클라이언트 쪽 보내기를 닫는다(반쯤 닫기).
+//!   양쪽이 끝나면(또는 어느 쪽이든 오류면) 둘 다 닫는다. 끝을 vsock의 반쯤 닫기에 맡기지 않는다.
 
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
@@ -33,7 +35,6 @@ pub const MAX_HEAD: usize = 16 * 1024;
 pub struct Slot {
     reader: Box<dyn Read + Send>,
     writer: Box<dyn Write + Send>,
-    shutdown_write: Box<dyn Fn() + Send + Sync>,
     shutdown_both: Box<dyn Fn() + Send + Sync>,
 }
 
@@ -41,14 +42,10 @@ impl Slot {
     /// 연결로 만든다.
     pub fn new<C: Conn>(conn: C) -> io::Result<Self> {
         let writer = conn.try_clone()?;
-        let half = conn.try_clone()?;
         let full = conn.try_clone()?;
         Ok(Self {
             reader: Box::new(conn),
             writer: Box::new(writer),
-            shutdown_write: Box::new(move || {
-                let _ = half.shutdown_write();
-            }),
             shutdown_both: Box::new(move || {
                 let _ = full.shutdown_both();
             }),
@@ -253,12 +250,11 @@ fn reply(client: &mut TcpStream, code: u16, reason: &str) {
     );
 }
 
-/// 양쪽을 잇는다. `first`는 목적지로 먼저 보낼 바이트다.
+/// 양쪽을 잇는다. `first`는 목적지로 먼저 보낼 바이트다. 규칙은 모듈 문서에 있다.
 fn splice(client: TcpStream, slot: Slot, first: &[u8]) {
     let Slot {
         mut reader,
         mut writer,
-        shutdown_write,
         shutdown_both,
     } = slot;
     let Ok(mut client_in) = client.try_clone() else {
@@ -267,15 +263,48 @@ fn splice(client: TcpStream, slot: Slot, first: &[u8]) {
     };
     let mut client_out = client;
     let first = first.to_vec();
+    // 클라이언트 → 호스트.
     let up = thread::spawn(move || {
-        if writer.write_all(&first).is_ok() {
-            let _ = io::copy(&mut client_in, &mut writer);
+        let mut send = |m: GuestMsg| m.write_to(&mut writer).and_then(|()| writer.flush());
+        if !first.is_empty() && send(GuestMsg::Data(first)).is_err() {
+            return;
         }
-        let _ = writer.flush();
-        shutdown_write();
+        let mut buf = vec![0u8; sandbox_proto::CHUNK_LEN];
+        loop {
+            match client_in.read(&mut buf) {
+                Ok(0) => {
+                    let _ = send(GuestMsg::End);
+                    return;
+                }
+                Ok(n) => {
+                    if send(GuestMsg::Data(buf[..n].to_vec())).is_err() {
+                        return;
+                    }
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(_) => return,
+            }
+        }
     });
-    let _ = io::copy(&mut reader, &mut client_out);
-    let _ = client_out.shutdown(Shutdown::Write);
+    // 호스트 → 클라이언트.
+    let ok = loop {
+        match HostMsg::read_from(&mut reader) {
+            Ok(HostMsg::Data(b)) => {
+                if client_out.write_all(&b).is_err() {
+                    break false;
+                }
+            }
+            Ok(HostMsg::End) => {
+                let _ = client_out.shutdown(Shutdown::Write);
+                break true;
+            }
+            _ => break false,
+        }
+    };
+    if !ok {
+        // 호스트 쪽이 끊겼다. 클라이언트를 닫아 올라가는 쪽도 끝나게 한다.
+        let _ = client_out.shutdown(Shutdown::Both);
+    }
     let _ = up.join();
     shutdown_both();
     let _ = client_out.shutdown(Shutdown::Both);
