@@ -165,10 +165,10 @@ pub struct RunArgs {
     /// 라벨 k=v.
     #[arg(short = 'l', long = "label")]
     pub labels: Vec<String>,
-    /// SRC:DST[:ro] (type=bind의 줄임말).
+    /// `SRC:DST[:ro]` (type=bind의 줄임말).
     #[arg(short = 'v', long = "volume")]
     pub volumes: Vec<String>,
-    /// type=bind|copy,source=...,target=...[,readonly]
+    /// `type=bind|copy,source=...,target=...[,readonly]`
     #[arg(long = "mount")]
     pub mounts: Vec<String>,
     /// 네트워크. 지금은 none만.

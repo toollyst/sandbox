@@ -1,6 +1,6 @@
 //! manifest, index, image config 해석. 네트워크 없이 바이트만 다룬다.
 //!
-//! 레지스트리가 보낸 문서는 믿지 않는다. 형식이 [`scope`](crate::scope)에 없으면 거부하고,
+//! 레지스트리가 보낸 문서는 믿지 않는다. 형식이 [`scope`]에 없으면 거부하고,
 //! digest는 호출하는 쪽이 직접 계산해 대조한다.
 
 use serde::Deserialize;
