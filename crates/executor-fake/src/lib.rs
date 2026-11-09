@@ -15,6 +15,8 @@
 //! - VM을 끝내면 열린 게스트 연결을 모두 닫는다. 그러면 게스트 쪽 처리가 그 연결의 프로세스를 SIGKILL로 끝낸다
 //!   (실제 VM에서 전원이 꺼지는 것과 같은 결과). 그 프로세스가 띄운 다른 호스트 프로세스는 남을 수 있다.
 //! - 게스트 포트([`sandbox_proto::GUEST_PORT`]) 외의 포트로 연결하면 닫는다(듣는 쪽이 없는 것과 같다).
+//! - 공유 폴더(`Share`)는 마운트하지 않고 대상 경로에 호스트 경로를 가리키는 심볼릭 링크를 둔다
+//!   (대상이 빈 디렉터리면 바꾼다). 읽기 전용은 강제하지 않는다.
 //! - Unix에서만 VM을 "띄운다". 다른 OS에서는 `launch`가 [`ExecutorError::Unsupported`]다.
 //!
 //! 모듈 층: `lib`, `process` → `guest` → `vm`.
@@ -52,13 +54,13 @@ impl FakeExecutor {
         }
     }
 
-    /// 흔한 기본값: 호스트 아키텍처, 모든 rootfs 형식, 실시간 공유 없음, 디스크 2개.
+    /// 흔한 기본값: 호스트 아키텍처, 모든 rootfs 형식, 실시간 공유, 디스크 2개.
     pub fn basic() -> Self {
         Self::new(Capabilities {
             name: "fake",
             arch: Arch::host().unwrap_or(Arch::X86_64),
             rootfs_formats: RootfsFormat::ALL.to_vec(),
-            live_share: false,
+            live_share: true,
             snapshot: false,
             max_disks: 2,
         })
@@ -81,7 +83,12 @@ impl Executor for FakeExecutor {
             if let Ok(mut l) = self.launches.lock() {
                 l.push(vm.clone());
             }
-            guest::start(&vm.control_channel.host_endpoint)
+            let shares = vm
+                .shares
+                .iter()
+                .map(|s| (s.tag.clone(), s.host_path.clone()))
+                .collect();
+            guest::start(&vm.control_channel.host_endpoint, shares)
                 .map(|v| Box::new(v) as Box<dyn VmHandle>)
         })
     }

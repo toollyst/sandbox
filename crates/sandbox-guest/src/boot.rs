@@ -166,6 +166,15 @@ fn switch_root(cfg: &BootConfig) -> io::Result<()> {
     Ok(())
 }
 
+/// 실행기가 붙인 virtio-fs 공유 폴더를 마운트한다. 대상 디렉터리가 없으면 만든다.
+fn mount_share(tag: &str, target: &str, readonly: bool) -> io::Result<()> {
+    let mut flags = libc::MS_NOSUID | libc::MS_NODEV;
+    if readonly {
+        flags |= libc::MS_RDONLY;
+    }
+    mount_dir(tag, target, "virtiofs", flags, "")
+}
+
 /// PID 1. 돌아오지 않는다.
 pub fn pid1() -> ! {
     if std::process::id() != 1 {
@@ -215,6 +224,7 @@ pub fn agent() -> ! {
     let ctx: &'static Ctx = Box::leak(Box::new(Ctx {
         root: "/".into(),
         on_shutdown: Box::new(move || halt(halt_how)),
+        share: Some(Box::new(mount_share)),
     }));
     loop {
         match sys::accept(&listener) {

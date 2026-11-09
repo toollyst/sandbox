@@ -25,7 +25,7 @@ pub fn capabilities() -> proto::Capabilities {
             proto::Arch::Amd64
         },
         rootfs_formats: vec!["erofs".into()],
-        live_share: false,
+        live_share: true,
         snapshot: false,
         max_disks: 2,
     }
@@ -69,7 +69,12 @@ fn run() -> ExitCode {
     if vm.vcpus == 0 || vm.memory_mib == 0 || vm.disks.len() > caps.max_disks as usize {
         return fail(&mut out, "unsupported vm spec".into());
     }
-    let handle = match guest::start(&vm.control_socket) {
+    let shares = vm
+        .shares
+        .iter()
+        .map(|s| (s.tag.clone(), s.host_path.clone()))
+        .collect();
+    let handle = match guest::start(&vm.control_socket, shares) {
         Ok(h) => h,
         Err(e) => return fail(&mut out, format!("cannot open control socket: {e}")),
     };

@@ -41,6 +41,9 @@
 //! - 디스크는 [`VmSpec::disks`] 순서대로 붙인다. 게스트에서 첫째가 `/dev/vda`(rootfs, 읽기 전용), 둘째가 `/dev/vdb`(scratch)다.
 //! - 커널 명령줄에 `sbx.hostname=<hostname>`과 `sbx.halt=poweroff|reboot`을 넣는다. `sbx.halt`는 그 VMM에서
 //!   게스트가 VM을 끝내는 방법이다(Firecracker처럼 재시작 요청을 VM 종료로 다루면 `reboot`).
+//! - 공유 폴더([`VmSpec::shares`])는 virtio-fs 장치 하나씩으로 붙이고, 그 태그를 [`ShareSpec::tag`]로 한다.
+//!   게스트 init이 `mount -t virtiofs <tag> <경로>`로 마운트한다(커널 기능 virtio-fs). 읽기 전용이면 실행기도
+//!   읽기 전용으로 내보낸다. 붙일 수 없는 실행기는 `live_share`를 `false`로 알린다. 그러면 sbx는 공유를 보내지 않는다.
 //! - 네트워크 장치는 붙이지 않는다(지금 정책은 네트워크 차단뿐이다).
 //!
 //! # 버전
@@ -114,7 +117,7 @@ pub struct DiskSpec {
     pub readonly: bool,
 }
 
-/// 실시간 폴더 공유 하나. `live_share`가 없는 실행기에는 보내지 않는다.
+/// 실시간 폴더 공유 하나(virtio-fs). `live_share`가 없는 실행기에는 보내지 않는다.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ShareSpec {

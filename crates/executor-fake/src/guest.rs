@@ -21,6 +21,25 @@ mod unix {
     use executor_proto::vsock;
     use sandbox_guest::server::{self, Ctx};
 
+    /// 공유 폴더 흉내: 대상 경로에 호스트 경로를 가리키는 심볼릭 링크를 둔다. 대상이 빈 디렉터리면 바꾼다.
+    fn link_share(host: &Path, target: &Path) -> io::Result<()> {
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        match std::fs::symlink_metadata(target) {
+            Ok(m) if m.is_dir() => std::fs::remove_dir(target)?,
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("{} exists", target.display()),
+                ));
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+        std::os::unix::fs::symlink(host, target)
+    }
+
     pub(crate) fn connect(channel: &ChannelSpec) -> io::Result<Box<dyn GuestConn>> {
         Ok(Box::new(vsock::connect(
             &channel.host_endpoint,
@@ -28,8 +47,11 @@ mod unix {
         )?))
     }
 
-    /// 제어 소켓을 열고 게스트 처리를 돌린다.
-    pub(crate) fn start(socket: &Path) -> Result<FakeVm, ExecutorError> {
+    /// 제어 소켓을 열고 게스트 처리를 돌린다. `shares`는 (태그, 호스트 경로)다.
+    pub(crate) fn start(
+        socket: &Path,
+        shares: Vec<(String, PathBuf)>,
+    ) -> Result<FakeVm, ExecutorError> {
         let path: PathBuf = socket.to_owned();
         let _ = std::fs::remove_file(&path);
         let listener = UnixListener::bind(&path)?;
@@ -56,6 +78,16 @@ mod unix {
                 let stop = stop.clone();
                 Box::new(move || stop(REASON_GUEST_SHUTDOWN))
             },
+            share: Some(Box::new(move |tag: &str, target: &str, _readonly: bool| {
+                let host = shares
+                    .iter()
+                    .find(|(t, _)| t == tag)
+                    .map(|(_, h)| h.clone())
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::NotFound, format!("no share tagged {tag}"))
+                    })?;
+                link_share(&host, Path::new(target))
+            })),
         });
         {
             let life = life.clone();
@@ -108,7 +140,10 @@ mod other {
         ))
     }
 
-    pub(crate) fn start(_socket: &std::path::Path) -> Result<FakeVm, ExecutorError> {
+    pub(crate) fn start(
+        _socket: &std::path::Path,
+        _shares: Vec<(String, std::path::PathBuf)>,
+    ) -> Result<FakeVm, ExecutorError> {
         Err(ExecutorError::Unsupported(
             "the fake guest needs Unix sockets".into(),
         ))

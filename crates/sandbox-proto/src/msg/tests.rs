@@ -61,6 +61,11 @@ fn host_samples() -> Vec<HostMsg> {
         HostMsg::End,
         HostMsg::Shutdown,
         HostMsg::Stat { path: "/w".into() },
+        HostMsg::Share {
+            tag: "sbx0".into(),
+            target: "/data".into(),
+            readonly: true,
+        },
     ]
 }
 

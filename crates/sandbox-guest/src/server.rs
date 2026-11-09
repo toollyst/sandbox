@@ -1,5 +1,6 @@
 //! 연결 하나를 처리한다. 순서는 `sandbox-proto` 문서에 있다. 요청을 `exec`, `copy`로 나눠 보내는 맨 위 층이다.
 
+use std::io;
 use std::path::PathBuf;
 
 use sandbox_proto::{Error, ErrorKind, GuestMsg, HostMsg, PROTOCOL_VERSION};
@@ -13,7 +14,13 @@ pub struct Ctx {
     pub root: PathBuf,
     /// `Shutdown` 요청을 마친 뒤 부른다. 게스트에서는 VM을 끈다.
     pub on_shutdown: Box<dyn Fn() + Send + Sync>,
+    /// `Share` 요청을 처리한다: (태그, 대상 경로, 읽기 전용). 게스트에서는 virtio-fs를 마운트한다.
+    /// 없으면 `Share`는 `InvalidArgument` 오류다.
+    pub share: Option<ShareFn>,
 }
+
+/// 공유 폴더를 붙이는 방법.
+pub type ShareFn = Box<dyn Fn(&str, &str, bool) -> io::Result<()> + Send + Sync>;
 
 /// 연결 하나를 끝까지 처리한다.
 pub fn serve<C: Conn>(conn: C, ctx: &Ctx) {
@@ -48,6 +55,29 @@ pub fn serve<C: Conn>(conn: C, ctx: &Ctx) {
         Ok(HostMsg::CopyIn { dest }) => copy::receive(&dest, &mut input, &out),
         Ok(HostMsg::CopyOut { path }) => copy::send(&path, &out),
         Ok(HostMsg::Stat { path }) => copy::stat(&path, &out),
+        Ok(HostMsg::Share {
+            tag,
+            target,
+            readonly,
+        }) => match &ctx.share {
+            _ if !target.starts_with('/') => out.error(Error::new(
+                ErrorKind::InvalidArgument,
+                format!("share target must be absolute: {target:?}"),
+            )),
+            Some(f) => match f(&tag, &target, readonly) {
+                Ok(()) => {
+                    let _ = out.send(&GuestMsg::Done);
+                }
+                Err(e) => out.error(crate::wire::io_error(
+                    &format!("share {tag} at {target}"),
+                    &e,
+                )),
+            },
+            None => out.error(Error::new(
+                ErrorKind::InvalidArgument,
+                "shares are not supported by this guest",
+            )),
+        },
         Ok(HostMsg::Shutdown) => {
             sys::sync();
             let _ = out.send(&GuestMsg::Done);

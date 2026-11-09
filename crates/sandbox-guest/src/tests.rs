@@ -45,6 +45,7 @@ impl Fixture {
                 &Ctx {
                     root,
                     on_shutdown: Box::new(|| {}),
+                    share: None,
                 },
             )
         });
@@ -136,6 +137,7 @@ fn version_mismatch_is_reported() {
             &Ctx {
                 root: "/".into(),
                 on_shutdown: Box::new(|| {}),
+                share: None,
             },
         )
     });
@@ -152,6 +154,7 @@ fn request_before_hello_is_a_protocol_error() {
             &Ctx {
                 root: "/".into(),
                 on_shutdown: Box::new(|| {}),
+                share: None,
             },
         )
     });
@@ -387,6 +390,7 @@ fn shutdown_syncs_replies_then_calls_back() {
             &Ctx {
                 root: "/".into(),
                 on_shutdown: Box::new(move || flag.store(true, Ordering::SeqCst)),
+                share: None,
             },
         )
     });

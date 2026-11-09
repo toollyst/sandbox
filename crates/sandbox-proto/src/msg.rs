@@ -187,6 +187,16 @@ pub enum HostMsg {
         /// 절대 경로.
         path: String,
     },
+    /// 실행기가 붙인 공유 폴더(virtio-fs, 태그 `tag`)를 `target`에 마운트한다. `target`이 없으면 만든다.
+    /// 흐름: 게스트가 [`GuestMsg::Done`].
+    Share {
+        /// 실행기에 준 태그.
+        tag: String,
+        /// 게스트 절대 경로.
+        target: String,
+        /// 읽기 전용으로 마운트한다.
+        readonly: bool,
+    },
 }
 
 /// 게스트 → 호스트.
@@ -261,6 +271,7 @@ mod tag {
     pub const END: u8 = 0x0B;
     pub const SHUTDOWN: u8 = 0x0C;
     pub const STAT: u8 = 0x0D;
+    pub const SHARE: u8 = 0x0E;
 
     pub const HELLO_ACK: u8 = 0x81;
     pub const STARTED: u8 = 0x82;
@@ -452,6 +463,14 @@ impl HostMsg {
                 e = Encoder::new(tag::STAT);
                 e.str(path);
             }
+            HostMsg::Share {
+                tag,
+                target,
+                readonly,
+            } => {
+                e = Encoder::new(tag::SHARE);
+                e.str(tag).str(target).bool(*readonly);
+            }
         }
         e.finish()
     }
@@ -491,6 +510,11 @@ impl HostMsg {
             tag::END => HostMsg::End,
             tag::SHUTDOWN => HostMsg::Shutdown,
             tag::STAT => HostMsg::Stat { path: d.string()? },
+            tag::SHARE => HostMsg::Share {
+                tag: d.string()?,
+                target: d.string()?,
+                readonly: d.bool()?,
+            },
             t => return bad(format!("unknown host message {t:#04x}")),
         };
         d.end()?;
