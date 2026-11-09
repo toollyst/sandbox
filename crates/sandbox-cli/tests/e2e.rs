@@ -1,0 +1,439 @@
+//! `sbx` 실행 파일 끝-끝 테스트. 가짜 실행기로 VM 없이 CLI → 실행 코어 → 실행기 규약 → 게스트 처리를 모두 지난다.
+//!
+//! 이 테스트 실행 파일이 곧 가짜 실행기다: `sbx --executor <이 파일>`이 `<이 파일> capabilities|run`으로 부르면
+//! `executor_fake::process::main`을 돈다. 그래서 다른 패키지의 실행 파일을 빌드할 필요가 없다(`harness = false`).
+//!
+//! 가짜 실행기의 게스트 처리는 호스트에서 지금 사용자로 돈다. 그래서 이미지의 사용자는 지금 사용자이고,
+//! 게스트 경로는 호스트 경로다. 실제 VM 검증은 실행기(fc-fork) 쪽 E2E가 맡는다.
+
+use std::process::ExitCode;
+
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().collect();
+    if matches!(
+        args.get(1).map(String::as_str),
+        Some("capabilities" | "run")
+    ) {
+        #[cfg(unix)]
+        return executor_fake::process::main();
+    }
+    #[cfg(unix)]
+    {
+        unix::run_all(&args[1..])
+    }
+    #[cfg(not(unix))]
+    {
+        println!("e2e: skipped (the fake executor needs Unix sockets)");
+        ExitCode::SUCCESS
+    }
+}
+
+#[cfg(unix)]
+mod unix {
+    use std::io::Write;
+    use std::path::{Path, PathBuf};
+    use std::process::{Child, Command, ExitCode, Output, Stdio};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
+    use sandbox_model::{Arch, Digest, ImageConfig, ImageId, RootfsFormat};
+    use sandbox_store::{CacheLayout, ImageRecord, write};
+
+    type Test = (&'static str, fn());
+
+    const TESTS: &[Test] = &[
+        (
+            "run_streams_output_and_returns_the_exit_code",
+            run_streams_output_and_returns_the_exit_code,
+        ),
+        (
+            "run_command_not_found_is_127_and_not_executable_is_126",
+            run_command_not_found_is_127_and_not_executable_is_126,
+        ),
+        ("run_i_forwards_stdin", run_i_forwards_stdin),
+        ("create_start_inspect_rm", create_start_inspect_rm),
+        (
+            "exec_cp_stop_on_a_running_sandbox",
+            exec_cp_stop_on_a_running_sandbox,
+        ),
+        (
+            "signals_are_forwarded_to_the_main_process",
+            signals_are_forwarded_to_the_main_process,
+        ),
+        (
+            "commands_that_do_not_launch_need_no_executor",
+            commands_that_do_not_launch_need_no_executor,
+        ),
+        (
+            "run_failures_before_the_command_are_125",
+            run_failures_before_the_command_are_125,
+        ),
+    ];
+
+    /// 인자: 이름 일부(걸러 내기). `--`로 시작하는 인자(cargo test가 넘기는 것)는 무시한다.
+    pub fn run_all(args: &[String]) -> ExitCode {
+        let filters: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
+        if args.iter().any(|a| a == "--list") {
+            for (name, _) in TESTS {
+                println!("{name}: test");
+            }
+            return ExitCode::SUCCESS;
+        }
+        let selected: Vec<&Test> = TESTS
+            .iter()
+            .filter(|(n, _)| filters.is_empty() || filters.iter().any(|f| n.contains(f.as_str())))
+            .collect();
+        println!("\nrunning {} tests", selected.len());
+        let mut failed = Vec::new();
+        for (name, f) in &selected {
+            let ok = std::panic::catch_unwind(f).is_ok();
+            println!("test {name} ... {}", if ok { "ok" } else { "FAILED" });
+            if !ok {
+                failed.push(*name);
+            }
+        }
+        let passed = selected.len() - failed.len();
+        if failed.is_empty() {
+            println!("\ntest result: ok. {passed} passed; 0 failed\n");
+            ExitCode::SUCCESS
+        } else {
+            println!(
+                "\ntest result: FAILED. {passed} passed; {} failed: {}\n",
+                failed.len(),
+                failed.join(", ")
+            );
+            ExitCode::FAILURE
+        }
+    }
+
+    const IMAGE: &str = "e2e-fake";
+
+    fn id_output(flag: &str) -> String {
+        let o = Command::new("id").arg(flag).output().unwrap();
+        String::from_utf8(o.stdout).unwrap().trim().to_owned()
+    }
+
+    /// 테스트 하나의 환경: 짧은 임시 디렉터리(Unix 소켓 길이 제한) 안에 data, cache, socket, 게스트 init.
+    struct Env {
+        root: PathBuf,
+    }
+
+    impl Env {
+        fn new() -> Self {
+            static N: AtomicUsize = AtomicUsize::new(0);
+            let root = PathBuf::from(format!(
+                "/tmp/sbx-e2e-{}-{}",
+                std::process::id(),
+                N.fetch_add(1, Ordering::Relaxed)
+            ));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(root.join("initramfs"), b"guest").unwrap();
+            let env = Self { root };
+            env.plant_image();
+            env
+        }
+
+        /// 관리 쪽이 해 두었을 일: 이미지 기록, 참조, rootfs. 사용자는 지금 사용자다.
+        fn plant_image(&self) {
+            let layout = CacheLayout::new(self.root.join("cache"));
+            let id = ImageId::new(Digest::parse(&format!("sha256:{}", "e2".repeat(32))).unwrap());
+            let record = ImageRecord {
+                id: id.clone(),
+                reference: format!("docker.io/library/{IMAGE}:latest"),
+                source: "test".into(),
+                arch: Arch::host().unwrap(),
+                config: ImageConfig {
+                    cmd: vec!["sh".into()],
+                    user: Some(format!("{}:{}", id_output("-u"), id_output("-g"))),
+                    ..ImageConfig::default()
+                },
+                layers: vec![],
+                ignored_fields: vec![],
+            };
+            write::write_image_record(&layout, &record).unwrap();
+            write::set_ref(&layout, &record.reference, &id).unwrap();
+            std::fs::write(layout.rootfs(&id, RootfsFormat::Erofs), b"fs").unwrap();
+        }
+
+        fn path(&self, name: &str) -> PathBuf {
+            self.root.join(name)
+        }
+
+        fn cmd(&self, args: &[&str]) -> Command {
+            let mut c = Command::new(env!("CARGO_BIN_EXE_sbx"));
+            c.args(args)
+                .env("SBX_DATA_DIR", self.root.join("data"))
+                .env("SBX_CACHE_DIR", self.root.join("cache"))
+                .env("SBX_SOCKET_DIR", self.root.join("s"))
+                .env("SBX_GUEST_INIT", self.root.join("initramfs"))
+                .env("SBX_EXECUTOR", std::env::current_exe().unwrap())
+                .stdin(Stdio::null());
+            c
+        }
+
+        fn sbx(&self, args: &[&str]) -> Output {
+            self.cmd(args).output().unwrap()
+        }
+
+        fn sbx_with_stdin(&self, args: &[&str], input: &[u8]) -> Output {
+            let mut child = self
+                .cmd(args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child.stdin.take().unwrap().write_all(input).unwrap();
+            child.wait_with_output().unwrap()
+        }
+
+        fn spawn(&self, args: &[&str]) -> Child {
+            self.cmd(args)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap()
+        }
+
+        /// `ps -a --format json`.
+        fn ps(&self) -> Vec<serde_json::Value> {
+            let o = self.sbx(&["ps", "-a", "--format", "json"]);
+            assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+            serde_json::from_slice(&o.stdout).unwrap()
+        }
+
+        /// 실행 중인 샌드박스가 하나 생길 때까지 기다려 그 ID를 돌려준다.
+        fn wait_running(&self) -> String {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            loop {
+                if let Some(s) = self.ps().into_iter().find(|s| s["state"] == "running") {
+                    return s["id"].as_str().unwrap().to_owned();
+                }
+                assert!(Instant::now() < deadline, "no running sandbox");
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+
+    impl Drop for Env {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn text(b: &[u8]) -> String {
+        String::from_utf8_lossy(b).into_owned()
+    }
+
+    fn wait_with_timeout(mut child: Child, timeout: Duration) -> Output {
+        let deadline = Instant::now() + timeout;
+        while child.try_wait().unwrap().is_none() {
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                panic!("sbx did not finish in {timeout:?}");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        child.wait_with_output().unwrap()
+    }
+
+    fn run_streams_output_and_returns_the_exit_code() {
+        let e = Env::new();
+        let o = e.sbx(&[
+            "run",
+            "--rm",
+            IMAGE,
+            "sh",
+            "-c",
+            "echo out; echo err >&2; exit 7",
+        ]);
+        assert_eq!(o.status.code(), Some(7), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "out\n");
+        assert!(text(&o.stderr).contains("err\n"), "{}", text(&o.stderr));
+        // --rm: 남지 않는다.
+        assert!(e.ps().is_empty());
+    }
+
+    fn run_command_not_found_is_127_and_not_executable_is_126() {
+        let e = Env::new();
+        let o = e.sbx(&["run", "--rm", IMAGE, "no-such-command-xyz"]);
+        assert_eq!(o.status.code(), Some(127), "{}", text(&o.stderr));
+        let plain = e.path("plain");
+        std::fs::write(&plain, b"not a program").unwrap();
+        let o = e.sbx(&["run", "--rm", IMAGE, plain.to_str().unwrap()]);
+        assert_eq!(o.status.code(), Some(126), "{}", text(&o.stderr));
+        // 시작에 실패해도 --rm이면 지운다.
+        assert!(e.ps().is_empty());
+    }
+
+    fn run_i_forwards_stdin() {
+        let e = Env::new();
+        let o = e.sbx_with_stdin(&["run", "--rm", "-i", IMAGE, "cat"], b"hello\nworld\n");
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "hello\nworld\n");
+        // -i가 없으면 표준 입력은 처음부터 닫혀 있다.
+        let o = e.sbx_with_stdin(&["run", "--rm", IMAGE, "cat"], b"ignored");
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "");
+    }
+
+    fn create_start_inspect_rm() {
+        let e = Env::new();
+        let o = e.sbx(&["create", IMAGE, "sh", "-c", "echo started; exit 3"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let id = text(&o.stdout).trim().to_owned();
+        assert_eq!(e.ps()[0]["state"], "created");
+
+        // start는 붙어서 기본 프로세스가 끝날 때까지 기다린다.
+        let o = e.sbx(&["start", "-a", &id]);
+        assert_eq!(o.status.code(), Some(3), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "started\n");
+
+        let o = e.sbx(&["inspect", &id]);
+        let info: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(info["state"], "stopped");
+        assert_eq!(info["exit_code"], 3);
+        let o = e.sbx(&["ps", "-a"]);
+        assert!(
+            text(&o.stdout).contains("stopped (3)"),
+            "{}",
+            text(&o.stdout)
+        );
+
+        // 다시 시작할 수 있다(Docker와 같다).
+        assert_eq!(e.sbx(&["start", &id]).status.code(), Some(3));
+
+        let o = e.sbx(&["rm", &id]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout).trim(), id);
+        assert!(e.ps().is_empty());
+
+        // create --rm은 받지 않는다.
+        assert_eq!(e.sbx(&["create", "--rm", IMAGE]).status.code(), Some(1));
+    }
+
+    fn exec_cp_stop_on_a_running_sandbox() {
+        let e = Env::new();
+        let main = e.spawn(&["run", IMAGE, "sh", "-c", "echo up; sleep 60"]);
+        let id = e.wait_running();
+
+        let o = e.sbx(&["exec", &id, "sh", "-c", "echo in; echo e >&2; exit 4"]);
+        assert_eq!(o.status.code(), Some(4), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "in\n");
+        assert_eq!(text(&o.stderr), "e\n");
+        let o = e.sbx_with_stdin(&["exec", "-i", &id, "cat"], b"piped");
+        assert_eq!(text(&o.stdout), "piped");
+        assert_eq!(
+            e.sbx(&["exec", &id, "no-such-command-xyz"]).status.code(),
+            Some(127)
+        );
+        assert_eq!(e.sbx(&["exec", "-t", &id, "sh"]).status.code(), Some(1));
+
+        // 가짜 실행기의 게스트 경로는 호스트 경로다.
+        let src = e.path("src.txt");
+        std::fs::write(&src, b"copied").unwrap();
+        let guest_dir = e.path("guest");
+        std::fs::create_dir(&guest_dir).unwrap();
+        let o = e.sbx(&[
+            "cp",
+            src.to_str().unwrap(),
+            &format!("{id}:{}/", guest_dir.display()),
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(std::fs::read(guest_dir.join("src.txt")).unwrap(), b"copied");
+        let back = e.path("back.txt");
+        let o = e.sbx(&[
+            "cp",
+            &format!("{id}:{}/src.txt", guest_dir.display()),
+            back.to_str().unwrap(),
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(std::fs::read(&back).unwrap(), b"copied");
+
+        // 실행 중이면 -f 없이 지우지 않는다.
+        assert_eq!(e.sbx(&["rm", &id]).status.code(), Some(1));
+
+        let o = e.sbx(&["stop", "-t", "10", &id]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let out = wait_with_timeout(main, Duration::from_secs(20));
+        // VM이 먼저 끝나면 기본 프로세스는 137.
+        assert_eq!(out.status.code(), Some(137), "{}", text(&out.stderr));
+        assert_eq!(text(&out.stdout), "up\n");
+        assert_eq!(e.ps()[0]["exit_code"], 137);
+        assert_eq!(e.sbx(&["rm", &id]).status.code(), Some(0));
+    }
+
+    fn signals_are_forwarded_to_the_main_process() {
+        let e = Env::new();
+        let main = e.spawn(&[
+            "run",
+            "--rm",
+            IMAGE,
+            "sh",
+            "-c",
+            "trap 'echo got; exit 42' TERM; echo ready; sleep 60 & wait",
+        ]);
+        e.wait_running();
+        // 기본 프로세스가 trap을 걸 때까지 잠깐 둔다.
+        std::thread::sleep(Duration::from_millis(300));
+        let pid = main.id().to_string();
+        assert!(
+            Command::new("kill")
+                .args(["-TERM", &pid])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let out = wait_with_timeout(main, Duration::from_secs(20));
+        assert_eq!(out.status.code(), Some(42), "{}", text(&out.stderr));
+        assert_eq!(text(&out.stdout), "ready\ngot\n");
+    }
+
+    fn commands_that_do_not_launch_need_no_executor() {
+        let e = Env::new();
+        let missing = Path::new("/nonexistent/sbx-executor");
+        let ok = |args: &[&str]| {
+            let o = e.cmd(args).env("SBX_EXECUTOR", missing).output().unwrap();
+            assert_eq!(o.status.code(), Some(0), "{args:?}: {}", text(&o.stderr));
+        };
+        ok(&["ps", "-a"]);
+        ok(&["images"]);
+        let o = e.sbx(&["create", IMAGE]);
+        let id = text(&o.stdout).trim().to_owned();
+        ok(&["inspect", &id]);
+        ok(&["rm", &id]);
+    }
+
+    fn run_failures_before_the_command_are_125() {
+        let e = Env::new();
+        let o = e
+            .cmd(&["run", "--rm", IMAGE, "true"])
+            .env("SBX_EXECUTOR", "/nonexistent/sbx-executor")
+            .output()
+            .unwrap();
+        assert_eq!(o.status.code(), Some(125), "{}", text(&o.stderr));
+        assert_eq!(
+            e.sbx(&["run", "--rm", "-t", IMAGE, "true"]).status.code(),
+            Some(125)
+        );
+        assert_eq!(
+            e.sbx(&["run", "-d", IMAGE, "true"]).status.code(),
+            Some(125)
+        );
+        assert_eq!(
+            e.sbx(&["run", "--pull", "never", "no-such-image", "true"])
+                .status
+                .code(),
+            Some(125)
+        );
+        let o = e
+            .cmd(&["run", "--rm", IMAGE, "true"])
+            .env("SBX_FAKE_FAIL_LAUNCH", "boom")
+            .output()
+            .unwrap();
+        assert_eq!(o.status.code(), Some(125));
+        assert!(text(&o.stderr).contains("boom"), "{}", text(&o.stderr));
+        assert!(e.ps().is_empty());
+    }
+}

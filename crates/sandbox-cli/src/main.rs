@@ -1,4 +1,4 @@
-//! `sbx` 진입점. 종료 코드: 0 성공, 1 실행 오류, 2 사용법 오류(clap), `exec`는 안에서 실행한 프로세스의 코드.
+//! `sbx` 진입점. 종료 코드는 [`sandbox_cli::behavior`]의 종료 코드 표를 따른다.
 
 use std::process::ExitCode;
 
@@ -13,7 +13,10 @@ async fn main() -> ExitCode {
         Ok(code) => ExitCode::from(code),
         Err(e) => {
             eprintln!("sbx: {e}");
-            ExitCode::from(1)
+            match e.downcast_ref::<app::Failure>() {
+                Some(f) => ExitCode::from(f.code),
+                None => ExitCode::from(1),
+            }
         }
     }
 }

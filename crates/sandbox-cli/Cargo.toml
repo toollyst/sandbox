@@ -19,10 +19,19 @@ sandbox-image.workspace = true
 sandbox-store.workspace = true
 sandbox-proto.workspace = true
 clap.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["signal"] }
 serde_json.workspace = true
 sandbox-runtime.workspace = true
 sandbox-manage.workspace = true
 sandbox-oci.workspace = true
 sandbox-rootfs = { workspace = true, features = ["erofs"] }
 executor-process.workspace = true
+
+[dev-dependencies]
+# 테스트 실행 파일이 곧 가짜 실행기다(tests/e2e.rs).
+executor-fake.workspace = true
+sandbox-store = { workspace = true, features = ["write"] }
+
+[[test]]
+name = "e2e"
+harness = false

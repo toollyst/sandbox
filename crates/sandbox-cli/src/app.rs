@@ -7,6 +7,9 @@
 //! | 이미지 소스 | `sandbox-oci` (OCI 레지스트리) |
 //! | rootfs writer | `sandbox-rootfs`의 erofs |
 //! | 실행기 | `--executor <실행 파일>`(`SBX_EXECUTOR`, 기본 PATH의 `sbx-executor`): `executor-proto` 규약을 말하는 외부 실행기 |
+//!
+//! 실행기 실행 파일은 VM을 띄우는 명령(`run`, `create`, `start`)에만 필요하다. 나머지는 떠 있는 VM에 규약대로 연결만 한다
+//! ([`executor_process::ConnectOnly`]).
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -17,7 +20,7 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use executor_process::ProcessExecutor;
+use executor_process::{ConnectOnly, ProcessExecutor};
 use sandbox_executor::Executor;
 use sandbox_image::Platform;
 use sandbox_manage::Manager;
@@ -27,11 +30,12 @@ use sandbox_model::{
 };
 use sandbox_oci::{OciImageSource, Reference};
 use sandbox_rootfs::erofs::ErofsBuilder;
-use sandbox_runtime::{Runtime, RuntimeConfig, SandboxInfo};
+use sandbox_runtime::{Runtime, RuntimeConfig, RuntimeError, SandboxInfo};
 use sandbox_store::CacheLayout;
 
+use crate::attach::attach;
 use crate::behavior::{self, ImageMatch, LookupError, RmiAction, RmiDecision, Step};
-use crate::cli::{Cli, Command, ExecArgs, Format, RunArgs};
+use crate::cli::{AttachArgs, Cli, Command, ExecArgs, Format, RunArgs};
 use crate::dirs;
 use crate::parse::{self, CpEndpoint};
 
@@ -51,6 +55,39 @@ impl Error for Msg {}
 
 fn msg(s: impl Into<String>) -> Box<dyn Error> {
     Box::new(Msg(s.into()))
+}
+
+/// 1이 아닌 종료 코드로 끝나야 하는 오류. 코드는 [`behavior`]의 종료 코드 표를 따른다.
+#[derive(Debug)]
+pub struct Failure {
+    /// 종료 코드.
+    pub code: u8,
+    /// 오류.
+    pub error: Box<dyn Error>,
+}
+
+impl fmt::Display for Failure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
+impl Error for Failure {}
+
+fn failure(code: u8, error: impl Into<Box<dyn Error>>) -> Box<dyn Error> {
+    Box::new(Failure {
+        code,
+        error: error.into(),
+    })
+}
+
+/// `run`, `exec`에서 명령을 시작하지 못했으면 126/127, 아니면 `otherwise`.
+fn start_failure(e: RuntimeError, otherwise: u8) -> Box<dyn Error> {
+    let code = match &e {
+        RuntimeError::CommandFailed(g) => behavior::command_failure_code(g.kind),
+        _ => otherwise,
+    };
+    failure(code, e)
 }
 
 fn short(id: &ImageId) -> &str {
@@ -87,18 +124,21 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
         } => ctx.prepare(*rootfs_format, image).await,
         Command::Images => ctx.images(),
         Command::Rmi { force, images } => ctx.rmi(*force, images).await,
-        Command::Run(a) => ctx.run_sandbox(a).await,
+        Command::Run { attach, args } => ctx.run_sandbox(attach, args).await,
         Command::Create(a) => {
+            if a.rm {
+                // 끝난 뒤 지우기는 붙어 있는 run만 할 수 있다. 기록해 두었다가 start에서 지우지 않는다.
+                return Err(msg("--rm is only supported with run"));
+            }
             let id = ctx.create(a).await?;
             println!("{id}");
             Ok(0)
         }
-        Command::Start { id } => {
-            let rt = ctx.runtime()?;
-            rt.get(&SandboxId::new(id)?).await?.start(false).await?;
-            println!("{id}");
-            Ok(0)
-        }
+        Command::Start {
+            attach: _,
+            interactive,
+            id,
+        } => ctx.start(*interactive, id).await,
         Command::Exec(a) => ctx.exec(a).await,
         Command::Cp { src, dst } => ctx.cp(src, dst).await,
         Command::Stop { time, ids } => ctx.stop(*time, ids).await,
@@ -154,10 +194,6 @@ impl Ctx {
         )?)
     }
 
-    fn executor(&self) -> AppResult<Arc<dyn Executor>> {
-        Ok(Arc::new(ProcessExecutor::new(&self.executor)?))
-    }
-
     /// 게스트 init. 지정하지 않으면 캐시의 `guest/<게스트 프로토콜 버전>/<arch>/initramfs`.
     fn guest_init(&self) -> AppResult<PathBuf> {
         if let Some(p) = &self.guest_init {
@@ -168,7 +204,7 @@ impl Ctx {
             .join("initramfs"))
     }
 
-    fn runtime(&self) -> AppResult<Runtime> {
+    fn runtime_with(&self, executor: Arc<dyn Executor>) -> AppResult<Runtime> {
         Ok(Runtime::new(
             RuntimeConfig {
                 data_dir: self.data_dir.clone(),
@@ -176,8 +212,18 @@ impl Ctx {
                 guest_init: self.guest_init()?,
                 socket_dir: self.socket_dir.clone(),
             },
-            self.executor()?,
+            executor,
         )?)
+    }
+
+    /// VM을 띄우지 않는 일에 쓰는 실행 코어. 실행기 실행 파일을 실행하지 않는다.
+    fn runtime(&self) -> AppResult<Runtime> {
+        self.runtime_with(Arc::new(ConnectOnly))
+    }
+
+    /// VM을 띄우는 일(`create`의 기능 확인, `start`)에 쓰는 실행 코어. 실행기의 capability를 받아 둔다.
+    fn launcher(&self) -> AppResult<Runtime> {
+        self.runtime_with(Arc::new(ProcessExecutor::new(&self.executor)?))
     }
 
     /// 이미지 이름을 찾는다. 없으면 `None`, 그 밖의 문제는 오류.
@@ -447,7 +493,7 @@ impl Ctx {
                         hostname: a.hostname.clone(),
                         labels: labels.clone(),
                     };
-                    let sandbox = self.runtime()?.create(spec).await?;
+                    let sandbox = self.launcher()?.create(spec).await?;
                     return Ok(sandbox.id().clone());
                 }
             }
@@ -455,19 +501,52 @@ impl Ctx {
         Err(msg("internal: create step missing"))
     }
 
-    async fn run_sandbox(&self, a: &RunArgs) -> AppResult<u8> {
-        let id = self.create(a).await?;
-        let rt = self.runtime()?;
-        rt.get(&id).await?.start(false).await?;
-        if a.detach {
-            println!("{id}");
-            Ok(0)
-        } else {
-            Err(msg("attaching to a sandbox is not implemented yet; use -d"))
+    /// `run`: 만들고, 시작하고, 붙어서 기본 프로세스가 끝날 때까지 기다린다. 종료 코드는 그 프로세스의 코드다.
+    /// `--rm`이면 끝난 뒤(시작에 실패해도) 지운다.
+    async fn run_sandbox(&self, attach_args: &AttachArgs, a: &RunArgs) -> AppResult<u8> {
+        let fail = |e: Box<dyn Error>| failure(behavior::EXIT_RUN_FAILED, e);
+        if attach_args.tty {
+            return Err(fail(msg("-t is not supported yet")));
         }
+        let id = self.create(a).await.map_err(fail)?;
+        let rt = self.launcher().map_err(fail)?;
+        let sandbox = rt.get(&id).await.map_err(|e| fail(e.into()))?;
+        let started = sandbox.start(attach_args.interactive).await;
+        let result = match started {
+            Ok(p) => attach(p, attach_args.interactive)
+                .await
+                .map(behavior::exit_byte)
+                .map_err(|e| fail(e.into())),
+            Err(e) => Err(start_failure(e, behavior::EXIT_RUN_FAILED)),
+        };
+        if a.rm {
+            let removed = match rt.get(&id).await {
+                Ok(s) => s.delete().await,
+                Err(e) => Err(e),
+            };
+            if let Err(e) = removed {
+                eprintln!("sbx: {id}: cannot remove: {e}");
+            }
+        }
+        result
     }
 
+    /// `start`: 시작하고 붙어서 기본 프로세스가 끝날 때까지 기다린다 (Docker의 `start -a`).
+    async fn start(&self, interactive: bool, id: &str) -> AppResult<u8> {
+        let rt = self.launcher()?;
+        let p = rt
+            .get(&SandboxId::new(id)?)
+            .await?
+            .start(interactive)
+            .await?;
+        Ok(behavior::exit_byte(attach(p, interactive).await?))
+    }
+
+    /// `exec`: 붙어서 실행한다. 종료 코드는 그 프로세스의 코드다.
     async fn exec(&self, a: &ExecArgs) -> AppResult<u8> {
+        if a.tty {
+            return Err(msg("-t is not supported yet"));
+        }
         let rt = self.runtime()?;
         let sandbox = rt.get(&SandboxId::new(&a.id)?).await?;
         let spec = ExecSpec {
@@ -477,8 +556,11 @@ impl Ctx {
             user: a.user.as_deref().map(str::parse::<UserSpec>).transpose()?,
             tty: a.tty,
         };
-        let code = sandbox.exec(spec).await?.wait().await?;
-        Ok(u8::try_from(code.clamp(0, 255)).unwrap_or(255))
+        let p = sandbox
+            .exec_with(spec, a.interactive)
+            .await
+            .map_err(|e| start_failure(e, 1))?;
+        Ok(behavior::exit_byte(attach(p, a.interactive).await?))
     }
 
     async fn cp(&self, src: &str, dst: &str) -> AppResult<u8> {
@@ -517,7 +599,8 @@ impl Ctx {
                 if !force {
                     return Err(msg("sandbox is running; stop it first or use -f"));
                 }
-                sandbox.stop(Duration::ZERO).await?;
+                // 이 프로세스가 소유한 VM이 아니므로(attached) 게스트에 종료를 요청하고 기다린다.
+                sandbox.stop(behavior::RM_FORCE_WAIT).await?;
                 rt.get(&id).await?.delete().await?;
             } else {
                 sandbox.delete().await?;
@@ -549,10 +632,13 @@ impl Ctx {
             if command.chars().count() > 28 {
                 command = command.chars().take(27).collect::<String>() + "…";
             }
-            let status = match &s.error {
-                Some(e) => format!("{} ({e})", s.state.as_str()),
-                None => s.state.as_str().to_owned(),
-            };
+            let mut status = s.state.as_str().to_owned();
+            if let (State::Stopped, Some(c)) = (s.state, s.exit_code) {
+                status = format!("{status} ({c})");
+            }
+            if let Some(e) = &s.error {
+                status = format!("{status}: {e}");
+            }
             println!(
                 "{:<24} {:<14} {:<30} {}",
                 s.id,
@@ -579,7 +665,13 @@ impl Ctx {
 }
 
 fn info_json(s: &SandboxInfo) -> serde_json::Value {
-    json!({"id": s.id, "state": s.state, "error": s.error, "spec": s.spec})
+    json!({
+        "id": s.id,
+        "state": s.state,
+        "exit_code": s.exit_code,
+        "error": s.error,
+        "spec": s.spec,
+    })
 }
 
 fn join_ids(ids: &[SandboxId]) -> String {

@@ -7,7 +7,10 @@ use std::str::FromStr;
 
 use std::collections::BTreeMap;
 
+use std::time::Duration;
+
 use sandbox_model::{ImageId, ParseError, RootfsFormat, SandboxId};
+use sandbox_proto::ErrorKind;
 
 /// `run`과 `create`의 `--pull`. Docker와 같은 값과 같은 기본값(`missing`)이다.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -135,6 +138,55 @@ pub const DEFAULT_SCRATCH_MIB: u32 = 1024;
 /// 이미지 ID 앞부분으로 찾을 때 필요한 최소 길이. `images`의 IMAGE ID 열과 같은 12자리다.
 /// 짧은 문자열이 우연히 ID 앞부분과 맞아 엉뚱한 이미지를 지우는 일을 막는다.
 pub const MIN_ID_PREFIX: usize = 12;
+
+/// 종료 코드 (Docker와 같다).
+///
+/// | 경우 | 코드 |
+/// |---|---|
+/// | 붙어서 실행한 프로세스가 끝남 (`run`, `start`, `exec`) | 그 프로세스의 코드. 시그널이면 128 + 번호 |
+/// | `run`에서 sbx 쪽 실패 (이미지, 실행기, VM, 게스트) | [`EXIT_RUN_FAILED`] 125 |
+/// | `run`, `exec`에서 명령을 시작하지 못함: 실행 권한 없음 | [`EXIT_CANNOT_INVOKE`] 126 |
+/// | `run`, `exec`에서 명령을 시작하지 못함: 실행 파일 없음 | [`EXIT_NOT_FOUND`] 127 |
+/// | 그 밖의 명령의 실패 | 1 |
+/// | 사용법 오류 | 2 (clap) |
+pub const EXIT_RUN_FAILED: u8 = 125;
+
+/// 명령을 찾았지만 실행할 수 없음.
+pub const EXIT_CANNOT_INVOKE: u8 = 126;
+
+/// 명령을 찾지 못함.
+pub const EXIT_NOT_FOUND: u8 = 127;
+
+/// `run`, `exec`에서 명령을 시작하지 못했을 때의 종료 코드.
+pub fn command_failure_code(kind: ErrorKind) -> u8 {
+    match kind {
+        ErrorKind::NotFound => EXIT_NOT_FOUND,
+        ErrorKind::PermissionDenied => EXIT_CANNOT_INVOKE,
+        _ => EXIT_RUN_FAILED,
+    }
+}
+
+/// 프로세스 종료 코드를 sbx의 종료 코드로. 0..=255 밖이면 255.
+pub fn exit_byte(code: i32) -> u8 {
+    u8::try_from(code).unwrap_or(255)
+}
+
+/// 붙어서 실행하는 동안 받으면 프로세스에 그대로 전하는 시그널 (Docker `--sig-proxy` 기본과 같다).
+/// (이름, 게스트 Linux 번호). 호스트 번호와 다를 수 있어(macOS의 USR1은 30) 게스트 번호로 보낸다.
+/// sbx는 이 시그널로 끝나지 않는다. 프로세스가 끝나야 끝난다.
+/// Windows에서는 Ctrl+C만 받아 INT로 보낸다.
+pub const FORWARDED_SIGNALS: &[(&str, i32)] = &[
+    ("HUP", 1),
+    ("INT", 2),
+    ("QUIT", 3),
+    ("USR1", 10),
+    ("USR2", 12),
+    ("TERM", 15),
+];
+
+/// `rm -f`가 다른 프로세스가 소유한 실행 중 샌드박스를 멈출 때 기다리는 시간.
+/// 이 프로세스가 소유한 VM은 기다리지 않고 바로 끝낸다.
+pub const RM_FORCE_WAIT: Duration = Duration::from_secs(10);
 
 /// 이미지 이름이 무엇으로 맞았는지.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -292,6 +344,31 @@ pub const DOCKER_DIFFERENCES: &[(&str, &str, &str)] = &[
         "Docker처럼 다시 start할 수 있다 (OCI Runtime Spec과 다름)",
         "CLI가 Docker를 기준으로 한다",
     ),
+    (
+        "run -d, start (붙지 않고 시작)",
+        "아직 없다 (-d는 오류). start는 언제나 `start -a`처럼 붙어서 기본 프로세스가 끝날 때까지 기다린다",
+        "VM이 띄운 프로세스에 묶인다(attached 수명). 프로세스와 상관없이 사는 VM은 로드맵 M3",
+    ),
+    (
+        "-t (터미널)",
+        "아직 없다 (오류)",
+        "게스트 tty는 로드맵 7단계에 남아 있다",
+    ),
+    (
+        "cp",
+        "실행 중인 샌드박스에서만 된다",
+        "디스크를 읽고 쓰는 것이 게스트이기 때문이다",
+    ),
+    (
+        "stop",
+        "기본 프로세스에 SIGTERM을 먼저 보내지 않고 게스트를 끈다 (sync 뒤 전원 끄기). -t가 지나면 강제로 끝낸다",
+        "샌드박스 하나가 VM 하나다. 정지 = VM 종료",
+    ),
+    (
+        "다른 터미널에서 실행 중인 샌드박스의 stop, rm -f",
+        "게스트에 종료를 요청하고 기다린다. 끝나지 않으면 오류 (강제로 끝낼 수 있는 것은 VM을 띄운 프로세스뿐이다)",
+        "VM은 띄운 프로세스가 소유한다",
+    ),
 ];
 
 #[cfg(test)]
@@ -327,6 +404,23 @@ mod tests {
                 "{policy:?} image={image} rootfs={rootfs}"
             );
         }
+    }
+
+    #[test]
+    fn exit_codes_match_docker() {
+        assert_eq!(command_failure_code(ErrorKind::NotFound), 127);
+        assert_eq!(command_failure_code(ErrorKind::PermissionDenied), 126);
+        assert_eq!(command_failure_code(ErrorKind::InvalidArgument), 125);
+        assert_eq!(exit_byte(0), 0);
+        assert_eq!(exit_byte(137), 137);
+        assert_eq!(exit_byte(-1), 255);
+        assert_eq!(exit_byte(256), 255);
+    }
+
+    #[test]
+    fn forwarded_signals_use_linux_numbers() {
+        let n = |name| FORWARDED_SIGNALS.iter().find(|s| s.0 == name).unwrap().1;
+        assert_eq!((n("INT"), n("TERM"), n("USR1"), n("USR2")), (2, 15, 10, 12));
     }
 
     #[test]

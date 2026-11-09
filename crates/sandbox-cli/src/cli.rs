@@ -84,11 +84,22 @@ pub enum Command {
         images: Vec<String>,
     },
     #[command(about = about("run"))]
-    Run(RunArgs),
+    Run {
+        #[command(flatten)]
+        attach: AttachArgs,
+        #[command(flatten)]
+        args: RunArgs,
+    },
     #[command(about = about("create"))]
     Create(RunArgs),
     #[command(about = about("start"))]
     Start {
+        /// 붙어서 출력을 받는다. 지금은 언제나 붙는다(Docker와 다른 점 참고). Docker와 같은 옵션으로 받아 둔다.
+        #[arg(short = 'a', long)]
+        attach: bool,
+        /// 표준 입력을 연다.
+        #[arg(short = 'i', long)]
+        interactive: bool,
         /// 샌드박스 ID.
         id: String,
     },
@@ -132,6 +143,17 @@ pub enum Command {
     },
 }
 
+/// `run`에만 있는 옵션: 붙어서 실행하는 방법.
+#[derive(Debug, Args)]
+pub struct AttachArgs {
+    /// 표준 입력을 연다.
+    #[arg(short = 'i', long)]
+    pub interactive: bool,
+    /// 터미널을 할당한다. 아직 없다(오류).
+    #[arg(short = 't', long)]
+    pub tty: bool,
+}
+
 /// `run`과 `create`의 옵션. 이미지 이름 뒤의 인자는 모두 명령으로 넘어간다(Docker와 같다).
 #[derive(Debug, Args)]
 pub struct RunArgs {
@@ -141,10 +163,10 @@ pub struct RunArgs {
     /// rootfs 형식.
     #[arg(long, default_value = DEFAULT_ROOTFS_FORMAT.as_str())]
     pub rootfs_format: RootfsFormat,
-    /// 호출한 프로세스가 끝나도 남긴다.
+    /// 호출한 프로세스가 끝나도 남긴다. 아직 없다(오류).
     #[arg(short = 'd', long)]
     pub detach: bool,
-    /// 끝나면 지운다.
+    /// 끝나면 지운다. run에서만 된다(create에서는 오류).
     #[arg(long)]
     pub rm: bool,
     /// 환경 변수 K=V.
@@ -193,7 +215,7 @@ pub struct ExecArgs {
     /// 표준 입력을 연다.
     #[arg(short = 'i', long)]
     pub interactive: bool,
-    /// 터미널을 할당한다.
+    /// 터미널을 할당한다. 아직 없다(오류).
     #[arg(short = 't', long)]
     pub tty: bool,
     /// 환경 변수 K=V.
@@ -222,13 +244,15 @@ mod tests {
 
     #[test]
     fn run_stops_option_parsing_at_image() {
-        let Command::Run(r) = parse(&["run", "-e", "A=1", "alpine", "ls", "-l", "-e"]).command
+        let Command::Run { attach, args: r } =
+            parse(&["run", "-i", "-e", "A=1", "alpine", "ls", "-l", "-e", "-i"]).command
         else {
             panic!("expected run");
         };
+        assert!(attach.interactive && !attach.tty);
         assert_eq!(r.image, "alpine");
         assert_eq!(r.env, vec!["A=1"]);
-        assert_eq!(r.command, vec!["ls", "-l", "-e"]);
+        assert_eq!(r.command, vec!["ls", "-l", "-e", "-i"]);
         assert_eq!(r.pull, PullPolicy::Missing);
         assert_eq!(r.rootfs_format, RootfsFormat::Erofs);
         assert_eq!(r.network, "none");
