@@ -10,6 +10,7 @@
 //! - `smoke [--sbx <파일>] [--no-internet]`: 설치한 실행기로 실제 VM의 기본 동작을 확인한다. [`smoke`]에 있다.
 //! - `repo-add --repo <디렉터리> --bundle <디렉터리> --name <이름> --version <버전>`: 실행기 묶음을 정적 저장소에
 //!   더한다. [`repo`]에 있다.
+//! - `demo [--sbx <파일>] [--out <SVG>]`: README의 데모를 실제로 돌려 만든다. [`demo`]에 있다.
 //! - `bench [--sbx <파일>] [--image <참조>] [--runs <N>] [--parallel <K>]`: `sbx`로 시간을 잰다. [`bench`](mod@bench)에 있다.
 
 use std::collections::BTreeSet;
@@ -17,6 +18,7 @@ use std::path::Path;
 use std::process::{Command, ExitCode};
 
 mod bench;
+mod demo;
 mod dist;
 mod initramfs;
 mod kernel;
@@ -207,6 +209,23 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Some("demo") => {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("xtask lives inside the workspace");
+            match demo::run(root, &args[1..]) {
+                Ok(files) => {
+                    for f in files {
+                        println!("{}", f.display());
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("demo: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Some("bench") => {
             let root = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .parent()
@@ -224,7 +243,7 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "usage: cargo xtask check-deps\n       cargo xtask guest-initramfs --arch <x86_64|aarch64> [--binary <file>] [--out <file>]\n       cargo xtask dist [--target <triple>]\n       cargo xtask kernel --arch <x86_64|aarch64> [--out <file>]\n       cargo xtask smoke [--sbx <file>] [--no-internet]\n       cargo xtask repo-add --repo <dir> --bundle <dir> --name <name> --version <version> [--os <os>] [--capabilities <file>] [--url <prefix>] [--description <text>]\n       cargo xtask bench [--sbx <file>] [--image <ref>] [--runs <n>] [--parallel <k>]"
+                "usage: cargo xtask check-deps\n       cargo xtask guest-initramfs --arch <x86_64|aarch64> [--binary <file>] [--out <file>]\n       cargo xtask dist [--target <triple>]\n       cargo xtask kernel --arch <x86_64|aarch64> [--out <file>]\n       cargo xtask smoke [--sbx <file>] [--no-internet]\n       cargo xtask repo-add --repo <dir> --bundle <dir> --name <name> --version <version> [--os <os>] [--capabilities <file>] [--url <prefix>] [--description <text>]\n       cargo xtask demo [--sbx <file>] [--out <svg>]\n       cargo xtask bench [--sbx <file>] [--image <ref>] [--runs <n>] [--parallel <k>]"
             );
             ExitCode::from(2)
         }

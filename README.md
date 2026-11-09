@@ -6,23 +6,17 @@
 [Firecracker](https://firecracker-microvm.github.io/) microVM with its own Linux kernel. You use it the way you already
 use `docker`, and a full boot → run → shutdown → cleanup cycle takes about **120 ms**.
 
-```console
-$ sbx run --rm alpine uname -sr
-Linux 6.1.155
+<p align="center">
+  <img src="assets/demo.svg" width="876" alt="Terminal recording: sbx run prints Linux 6.1.155; time shows how long one run takes; the sandbox has no network device; with --network allow only example.com is reachable and github.com gets 403; a detached sandbox is exec'd into, listed with ps and removed; a Python image runs.">
+</p>
 
-$ sbx run --rm alpine ls /sys/class/net          # no network device at all
-lo
-
-$ sbx run --rm --network allow --allow example.com:443 curlimages/curl -sS https://example.com -o /dev/null -w '%{http_code}\n'
-200
-$ sbx run --rm --network allow --allow example.com:443 curlimages/curl -sS https://github.com
-curl: (7) CONNECT tunnel failed, response 403
-```
+<sub>A real recording (`cargo xtask demo`, macOS on Apple Silicon): every command ran for real, and the output appears
+when it actually arrived. Only the typing is simulated.</sub>
 
 Built for running code you don't trust: AI agents, user-submitted code, CI jobs, plugins.
 
-> **Status: pre-release.** It works end to end on Apple Silicon Macs. Linux/KVM passes the test suite, and real-VM
-> verification is in progress. Prebuilt binaries and executor bundles are not published yet. See [Status](#status).
+> **Status: pre-release.** It works end to end on Apple Silicon Macs and on Linux x86_64 with KVM (real VMs boot in CI
+> on every push). Prebuilt binaries and executor bundles come with the first release. See [Status](#status).
 
 ## Why
 
@@ -212,7 +206,8 @@ cargo xtask repo-add --repo ./executors --bundle ./bundle --name firecracker --v
 | Host | VMM | Status |
 | --- | --- | --- |
 | macOS, Apple Silicon | Firecracker ported to Hypervisor.framework ([toollyst/firecracker](https://github.com/toollyst/firecracker)) | works end to end |
-| Linux x86_64 / aarch64 | upstream Firecracker on KVM | test suite passes; real-VM verification in progress |
+| Linux x86_64 | upstream Firecracker on KVM | works end to end (real-VM checks in CI) |
+| Linux aarch64 | upstream Firecracker on KVM | test suite passes; real-VM checks wait for an arm runner with KVM |
 | Windows | – | not yet |
 
 ## Use it as a library
@@ -228,6 +223,7 @@ cargo test --workspace --all-features     # unit, protocol conformance, and CLI 
 cargo xtask check-deps                    # dependency direction between and inside crates
 cargo xtask dist && cargo xtask smoke     # real-VM checks with the installed executor
 cargo xtask bench                         # real numbers on your machine
+cargo xtask demo                          # re-record assets/demo.svg (real commands, real timing)
 cargo xtask kernel --arch x86_64          # the default guest kernel (Docker; cross-compiles if needed)
 ```
 
@@ -239,7 +235,7 @@ Korean.
 Pre-release. Done: the full Docker-style lifecycle, images, the egress allow list, the executor protocol v2 and
 repositories, image-provided kernels, the macOS/HVF end to end, and the release pipeline (static Linux binaries,
 executor bundles with a CI-built kernel, the official repository, and the installer). Next: the first release and
-Linux/KVM end to end in CI. See the [roadmap](docs/roadmap.md).
+a Linux aarch64 real-VM run. See the [roadmap](docs/roadmap.md).
 
 ## License
 
