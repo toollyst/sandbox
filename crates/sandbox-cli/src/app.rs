@@ -6,7 +6,7 @@
 //! |---|---|
 //! | 이미지 소스 | `sandbox-oci` (OCI 레지스트리) |
 //! | rootfs writer | `sandbox-rootfs`의 erofs |
-//! | 실행기 | `--executor firecracker`: `SBX_FIRECRACKER` 경로, 없으면 PATH의 `firecracker` |
+//! | 실행기 | `--executor <실행 파일>`(`SBX_EXECUTOR`, 기본 PATH의 `sbx-executor`): `executor-proto` 규약을 말하는 외부 실행기 |
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use executor_firecracker::FirecrackerExecutor;
+use executor_process::ProcessExecutor;
 use sandbox_executor::Executor;
 use sandbox_image::Platform;
 use sandbox_manage::Manager;
@@ -110,7 +110,7 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
 struct Ctx {
     data_dir: PathBuf,
     cache_dir: PathBuf,
-    executor: String,
+    executor: PathBuf,
     format: Format,
 }
 
@@ -145,17 +145,7 @@ impl Ctx {
     }
 
     fn executor(&self) -> AppResult<Arc<dyn Executor>> {
-        match self.executor.as_str() {
-            "firecracker" => {
-                let bin = std::env::var_os("SBX_FIRECRACKER")
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| "firecracker".into());
-                Ok(Arc::new(FirecrackerExecutor::new(bin)?))
-            }
-            other => Err(msg(format!(
-                "unknown executor {other:?} (available: firecracker)"
-            ))),
-        }
+        Ok(Arc::new(ProcessExecutor::new(&self.executor)?))
     }
 
     fn runtime(&self) -> AppResult<Runtime> {

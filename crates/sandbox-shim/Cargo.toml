@@ -14,4 +14,4 @@ sandbox-proto.workspace = true
 sandbox-executor.workspace = true
 sandbox-store.workspace = true
 sandbox-runtime.workspace = true
-executor-firecracker.workspace = true
+executor-process.workspace = true

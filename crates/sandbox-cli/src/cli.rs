@@ -28,14 +28,14 @@ pub struct Cli {
     /// 이미지 캐시 디렉터리.
     #[arg(long, global = true, env = "SBX_CACHE_DIR")]
     pub cache_dir: Option<PathBuf>,
-    /// 실행기.
+    /// 실행기 실행 파일 (`executor-proto` 규약). 경로가 아니면 PATH에서 찾는다.
     #[arg(
         long,
         global = true,
-        default_value = "firecracker",
+        default_value = "sbx-executor",
         env = "SBX_EXECUTOR"
     )]
-    pub executor: String,
+    pub executor: PathBuf,
     /// 출력 형식.
     #[arg(long, global = true, value_enum, default_value_t = Format::Text)]
     pub format: Format,

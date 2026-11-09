@@ -347,18 +347,31 @@ dependencies = [
 name = "executor-fake"
 version = "0.0.0"
 dependencies = [
+ "executor-process",
+ "executor-proto",
  "sandbox-executor",
  "sandbox-guest",
  "sandbox-model",
  "sandbox-proto",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
-name = "executor-firecracker"
+name = "executor-process"
 version = "0.0.0"
 dependencies = [
+ "executor-proto",
  "sandbox-executor",
  "sandbox-model",
+]
+
+[[package]]
+name = "executor-proto"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1214,7 +1227,7 @@ name = "sandbox-cli"
 version = "0.0.0"
 dependencies = [
  "clap",
- "executor-firecracker",
+ "executor-process",
  "sandbox-executor",
  "sandbox-image",
  "sandbox-manage",
@@ -1309,7 +1322,7 @@ dependencies = [
 name = "sandbox-shim"
 version = "0.0.0"
 dependencies = [
- "executor-firecracker",
+ "executor-process",
  "sandbox-executor",
  "sandbox-model",
  "sandbox-proto",

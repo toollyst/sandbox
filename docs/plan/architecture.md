@@ -7,6 +7,8 @@
 | 규칙 | 정본 위치 |
 |---|---|
 | 크레이트 사이 의존 규칙 | `xtask/src/main.rs`의 `RULES`, `FORBIDDEN_FEATURES` (`cargo xtask check-deps`) |
+| 크레이트 안 모듈 의존 방향 (순환 금지) | `xtask/src/modules.rs` (`cargo xtask check-deps`) |
+| 실행기 통신 규약 (외부 실행기가 지킬 규격, 게스트에 대한 약속) | `executor-proto` |
 | 각 크레이트의 책임과 알면 안 되는 것 | 각 크레이트 `lib.rs`의 `//!` 문서 |
 | 상태와 전이 | `sandbox-model`의 `State::can_transition_to` |
 | 이미지 config와 호출자 값을 합치는 규칙 (Docker `run`) | `sandbox-runtime/src/process.rs` |
@@ -40,8 +42,11 @@
 ```text
 crates/
   sandbox-model         공용 자료형
-  sandbox-proto         호스트-게스트 메시지 틀
-  sandbox-executor      실행기 trait          ← executor-fake, executor-firecracker
+  sandbox-proto         호스트-게스트 메시지
+  sandbox-executor      실행기 trait          ← executor-process, executor-fake
+  executor-proto        실행기 통신 규약 (외부 실행기에 주는 규격)
+  executor-process      규약을 말하는 외부 실행 파일을 띄우는 어댑터
+  executor-fake         테스트용 실행기 (같은 프로세스 구현 + 규약 실행 파일 sbx-fake-executor)
   sandbox-image         이미지 소스 trait     ← sandbox-oci
   sandbox-rootfs        레이어 병합 + rootfs writer trait (형식별 구현은 feature)
   sandbox-store         cache_dir 레이아웃, 잠금 (쓰기는 feature "write")
@@ -54,10 +59,15 @@ xtask/                  check-deps 등 개발용 작업
 docs/                   기획과 로드맵만
 ```
 
-의존 방향은 세 가지로 요약된다.
+**책임 분담**: VM을 실제로 띄우는 실행기 실행 파일(VMM, 게스트 커널)은 이 저장소 밖(예: fc-fork)의 책임이다.
+이 저장소는 생명주기, 코어, CLI, 게스트 init, 그리고 실행기가 맞춰야 할 통신 규약(`executor-proto`)을 책임진다.
+규약에 맞는 실행기는 그대로 실행한다.
+
+의존 방향은 네 가지로 요약된다.
 - 코어(runtime, manage)는 trait 크레이트에만 의존한다.
 - 구현체를 고르는 것은 바이너리뿐이다.
 - runtime과 manage는 서로 모른다.
+- 크레이트 안에서도 위 모듈만 아래 모듈을 쓴다. 순환은 없다.
 
 정확한 규칙은 `xtask`의 `RULES`가 정본이고 CI에서 검사한다.
 

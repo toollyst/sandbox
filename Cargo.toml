@@ -36,4 +36,5 @@ sandbox-runtime = { path = "crates/sandbox-runtime" }
 sandbox-manage = { path = "crates/sandbox-manage" }
 sandbox-oci = { path = "crates/sandbox-oci" }
 executor-fake = { path = "crates/executor-fake" }
-executor-firecracker = { path = "crates/executor-firecracker" }
+executor-proto = { path = "crates/executor-proto" }
+executor-process = { path = "crates/executor-process" }

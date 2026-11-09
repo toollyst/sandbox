@@ -10,13 +10,11 @@
 //! 게스트에 종료를 요청하는 것은 실행 코어가 메시지로 하고, 실행기는 VM이 끝나기를 기다리거나([`VmHandle::wait`])
 //! 강제로 끝낸다([`VmHandle::kill`]).
 //!
-//! **게스트와의 약속** (모든 어댑터가 지킨다)
-//! - 디스크는 [`VmConfig::disks`] 순서대로 붙인다. 게스트에서 첫째가 `/dev/vda`(rootfs), 둘째가 `/dev/vdb`(scratch)다.
-//! - 커널 명령줄에 `sbx.hostname=`[`VmConfig::hostname`]과, 그 VMM에서 VM을 끝내는 방법 `sbx.halt=`를 넣는다.
-//! - [`Executor::connect`]가 연 스트림은 게스트의 vsock 포트 `sandbox_proto::GUEST_PORT`에 닿는다.
+//! 게스트에 대한 약속(디스크 순서, 커널 명령줄, 커널 기능)은 `executor-proto` 문서에 있다. 모든 구현이 지킨다.
+//! [`Executor::connect`]가 연 스트림은 게스트의 vsock 포트 [`ChannelSpec::guest_port`]에 닿는다.
 //!
 //! - 의존: `sandbox-model`
-//! - 구현: `executor-fake`, `executor-firecracker`
+//! - 구현: `executor-process`(외부 실행기를 `executor-proto` 규약으로 다룬다), `executor-fake`(테스트)
 
 use std::fmt;
 use std::io::{self, Read, Write};
@@ -80,20 +78,20 @@ pub struct Share {
     pub readonly: bool,
 }
 
-/// 호스트-게스트 통신 채널의 호스트 쪽 접속점. 게스트 쪽은 실행기가 정한다.
+/// 호스트-게스트 통신 채널.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelSpec {
-    /// 호스트에서 접속할 경로(Unix 소켓 또는 named pipe).
+    /// 호스트에서 접속할 경로(Unix 소켓). 실행기가 만든다.
     pub host_endpoint: PathBuf,
+    /// 게스트가 듣는 vsock 포트.
+    pub guest_port: u32,
 }
 
 /// VM 하나를 띄우는 데 필요한 전부.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VmConfig {
-    /// 게스트 커널.
-    pub kernel: PathBuf,
-    /// 게스트 initrd.
-    pub initrd: Option<PathBuf>,
+    /// 게스트 init initramfs. 커널은 실행기가 정한다.
+    pub guest_init: PathBuf,
     /// 디스크.
     pub disks: Vec<Disk>,
     /// vCPU 개수.
@@ -106,6 +104,8 @@ pub struct VmConfig {
     pub control_channel: ChannelSpec,
     /// 게스트 호스트 이름.
     pub hostname: String,
+    /// 실행기의 진단 출력을 남길 파일. 없으면 만들고, 있으면 뒤에 붙인다.
+    pub log: PathBuf,
 }
 
 impl VmConfig {
@@ -230,8 +230,7 @@ mod tests {
 
     fn vm() -> VmConfig {
         VmConfig {
-            kernel: "k".into(),
-            initrd: None,
+            guest_init: "i".into(),
             disks: vec![Disk {
                 path: "r".into(),
                 role: DiskRole::Rootfs,
@@ -242,8 +241,10 @@ mod tests {
             shares: vec![],
             control_channel: ChannelSpec {
                 host_endpoint: "c".into(),
+                guest_port: 1024,
             },
             hostname: "h".into(),
+            log: "l".into(),
         }
     }
 

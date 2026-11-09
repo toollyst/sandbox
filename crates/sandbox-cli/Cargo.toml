@@ -24,4 +24,4 @@ sandbox-runtime.workspace = true
 sandbox-manage.workspace = true
 sandbox-oci.workspace = true
 sandbox-rootfs = { workspace = true, features = ["erofs"] }
-executor-firecracker.workspace = true
+executor-process.workspace = true

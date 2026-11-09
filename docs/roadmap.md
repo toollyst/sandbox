@@ -23,12 +23,13 @@
 |---|---|---|---|
 | 6 | 호스트-게스트 메시지 정의 | 프레이밍 위 인코딩, 버전 확인 | 완료 |
 | 7 | 게스트 init: rootfs와 scratch를 overlay로 합침, exec, 파일 송수신 | 게스트 단독 테스트 | 연결 처리·scratch 포맷 완료 (단독 테스트, e2fsck, 커널 마운트). 부팅 순서는 구현했고 실제 부팅은 9단계에서 확인. tty 남음 |
-| 8 | 게스트 커널 빌드 (`xtask`), x86_64·aarch64 | erofs, overlay, vsock, virtio-blk를 켠 커널 | |
-| 9 | Firecracker 어댑터 | 적합성 테스트를 fake와 함께 통과 | |
-| 10 | 실행 코어: create, start, exec, cp, stop, rm (attached) | Linux CI에서 실제 VM으로 통과 | |
+| 8 | 게스트 init initramfs 만들기 (`xtask`), x86_64·aarch64 | `/init`이 정적 `sandbox-guest`인 initramfs | |
+| 9 | 실행기 통신 규약(`executor-proto`)과 외부 실행기 어댑터(`executor-process`) | 규약을 지키는 `sbx-fake-executor`로 적합성 테스트 통과 | 완료 |
+| 10 | 실행 코어: create, start, exec, cp, stop, rm (attached) | fake 실행기로 통과 (실제 VM은 외부 실행기로 E2E) | |
 | 11 | CLI `run`, `create`, `start`, `exec`, `cp`, `stop`, `rm`, `ps`, `inspect` | `sbx run alpine echo hi`가 `hi`를 출력 | |
 
-M2가 끝나면 성공 기준 1을 충족한다.
+VM을 실제로 띄우는 실행기(VMM, 게스트 커널)는 이 저장소 밖(fc-fork)의 책임이다. 여기서는 규약과 fake로 검증하고,
+실제 VM 검증은 규약을 지키는 외부 실행기로 하는 E2E에서 한다. 그것이 끝나면 성공 기준 1을 충족한다.
 
 ## M3. 격리와 수명
 
@@ -41,6 +42,6 @@ M2가 끝나면 성공 기준 1을 충족한다.
 
 ## 그 뒤
 
-- 실행기 어댑터 추가 (fc-fork, libkrun)
+- 다른 외부 실행기 (libkrun 등). 규약(`executor-proto`)만 지키면 된다.
 - 언어 바인딩
 - OCI 범위 확대 (`docs/plan/architecture.md` 3장의 "나중")

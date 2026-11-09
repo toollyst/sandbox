@@ -17,6 +17,45 @@ use serde::{Deserialize, Serialize};
 /// `Arc<dyn Trait>`으로 갈아 끼우는 인터페이스(실행기, 이미지 소스)에 쓰는 비동기 반환 타입.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// 블로킹 작업을 새 스레드에서 돌리고 그 결과를 기다리는 future.
+///
+/// 특정 비동기 런타임에 의존하지 않는다. 파일과 소켓을 블로킹으로 다루는 구현이
+/// 호출자의 비동기 스레드를 막지 않게 할 때 쓴다.
+pub fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> T + Send + 'static,
+) -> BoxFuture<'static, T> {
+    use std::sync::{Arc, Mutex};
+    use std::task::{Poll, Waker};
+
+    struct Slot<T> {
+        value: Option<T>,
+        waker: Option<Waker>,
+    }
+    let slot = Arc::new(Mutex::new(Slot {
+        value: None,
+        waker: None,
+    }));
+    let inner = slot.clone();
+    std::thread::spawn(move || {
+        let v = f();
+        let mut s = inner.lock().unwrap_or_else(|e| e.into_inner());
+        s.value = Some(v);
+        if let Some(w) = s.waker.take() {
+            w.wake();
+        }
+    });
+    Box::pin(std::future::poll_fn(move |cx| {
+        let mut s = slot.lock().unwrap_or_else(|e| e.into_inner());
+        match s.value.take() {
+            Some(v) => Poll::Ready(v),
+            None => {
+                s.waker = Some(cx.waker().clone());
+                Poll::Pending
+            }
+        }
+    }))
+}
+
 /// 값 해석 실패.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseError {
