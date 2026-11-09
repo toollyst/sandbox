@@ -10,6 +10,9 @@
 //! 명령 목록은 [`commands`], 동작 규칙은 [`behavior`], Docker와 다른 점은
 //! [`behavior::DOCKER_DIFFERENCES`]에 있다. 기본 디렉터리는 [`dirs`]에 있다.
 
+// 문서는 unix 전용 항목(붙기, 시그널 전달)을 가리킨다. 링크 검사는 Linux와 macOS의 `cargo doc`이 한다.
+#![cfg_attr(not(unix), allow(rustdoc::broken_intra_doc_links))]
+
 pub mod app;
 pub mod attach;
 pub mod behavior;
