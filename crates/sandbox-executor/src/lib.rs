@@ -6,11 +6,20 @@
 //!
 //! 실행기 하나는 VM 하나당 별도 프로세스 하나를 띄운다. 앱 프로세스 안에서 VM을 돌리지 않는다.
 //!
+//! 실행기는 호스트-게스트 메시지를 모른다. 게스트까지 바이트 스트림 하나를 여는 방법([`Executor::connect`])만 안다.
+//! 게스트에 종료를 요청하는 것은 실행 코어가 메시지로 하고, 실행기는 VM이 끝나기를 기다리거나([`VmHandle::wait`])
+//! 강제로 끝낸다([`VmHandle::kill`]).
+//!
+//! **게스트와의 약속** (모든 어댑터가 지킨다)
+//! - 디스크는 [`VmConfig::disks`] 순서대로 붙인다. 게스트에서 첫째가 `/dev/vda`(rootfs), 둘째가 `/dev/vdb`(scratch)다.
+//! - 커널 명령줄에 `sbx.hostname=`[`VmConfig::hostname`]과, 그 VMM에서 VM을 끝내는 방법 `sbx.halt=`를 넣는다.
+//! - [`Executor::connect`]가 연 스트림은 게스트의 vsock 포트 `sandbox_proto::GUEST_PORT`에 닿는다.
+//!
 //! - 의존: `sandbox-model`
 //! - 구현: `executor-fake`, `executor-firecracker`
 
 use std::fmt;
-use std::io;
+use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -95,6 +104,8 @@ pub struct VmConfig {
     pub shares: Vec<Share>,
     /// 제어 채널.
     pub control_channel: ChannelSpec,
+    /// 게스트 호스트 이름.
+    pub hostname: String,
 }
 
 impl VmConfig {
@@ -161,24 +172,44 @@ impl From<io::Error> for ExecutorError {
     }
 }
 
+/// 게스트까지의 바이트 스트림 하나. 읽기와 쓰기를 다른 스레드에서 하도록 복제할 수 있다.
+pub trait GuestConn: Read + Write + Send {
+    /// 같은 연결을 가리키는 다른 핸들.
+    fn try_clone_conn(&self) -> io::Result<Box<dyn GuestConn>>;
+}
+
+#[cfg(unix)]
+impl GuestConn for std::os::unix::net::UnixStream {
+    fn try_clone_conn(&self) -> io::Result<Box<dyn GuestConn>> {
+        Ok(Box::new(self.try_clone()?))
+    }
+}
+
 /// 실행기.
 pub trait Executor: Send + Sync {
     /// 이 실행기가 제공하는 기능.
     fn capabilities(&self) -> Capabilities;
 
     /// VM 하나를 띄운다. 구현은 먼저 [`VmConfig::check`]를 통과시켜야 한다.
+    /// 돌아온 뒤 게스트가 연결을 받을 준비가 되었다는 보장은 없다. 호출자가 [`Executor::connect`]를 다시 시도한다.
     fn launch(&self, vm: VmConfig) -> BoxFuture<'_, Result<Box<dyn VmHandle>, ExecutorError>>;
+
+    /// 그 채널로 게스트 연결 하나를 연다. 블로킹이다.
+    ///
+    /// 채널 위치만으로 열 수 있어야 한다. 그래서 VM을 띄운 프로세스가 아니어도 연결할 수 있다.
+    /// 게스트가 아직 듣지 않으면 `ConnectionRefused`나 `NotFound` 종류의 오류다.
+    fn connect(&self, channel: &ChannelSpec) -> io::Result<Box<dyn GuestConn>>;
 }
 
-/// 띄운 VM 하나.
+/// 띄운 VM 하나. 버려지면 VM을 강제로 끝낸다.
 pub trait VmHandle: Send {
     /// 실행기 프로세스 ID. 고아 프로세스 정리에 쓴다.
     fn pid(&self) -> Option<u32>;
 
-    /// 게스트에 종료를 요청하고 `timeout`까지 기다린다. 넘으면 강제로 끝낸다.
-    fn shutdown(&mut self, timeout: Duration) -> BoxFuture<'_, Result<(), ExecutorError>>;
+    /// VM이 끝나기를 `timeout`까지 기다린다. 끝났으면 `true`.
+    fn wait(&mut self, timeout: Duration) -> BoxFuture<'_, Result<bool, ExecutorError>>;
 
-    /// 즉시 강제로 끝낸다.
+    /// 즉시 강제로 끝낸다. 이미 끝났으면 아무것도 하지 않는다.
     fn kill(&mut self) -> Result<(), ExecutorError>;
 }
 
@@ -212,6 +243,7 @@ mod tests {
             control_channel: ChannelSpec {
                 host_endpoint: "c".into(),
             },
+            hostname: "h".into(),
         }
     }
 

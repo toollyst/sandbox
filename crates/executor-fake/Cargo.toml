@@ -11,3 +11,9 @@ workspace = true
 [dependencies]
 sandbox-model.workspace = true
 sandbox-executor.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+sandbox-guest.workspace = true
+
+[dev-dependencies]
+sandbox-proto.workspace = true

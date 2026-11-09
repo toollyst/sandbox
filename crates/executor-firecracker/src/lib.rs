@@ -10,7 +10,9 @@
 
 use std::path::PathBuf;
 
-use sandbox_executor::{Capabilities, Executor, ExecutorError, VmConfig, VmHandle};
+use sandbox_executor::{
+    Capabilities, ChannelSpec, Executor, ExecutorError, GuestConn, VmConfig, VmHandle,
+};
 use sandbox_model::{Arch, BoxFuture, RootfsFormat};
 
 /// Firecracker 실행기.
@@ -58,5 +60,12 @@ impl Executor for FirecrackerExecutor {
             vm.check(&self.capabilities())?;
             Err(ExecutorError::Unimplemented("firecracker launch"))
         })
+    }
+
+    fn connect(&self, _channel: &ChannelSpec) -> std::io::Result<Box<dyn GuestConn>> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "firecracker connect is not implemented yet",
+        ))
     }
 }

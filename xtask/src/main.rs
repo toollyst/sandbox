@@ -57,7 +57,13 @@ const RULES: &[(&str, Allowed)] = &[
     ),
     (
         "executor-fake",
-        Allowed::Workspace(&["sandbox-model", "sandbox-executor"]),
+        // 게스트 쪽 연결 처리를 호스트에서 그대로 돌린다.
+        Allowed::Workspace(&[
+            "sandbox-model",
+            "sandbox-executor",
+            "sandbox-proto",
+            "sandbox-guest",
+        ]),
     ),
     (
         "executor-firecracker",

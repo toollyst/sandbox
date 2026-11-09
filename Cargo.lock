@@ -348,7 +348,9 @@ name = "executor-fake"
 version = "0.0.0"
 dependencies = [
  "sandbox-executor",
+ "sandbox-guest",
  "sandbox-model",
+ "sandbox-proto",
 ]
 
 [[package]]

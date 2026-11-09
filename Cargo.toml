@@ -27,6 +27,7 @@ clap = { version = "4", features = ["derive", "env"] }
 # workspace
 sandbox-model = { path = "crates/sandbox-model" }
 sandbox-proto = { path = "crates/sandbox-proto" }
+sandbox-guest = { path = "crates/sandbox-guest" }
 sandbox-executor = { path = "crates/sandbox-executor" }
 sandbox-image = { path = "crates/sandbox-image" }
 sandbox-rootfs = { path = "crates/sandbox-rootfs" }
