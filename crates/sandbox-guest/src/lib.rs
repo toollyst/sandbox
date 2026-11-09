@@ -8,17 +8,21 @@
 //! **층** (위가 아래를 쓴다. 아래는 위를 모른다. `cargo xtask check-deps`가 순환을 막는다.)
 //!
 //! ```text
-//! server            연결 하나: 버전 확인, 요청을 나눠 보냄
-//! exec   copy       요청별 처리
-//! wire   passwd     메시지 주고받기, 사용자 해석
-//! sys               시스템 호출 (unsafe는 여기만)
+//! boot                          PID 1과 연결 처리 프로세스 (Linux)
+//! server                        연결 하나: 버전 확인, 요청을 나눠 보냄
+//! exec   copy                   요청별 처리
+//! wire   passwd  mkfs  cmdline  메시지 주고받기, 사용자 해석, scratch 포맷, 부팅 인자
+//! sys                           시스템 호출 (unsafe는 여기만)
 //! ```
 //!
-//! 연결 처리는 일반 스트림 위에서 돌므로 호스트(Unix)에서 그대로 테스트한다.
+//! `boot` 아래는 일반 스트림과 파일 위에서 돌므로 호스트(Unix)에서 그대로 테스트한다.
 //!
 //! - 의존: `sandbox-proto`, `libc`(시스템 호출 선언)
 #![cfg(unix)]
 
+#[cfg(target_os = "linux")]
+pub mod boot;
+pub mod cmdline;
 pub mod copy;
 pub mod exec;
 pub mod mkfs;

@@ -18,6 +18,13 @@ impl Conn for UnixStream {
     }
 }
 
+/// 게스트의 vsock 연결은 fd를 그대로 읽고 쓰므로 `File`로 다룬다.
+impl Conn for std::fs::File {
+    fn try_clone(&self) -> io::Result<Self> {
+        std::fs::File::try_clone(self)
+    }
+}
+
 /// 여러 스레드가 함께 쓰는 보내는 쪽. 메시지 하나는 잠금 하나 안에서 통째로 쓴다.
 #[derive(Clone)]
 pub struct Out(Arc<Mutex<Box<dyn Write + Send>>>);

@@ -49,3 +49,156 @@ pub fn sync() {
     // SAFETY: sync는 인자가 없고 실패하지 않는다.
     unsafe { libc::sync() }
 }
+
+/// Linux 전용 시스템 호출. 부팅(`boot`)만 쓴다.
+#[cfg(target_os = "linux")]
+pub mod linux {
+    use std::ffi::CString;
+    use std::fs::File;
+    use std::io;
+    use std::os::fd::{FromRawFd, OwnedFd};
+
+    use super::check;
+
+    fn cstr(s: &str) -> io::Result<CString> {
+        CString::new(s).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))
+    }
+
+    /// `mount(2)`.
+    pub fn mount(
+        source: &str,
+        target: &str,
+        fstype: &str,
+        flags: libc::c_ulong,
+        data: &str,
+    ) -> io::Result<()> {
+        let (s, t, f, d) = (cstr(source)?, cstr(target)?, cstr(fstype)?, cstr(data)?);
+        // SAFETY: 모든 포인터는 이 호출 동안 살아 있는 NUL 종료 문자열이다.
+        check(unsafe { libc::mount(s.as_ptr(), t.as_ptr(), f.as_ptr(), flags, d.as_ptr().cast()) })
+    }
+
+    /// 마운트 하나를 옮긴다(`MS_MOVE`).
+    pub fn move_mount(source: &str, target: &str) -> io::Result<()> {
+        let (s, t) = (cstr(source)?, cstr(target)?);
+        // SAFETY: 위와 같다. MS_MOVE에서는 fstype과 data를 쓰지 않으므로 null이어도 된다.
+        check(unsafe {
+            libc::mount(
+                s.as_ptr(),
+                t.as_ptr(),
+                std::ptr::null(),
+                libc::MS_MOVE,
+                std::ptr::null(),
+            )
+        })
+    }
+
+    /// VM을 끝낸다. 돌아오면 실패한 것이다.
+    pub fn reboot(cmd: libc::c_int) -> io::Error {
+        // SAFETY: reboot은 메모리를 건드리지 않는다.
+        unsafe { libc::reboot(cmd) };
+        io::Error::last_os_error()
+    }
+
+    /// 호스트 이름.
+    pub fn sethostname(name: &str) -> io::Result<()> {
+        // SAFETY: 포인터와 길이가 같은 바이트열을 가리킨다.
+        check(unsafe { libc::sethostname(name.as_ptr().cast(), name.len()) })
+    }
+
+    /// 아무 자식이나 끝나면 거둔다. (pid, 종료 상태). 자식이 없으면 `ECHILD` 오류.
+    pub fn wait_any() -> io::Result<(u32, libc::c_int)> {
+        let mut status = 0;
+        loop {
+            // SAFETY: status는 이 호출 동안 살아 있다.
+            let pid = unsafe { libc::waitpid(-1, &mut status, 0) };
+            if pid >= 0 {
+                return Ok((pid as u32, status));
+            }
+            let e = io::Error::last_os_error();
+            if e.kind() != io::ErrorKind::Interrupted {
+                return Err(e);
+            }
+        }
+    }
+
+    /// 루프백 인터페이스를 올린다.
+    // ioctl 요청 번호의 타입이 glibc(c_ulong)와 musl(c_int)에서 다르다. 한쪽에서는 같은 타입으로의 변환이다.
+    #[allow(clippy::unnecessary_cast)]
+    pub fn loopback_up() -> io::Result<()> {
+        // SAFETY: socket은 새 fd를 돌려주거나 -1이다.
+        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
+        check(fd)?;
+        // SAFETY: fd는 방금 만든, 아무도 소유하지 않은 fd다.
+        let sock = unsafe { OwnedFd::from_raw_fd(fd) };
+        use std::os::fd::AsRawFd;
+        // SAFETY: ifreq는 정수와 바이트 배열로 된 C 구조체라 0으로 채워도 된다.
+        let mut req: libc::ifreq = unsafe { std::mem::zeroed() };
+        for (d, s) in req.ifr_name.iter_mut().zip(b"lo\0") {
+            *d = *s as libc::c_char;
+        }
+        // SAFETY: req는 살아 있는 ifreq이고, 이 ioctl들은 ifreq를 읽고 쓴다.
+        check(unsafe {
+            libc::ioctl(
+                sock.as_raw_fd(),
+                libc::SIOCGIFFLAGS as libc::Ioctl,
+                &mut req,
+            )
+        })?;
+        // SAFETY: SIOCGIFFLAGS가 채운 공용체의 flags 필드를 읽고 쓴다.
+        unsafe {
+            req.ifr_ifru.ifru_flags |= (libc::IFF_UP | libc::IFF_RUNNING) as libc::c_short;
+        }
+        // SAFETY: 위와 같다.
+        check(unsafe { libc::ioctl(sock.as_raw_fd(), libc::SIOCSIFFLAGS as libc::Ioctl, &req) })
+    }
+
+    /// vsock 포트에서 듣는다.
+    pub fn vsock_listen(port: u32) -> io::Result<OwnedFd> {
+        // SAFETY: socket은 새 fd를 돌려주거나 -1이다.
+        let fd = unsafe { libc::socket(libc::AF_VSOCK, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
+        check(fd)?;
+        // SAFETY: fd는 방금 만든, 아무도 소유하지 않은 fd다.
+        let sock = unsafe { OwnedFd::from_raw_fd(fd) };
+        use std::os::fd::AsRawFd;
+        // SAFETY: sockaddr_vm은 정수 필드만 있어 0으로 채워도 된다.
+        let mut addr: libc::sockaddr_vm = unsafe { std::mem::zeroed() };
+        addr.svm_family = libc::AF_VSOCK as libc::sa_family_t;
+        addr.svm_port = port;
+        addr.svm_cid = libc::VMADDR_CID_ANY;
+        // SAFETY: addr는 살아 있고, 길이는 그 구조체의 크기다.
+        check(unsafe {
+            libc::bind(
+                sock.as_raw_fd(),
+                (&addr as *const libc::sockaddr_vm).cast(),
+                std::mem::size_of::<libc::sockaddr_vm>() as libc::socklen_t,
+            )
+        })?;
+        // SAFETY: listen은 메모리를 건드리지 않는다.
+        check(unsafe { libc::listen(sock.as_raw_fd(), 16) })?;
+        Ok(sock)
+    }
+
+    /// 연결 하나를 받는다. 읽기와 쓰기는 일반 파일처럼 한다.
+    pub fn accept(listener: &OwnedFd) -> io::Result<File> {
+        use std::os::fd::AsRawFd;
+        loop {
+            // SAFETY: 주소를 받지 않으므로 null을 넘긴다.
+            let fd = unsafe {
+                libc::accept4(
+                    listener.as_raw_fd(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    libc::SOCK_CLOEXEC,
+                )
+            };
+            if fd >= 0 {
+                // SAFETY: accept4가 돌려준 새 fd다.
+                return Ok(File::from(unsafe { OwnedFd::from_raw_fd(fd) }));
+            }
+            let e = io::Error::last_os_error();
+            if e.kind() != io::ErrorKind::Interrupted {
+                return Err(e);
+            }
+        }
+    }
+}
