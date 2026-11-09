@@ -24,6 +24,7 @@
 pub mod boot;
 pub mod cmdline;
 pub mod copy;
+pub mod dns;
 pub mod egress;
 pub mod exec;
 pub mod mkfs;

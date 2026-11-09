@@ -7,7 +7,8 @@
 //! - `--sbx`: 기본은 `target/release/sbx`. 설정은 [`bench`](crate::bench)처럼 환경 변수와 설치한 기본 실행기를 따른다.
 //! - `--no-internet`: 인터넷이 필요한 확인(허용한 곳으로 HTTPS)을 건너뛴다. 이미지는 미리 받아 둬야 한다.
 //!
-//! 확인하는 것: 출력과 종료 코드(0, 7, 127), 표준 입력, 네트워크 장치 없음, 쓰기 가능한 루트, detached 실행과
+//! 확인하는 것: 출력과 종료 코드(0, 7, 127), 표준 입력, 네트워크 장치 없음, 이름 풀기가 곧바로 실패함(5초 시간
+//! 초과를 기다리지 않음), 쓰기 가능한 루트, detached 실행과
 //! `exec`/`cp`/`logs`/`stop`(SIGTERM으로 143)/`rm`, 허용 목록(허용한 곳은 200, 나머지는 막힘).
 //! 하나라도 다르면 무엇이 달랐는지 쓰고 실패한다.
 
@@ -143,6 +144,29 @@ pub fn run(root: &Path, args: &[String]) -> Result<usize, String> {
         0,
         Some("lo\n"),
     ))?;
+    // 네트워크가 없으면 이름 풀기는 곧바로 실패한다(게스트의 루프백 DNS). 리졸버 시간 초과는 5초다.
+    let t = std::time::Instant::now();
+    check(expect(
+        &s,
+        "name lookup fails fast",
+        &[
+            "run",
+            "--rm",
+            IMAGE,
+            "sh",
+            "-c",
+            "wget -q -O- http://example.com",
+        ],
+        None,
+        1,
+        Some(""),
+    ))?;
+    if t.elapsed() > std::time::Duration::from_secs(3) {
+        return Err(format!(
+            "name lookup fails fast: took {:?} (the resolver timed out)",
+            t.elapsed()
+        ));
+    }
     check(expect(
         &s,
         "writable root",

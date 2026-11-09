@@ -14,6 +14,7 @@
 //! 연결 처리를 따로 띄우는 이유: PID 1이 모든 자식을 거두면(`waitpid(-1)`) exec한 프로세스의 종료 상태를 빼앗는다.
 //!
 //! **연결 처리** ([`agent`]): vsock [`GUEST_PORT`]에서 연결마다 스레드 하나로 `server::serve`를 돌린다.
+//! 루프백 DNS([`crate::dns`])도 띄운다: 이름 풀기가 시간 초과(5초)를 기다리지 않고 곧바로 실패하게 한다.
 //! `Shutdown` 요청이면 sync 뒤 `sbx.halt` 방법으로 VM을 끝낸다.
 //!
 //! 어느 단계든 실패하면 콘솔에 이유를 쓰고 VM을 끝낸다. 호스트는 연결이 되지 않는 것으로 안다.
@@ -221,6 +222,15 @@ pub fn agent() -> ! {
             halt(cfg.halt);
         }
     };
+    // 루프백 DNS. 띄우지 못해도(이미 누가 듣는다) 부팅은 계속한다. 그때는 이름 풀기가 느리게 실패할 뿐이다.
+    for addr in ["127.0.0.1:53", "[::1]:53"] {
+        match std::net::UdpSocket::bind(addr) {
+            Ok(sock) => {
+                thread::spawn(move || crate::dns::serve(&sock));
+            }
+            Err(e) => log(&format!("dns on {addr}: {e}")),
+        }
+    }
     let halt_how = cfg.halt;
     let ctx: &'static Ctx = Box::leak(Box::new(Ctx {
         root: "/".into(),

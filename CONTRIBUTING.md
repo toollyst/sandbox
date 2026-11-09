@@ -23,7 +23,7 @@ cargo xtask check-deps                    # dependency direction between and ins
 With a real executor installed (Linux with `/dev/kvm`, or an Apple Silicon Mac):
 
 ```sh
-cargo xtask dist && cargo xtask smoke     # 16 checks on real VMs
+cargo xtask dist && cargo xtask smoke     # 17 checks on real VMs
 cargo xtask bench                         # numbers to paste into a PR that touches the hot path
 ```
 

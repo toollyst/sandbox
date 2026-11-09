@@ -100,7 +100,7 @@ cp target/release/sbx-executor-firecracker bundle/sbx-executor
 cp "target/kernel/$arch/kernel" bundle/kernel
 cp /path/to/firecracker bundle/firecracker   # an upstream Firecracker release on Linux/KVM
 sbx executor install --from bundle firecracker@local
-cargo xtask smoke                          # 16 checks on a real VM
+cargo xtask smoke                          # 17 checks on a real VM
 ```
 
 ### Run things
