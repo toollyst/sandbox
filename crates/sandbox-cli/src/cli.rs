@@ -187,6 +187,9 @@ pub enum Command {
         /// Keep streaming new output until the sandbox stops.
         #[arg(short, long)]
         follow: bool,
+        /// Show only the last N lines of what is already there (`all` for everything).
+        #[arg(short = 'n', long, default_value = "all")]
+        tail: String,
         /// Sandbox ID (or a unique prefix).
         id: String,
     },

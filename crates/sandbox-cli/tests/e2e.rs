@@ -678,7 +678,11 @@ mod unix {
         ok(&["images"]);
         ok(&["completion", "bash"]);
         let o = e.sbx(&["completion", "zsh"]);
-        assert!(text(&o.stdout).starts_with("#compdef sbx"), "{}", text(&o.stderr));
+        assert!(
+            text(&o.stdout).starts_with("#compdef sbx"),
+            "{}",
+            text(&o.stderr)
+        );
         let o = e.sbx(&["create", IMAGE]);
         let id = text(&o.stdout).trim().to_owned();
         ok(&["inspect", &id]);
@@ -796,6 +800,11 @@ mod unix {
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
         assert_eq!(text(&o.stdout), "a\nb\n");
         assert_eq!(wait_state(&e, &id, "stopped")["exit_code"], 0);
+        // --tail N: 마지막 N줄만.
+        let o = e.sbx(&["logs", "--tail", "1", &id]);
+        assert_eq!(text(&o.stdout), "b\n", "{}", text(&o.stderr));
+        assert_eq!(text(&e.sbx(&["logs", "-n", "0", &id]).stdout), "");
+        assert_ne!(e.sbx(&["logs", "--tail", "x", &id]).status.code(), Some(0));
 
         // --rm: 끝나면 shim이 지운다.
         let o = e.sbx(&["run", "-d", "--rm", IMAGE, "sh", "-c", "exit 0"]);

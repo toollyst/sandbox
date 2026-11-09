@@ -149,7 +149,7 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
                 Ok(0)
             }
         }
-        Command::Logs { follow, id } => ctx.logs(*follow, id).await,
+        Command::Logs { follow, tail, id } => ctx.logs(*follow, tail, id).await,
         Command::Exec(a) => ctx.exec(a).await,
         Command::Cp { src, dst } => ctx.cp(src, dst).await,
         Command::Stop(a) => ctx.stop(a).await,
@@ -291,7 +291,14 @@ impl Ctx {
 
     /// `logs`: shim이 남긴 기본 프로세스 출력을 순서대로 표준 출력과 표준 오류에 쓴다.
     /// `-f`면 샌드박스가 실행 중인 동안 새 출력을 기다린다.
-    async fn logs(&self, follow: bool, id: &str) -> AppResult<u8> {
+    async fn logs(&self, follow: bool, tail: &str, id: &str) -> AppResult<u8> {
+        let tail = match tail {
+            "all" => None,
+            n => Some(
+                n.parse::<usize>()
+                    .map_err(|_| msg(format!("--tail: expected a number or `all`, got {n:?}")))?,
+            ),
+        };
         let rt = self.runtime()?;
         let sandbox = rt.find(id).await?;
         let path = sandbox.log_dir().join(MAIN_LOG);
@@ -301,6 +308,19 @@ impl Ctx {
             Err(e) => return Err(e.into()),
         };
         let (mut out, mut err) = (std::io::stdout(), std::io::stderr());
+        // --tail: 이미 있는 것은 모아서 마지막 N줄만 보인다. 그 뒤(-f)는 그대로 흘린다.
+        if let (Some(n), Some(r)) = (tail, &mut reader) {
+            let mut records = Vec::new();
+            while let Some(record) = r.next_record()? {
+                records.push(record);
+            }
+            for (stream, line) in behavior::last_lines(records, n) {
+                let _ = match stream {
+                    Stream::Stdout => out.write_all(&line).and_then(|()| out.flush()),
+                    Stream::Stderr => err.write_all(&line).and_then(|()| err.flush()),
+                };
+            }
+        }
         loop {
             if let Some(r) = &mut reader {
                 while let Some((stream, data)) = r.next_record()? {

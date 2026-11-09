@@ -480,6 +480,24 @@ pub fn rfc3339(t: std::time::SystemTime) -> String {
     )
 }
 
+/// 로그 기록(출력 조각)들의 마지막 `n`줄. 조각을 줄로 나누고, 같은 스트림에서 이어지는 조각은 한 줄로 붙인다.
+/// 끝에 줄바꿈이 없는 마지막 조각도 한 줄로 센다(Docker `logs --tail`과 같다).
+pub fn last_lines<S: Copy + PartialEq>(records: Vec<(S, Vec<u8>)>, n: usize) -> Vec<(S, Vec<u8>)> {
+    let mut lines: Vec<(S, Vec<u8>)> = Vec::new();
+    for (stream, data) in records {
+        for piece in data.split_inclusive(|&b| b == b'\n') {
+            match lines.last_mut() {
+                Some((s, line)) if *s == stream && line.last() != Some(&b'\n') => {
+                    line.extend_from_slice(piece)
+                }
+                _ => lines.push((stream, piece.to_vec())),
+            }
+        }
+    }
+    let skip = lines.len().saturating_sub(n);
+    lines.split_off(skip)
+}
+
 /// 사람이 읽는 크기. Docker처럼 1000 단위다.
 pub fn human_size(bytes: u64) -> String {
     const UNITS: [&str; 4] = ["B", "kB", "MB", "GB"];
@@ -498,7 +516,37 @@ pub fn human_size(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{familiar, human_ago, human_size, rfc3339};
+    use super::{familiar, human_ago, human_size, last_lines, rfc3339};
+
+    #[test]
+    fn tail_counts_lines_across_records() {
+        let r = |s: u8, d: &str| (s, d.as_bytes().to_vec());
+        let records = vec![
+            r(1, "a\nb"),
+            r(1, "c\n"),
+            r(2, "e1\n"),
+            r(1, "d\n"),
+            r(1, "no-newline"),
+        ];
+        let got = |n| {
+            last_lines(records.clone(), n)
+                .into_iter()
+                .map(|(s, l)| (s, String::from_utf8(l).unwrap()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(got(2), [(1, "d\n".into()), (1, "no-newline".into())]);
+        assert_eq!(
+            got(4),
+            [
+                (1, "bc\n".into()),
+                (2, "e1\n".into()),
+                (1, "d\n".into()),
+                (1, "no-newline".into())
+            ]
+        );
+        assert_eq!(got(0), []);
+        assert_eq!(got(99).len(), 5);
+    }
     use std::time::{Duration, UNIX_EPOCH};
 
     #[test]
