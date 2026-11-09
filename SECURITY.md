@@ -6,8 +6,8 @@ cover yet. If you find a way across one of the boundaries below, please report i
 ## Reporting a vulnerability
 
 Use GitHub's private vulnerability reporting: **Security → Report a vulnerability** on this repository. Please
-don't open a public issue. Include the `sbx` version (`sbx --version`), the executor (`sbx executor ls`), the host
-OS, and the smallest reproduction you have.
+don't open a public issue. Include the output of `sbx info` (version, host, hypervisor and executor) and the smallest
+reproduction you have.
 
 `sbx` is pre-release. Fixes go to the latest release and `main` only.
 

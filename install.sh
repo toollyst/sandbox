@@ -91,4 +91,4 @@ case ":$PATH:" in
     *":$dir:"*) ;;
     *) say "note: $dir is not on your PATH. Add it: export PATH=\"$dir:\$PATH\"" ;;
 esac
-say "done. Try: sbx run --rm alpine echo hello"
+say "done. Check with: sbx info   Then try: sbx run --rm alpine echo hello"

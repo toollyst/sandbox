@@ -97,6 +97,8 @@ pub enum Command {
         #[command(subcommand)]
         command: ExecutorCommand,
     },
+    #[command(about = about("info"))]
+    Info,
     #[command(about = about("run"), override_usage = "sbx run [OPTIONS] IMAGE [COMMAND] [ARG...]")]
     Run {
         #[command(flatten)]

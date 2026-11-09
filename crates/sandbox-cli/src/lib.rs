@@ -22,6 +22,7 @@ pub mod commands;
 pub mod dirs;
 pub mod executors;
 pub mod guest;
+pub mod host;
 pub mod mcp;
 pub mod parse;
 pub mod progress;

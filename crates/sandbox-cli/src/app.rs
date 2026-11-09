@@ -42,7 +42,7 @@ use crate::behavior::{self, ImageMatch, LookupError, RmiAction, RmiDecision, Ste
 use crate::cli::{AttachArgs, Cli, Command, ExecArgs, ExecutorCommand, Format, RunArgs, StopArgs};
 use crate::parse::{self, CpEndpoint};
 use crate::progress::Status;
-use crate::{dirs, executors, guest};
+use crate::{dirs, executors, guest, host};
 
 /// 명령 결과. 성공하면 종료 코드.
 pub type AppResult<T> = Result<T, Box<dyn Error>>;
@@ -125,6 +125,7 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
             image,
         } => ctx.prepare(*rootfs_format, image).await,
         Command::Images { quiet } => ctx.images(*quiet),
+        Command::Info => ctx.info().await,
         Command::Rmi { force, images } => ctx.rmi(*force, images).await,
         Command::Run { attach, args } => ctx.run_sandbox(attach, args).await,
         Command::Create(a) => {
@@ -444,6 +445,97 @@ impl Ctx {
         } else {
             println!("{}: {format} rootfs already prepared", short(found.id()));
         }
+        Ok(0)
+    }
+
+    /// `info`: 버그 보고와 설치 확인에 쓰는 진단. 실행기를 부를 수 없어도 나머지는 보여준다.
+    async fn info(&self) -> AppResult<u8> {
+        let arch = host_arch()?;
+        let (vm_ok, hypervisor) = host::hypervisor();
+        let installed = executors::installed(&self.data_dir)
+            .default()
+            .ok()
+            .flatten();
+        let program = self.executor()?;
+        let caps = ProcessExecutor::new(&program)
+            .map(|e| e.capabilities())
+            .map_err(|e| match e {
+                sandbox_executor::ExecutorError::Launch(m) => m,
+                e => e.to_string(),
+            });
+        let guest = match &self.guest_init {
+            Some(p) => p.display().to_string(),
+            None if guest::embedded(arch).is_some() => "embedded in sbx".into(),
+            None => self.guest_init(false)?.display().to_string(),
+        };
+        let sandboxes = self.runtime()?.list().await?;
+        let running = sandboxes
+            .iter()
+            .filter(|s| s.state == State::Running)
+            .count();
+        let images = self.manager()?.images()?.len();
+        let executor_name = match (&self.executor, &installed) {
+            (Some(p), _) => p.display().to_string(),
+            (None, Some(i)) => i.to_string(),
+            (None, None) => "none installed (sbx executor install firecracker)".into(),
+        };
+        if self.json() {
+            let caps = match &caps {
+                Ok(c) => json!({
+                    "name": c.name,
+                    "arch": c.arch,
+                    "rootfs_formats": c.rootfs_formats,
+                    "live_share": c.live_share,
+                    "custom_kernel": c.custom_kernel,
+                }),
+                Err(e) => json!({ "error": e }),
+            };
+            let v = json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "os": host::os(),
+                "arch": arch,
+                "hypervisor": { "usable": vm_ok, "detail": hypervisor },
+                "executor": { "name": executor_name, "program": program, "capabilities": caps },
+                "guest_init": guest,
+                "data_dir": self.data_dir,
+                "cache_dir": self.cache_dir,
+                "sandboxes": sandboxes.len(),
+                "running": running,
+                "images": images,
+            });
+            println!("{}", serde_json::to_string_pretty(&v)?);
+            return Ok(0);
+        }
+        println!("sbx {}", env!("CARGO_PKG_VERSION"));
+        println!(
+            " Host:        {} ({}/{})",
+            host::os(),
+            std::env::consts::OS,
+            arch.oci_name()
+        );
+        println!(" Hypervisor:  {hypervisor}");
+        println!(" Executor:    {executor_name}");
+        println!(" Program:     {}", program.display());
+        match &caps {
+            Ok(c) => {
+                let formats: Vec<&str> = c.rootfs_formats.iter().map(|f| f.as_str()).collect();
+                let yes = |b: bool| if b { "yes" } else { "no" };
+                println!(
+                    " Supports:    {} ({}), rootfs {}, live share {}, custom kernel {}",
+                    c.name,
+                    c.arch.oci_name(),
+                    formats.join(","),
+                    yes(c.live_share),
+                    yes(c.custom_kernel)
+                );
+            }
+            Err(e) => println!(" Supports:    unknown ({e})"),
+        }
+        println!(" Guest init:  {guest}");
+        println!(" Data dir:    {}", self.data_dir.display());
+        println!(" Cache dir:   {}", self.cache_dir.display());
+        println!(" Sandboxes:   {} ({running} running)", sandboxes.len());
+        println!(" Images:      {images}");
         Ok(0)
     }
 

@@ -69,6 +69,11 @@ pub const COMMANDS: &[Command] = &[
         "Install and choose executors (ls, install, search, use, rm, repo)",
     ),
     cmd(
+        "info",
+        Group::Manage,
+        "Show the host, executor and storage sbx uses (include it in bug reports)",
+    ),
+    cmd(
         "run",
         Group::Run,
         "Create and start a sandbox (pulls missing images by default)",

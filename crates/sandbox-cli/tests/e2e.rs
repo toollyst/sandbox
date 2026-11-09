@@ -686,6 +686,23 @@ mod unix {
         ok(&["ps", "-a"]);
         ok(&["images"]);
         ok(&["completion", "bash"]);
+        // info는 실행기를 부를 수 없어도 나머지를 보여준다.
+        let o = e
+            .cmd(&["info", "--format", "json"])
+            .env("SBX_EXECUTOR", missing)
+            .output()
+            .unwrap();
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(v["images"], 1);
+        assert!(v["executor"]["capabilities"]["error"].is_string(), "{v}");
+        let o = e.sbx(&["info"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(
+            text(&o.stdout).contains("Supports:    fake"),
+            "{}",
+            text(&o.stdout)
+        );
         let o = e.sbx(&["completion", "zsh"]);
         assert!(
             text(&o.stdout).starts_with("#compdef sbx"),

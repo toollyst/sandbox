@@ -10,25 +10,19 @@ body:
       render: console
     validations:
       required: true
-  - type: input
-    id: version
+  - type: textarea
+    id: info
     attributes:
-      label: sbx version
-      description: Output of `sbx --version`.
+      label: sbx info
+      description: Output of `sbx info` (version, host, hypervisor, executor and directories).
+      render: console
     validations:
       required: true
   - type: input
-    id: executor
+    id: cpu
     attributes:
-      label: Executor
-      description: Output of `sbx executor ls`.
-  - type: input
-    id: host
-    attributes:
-      label: Host
-      description: OS, version and CPU, e.g. macOS 15.4 on M2, Ubuntu 24.04 x86_64 with KVM.
-    validations:
-      required: true
+      label: CPU
+      description: e.g. Apple M2, AMD EPYC 7763, or "GitHub Actions ubuntu-latest".
   - type: markdown
     attributes:
       value: Security problems go through private reporting (see SECURITY.md), not here.
