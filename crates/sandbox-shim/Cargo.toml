@@ -1,0 +1,17 @@
+[package]
+name = "sandbox-shim"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+sandbox-model.workspace = true
+sandbox-proto.workspace = true
+sandbox-executor.workspace = true
+sandbox-store.workspace = true
+sandbox-runtime.workspace = true
+executor-firecracker.workspace = true

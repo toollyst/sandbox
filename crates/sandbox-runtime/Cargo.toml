@@ -1,0 +1,21 @@
+[package]
+name = "sandbox-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+sandbox-model.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sandbox-proto.workspace = true
+sandbox-executor.workspace = true
+# write feature를 켜지 않는다. 실행 쪽은 캐시를 읽기만 한다.
+sandbox-store.workspace = true
+
+[dev-dependencies]
+executor-fake.workspace = true
