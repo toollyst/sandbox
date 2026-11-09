@@ -13,10 +13,9 @@
 //! |---|---|
 //! | `MountKind::Bind` (실행기가 지원해도) | [`RuntimeError::Unimplemented`] (로드맵 M3) |
 //! | `MountKind::Copy` + `readonly` | [`RuntimeError::Invalid`] (복사본이라 읽기 전용을 강제할 수 없다) |
-//! | `Lifetime::Detached` | [`RuntimeError::Unimplemented`] (로드맵 M3) |
 
 use sandbox_executor::Capabilities;
-use sandbox_model::{Lifetime, MountKind, SandboxSpec};
+use sandbox_model::{MountKind, SandboxSpec};
 
 use crate::error::RuntimeError;
 
@@ -49,9 +48,6 @@ pub fn check(spec: &SandboxSpec, caps: &Capabilities) -> Result<(), RuntimeError
             m.destination
         )));
     }
-    if spec.lifetime == Lifetime::Detached {
-        return Err(RuntimeError::Unimplemented("detached sandboxes"));
-    }
     Ok(())
 }
 
@@ -59,8 +55,8 @@ pub fn check(spec: &SandboxSpec, caps: &Capabilities) -> Result<(), RuntimeError
 mod tests {
     use super::*;
     use sandbox_model::{
-        Arch, Digest, ImageId, Lifetime, Mount, NetworkPolicy, ProcessDefaults, Resources,
-        RootfsFormat, UserSpec,
+        Arch, Digest, ImageId, Mount, NetworkPolicy, ProcessDefaults, Resources, RootfsFormat,
+        UserSpec,
     };
     use std::collections::BTreeMap;
 
@@ -92,7 +88,6 @@ mod tests {
             },
             mounts,
             network: NetworkPolicy::Disabled,
-            lifetime: Lifetime::Attached,
             hostname: None,
             labels: BTreeMap::new(),
         }
@@ -130,7 +125,7 @@ mod tests {
     }
 
     #[test]
-    fn readonly_copy_and_detached_are_rejected() {
+    fn readonly_copy_is_rejected() {
         let mut m = mount(MountKind::Copy);
         m.readonly = true;
         let c = caps(vec![RootfsFormat::Erofs], false);
@@ -138,9 +133,6 @@ mod tests {
             check(&spec(vec![m]), &c),
             Err(RuntimeError::Invalid(_))
         ));
-        let mut s = spec(vec![]);
-        s.lifetime = Lifetime::Detached;
-        assert!(matches!(check(&s, &c), Err(RuntimeError::Unimplemented(_))));
     }
 
     #[test]

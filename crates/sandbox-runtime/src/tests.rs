@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::time::Instant;
 
 use executor_fake::FakeExecutor;
-use sandbox_model::{Digest, ImageId, Lifetime, Mount, NetworkPolicy, Resources, RootfsFormat};
+use sandbox_model::{Digest, ImageId, Mount, NetworkPolicy, Resources, RootfsFormat};
 
 use crate::chan::block_on;
 
@@ -83,7 +83,6 @@ impl Env {
             },
             mounts: vec![],
             network: NetworkPolicy::Disabled,
-            lifetime: Lifetime::Attached,
             hostname: None,
             labels: BTreeMap::new(),
         }

@@ -513,17 +513,10 @@ pub enum NetworkPolicy {
     Disabled,
 }
 
-/// 샌드박스 수명.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Lifetime {
-    /// 호출한 프로세스가 끝나면 샌드박스도 정리된다.
-    Attached,
-    /// 호출한 프로세스가 끝나도 남는다. `sandbox-shim`이 붙잡고 있다.
-    Detached,
-}
-
 /// 샌드박스를 만드는 데 필요한 전부. 생성 후에는 바뀌지 않는다.
+///
+/// 수명(VM을 띄운 프로세스와 함께 끝나는지, 남는지)은 여기에 없다. Docker처럼 시작할 때 정한다:
+/// 시작한 프로세스가 VM을 소유하고, 남기려면 `sandbox-shim`이 시작한다.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxSpec {
     /// digest로 고정된 이미지.
@@ -538,8 +531,6 @@ pub struct SandboxSpec {
     pub mounts: Vec<Mount>,
     /// 네트워크 정책.
     pub network: NetworkPolicy,
-    /// 수명.
-    pub lifetime: Lifetime,
     /// 게스트 hostname.
     pub hostname: Option<String>,
     /// 호출자가 붙이는 라벨.

@@ -25,8 +25,8 @@ use sandbox_executor::Executor;
 use sandbox_image::Platform;
 use sandbox_manage::Manager;
 use sandbox_model::{
-    Arch, ExecSpec, ImageId, Lifetime, NetworkPolicy, ProcessOverrides, Resources, RootfsFormat,
-    SandboxId, SandboxSpec, State, UserSpec,
+    Arch, ExecSpec, ImageId, NetworkPolicy, ProcessOverrides, Resources, RootfsFormat, SandboxId,
+    SandboxSpec, State, UserSpec,
 };
 use sandbox_oci::{OciImageSource, Reference};
 use sandbox_rootfs::erofs::ErofsBuilder;
@@ -485,11 +485,6 @@ impl Ctx {
                         resources,
                         mounts: mounts.clone(),
                         network: NetworkPolicy::Disabled,
-                        lifetime: if a.detach {
-                            Lifetime::Detached
-                        } else {
-                            Lifetime::Attached
-                        },
                         hostname: a.hostname.clone(),
                         labels: labels.clone(),
                     };
@@ -505,6 +500,9 @@ impl Ctx {
     /// `--rm`이면 끝난 뒤(시작에 실패해도) 지운다.
     async fn run_sandbox(&self, attach_args: &AttachArgs, a: &RunArgs) -> AppResult<u8> {
         let fail = |e: Box<dyn Error>| failure(behavior::EXIT_RUN_FAILED, e);
+        if attach_args.detach {
+            return Err(fail(msg("-d is not supported yet")));
+        }
         let io =
             attach::io_mode(attach_args.interactive, attach_args.tty).map_err(|e| fail(msg(e)))?;
         let id = self.create(a).await.map_err(fail)?;

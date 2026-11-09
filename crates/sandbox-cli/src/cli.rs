@@ -146,6 +146,9 @@ pub enum Command {
 /// `run`에만 있는 옵션: 붙어서 실행하는 방법.
 #[derive(Debug, Args)]
 pub struct AttachArgs {
+    /// 붙지 않고 시작해 ID를 출력한다. 샌드박스는 sbx가 끝나도 남는다(`sandbox-shim`).
+    #[arg(short = 'd', long)]
+    pub detach: bool,
     /// 표준 입력을 연다.
     #[arg(short = 'i', long)]
     pub interactive: bool,
@@ -163,9 +166,6 @@ pub struct RunArgs {
     /// rootfs 형식.
     #[arg(long, default_value = DEFAULT_ROOTFS_FORMAT.as_str())]
     pub rootfs_format: RootfsFormat,
-    /// 호출한 프로세스가 끝나도 남긴다. 아직 없다(오류).
-    #[arg(short = 'd', long)]
-    pub detach: bool,
     /// 끝나면 지운다. run에서만 된다(create에서는 오류).
     #[arg(long)]
     pub rm: bool,
