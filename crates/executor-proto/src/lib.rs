@@ -29,7 +29,7 @@
 //! 실행기는 [`VmSpec::control_socket`] 경로에 Unix 소켓을 만든다. sbx는 여기에 연결해
 //! `CONNECT <포트>\n`을 쓰고 `OK <아무 숫자>\n`을 받은 뒤부터 게스트 vsock 포트와의 바이트 스트림으로 쓴다
 //! (Firecracker와 Cloud Hypervisor의 vsock 방식과 같다). 게스트가 아직 그 포트를 듣지 않으면 실행기는 연결을 닫는다.
-//! 클라이언트 쪽은 [`vsock::connect`], 서버 쪽 읽기는 [`vsock::accept`]다.
+//! 클라이언트 쪽은 `vsock::connect`(unix), 서버 쪽 읽기는 [`vsock::accept`]다.
 //!
 //! sbx는 연결의 반쯤 닫기(`shutdown(SHUT_WR)`)를 쓰지 않는다. 끝은 연결 위의 메시지로 알리고, 다 쓰면 연결 전체를 닫는다.
 //! 그래서 한쪽이 EOF면 연결 전체를 닫는 vsock 구현(Firecracker가 그렇다)도 그대로 맞는다.

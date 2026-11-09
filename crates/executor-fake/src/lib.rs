@@ -1,7 +1,7 @@
 //! 테스트용 가짜 실행기. 두 가지로 쓴다.
 //!
 //! - [`FakeExecutor`]: 같은 프로세스 안의 `Executor` 구현. 실행 코어 단위 테스트용.
-//! - `sbx-fake-executor` 실행 파일([`process::main`]): `executor-proto` 규약을 그대로 말하는 외부 실행기.
+//! - `sbx-fake-executor` 실행 파일(unix에서 `process::main`): `executor-proto` 규약을 그대로 말하는 외부 실행기.
 //!   `executor-process` 어댑터와 CLI가 실제 실행기와 같은 경로로 동작하는지 검증한다.
 //!
 //! 둘 다 VM을 띄우지 않는다. 대신 채널 위치(제어 소켓)에 Unix 소켓을 열고, 규약의 vsock 방식
