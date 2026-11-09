@@ -440,7 +440,7 @@ fn install_guest_init_is_content_addressed_and_repairs_damage() {
     let a = m.install_guest_init(Arch::Aarch64, b"guest one").unwrap();
     assert_eq!(std::fs::read(&a).unwrap(), b"guest one");
     assert!(a.starts_with(root.join("guest")));
-    assert!(a.to_string_lossy().contains("/arm64/"));
+    assert!(a.components().any(|c| c.as_os_str() == "arm64"), "{a:?}");
     // 같은 내용이면 같은 경로, 다른 내용이면 다른 경로.
     assert_eq!(
         m.install_guest_init(Arch::Aarch64, b"guest one").unwrap(),

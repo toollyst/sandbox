@@ -34,10 +34,7 @@ fn with_refs<T>(
     f: impl FnOnce(&mut BTreeMap<String, ImageId>) -> T,
 ) -> Result<T, StoreError> {
     fs::create_dir_all(layout.root())?;
-    let lock = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(layout.cache_lock())?;
+    let lock = open_lock_file(&layout.cache_lock())?;
     lock.lock()?;
     let mut refs = Store::open(layout.root()).refs()?;
     let out = f(&mut refs);
@@ -248,11 +245,18 @@ pub fn remove_image(
     fs::remove_dir(&dir)
 }
 
+/// 잠금 파일을 연다(없으면 만든다). 읽기와 쓰기로 연다: Windows의 `LockFileEx`는 읽기나 쓰기 권한이 있는 핸들을
+/// 요구하고, 덧붙이기 전용 핸들(`append`)에는 쓰기 권한이 없어 "Access is denied"가 난다. 내용은 쓰지 않는다.
 fn open_lock_file(path: &Path) -> io::Result<File> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
-    OpenOptions::new().create(true).append(true).open(path)
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
 }
 
 /// 진행 중인 pull이 쓸 blob 목록. 살아 있는 동안 [`collect_blobs`]가 이 blob들을 지우지 않는다.

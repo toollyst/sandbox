@@ -29,7 +29,8 @@ jobs:
           sudo apt-get install -y erofs-utils e2fsprogs
           echo "SANDBOX_REQUIRE_FSCK_EROFS=1" >> "$GITHUB_ENV"
           echo "SANDBOX_REQUIRE_E2FSCK=1" >> "$GITHUB_ENV"
-      - run: cargo test --workspace --all-features
+      # 실패해도 다른 크레이트의 테스트를 계속 돌려 실패를 한 번에 다 본다.
+      - run: cargo test --workspace --all-features --no-fail-fast
       - run: cargo doc --workspace --no-deps --all-features
         env:
           RUSTDOCFLAGS: -D warnings

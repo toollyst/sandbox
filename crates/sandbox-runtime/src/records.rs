@@ -261,10 +261,13 @@ pub struct OwnerLock {
     _file: File,
 }
 
+/// 소유 잠금 파일. 읽기와 쓰기로 연다: Windows의 `LockFileEx`는 덧붙이기 전용 핸들을 거부한다("Access is denied").
 fn open_lock(paths: &Paths) -> io::Result<File> {
     OpenOptions::new()
+        .read(true)
+        .write(true)
         .create(true)
-        .append(true)
+        .truncate(false)
         .open(paths.owner_lock())
 }
 
