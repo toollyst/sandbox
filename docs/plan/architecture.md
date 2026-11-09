@@ -11,13 +11,13 @@
 | 상태와 전이 | `sandbox-model`의 `State::can_transition_to` |
 | 이미지 config와 호출자 값을 합치는 규칙 (Docker `run`) | `sandbox-runtime/src/process.rs` |
 | 실행기 기능 검사 (bind 미지원 시 오류 등) | `sandbox-runtime/src/validate.rs` |
-| 캐시 레이아웃, 잠금, 사용 중 보호 | `sandbox-store` |
+| 캐시 레이아웃, 잠금, 사용 중 보호, blob 정리 | `sandbox-store` |
 | 레이어 병합 규칙 (whiteout, opaque, 하드 링크) | `sandbox-rootfs/src/lib.rs` |
 | 이미지 참조 해석 | `sandbox-oci/src/reference.rs` |
 | OCI 적용 범위 (받는 형식, 적용하는 필드) | `sandbox-oci/src/scope.rs` |
 | CLI 명령 목록 | `sandbox-cli/src/commands.rs` (`sbx help`가 그대로 출력) |
 | CLI 동작 (`--pull`, `rmi` 보호, Docker와 다른 점) | `sandbox-cli/src/behavior.rs` |
-| 호스트-게스트 프레이밍과 신뢰 경계 | `sandbox-proto` |
+| 호스트-게스트 메시지 (연결 단위, 순서, 인코딩, 신뢰 경계) | `sandbox-proto` |
 
 ## 1. 원칙
 
@@ -85,6 +85,5 @@ OCI는 입력 형식이다. OCI 자료형은 `sandbox-oci` 밖으로 나가지 �
 ## 5. 아직 정하지 않은 것
 
 - 레이어를 병합할 때 파일 내용을 다시 읽을지 임시 저장할지 (`sandbox-rootfs`의 `ContentSource` 뒤에 숨겨 두었다)
-- 호스트-게스트 메시지 본문 인코딩과 메시지 종류 (`sandbox-proto`)
 - 네트워크 허용 방식과 그 CLI 표현 (`NetworkPolicy`에는 지금 `Disabled`만 있다)
 - 게스트 기반 이미지(커널, 게스트 init)의 배포 방식

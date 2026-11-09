@@ -19,14 +19,14 @@
 
 ## M2. 실행 경로 (Linux x64)
 
-| 단계 | 내용 | 끝났다는 기준 |
-|---|---|---|
-| 6 | 호스트-게스트 메시지 정의 | 프레이밍 위 인코딩, 버전 확인 |
-| 7 | 게스트 init: rootfs와 scratch를 overlay로 합침, exec, 파일 송수신 | 게스트 단독 테스트 |
-| 8 | 게스트 커널 빌드 (`xtask`), x86_64·aarch64 | erofs, overlay, vsock, virtio-blk를 켠 커널 |
-| 9 | Firecracker 어댑터 | 적합성 테스트를 fake와 함께 통과 |
-| 10 | 실행 코어: create, start, exec, cp, stop, rm (attached) | Linux CI에서 실제 VM으로 통과 |
-| 11 | CLI `run`, `create`, `start`, `exec`, `cp`, `stop`, `rm`, `ps`, `inspect` | `sbx run alpine echo hi`가 `hi`를 출력 |
+| 단계 | 내용 | 끝났다는 기준 | 상태 |
+|---|---|---|---|
+| 6 | 호스트-게스트 메시지 정의 | 프레이밍 위 인코딩, 버전 확인 | 완료 |
+| 7 | 게스트 init: rootfs와 scratch를 overlay로 합침, exec, 파일 송수신 | 게스트 단독 테스트 | |
+| 8 | 게스트 커널 빌드 (`xtask`), x86_64·aarch64 | erofs, overlay, vsock, virtio-blk를 켠 커널 | |
+| 9 | Firecracker 어댑터 | 적합성 테스트를 fake와 함께 통과 | |
+| 10 | 실행 코어: create, start, exec, cp, stop, rm (attached) | Linux CI에서 실제 VM으로 통과 | |
+| 11 | CLI `run`, `create`, `start`, `exec`, `cp`, `stop`, `rm`, `ps`, `inspect` | `sbx run alpine echo hi`가 `hi`를 출력 | |
 
 M2가 끝나면 성공 기준 1을 충족한다.
 
