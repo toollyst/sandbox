@@ -70,6 +70,8 @@ use records::{OwnerLock, Paths};
 
 /// 게스트가 연결을 받을 때까지 기다리는 시간.
 pub const START_TIMEOUT: Duration = Duration::from_secs(30);
+/// 시작할 때 소유 잠금을 얻으려고 기다리는 시간 (다른 프로세스가 잠깐 쥐는 경우).
+pub const OWN_WAIT: Duration = Duration::from_secs(1);
 /// 기본 프로세스가 끝난 뒤 VM이 스스로 꺼지기를 기다리는 시간. 넘으면 강제로 끝낸다.
 pub const VM_EXIT_GRACE: Duration = Duration::from_secs(10);
 /// VM이 먼저 끝났을 때 기본 프로세스의 종료 코드 (SIGKILL로 끝난 것과 같다).
@@ -432,8 +434,9 @@ impl Sandbox {
         let id = info.id.clone();
         let paths = rt.paths(&id);
         let control = rt.socket_path(&id)?;
-        let owner =
-            records::try_own(&paths)?.ok_or_else(|| RuntimeError::OwnedElsewhere(id.clone()))?;
+        // 기록이 실행 중이 아니므로 소유자는 없어야 한다. 잠깐 쥐는 쪽이 있을 수 있어 조금 기다린다.
+        let owner = records::own_within(&paths, OWN_WAIT)?
+            .ok_or_else(|| RuntimeError::OwnedElsewhere(id.clone()))?;
         let guest_init = rt.inner.config.guest_init.clone();
         if !guest_init.is_file() {
             return Err(RuntimeError::GuestInitMissing(guest_init));

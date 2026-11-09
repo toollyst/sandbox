@@ -268,6 +268,24 @@ pub fn try_own(paths: &Paths) -> Result<Option<OwnerLock>, RuntimeError> {
     }
 }
 
+/// `wait`까지 소유를 시도한다. 잠금은 잠깐씩 다른 쪽이 쥘 수 있다: 다른 프로세스가 [`is_owned`]로
+/// 확인하는 순간, 또는 fork한 자식이 exec 전까지 파일을 물려받은 동안. 그래서 한 번 실패로 판단하지 않는다.
+pub fn own_within(
+    paths: &Paths,
+    wait: std::time::Duration,
+) -> Result<Option<OwnerLock>, RuntimeError> {
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        if let Some(l) = try_own(paths)? {
+            return Ok(Some(l));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Ok(None);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
 /// 누가 소유하고 있는지.
 pub fn is_owned(paths: &Paths) -> Result<bool, RuntimeError> {
     Ok(try_own(paths)?.is_none())
