@@ -1,0 +1,194 @@
+//! 개발용 작업. `cargo xtask <명령>`으로 실행한다.
+//!
+//! - `check-deps`: 크레이트 사이 의존 규칙을 검사한다. 규칙은 [`RULES`]가 정본이다.
+
+use std::collections::BTreeSet;
+use std::path::Path;
+use std::process::{Command, ExitCode};
+
+/// 크레이트가 의존해도 되는 것.
+enum Allowed {
+    /// 이 workspace 크레이트들만. 외부 크레이트는 따로 제한하지 않는다.
+    Workspace(&'static [&'static str]),
+    /// 이 workspace 크레이트들만, 외부 크레이트도 금지 (게스트 바이너리 크기와 호환성 때문).
+    Strict(&'static [&'static str]),
+    /// 제한 없음. 구현체를 고르고 조립하는 바이너리.
+    Any,
+}
+
+/// 의존 규칙. 직접 의존과 간접 의존 모두에 적용한다.
+///
+/// - 실행(`sandbox-runtime`)과 관리(`sandbox-manage`)는 서로 의존하지 않는다.
+/// - 코어는 trait 크레이트에만 의존한다. 구현체(`sandbox-oci`, `executor-*`)를 고르는 것은 바이너리뿐이다.
+/// - `sandbox-proto`와 `sandbox-guest`는 외부 크레이트도 쓰지 않는다.
+const RULES: &[(&str, Allowed)] = &[
+    ("sandbox-model", Allowed::Workspace(&[])),
+    ("sandbox-proto", Allowed::Strict(&[])),
+    ("sandbox-executor", Allowed::Workspace(&["sandbox-model"])),
+    ("sandbox-image", Allowed::Workspace(&["sandbox-model"])),
+    ("sandbox-rootfs", Allowed::Workspace(&["sandbox-model"])),
+    ("sandbox-store", Allowed::Workspace(&["sandbox-model"])),
+    (
+        "sandbox-runtime",
+        Allowed::Workspace(&[
+            "sandbox-model",
+            "sandbox-proto",
+            "sandbox-executor",
+            "sandbox-store",
+        ]),
+    ),
+    (
+        "sandbox-manage",
+        Allowed::Workspace(&[
+            "sandbox-model",
+            "sandbox-image",
+            "sandbox-rootfs",
+            "sandbox-store",
+        ]),
+    ),
+    (
+        "sandbox-oci",
+        Allowed::Workspace(&["sandbox-model", "sandbox-image"]),
+    ),
+    (
+        "executor-fake",
+        Allowed::Workspace(&["sandbox-model", "sandbox-executor"]),
+    ),
+    (
+        "executor-firecracker",
+        Allowed::Workspace(&["sandbox-model", "sandbox-executor"]),
+    ),
+    ("sandbox-guest", Allowed::Strict(&["sandbox-proto"])),
+    (
+        "sandbox-shim",
+        Allowed::Workspace(&[
+            "sandbox-model",
+            "sandbox-proto",
+            "sandbox-executor",
+            "sandbox-store",
+            "sandbox-runtime",
+            "executor-firecracker",
+        ]),
+    ),
+    ("sandbox-cli", Allowed::Any),
+];
+
+/// 켜면 안 되는 feature: (크레이트, 의존 크레이트, feature).
+///
+/// 실행 쪽이 캐시 쓰기 API를 켜면 "실행은 캐시를 읽기만 한다"가 깨진다.
+const FORBIDDEN_FEATURES: &[(&str, &str, &str)] = &[
+    ("sandbox-runtime", "sandbox-store", "write"),
+    ("sandbox-shim", "sandbox-store", "write"),
+];
+
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
+        Some("check-deps") => match check_deps() {
+            Ok(()) => {
+                println!("check-deps: ok");
+                ExitCode::SUCCESS
+            }
+            Err(problems) => {
+                for p in problems {
+                    eprintln!("check-deps: {p}");
+                }
+                ExitCode::FAILURE
+            }
+        },
+        _ => {
+            eprintln!("usage: cargo xtask check-deps");
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn check_deps() -> Result<(), Vec<String>> {
+    let mut problems = Vec::new();
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask lives inside the workspace");
+
+    let rule_names: BTreeSet<&str> = RULES.iter().map(|(n, _)| *n).collect();
+    let crate_dirs: BTreeSet<String> = std::fs::read_dir(root.join("crates"))
+        .map_err(|e| vec![format!("cannot read crates/: {e}")])?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().join("Cargo.toml").is_file())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    for dir in &crate_dirs {
+        if !rule_names.contains(dir.as_str()) {
+            problems.push(format!("crates/{dir} has no rule in xtask RULES"));
+        }
+    }
+    for name in &rule_names {
+        if !crate_dirs.contains(*name) {
+            problems.push(format!("rule for {name} but crates/{name} does not exist"));
+        }
+    }
+
+    for (name, allowed) in RULES {
+        let deps = match tree(root, name, &["-e", "normal"]) {
+            Ok(lines) => lines
+                .iter()
+                .skip(1) // 첫 줄은 크레이트 자신이다.
+                .filter_map(|l| l.split_whitespace().next())
+                .map(str::to_owned)
+                .collect::<BTreeSet<_>>(),
+            Err(e) => {
+                problems.push(e);
+                continue;
+            }
+        };
+        for dep in &deps {
+            let is_workspace = rule_names.contains(dep.as_str());
+            let ok = match allowed {
+                Allowed::Any => true,
+                Allowed::Workspace(list) => !is_workspace || list.contains(&dep.as_str()),
+                Allowed::Strict(list) => list.contains(&dep.as_str()),
+            };
+            if !ok {
+                problems.push(format!("{name} must not depend on {dep}"));
+            }
+        }
+    }
+
+    for (name, dep, feature) in FORBIDDEN_FEATURES {
+        match tree(root, name, &["-e", "features"]) {
+            Ok(lines) => {
+                let needle = format!("{dep} feature \"{feature}\"");
+                if lines.iter().any(|l| l.starts_with(&needle)) {
+                    problems.push(format!("{name} must not enable {dep}/{feature}"));
+                }
+            }
+            Err(e) => problems.push(e),
+        }
+    }
+
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems)
+    }
+}
+
+/// `cargo tree -p <name> --prefix none`의 줄 목록. 그 크레이트만 빌드할 때의 의존과 feature가 나온다.
+fn tree(root: &Path, name: &str, extra: &[&str]) -> Result<Vec<String>, String> {
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let out = Command::new(cargo)
+        .current_dir(root)
+        .args(["tree", "-p", name, "--prefix", "none"])
+        .args(extra)
+        .output()
+        .map_err(|e| format!("cannot run cargo tree: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "cargo tree -p {name} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect())
+}
