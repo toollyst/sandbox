@@ -36,7 +36,8 @@
 //! 실행기가 띄운 VM은 다음을 지킨다. 게스트 init([`VmSpec::guest_init`])은 sbx가 준다.
 //!
 //! - 커널은 `guest_init`을 initrd로 받아 그 안의 `/init`을 PID 1로 실행한다. `root=`를 주지 않는다.
-//! - 커널 기능: virtio-blk, vsock(virtio), erofs, ext4(ext2 형식 포함), overlay, devtmpfs, proc, sysfs, tmpfs, devpts, 루프백 네트워크.
+//! - 커널 기능: virtio-blk, vsock(virtio), erofs, ext4(ext2 형식 포함), overlay, devtmpfs, proc, sysfs, tmpfs, devpts(Unix98 pty), 루프백 네트워크.
+//!   커널은 4.7 이상이어야 한다(`newinstance`로 마운트한 `/dev/pts`를 `/dev/ptmx`가 찾는다).
 //! - 디스크는 [`VmSpec::disks`] 순서대로 붙인다. 게스트에서 첫째가 `/dev/vda`(rootfs, 읽기 전용), 둘째가 `/dev/vdb`(scratch)다.
 //! - 커널 명령줄에 `sbx.hostname=<hostname>`과 `sbx.halt=poweroff|reboot`을 넣는다. `sbx.halt`는 그 VMM에서
 //!   게스트가 VM을 끝내는 방법이다(Firecracker처럼 재시작 요청을 VM 종료로 다루면 `reboot`).

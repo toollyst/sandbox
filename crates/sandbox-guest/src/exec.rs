@@ -11,10 +11,15 @@
 //!   읽는 쪽을 닫으므로 그 뒤 남은 자식이 쓰면 EPIPE를 받는다.
 //! - 호스트가 연결을 닫으면 프로세스를 SIGKILL로 끝낸다.
 //! - 끝난 프로세스에는 시그널을 보내지 않는다. PID가 재사용되어 다른 프로세스가 맞는 일을 막는다.
-//! - 터미널(`tty`)은 아직 지원하지 않는다. 요청하면 `InvalidArgument`다.
+//! - 터미널(`tty`): 의사 터미널을 열어 표준 입력, 출력, 오류를 모두 거기에 붙이고, 프로세스는 새 세션을 만들어
+//!   그 터미널을 제어 터미널로 삼는다. 출력은 하나로 합쳐져 `Stdout`으로만 간다(터미널이 바꾼 그대로, 예: `\n` → `\r\n`).
+//!   크기는 `size`(없으면 24x80)로 시작하고 `Resize`로 바꾼다. `stdin`이 아니면 받은 입력을 버린다.
+//!   `StdinClose`는 터미널에 EOF 문자(^D)를 쓴다(터미널에는 닫을 입력 파이프가 없다).
+//!   tty가 아니면 `Resize`는 무시한다.
 
+use std::fs::File;
 use std::io::{self, Read, Write};
-use std::os::fd::AsFd;
+use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::Path;
 use std::process::{ChildStdin, Command, Stdio};
@@ -23,7 +28,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use sandbox_proto::{CHUNK_LEN, Error, ErrorKind, Exec, ExitStatus, GuestMsg, HostMsg};
+use sandbox_proto::{CHUNK_LEN, Error, ErrorKind, Exec, ExitStatus, GuestMsg, HostMsg, WinSize};
 
 use crate::passwd;
 use crate::wire::{Out, io_error};
@@ -88,12 +93,6 @@ fn run_inner(
     let Some(program) = x.args.first() else {
         return Err(Error::new(ErrorKind::InvalidArgument, "empty argv"));
     };
-    if x.tty {
-        return Err(Error::new(
-            ErrorKind::InvalidArgument,
-            "tty is not supported yet",
-        ));
-    }
     if !x.cwd.starts_with('/') {
         return Err(Error::new(
             ErrorKind::InvalidArgument,
@@ -114,18 +113,35 @@ fn run_inner(
         .envs(x.env.iter().map(|(k, v)| (k, v)))
         .current_dir(&x.cwd)
         .uid(creds.uid)
-        .gid(creds.gid)
-        .stdin(if x.stdin {
+        .gid(creds.gid);
+    if !x.env.iter().any(|(k, _)| k == "HOME") {
+        cmd.env("HOME", &creds.home);
+    }
+    // 터미널이면 주 쪽을 쥐고, 종 쪽을 자식의 표준 입출력으로 준다.
+    let tty = if x.tty {
+        let size = x.size.unwrap_or(WinSize { rows: 24, cols: 80 });
+        let (master, slave) =
+            crate::sys::openpty(size.rows, size.cols).map_err(|e| io_error("openpty", &e))?;
+        let dup = |fd: &OwnedFd| fd.try_clone().map_err(|e| io_error("openpty", &e));
+        cmd.stdin(Stdio::from(dup(&slave)?))
+            .stdout(Stdio::from(dup(&slave)?))
+            .stderr(Stdio::from(slave));
+        crate::sys::controlling_tty_on_stdin(&mut cmd);
+        Some(File::from(master))
+    } else {
+        cmd.stdin(if x.stdin {
             Stdio::piped()
         } else {
             Stdio::null()
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if !x.env.iter().any(|(k, _)| k == "HOME") {
-        cmd.env("HOME", &creds.home);
-    }
-    let mut child = cmd.spawn().map_err(|e| match e.kind() {
+        None
+    };
+    let spawned = cmd.spawn();
+    // 부모가 쥔 종 쪽을 닫는다. 그래야 자식들이 모두 닫으면 주 쪽에서 끝을 본다.
+    drop(cmd);
+    let mut child = spawned.map_err(|e| match e.kind() {
         io::ErrorKind::NotFound => Error::new(
             ErrorKind::NotFound,
             format!("exec: {program:?}: executable file not found in $PATH"),
@@ -147,17 +163,35 @@ fn run_inner(
 
     // stop_output_at_exit가 아니면 끝을 알리지 않는다: 파이프가 닫힐 때까지 읽는다.
     let ended = Arc::new(Ended::default());
-    let pumps = [
-        child
-            .stdout
-            .take()
-            .map(|s| pump(s, out.clone(), GuestMsg::Stdout, ended.clone())),
-        child
-            .stderr
-            .take()
-            .map(|s| pump(s, out.clone(), GuestMsg::Stderr, ended.clone())),
-    ];
-    let stdin = child.stdin.take();
+    let (pumps, stdin) = match tty {
+        Some(master) => {
+            let writer = master.try_clone().map_err(|e| io_error("tty", &e))?;
+            let pump = pump(master, out.clone(), GuestMsg::Stdout, ended.clone());
+            (
+                [Some(pump), None],
+                Input::Tty {
+                    master: writer,
+                    forward: x.stdin,
+                },
+            )
+        }
+        None => (
+            [
+                child
+                    .stdout
+                    .take()
+                    .map(|s| pump(s, out.clone(), GuestMsg::Stdout, ended.clone())),
+                child
+                    .stderr
+                    .take()
+                    .map(|s| pump(s, out.clone(), GuestMsg::Stderr, ended.clone())),
+            ],
+            match child.stdin.take() {
+                Some(s) => Input::Pipe(s),
+                None => Input::None,
+            },
+        ),
+    };
     {
         let proc = proc.clone();
         thread::spawn(move || control(&mut input, stdin, &proc));
@@ -220,21 +254,58 @@ fn pump(
     })
 }
 
+/// 프로세스의 입력 쪽.
+enum Input {
+    /// 입력이 없음 (`/dev/null`).
+    None,
+    /// 입력 파이프. 닫으면 프로세스는 EOF를 본다.
+    Pipe(ChildStdin),
+    /// 터미널의 주 쪽. `forward`가 아니면 받은 입력을 버린다.
+    Tty { master: File, forward: bool },
+}
+
+impl Input {
+    fn write(&mut self, b: &[u8]) {
+        let failed = match self {
+            Input::None | Input::Tty { forward: false, .. } => false,
+            Input::Pipe(s) => s.write_all(b).is_err(),
+            Input::Tty { master, .. } => master.write_all(b).is_err(),
+        };
+        if failed {
+            // 프로세스가 입력을 닫았다. 이후 입력은 버린다.
+            *self = Input::None;
+        }
+    }
+
+    fn close(&mut self) {
+        match self {
+            Input::Pipe(_) => *self = Input::None,
+            // 터미널은 EOF 문자를 받으면 읽는 쪽에 끝을 알린다(정규 모드).
+            Input::Tty {
+                master,
+                forward: true,
+            } => {
+                let _ = master.write_all(&[0x04]);
+            }
+            Input::None | Input::Tty { .. } => {}
+        }
+    }
+
+    fn resize(&self, s: WinSize) {
+        if let Input::Tty { master, .. } = self {
+            let _ = crate::sys::set_winsize(master.as_fd(), s.rows, s.cols);
+        }
+    }
+}
+
 /// 호스트가 보내는 입력과 제어. 연결이 끊기면 프로세스를 끝낸다.
-fn control(input: &mut impl Read, mut stdin: Option<ChildStdin>, proc: &Proc) {
+fn control(input: &mut impl Read, mut stdin: Input, proc: &Proc) {
     loop {
         match HostMsg::read_from(input) {
-            Ok(HostMsg::Stdin(b)) => {
-                if let Some(s) = &mut stdin
-                    && s.write_all(&b).is_err()
-                {
-                    // 프로세스가 입력을 닫았다. 이후 입력은 버린다.
-                    stdin = None;
-                }
-            }
-            Ok(HostMsg::StdinClose) => stdin = None,
+            Ok(HostMsg::Stdin(b)) => stdin.write(&b),
+            Ok(HostMsg::StdinClose) => stdin.close(),
             Ok(HostMsg::Signal(n)) => proc.signal(n),
-            Ok(HostMsg::Resize(_)) => {}
+            Ok(HostMsg::Resize(s)) => stdin.resize(s),
             Ok(_) | Err(_) => {
                 proc.signal(libc::SIGKILL);
                 return;

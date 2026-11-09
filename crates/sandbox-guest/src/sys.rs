@@ -51,6 +51,69 @@ pub fn poll_readable(
     }
 }
 
+/// 의사 터미널 한 쌍 (주, 종)을 그 크기로 연다. 둘 다 exec할 때 닫히게(`FD_CLOEXEC`) 해 둔다.
+pub fn openpty(rows: u16, cols: u16) -> io::Result<(std::os::fd::OwnedFd, std::os::fd::OwnedFd)> {
+    use std::os::fd::{FromRawFd, OwnedFd};
+    let mut master: libc::c_int = -1;
+    let mut slave: libc::c_int = -1;
+    let mut ws = libc::winsize {
+        ws_row: rows,
+        ws_col: cols,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: 출력 인자는 살아 있는 지역 변수다. 이름 버퍼는 넘기지 않고(null), termios는 기본값(null)이다.
+    check(unsafe {
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut ws,
+        )
+    })?;
+    // SAFETY: openpty가 성공했으므로 둘 다 새로 열린, 이 프로세스만 가진 fd다.
+    let (master, slave) = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+    for fd in [&master, &slave] {
+        use std::os::fd::AsRawFd;
+        // SAFETY: fd는 열려 있다. F_SETFD는 fd 플래그만 바꾼다.
+        check(unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) })?;
+    }
+    Ok((master, slave))
+}
+
+/// 터미널 크기를 바꾼다. 그 터미널의 전경 프로세스 그룹은 SIGWINCH를 받는다.
+pub fn set_winsize(fd: std::os::fd::BorrowedFd<'_>, rows: u16, cols: u16) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let ws = libc::winsize {
+        ws_row: rows,
+        ws_col: cols,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: fd는 BorrowedFd라 열려 있고, TIOCSWINSZ는 winsize를 읽기만 한다.
+    // 요청 번호의 타입은 libc마다 달라 `as _`로 맞춘다.
+    check(unsafe { libc::ioctl(fd.as_raw_fd(), libc::TIOCSWINSZ as _, &ws) })
+}
+
+/// 자식이 새 세션을 만들고 표준 입력(터미널)을 제어 터미널로 삼게 한다. 표준 입출력은 이미 터미널이어야 한다.
+pub fn controlling_tty_on_stdin(cmd: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: 닫힘은 fork 뒤 exec 전에 자식에서 돈다. 그 안에서는 async-signal-safe 함수(setsid, ioctl)만 부르고
+    // 메모리를 할당하지 않는다. std는 이 닫힘보다 먼저 표준 입출력을 맞춰 둔다.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            if libc::ioctl(0, libc::TIOCSCTTY as _, 0) == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
 /// 자식 프로세스가 끝날 때까지 기다리되 거두지 않는다(`WNOWAIT`).
 ///
 /// 이것이 돌아온 뒤에도 PID는 아직 재사용되지 않는다. 그래서 그 사이에 보내는 시그널이

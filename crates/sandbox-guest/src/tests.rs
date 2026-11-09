@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use sandbox_proto::{
     Entry, ErrorKind, Exec, ExitStatus, FileKind, GuestMsg, HostMsg, Ident, PROTOCOL_VERSION, User,
+    WinSize,
 };
 
 use crate::server::{self, Ctx};
@@ -201,6 +202,72 @@ fn stop_output_at_exit_does_not_wait_for_children_holding_the_pipe() {
     let (len, _, took) = run(false);
     assert_eq!(len, 200000);
     assert!(took >= std::time::Duration::from_secs(2), "{took:?}");
+}
+
+/// 끝(Exited)까지 받는다. 출력은 모두 Stdout이어야 한다(tty).
+fn collect_tty(c: &mut UnixStream) -> (String, ExitStatus) {
+    let mut out = Vec::new();
+    loop {
+        match recv(c) {
+            GuestMsg::Stdout(b) => out.extend(b),
+            GuestMsg::Exited(s) => return (String::from_utf8_lossy(&out).into_owned(), s),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn exec_tty_gives_a_terminal_with_the_requested_size() {
+    let f = Fixture::new("tty");
+    let mut c = f.connect();
+    let mut x = f.exec(
+        &[
+            "sh",
+            "-c",
+            "test -t 0 && test -t 1 && test -t 2 && echo yes; stty size; echo err >&2",
+        ],
+        false,
+    );
+    x.tty = true;
+    x.size = Some(WinSize {
+        rows: 33,
+        cols: 101,
+    });
+    send(&mut c, HostMsg::Exec(x));
+    started(&mut c);
+    let (out, status) = collect_tty(&mut c);
+    assert_eq!(status, ExitStatus::Code(0));
+    // 터미널이 줄 끝을 \r\n으로 바꾸고, stderr도 같은 흐름으로 온다.
+    assert_eq!(out, "yes\r\n33 101\r\nerr\r\n");
+}
+
+#[test]
+fn exec_tty_input_resize_and_eof() {
+    let f = Fixture::new("ttyin");
+    let mut c = f.connect();
+    // 한 줄을 읽고, 크기가 바뀌기를 기다린 뒤 크기를 쓰고, EOF까지 읽는다.
+    let mut x = f.exec(
+        &[
+            "sh",
+            "-c",
+            "read line; echo got:$line; trap 'stty size; trap - WINCH' WINCH; \
+             while [ \"$(stty size)\" = '24 80' ]; do sleep 0.05; done; stty size; cat; echo done",
+        ],
+        true,
+    );
+    x.tty = true;
+    send(&mut c, HostMsg::Exec(x));
+    started(&mut c);
+    send(&mut c, HostMsg::Stdin(b"hello\n".to_vec()));
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    send(&mut c, HostMsg::Resize(WinSize { rows: 10, cols: 20 }));
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    send(&mut c, HostMsg::StdinClose);
+    let (out, status) = collect_tty(&mut c);
+    assert_eq!(status, ExitStatus::Code(0));
+    assert!(out.contains("got:hello\r\n"), "{out:?}");
+    assert!(out.contains("10 20\r\n"), "{out:?}");
+    assert!(out.ends_with("done\r\n"), "{out:?}");
 }
 
 #[test]
