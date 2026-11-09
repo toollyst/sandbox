@@ -8,12 +8,15 @@
 //! | rootfs writer | `sandbox-rootfs`의 erofs |
 //! | 실행기 | `--executor <실행 파일>`(`SBX_EXECUTOR`, 기본 PATH의 `sbx-executor`): `executor-proto` 규약을 말하는 외부 실행기 |
 //!
+//! | detached 소유 | `--shim <실행 파일>`(`SBX_SHIM`, 기본 sbx 옆의 `sbx-shim`, 없으면 PATH): `sandbox-shim` |
+//!
 //! 실행기 실행 파일은 VM을 띄우는 명령(`run`, `create`, `start`)에만 필요하다. 나머지는 떠 있는 VM에 규약대로 연결만 한다
 //! ([`executor_process::ConnectOnly`]).
 
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,6 +34,7 @@ use sandbox_model::{
 use sandbox_oci::{OciImageSource, Reference};
 use sandbox_rootfs::erofs::ErofsBuilder;
 use sandbox_runtime::{Runtime, RuntimeConfig, RuntimeError, SandboxInfo};
+use sandbox_shim::{LogReader, MAIN_LOG, ShimConfig, Stream};
 use sandbox_store::CacheLayout;
 
 use crate::attach::{self, attach};
@@ -135,10 +139,20 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
             Ok(0)
         }
         Command::Start {
-            attach: _,
+            attach,
             interactive,
             id,
-        } => ctx.start(*interactive, id).await,
+        } => {
+            if *attach || *interactive {
+                ctx.start(*interactive, id).await
+            } else {
+                let id = SandboxId::new(id)?;
+                ctx.start_detached(&id, false).await?;
+                println!("{id}");
+                Ok(0)
+            }
+        }
+        Command::Logs { follow, id } => ctx.logs(*follow, id).await,
         Command::Exec(a) => ctx.exec(a).await,
         Command::Cp { src, dst } => ctx.cp(src, dst).await,
         Command::Stop { time, ids } => ctx.stop(*time, ids).await,
@@ -154,6 +168,7 @@ struct Ctx {
     socket_dir: PathBuf,
     guest_init: Option<PathBuf>,
     executor: PathBuf,
+    shim: Option<PathBuf>,
     format: Format,
 }
 
@@ -178,6 +193,7 @@ impl Ctx {
                 .ok_or_else(|| msg("cannot determine a data directory; use --data-dir"))?,
             cache_dir,
             executor: cli.executor.clone(),
+            shim: cli.shim.clone(),
             format: cli.format,
         })
     }
@@ -204,16 +220,86 @@ impl Ctx {
             .join("initramfs"))
     }
 
+    fn runtime_config(&self) -> AppResult<RuntimeConfig> {
+        Ok(RuntimeConfig {
+            data_dir: self.data_dir.clone(),
+            cache_dir: self.cache_dir.clone(),
+            guest_init: self.guest_init()?,
+            socket_dir: self.socket_dir.clone(),
+        })
+    }
+
     fn runtime_with(&self, executor: Arc<dyn Executor>) -> AppResult<Runtime> {
-        Ok(Runtime::new(
-            RuntimeConfig {
-                data_dir: self.data_dir.clone(),
-                cache_dir: self.cache_dir.clone(),
-                guest_init: self.guest_init()?,
-                socket_dir: self.socket_dir.clone(),
-            },
-            executor,
-        )?)
+        Ok(Runtime::new(self.runtime_config()?, executor)?)
+    }
+
+    /// shim 실행 파일: `--shim`, 아니면 sbx 옆의 `sbx-shim`, 아니면 PATH의 `sbx-shim`.
+    fn shim_program(&self) -> PathBuf {
+        if let Some(p) = &self.shim {
+            return p.clone();
+        }
+        let name = format!("sbx-shim{}", std::env::consts::EXE_SUFFIX);
+        std::env::current_exe()
+            .ok()
+            .map(|exe| exe.with_file_name(&name))
+            .filter(|p| p.is_file())
+            .unwrap_or_else(|| PathBuf::from(name))
+    }
+
+    /// shim으로 시작한다(붙지 않는다). 시작이 끝나면 돌아온다.
+    async fn start_detached(&self, id: &SandboxId, remove_on_exit: bool) -> AppResult<()> {
+        // 실행기와 이미지를 먼저 확인한다(shim 안에서 실패하면 이유가 덜 분명하다).
+        let sandbox = self.launcher()?.get(id).await?;
+        let config = ShimConfig {
+            runtime: self.runtime_config()?,
+            executor: self.executor.clone(),
+            remove_on_exit,
+        };
+        sandbox_shim::start_detached(&self.shim_program(), &config, id, &sandbox.log_dir())
+            .await
+            .map_err(msg)
+    }
+
+    /// `logs`: shim이 남긴 기본 프로세스 출력을 순서대로 표준 출력과 표준 오류에 쓴다.
+    /// `-f`면 샌드박스가 실행 중인 동안 새 출력을 기다린다.
+    async fn logs(&self, follow: bool, id: &str) -> AppResult<u8> {
+        let rt = self.runtime()?;
+        let id = SandboxId::new(id)?;
+        let sandbox = rt.get(&id).await?;
+        let path = sandbox.log_dir().join(MAIN_LOG);
+        let mut reader = match LogReader::open(&path) {
+            Ok(r) => Some(r),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e.into()),
+        };
+        let (mut out, mut err) = (std::io::stdout(), std::io::stderr());
+        loop {
+            if let Some(r) = &mut reader {
+                while let Some((stream, data)) = r.next_record()? {
+                    let _ = match stream {
+                        Stream::Stdout => out.write_all(&data).and_then(|()| out.flush()),
+                        Stream::Stderr => err.write_all(&data).and_then(|()| err.flush()),
+                    };
+                }
+            }
+            if !follow || rt.get(&id).await?.state() != State::Running {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            if reader.is_none() {
+                reader = LogReader::open(&path).ok();
+            }
+        }
+        // 멈춘 뒤 남은 것까지 읽는다.
+        if follow && let Some(r) = &mut reader {
+            while let Some((stream, data)) = r.next_record()? {
+                let _ = match stream {
+                    Stream::Stdout => out.write_all(&data).and_then(|()| out.flush()),
+                    Stream::Stderr => err.write_all(&data).and_then(|()| err.flush()),
+                };
+            }
+        }
+        Ok(0)
     }
 
     /// VM을 띄우지 않는 일에 쓰는 실행 코어. 실행기 실행 파일을 실행하지 않는다.
@@ -501,7 +587,20 @@ impl Ctx {
     async fn run_sandbox(&self, attach_args: &AttachArgs, a: &RunArgs) -> AppResult<u8> {
         let fail = |e: Box<dyn Error>| failure(behavior::EXIT_RUN_FAILED, e);
         if attach_args.detach {
-            return Err(fail(msg("-d is not supported yet")));
+            if attach_args.interactive || attach_args.tty {
+                return Err(fail(msg("-d cannot be combined with -i or -t yet")));
+            }
+            let id = self.create(a).await.map_err(fail)?;
+            if let Err(e) = self.start_detached(&id, a.rm).await {
+                if a.rm
+                    && let Ok(s) = self.runtime()?.get(&id).await
+                {
+                    let _ = s.delete().await;
+                }
+                return Err(fail(e));
+            }
+            println!("{id}");
+            return Ok(0);
         }
         let io =
             attach::io_mode(attach_args.interactive, attach_args.tty).map_err(|e| fail(msg(e)))?;

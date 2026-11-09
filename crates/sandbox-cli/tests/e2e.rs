@@ -1,7 +1,8 @@
 //! `sbx` 실행 파일 끝-끝 테스트. 가짜 실행기로 VM 없이 CLI → 실행 코어 → 실행기 규약 → 게스트 처리를 모두 지난다.
 //!
-//! 이 테스트 실행 파일이 곧 가짜 실행기다: `sbx --executor <이 파일>`이 `<이 파일> capabilities|run`으로 부르면
-//! `executor_fake::process::main`을 돈다. 그래서 다른 패키지의 실행 파일을 빌드할 필요가 없다(`harness = false`).
+//! 이 테스트 실행 파일이 곧 가짜 실행기이자 shim이다: `sbx --executor <이 파일>`이 `<이 파일> capabilities|run`으로
+//! 부르면 `executor_fake::process::main`을, `sbx --shim <이 파일>`이 `<이 파일> start ...`로 부르면
+//! `sandbox_shim::main`을 돈다. 그래서 다른 패키지의 실행 파일을 빌드할 필요가 없다(`harness = false`).
 //!
 //! 가짜 실행기의 게스트 처리는 호스트에서 지금 사용자로 돈다. 그래서 이미지의 사용자는 지금 사용자이고,
 //! 게스트 경로는 호스트 경로다. 실제 VM 검증은 실행기(fc-fork) 쪽 E2E가 맡는다.
@@ -16,6 +17,9 @@ fn main() -> ExitCode {
     ) {
         #[cfg(unix)]
         return executor_fake::process::main();
+    }
+    if args.get(1).map(String::as_str) == Some(sandbox_shim::config::START) {
+        return sandbox_shim::main();
     }
     #[cfg(unix)]
     {
@@ -72,6 +76,11 @@ mod unix {
             "run_failures_before_the_command_are_125",
             run_failures_before_the_command_are_125,
         ),
+        (
+            "detached_run_outlives_sbx_and_keeps_logs",
+            detached_run_outlives_sbx_and_keeps_logs,
+        ),
+        ("detached_rm_and_logs_follow", detached_rm_and_logs_follow),
     ];
 
     /// 인자: 이름 일부(걸러 내기). `--`로 시작하는 인자(cargo test가 넘기는 것)는 무시한다.
@@ -172,6 +181,7 @@ mod unix {
                 .env("SBX_SOCKET_DIR", self.root.join("s"))
                 .env("SBX_GUEST_INIT", self.root.join("initramfs"))
                 .env("SBX_EXECUTOR", std::env::current_exe().unwrap())
+                .env("SBX_SHIM", std::env::current_exe().unwrap())
                 .stdin(Stdio::null());
             c
         }
@@ -321,7 +331,7 @@ mod unix {
         );
 
         // 다시 시작할 수 있다(Docker와 같다).
-        assert_eq!(e.sbx(&["start", &id]).status.code(), Some(3));
+        assert_eq!(e.sbx(&["start", "-a", &id]).status.code(), Some(3));
 
         let o = e.sbx(&["rm", &id]);
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
@@ -441,7 +451,7 @@ mod unix {
         assert_eq!(o.status.code(), Some(125));
         assert!(text(&o.stderr).contains("not a TTY"), "{}", text(&o.stderr));
         assert_eq!(
-            e.sbx(&["run", "-d", IMAGE, "true"]).status.code(),
+            e.sbx(&["run", "-d", "-i", IMAGE, "true"]).status.code(),
             Some(125)
         );
         assert_eq!(
@@ -458,5 +468,106 @@ mod unix {
         assert_eq!(o.status.code(), Some(125));
         assert!(text(&o.stderr).contains("boom"), "{}", text(&o.stderr));
         assert!(e.ps().is_empty());
+    }
+
+    /// `logs` 출력이 기대한 것이 될 때까지 기다린다(shim은 시작을 알린 뒤 출력을 적는다).
+    fn wait_logs(e: &Env, id: &str, stdout: &str, stderr: &str) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let o = e.sbx(&["logs", id]);
+            assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+            if text(&o.stdout) == stdout && text(&o.stderr) == stderr {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "logs: {:?} / {:?}",
+                text(&o.stdout),
+                text(&o.stderr)
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    fn state_of(e: &Env, id: &str) -> Option<serde_json::Value> {
+        e.ps().into_iter().find(|s| s["id"] == id)
+    }
+
+    fn wait_state(e: &Env, id: &str, state: &str) -> serde_json::Value {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Some(s) = state_of(e, id).filter(|s| s["state"] == state) {
+                return s;
+            }
+            assert!(Instant::now() < deadline, "{id} is not {state}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    fn detached_run_outlives_sbx_and_keeps_logs() {
+        let e = Env::new();
+        let o = e.sbx(&[
+            "run",
+            "-d",
+            IMAGE,
+            "sh",
+            "-c",
+            "echo started; echo e >&2; sleep 60",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let id = text(&o.stdout).trim().to_owned();
+        // sbx는 끝났지만 샌드박스는 실행 중이다(shim이 소유한다).
+        assert_eq!(state_of(&e, &id).unwrap()["state"], "running");
+        wait_logs(&e, &id, "started\n", "e\n");
+        let o = e.sbx(&["exec", &id, "echo", "inside"]);
+        assert_eq!(text(&o.stdout), "inside\n");
+
+        let o = e.sbx(&["stop", &id]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(state_of(&e, &id).unwrap()["exit_code"], 137);
+        // 멈춘 뒤에도 로그는 남는다.
+        wait_logs(&e, &id, "started\n", "e\n");
+
+        // start는 Docker처럼 붙지 않고 시작한다. 로그는 이어 쓴다.
+        let o = e.sbx(&["start", &id]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout).trim(), id);
+        assert_eq!(state_of(&e, &id).unwrap()["state"], "running");
+        wait_logs(&e, &id, "started\nstarted\n", "e\ne\n");
+        assert_eq!(e.sbx(&["rm", "-f", &id]).status.code(), Some(0));
+        assert!(state_of(&e, &id).is_none());
+    }
+
+    fn detached_rm_and_logs_follow() {
+        let e = Env::new();
+        // -f는 샌드박스가 멈출 때까지 따라간다.
+        let o = e.sbx(&["run", "-d", IMAGE, "sh", "-c", "echo a; sleep 1; echo b"]);
+        let id = text(&o.stdout).trim().to_owned();
+        let o = e.sbx(&["logs", "-f", &id]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "a\nb\n");
+        assert_eq!(wait_state(&e, &id, "stopped")["exit_code"], 0);
+
+        // --rm: 끝나면 shim이 지운다.
+        let o = e.sbx(&["run", "-d", "--rm", IMAGE, "sh", "-c", "exit 0"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let id = text(&o.stdout).trim().to_owned();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while state_of(&e, &id).is_some() {
+            assert!(Instant::now() < deadline, "{id} was not removed");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        // 시작에 실패하면 그 이유로 125, --rm이면 남지 않는다.
+        let o = e.sbx(&["run", "-d", "--rm", IMAGE, "no-such-command-xyz"]);
+        assert_eq!(o.status.code(), Some(125), "{}", text(&o.stderr));
+        assert!(
+            text(&o.stderr).contains("executable file not found"),
+            "{}",
+            text(&o.stderr)
+        );
+        let failed =
+            |s: &serde_json::Value| s["spec"]["process"]["args"][0] == "no-such-command-xyz";
+        assert!(!e.ps().iter().any(failed), "{:?}", e.ps());
     }
 }

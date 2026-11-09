@@ -20,9 +20,10 @@ sandbox-store.workspace = true
 sandbox-proto.workspace = true
 clap.workspace = true
 crossterm.workspace = true
-tokio = { workspace = true, features = ["signal"] }
+tokio = { workspace = true, features = ["signal", "time"] }
 serde_json.workspace = true
 sandbox-runtime.workspace = true
+sandbox-shim.workspace = true
 sandbox-manage.workspace = true
 sandbox-oci.workspace = true
 sandbox-rootfs = { workspace = true, features = ["erofs"] }

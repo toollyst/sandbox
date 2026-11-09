@@ -63,7 +63,11 @@ pub const COMMANDS: &[Command] = &[
         "샌드박스를 만들고 시작한다 (--pull=missing이 기본)",
     ),
     cmd("create", Group::Run, "샌드박스를 만든다"),
-    cmd("start", Group::Run, "샌드박스를 시작한다"),
+    cmd(
+        "start",
+        Group::Run,
+        "샌드박스를 시작한다 (-a는 붙어서 끝날 때까지 기다린다)",
+    ),
     cmd(
         "exec",
         Group::Run,
@@ -82,6 +86,11 @@ pub const COMMANDS: &[Command] = &[
     ),
     cmd("ps", Group::Run, "샌드박스 목록을 보여준다"),
     cmd("inspect", Group::Run, "샌드박스 설정과 상태를 보여준다"),
+    cmd(
+        "logs",
+        Group::Run,
+        "detached로 시작한 샌드박스의 기본 프로세스 출력을 보여준다",
+    ),
 ];
 
 /// 이름으로 찾는다.

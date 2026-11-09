@@ -345,9 +345,14 @@ pub const DOCKER_DIFFERENCES: &[(&str, &str, &str)] = &[
         "CLI가 Docker를 기준으로 한다",
     ),
     (
-        "run -d, start (붙지 않고 시작)",
-        "아직 없다 (-d는 오류). start는 언제나 `start -a`처럼 붙어서 기본 프로세스가 끝날 때까지 기다린다",
-        "VM이 띄운 프로세스에 묶인다(attached 수명). 프로세스와 상관없이 사는 VM은 로드맵 M3",
+        "run -d, start",
+        "Docker와 같다. 붙지 않고 시작한 샌드박스는 데몬 대신 샌드박스마다 shim 프로세스(`sbx-shim`)가 소유한다",
+        "데몬이 없다. VM은 시작한 프로세스가 소유한다",
+    ),
+    (
+        "logs",
+        "붙지 않고(run -d, start) 시작했을 때만 남는다. 붙어서 실행한 출력은 sbx가 바로 보여주고 남기지 않는다",
+        "출력을 받아 적을 데몬이 없다. 적는 것은 shim이다",
     ),
     (
         "create -t",

@@ -42,6 +42,9 @@ pub struct Cli {
         env = "SBX_EXECUTOR"
     )]
     pub executor: PathBuf,
+    /// detached 샌드박스를 소유할 shim 실행 파일. 기본은 sbx 옆의 `sbx-shim`, 없으면 PATH의 `sbx-shim`.
+    #[arg(long, global = true, env = "SBX_SHIM")]
+    pub shim: Option<PathBuf>,
     /// 출력 형식.
     #[arg(long, global = true, value_enum, default_value_t = Format::Text)]
     pub format: Format,
@@ -94,10 +97,10 @@ pub enum Command {
     Create(RunArgs),
     #[command(about = about("start"))]
     Start {
-        /// 붙어서 출력을 받는다. 지금은 언제나 붙는다(Docker와 다른 점 참고). Docker와 같은 옵션으로 받아 둔다.
+        /// 붙어서 출력을 받고 기본 프로세스가 끝날 때까지 기다린다. 없으면 shim으로 시작하고 ID를 출력한다.
         #[arg(short = 'a', long)]
         attach: bool,
-        /// 표준 입력을 연다.
+        /// 표준 입력을 연다 (붙는다).
         #[arg(short = 'i', long)]
         interactive: bool,
         /// 샌드박스 ID.
@@ -138,6 +141,14 @@ pub enum Command {
     },
     #[command(about = about("inspect"))]
     Inspect {
+        /// 샌드박스 ID.
+        id: String,
+    },
+    #[command(about = about("logs"))]
+    Logs {
+        /// 샌드박스가 멈출 때까지 새 출력을 계속 보여준다.
+        #[arg(short, long)]
+        follow: bool,
         /// 샌드박스 ID.
         id: String,
     },

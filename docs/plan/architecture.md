@@ -31,7 +31,7 @@
   - 관리(`sandbox-manage`): 이미지 받기, rootfs 준비, 삭제. cache_dir에 쓰는 것은 관리뿐이다.
   - 실행(`sandbox-runtime`): 샌드박스 생명주기. 캐시는 읽기만 하고 data_dir만 쓴다.
   - Docker처럼 `run`이 이미지를 받아오는 동작은 CLI가 관리와 실행을 차례로 불러서 만든다.
-- 수명은 attached(호출 프로세스와 함께 끝남)와 detached(남음)를 모두 지원한다. detached는 데몬 없이 샌드박스마다 `sandbox-shim`을 하나씩 띄운다.
+- 수명은 attached(호출 프로세스와 함께 끝남)와 detached(남음)를 모두 지원하고, Docker처럼 시작할 때 고른다. detached는 데몬 없이 샌드박스마다 `sandbox-shim`을 하나씩 띄운다.
 - data_dir과 cache_dir은 설정으로 받는다. 같은 경로를 주면 공유되고, 다른 경로를 주면 따로 쓴다.
 - 폴더 공유는 bind(실시간, 실행기가 지원할 때만)와 copy(복사 후 명시적 회수)를 둘 다 두고 호출자가 고른다.
 - rootfs 형식은 인터페이스 하나 뒤에 여러 개를 붙인다. 하나씩 구현하며 첫 번째는 erofs다. 빌더는 Rust로 직접 구현한다.
@@ -53,7 +53,7 @@ crates/
   sandbox-runtime       실행 코어
   sandbox-manage        관리 코어
   sandbox-guest         게스트 init (바이너리)
-  sandbox-shim          detached 감시 프로세스 (바이너리)
+  sandbox-shim          detached 소유 프로세스 (라이브러리 + sbx-shim 바이너리)
   sandbox-cli           sbx (바이너리)
 xtask/                  check-deps 등 개발용 작업
 docs/                   기획과 로드맵만

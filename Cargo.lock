@@ -1317,6 +1317,7 @@ dependencies = [
  "sandbox-proto",
  "sandbox-rootfs",
  "sandbox-runtime",
+ "sandbox-shim",
  "sandbox-store",
  "serde_json",
  "tokio",
@@ -1407,9 +1408,8 @@ dependencies = [
  "executor-process",
  "sandbox-executor",
  "sandbox-model",
- "sandbox-proto",
  "sandbox-runtime",
- "sandbox-store",
+ "tokio",
 ]
 
 [[package]]
