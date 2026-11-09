@@ -45,6 +45,9 @@ pub struct StateRecord {
     /// 게스트 연결 소켓 (실행 중일 때).
     #[serde(default)]
     pub control: Option<PathBuf>,
+    /// 게스트 안 나가는 연결 프록시의 포트 (실행 중이고 네트워크를 허용했을 때).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub egress_port: Option<u16>,
 }
 
 impl StateRecord {
@@ -56,6 +59,7 @@ impl StateRecord {
             pid: None,
             exit_code: None,
             control: None,
+            egress_port: None,
         }
     }
 }
@@ -215,6 +219,7 @@ pub fn read(paths: &Paths) -> Result<Option<(SandboxSpec, StateRecord)>, Runtime
             pid: None,
             exit_code: state.exit_code,
             control: None,
+            egress_port: None,
         };
     }
     Ok(Some((spec, state)))

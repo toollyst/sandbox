@@ -484,3 +484,107 @@ fn bind_mount_is_shared_live() {
         b"from guest\n"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn network_allow_list_is_enforced_through_the_guest_proxy() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::{TcpListener, TcpStream};
+
+    // 목적지: 받은 첫 줄을 그대로 돌려주는 서버.
+    let server = TcpListener::bind("127.0.0.1:0").unwrap();
+    let allowed = server.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for mut c in server.incoming().flatten() {
+            let mut line = String::new();
+            BufReader::new(c.try_clone().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            let _ = c.write_all(format!("echo:{line}").as_bytes());
+        }
+    });
+
+    let e = Env::new("egress");
+    e.prepare_image();
+    let mut spec = e.spec(&["sh", "-c", "sleep 30"]);
+    spec.network = NetworkPolicy::Allow(vec![format!("127.0.0.1:{allowed}").parse().unwrap()]);
+    let s = block_on(e.rt.create(spec)).unwrap();
+    let _main = block_on(s.start(IoMode::default())).unwrap();
+    let port = e.state(&s).egress_port.expect("egress port");
+
+    // 프로세스는 프록시 환경 변수를 받는다.
+    let p = block_on(s.exec(exec(&["sh", "-c", "printf %s \"$HTTPS_PROXY $NO_PROXY\""]))).unwrap();
+    let mut p = p;
+    let mut out = Vec::new();
+    while let Some(o) = block_on(p.next()) {
+        if let Output::Stdout(b) = o {
+            out.extend(b);
+        }
+    }
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        format!("http://127.0.0.1:{port} localhost,127.0.0.1,::1")
+    );
+
+    // fake 게스트는 호스트에서 돌므로 테스트가 곧 게스트 안의 클라이언트다.
+    let proxy = || TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let head = |c: &mut TcpStream| {
+        let mut r = BufReader::new(c.try_clone().unwrap());
+        let mut status = String::new();
+        r.read_line(&mut status).unwrap();
+        loop {
+            let mut l = String::new();
+            r.read_line(&mut l).unwrap();
+            if l == "\r\n" || l.is_empty() {
+                break;
+            }
+        }
+        (status, r)
+    };
+
+    // CONNECT: 허용.
+    let mut c = proxy();
+    write!(c, "CONNECT 127.0.0.1:{allowed} HTTP/1.1\r\n\r\n").unwrap();
+    let (status, mut r) = head(&mut c);
+    assert!(status.starts_with("HTTP/1.1 200"), "{status}");
+    c.write_all(b"ping\n").unwrap();
+    let mut reply = String::new();
+    r.read_line(&mut reply).unwrap();
+    assert_eq!(reply, "echo:ping\n");
+
+    // 목록에 없는 포트: 403과 이유.
+    let mut c = proxy();
+    write!(
+        c,
+        "CONNECT 127.0.0.1:{} HTTP/1.1\r\n\r\n",
+        allowed.wrapping_add(1)
+    )
+    .unwrap();
+    let (status, mut r) = head(&mut c);
+    assert!(status.starts_with("HTTP/1.1 403"), "{status}");
+    let mut body = String::new();
+    r.read_to_string(&mut body).unwrap();
+    assert!(body.contains("not allowed"), "{body}");
+
+    // 평문 HTTP 절대 형식: 요청을 그대로 목적지로 보낸다.
+    let mut c = proxy();
+    write!(
+        c,
+        "GET http://127.0.0.1:{allowed}/x HTTP/1.1\r\nHost: a\r\n\r\n"
+    )
+    .unwrap();
+    let mut reply = String::new();
+    BufReader::new(c).read_line(&mut reply).unwrap();
+    assert_eq!(
+        reply,
+        format!("echo:GET http://127.0.0.1:{allowed}/x HTTP/1.1\r\n")
+    );
+
+    // 연결을 여러 번 써도 맡긴 연결이 다시 채워진다.
+    for _ in 0..(egress::POOL * 2) {
+        let mut c = proxy();
+        write!(c, "CONNECT 127.0.0.1:{allowed} HTTP/1.1\r\n\r\n").unwrap();
+        assert!(head(&mut c).0.starts_with("HTTP/1.1 200"));
+    }
+    block_on(s.stop(Duration::from_secs(5))).unwrap();
+}

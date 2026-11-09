@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use std::time::Duration;
 
-use sandbox_model::{ImageId, ParseError, RootfsFormat, SandboxId};
+use sandbox_model::{AllowRule, ImageId, NetworkPolicy, ParseError, RootfsFormat, SandboxId};
 use sandbox_proto::ErrorKind;
 
 /// `run`과 `create`의 `--pull`. Docker와 같은 값과 같은 기본값(`missing`)이다.
@@ -188,6 +188,31 @@ pub const FORWARDED_SIGNALS: &[(&str, i32)] = &[
 /// 이 프로세스가 소유한 VM은 기다리지 않고 바로 끝낸다.
 pub const RM_FORCE_WAIT: Duration = Duration::from_secs(10);
 
+/// `--network`와 `--allow`로 네트워크 정책을 정한다.
+///
+/// | `--network` | `--allow` | 결과 |
+/// |---|---|---|
+/// | `none` | 없음 | 차단 |
+/// | `none` | 있음 | 오류 (`--allow`는 `--network allow`와 함께) |
+/// | `allow` | 있음 | 그 목록만 허용 |
+/// | `allow` | 없음 | 오류 (허용할 것이 없다) |
+/// | 그 밖 | | 오류 |
+pub fn network_policy(mode: &str, allow: &[String]) -> Result<NetworkPolicy, String> {
+    match (mode, allow.is_empty()) {
+        ("none", true) => Ok(NetworkPolicy::Disabled),
+        ("none", false) => Err("--allow requires --network allow".into()),
+        ("allow", true) => Err("--network allow needs at least one --allow HOST:PORT".into()),
+        ("allow", false) => allow
+            .iter()
+            .map(|r| r.parse::<AllowRule>().map_err(|e| e.to_string()))
+            .collect::<Result<Vec<_>, _>>()
+            .map(NetworkPolicy::Allow),
+        (other, _) => Err(format!(
+            "--network {other} is not supported (none or allow)"
+        )),
+    }
+}
+
 /// 이미지 이름이 무엇으로 맞았는지.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImageMatch {
@@ -300,9 +325,9 @@ pub fn rmi_action(m: &ImageMatch, ref_count: usize, force: bool) -> RmiAction {
 /// Docker와 다른 점: (항목, 이 프로젝트의 동작, 이유).
 pub const DOCKER_DIFFERENCES: &[(&str, &str, &str)] = &[
     (
-        "--network 기본값",
-        "none (Docker는 bridge). 지금은 none만 받는다",
-        "기획서 원칙: 네트워크는 기본 차단, 허용한 것만 연다",
+        "--network",
+        "none(기본, Docker는 bridge)과 allow만 있다. allow는 --allow 목록의 HOST:PORT로 가는 TCP만 게스트 안 HTTP 프록시(HTTP_PROXY 등)를 거쳐 호스트가 연다. VM에는 네트워크 장치가 없다",
+        "기획서 원칙: 네트워크는 기본 차단, 허용한 것만 연다. 이름 단위 허용 목록을 실행기 기능 없이 모든 OS에서 강제한다",
     ),
     (
         "--cpus, --memory 기본값",
@@ -409,6 +434,23 @@ mod tests {
                 "{policy:?} image={image} rootfs={rootfs}"
             );
         }
+    }
+
+    #[test]
+    fn network_policy_table() {
+        let v = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(network_policy("none", &[]), Ok(NetworkPolicy::Disabled));
+        assert!(network_policy("none", &v(&["a.com:443"])).is_err());
+        assert!(network_policy("allow", &[]).is_err());
+        assert!(network_policy("bridge", &[]).is_err());
+        assert!(network_policy("allow", &v(&["a.com"])).is_err());
+        assert_eq!(
+            network_policy("allow", &v(&["A.com:443", "*.b.org:*"])),
+            Ok(NetworkPolicy::Allow(vec![
+                "a.com:443".parse().unwrap(),
+                "*.b.org:*".parse().unwrap()
+            ]))
+        );
     }
 
     #[test]

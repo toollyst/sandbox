@@ -28,8 +28,8 @@ use sandbox_executor::Executor;
 use sandbox_image::Platform;
 use sandbox_manage::Manager;
 use sandbox_model::{
-    Arch, ExecSpec, ImageId, NetworkPolicy, ProcessOverrides, Resources, RootfsFormat, SandboxId,
-    SandboxSpec, State, UserSpec,
+    Arch, ExecSpec, ImageId, ProcessOverrides, Resources, RootfsFormat, SandboxId, SandboxSpec,
+    State, UserSpec,
 };
 use sandbox_oci::{OciImageSource, Reference};
 use sandbox_rootfs::erofs::ErofsBuilder;
@@ -489,12 +489,7 @@ impl Ctx {
 
     /// `run`과 `create`: 옵션을 먼저 모두 해석하고, [`behavior::create_steps`] 순서로 코어를 부른다.
     async fn create(&self, a: &RunArgs) -> AppResult<SandboxId> {
-        if a.network != "none" {
-            return Err(msg(format!(
-                "--network {} is not supported yet (only none)",
-                a.network
-            )));
-        }
+        let network = behavior::network_policy(&a.network, &a.allow)?;
         let user = a.user.as_deref().map(str::parse::<UserSpec>).transpose()?;
         let overrides = ProcessOverrides {
             entrypoint: a.entrypoint.as_ref().map(|e| {
@@ -570,7 +565,7 @@ impl Ctx {
                         process,
                         resources,
                         mounts: mounts.clone(),
-                        network: NetworkPolicy::Disabled,
+                        network: network.clone(),
                         hostname: a.hostname.clone(),
                         labels: labels.clone(),
                     };

@@ -190,6 +190,24 @@ impl Guest {
         }
     }
 
+    /// 게스트 안의 나가는 연결 프록시를 띄우고 그 포트를 받는다.
+    pub fn egress_listen(&self) -> Result<u16, RuntimeError> {
+        let mut c = self.open()?;
+        send(&mut *c, &HostMsg::EgressListen)?;
+        match recv(&mut *c)? {
+            GuestMsg::Listening { port } => Ok(port),
+            GuestMsg::Error(e) => Err(RuntimeError::Guest(e)),
+            other => Err(proto_err(format!("expected Listening, got {other:?}"))),
+        }
+    }
+
+    /// 연결 하나를 나가는 연결용으로 맡긴다. 게스트가 쓸 때 `Connect`가 온다.
+    pub fn egress_slot(&self) -> Result<Box<dyn GuestConn>, RuntimeError> {
+        let mut c = self.open()?;
+        send(&mut *c, &HostMsg::EgressSlot)?;
+        Ok(c)
+    }
+
     /// 게스트에 종료를 요청한다. `Done`을 받으면 돌아온다.
     pub fn shutdown(&self) -> Result<(), RuntimeError> {
         let mut c = self.open()?;

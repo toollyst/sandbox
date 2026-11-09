@@ -34,7 +34,7 @@
 //!
 //! 모든 블로킹 입출력은 별도 스레드에서 한다([`sandbox_model::blocking`]). 특정 비동기 런타임에 의존하지 않는다.
 //!
-//! **층**: `lib` → `client` → `hostfs`, `records` → `process`, `validate`, `cpplan`, `chan` → `error`.
+//! **층**: `lib` → `egress` → `client` → `hostfs`, `records` → `process`, `validate`, `cpplan`, `chan` → `error`.
 //!
 //! - 의존: `sandbox-model`, `sandbox-proto`, `sandbox-executor`, `sandbox-store`(읽기)
 
@@ -46,7 +46,8 @@ use std::time::Duration;
 
 use sandbox_executor::{ChannelSpec, Disk, DiskRole, Executor, GuestConn, VmConfig, VmHandle};
 use sandbox_model::{
-    ExecSpec, Ident, MountKind, ProcessDefaults, SandboxId, SandboxSpec, State, UserSpec, blocking,
+    ExecSpec, Ident, MountKind, NetworkPolicy, ProcessDefaults, SandboxId, SandboxSpec, State,
+    UserSpec, blocking,
 };
 use sandbox_proto::{ExitStatus, GuestMsg, HostMsg, WinSize};
 use sandbox_store::{LeaseError, RootfsLease, Store};
@@ -54,6 +55,7 @@ use sandbox_store::{LeaseError, RootfsLease, Store};
 mod chan;
 mod client;
 pub mod cpplan;
+pub mod egress;
 mod error;
 mod hostfs;
 pub mod process;
@@ -133,6 +135,8 @@ pub struct SandboxInfo {
     pub exit_code: Option<i32>,
     /// 게스트 연결 소켓 (실행 중일 때).
     pub control: Option<PathBuf>,
+    /// 게스트 안 나가는 연결 프록시의 포트 (실행 중이고 네트워크를 허용했을 때).
+    pub egress_port: Option<u16>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -234,6 +238,7 @@ impl Runtime {
                 error: state.error,
                 exit_code: state.exit_code,
                 control: state.control,
+                egress_port: state.egress_port,
             }),
         )
     }
@@ -271,6 +276,7 @@ impl Runtime {
             pid: None,
             exit_code,
             control: None,
+            egress_port: None,
         };
         let _ = records::write_state(&self.paths(id), &state);
         // 상태를 쓴 뒤에 잠금을 놓는다. 그래야 다른 프로세스가 "소유자 사라짐"으로 잘못 보지 않는다.
@@ -473,8 +479,9 @@ impl Sandbox {
             .map_err(|e| record_failure(e.into()))?;
 
         let guest = rt.guest(&control);
-        let main = to_proto_exec(&spec.process, io, true);
+        let mut main = to_proto_exec(&spec.process, io, true);
         let mounts = spec.mounts.clone();
+        let network = spec.network.clone();
         let (vm, started) = blocking(move || {
             let mut vm = vm;
             let r = (|| {
@@ -502,7 +509,17 @@ impl Sandbox {
                         }
                     }
                 }
-                guest.exec(main)
+                // 나가는 연결: 프록시를 띄우고, 맡길 연결을 돌리고, 기본 프로세스에 프록시 환경 변수를 준다.
+                let egress_port = match network {
+                    NetworkPolicy::Disabled => None,
+                    NetworkPolicy::Allow(rules) => {
+                        let port = guest.egress_listen()?;
+                        egress::start(guest.clone(), rules);
+                        process::add_proxy_env(&mut main.env, port);
+                        Some(port)
+                    }
+                };
+                guest.exec(main).map(|(c, pid)| (c, pid, egress_port))
             })();
             if r.is_err() {
                 let _ = vm.kill();
@@ -510,7 +527,7 @@ impl Sandbox {
             (vm, r)
         })
         .await;
-        let (conn, pid) = started.map_err(record_failure)?;
+        let (conn, pid, egress_port) = started.map_err(record_failure)?;
 
         let state = StateRecord {
             state: State::Running,
@@ -518,6 +535,7 @@ impl Sandbox {
             pid: vm.pid(),
             exit_code: None,
             control: Some(control.clone()),
+            egress_port,
         };
         records::write_state(&paths, &state)?;
         lock(&rt.inner.owned).insert(
@@ -553,7 +571,10 @@ impl Sandbox {
             tty: io.tty.or(spec.tty.then_some(TtySize::GUEST_DEFAULT)),
             ..io
         };
-        let x = to_proto_exec(&p, io, false);
+        let mut x = to_proto_exec(&p, io, false);
+        if let Some(port) = info.egress_port {
+            process::add_proxy_env(&mut x.env, port);
+        }
         let (conn, pid) = blocking(move || guest.exec(x)).await?;
         Ok(Process::spawn(conn, pid, None))
     }

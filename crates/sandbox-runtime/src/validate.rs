@@ -12,9 +12,10 @@
 //! | 요청 | 결과 |
 //! |---|---|
 //! | `MountKind::Copy` + `readonly` | [`RuntimeError::Invalid`] (복사본이라 읽기 전용을 강제할 수 없다) |
+//! | `NetworkPolicy::Allow`에 규칙이 없음 | [`RuntimeError::Invalid`] (차단이면 `Disabled`다) |
 
 use sandbox_executor::Capabilities;
-use sandbox_model::{MountKind, SandboxSpec};
+use sandbox_model::{MountKind, NetworkPolicy, SandboxSpec};
 
 use crate::error::RuntimeError;
 
@@ -43,6 +44,11 @@ pub fn check(spec: &SandboxSpec, caps: &Capabilities) -> Result<(), RuntimeError
             "copy mount to {} cannot be read-only",
             m.destination
         )));
+    }
+    if spec.network == NetworkPolicy::Allow(Vec::new()) {
+        return Err(RuntimeError::Invalid(
+            "network allow list is empty (use the disabled policy to block everything)".into(),
+        ));
     }
     Ok(())
 }

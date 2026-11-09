@@ -34,6 +34,9 @@
 - 수명은 attached(호출 프로세스와 함께 끝남)와 detached(남음)를 모두 지원하고, Docker처럼 시작할 때 고른다. detached는 데몬 없이 샌드박스마다 `sandbox-shim`을 하나씩 띄운다.
 - data_dir과 cache_dir은 설정으로 받는다. 같은 경로를 주면 공유되고, 다른 경로를 주면 따로 쓴다.
 - 폴더 공유는 bind(실시간, 실행기가 지원할 때만)와 copy(복사 후 명시적 회수)를 둘 다 두고 호출자가 고른다.
+- 네트워크는 기본 차단이다. VM에는 네트워크 장치를 붙이지 않는다. 허용은 호출자가 준 `HOST:PORT` 목록이고,
+  게스트 안 HTTP 프록시가 받은 TCP 연결을 VM 소유 프로세스가 목록을 확인한 뒤 대신 연다(실행기 기능이 필요 없다).
+  UDP와 프록시를 따르지 않는 프로그램은 나가지 못한다. 규칙은 `sandbox-model`의 `AllowRule`, 강제는 `sandbox-runtime`의 `egress`.
 - rootfs 형식은 인터페이스 하나 뒤에 여러 개를 붙인다. 하나씩 구현하며 첫 번째는 erofs다. 빌더는 Rust로 직접 구현한다.
 - 구현 언어는 Rust다. 지금 노출하는 것은 CLI `sbx`뿐이고 언어 바인딩은 나중에 붙인다. 코어와 CLI는 별도 크레이트다.
 
@@ -95,5 +98,4 @@ OCI는 입력 형식이다. OCI 자료형은 `sandbox-oci` 밖으로 나가지 �
 ## 5. 아직 정하지 않은 것
 
 - 레이어를 병합할 때 파일 내용을 다시 읽을지 임시 저장할지 (`sandbox-rootfs`의 `ContentSource` 뒤에 숨겨 두었다)
-- 네트워크 허용 방식과 그 CLI 표현 (`NetworkPolicy`에는 지금 `Disabled`만 있다)
 - 게스트 기반 이미지(커널, 게스트 init)의 배포 방식

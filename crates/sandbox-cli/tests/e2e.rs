@@ -82,6 +82,7 @@ mod unix {
         ),
         ("detached_rm_and_logs_follow", detached_rm_and_logs_follow),
         ("volume_is_shared_live", volume_is_shared_live),
+        ("network_allow_list", network_allow_list),
     ];
 
     /// 인자: 이름 일부(걸러 내기). `--`로 시작하는 인자(cargo test가 넘기는 것)는 무시한다.
@@ -295,6 +296,72 @@ mod unix {
         ]);
         assert_eq!(o.status.code(), Some(6), "{}", text(&o.stderr));
         assert_eq!(text(&o.stdout), "tty\r\n");
+    }
+
+    fn network_allow_list() {
+        use std::io::{BufRead, BufReader};
+        // 목적지: 아무 요청에나 "hi"로 답하는 HTTP 서버.
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = server.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for c in server.incoming().flatten() {
+                let mut r = BufReader::new(c.try_clone().unwrap());
+                let mut line = String::new();
+                while r.read_line(&mut line).is_ok_and(|n| n > 2) {
+                    line.clear();
+                }
+                let mut c = c;
+                let _ = c.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi",
+                );
+            }
+        });
+        let e = Env::new();
+        let allow = format!("127.0.0.1:{port}");
+        // fake 게스트는 호스트에서 돌므로 직접 연결도 된다. 프록시를 거치게 -x와 --noproxy ''로 강제한다.
+        let script = format!(
+            "curl -s -x \"$HTTP_PROXY\" --noproxy '' http://127.0.0.1:{port}/; echo; \
+             curl -s -p -x \"$HTTP_PROXY\" --noproxy '' http://127.0.0.1:{port}/; echo; \
+             curl -s -o /dev/null -w '%{{http_code}}' -x \"$HTTP_PROXY\" --noproxy '' http://127.0.0.1:{}/",
+            port.wrapping_add(1)
+        );
+        let o = e.sbx(&[
+            "run",
+            "--rm",
+            "--network",
+            "allow",
+            "--allow",
+            &allow,
+            IMAGE,
+            "sh",
+            "-c",
+            &script,
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "hi\nhi\n403");
+
+        assert_eq!(
+            e.sbx(&["run", "--rm", "--allow", &allow, IMAGE, "true"])
+                .status
+                .code(),
+            Some(125)
+        );
+        assert_eq!(
+            e.sbx(&["run", "--rm", "--network", "allow", IMAGE, "true"])
+                .status
+                .code(),
+            Some(125)
+        );
+        // 차단(기본)이면 프록시 환경 변수가 없다.
+        let o = e.sbx(&[
+            "run",
+            "--rm",
+            IMAGE,
+            "sh",
+            "-c",
+            "printf %s \"$HTTP_PROXY\"",
+        ]);
+        assert_eq!(text(&o.stdout), "");
     }
 
     fn volume_is_shared_live() {

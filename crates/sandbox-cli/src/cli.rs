@@ -210,9 +210,12 @@ pub struct RunArgs {
     /// `type=bind|copy,source=...,target=...[,readonly]`
     #[arg(long = "mount")]
     pub mounts: Vec<String>,
-    /// 네트워크. 지금은 none만.
+    /// 네트워크: none(차단) 또는 allow(--allow 목록만, 프록시로).
     #[arg(long, default_value = "none")]
     pub network: String,
+    /// `--network allow`에서 허용할 `HOST:PORT` (`*.example.com:443`, `10.0.0.5:*`, `[::1]:80`). 여러 번 준다.
+    #[arg(long = "allow")]
+    pub allow: Vec<String>,
     /// 이미지 참조 또는 ID.
     pub image: String,
     /// 실행할 명령과 인자.

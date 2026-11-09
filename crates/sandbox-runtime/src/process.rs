@@ -13,6 +13,8 @@
 //!
 //! `exec`([`for_exec`])도 Docker `exec`와 같다: argv는 호출자 값, env는 기본 프로세스 env에 호출자 값을 덮어쓰고,
 //! cwd와 user는 호출자 값이 없으면 기본 프로세스의 값이다.
+//!
+//! 네트워크를 허용한 샌드박스에서는 실행할 때 [`add_proxy_env`]가 프록시 환경 변수를 더한다(이미 있는 키는 두고).
 
 use sandbox_model::{ExecSpec, ImageConfig, ProcessDefaults, ProcessOverrides, UserSpec};
 
@@ -27,6 +29,33 @@ fn overlay_env(base: &mut Vec<(String, String)>, over: &[(String, String)]) {
             Some(slot) => slot.1 = value.clone(),
             None => base.push((key.clone(), value.clone())),
         }
+    }
+}
+
+/// 나가는 연결 프록시 환경 변수. `HTTP_PROXY`, `HTTPS_PROXY`(와 소문자)는 `http://127.0.0.1:<port>`,
+/// `NO_PROXY`(와 소문자)는 `localhost,127.0.0.1,::1`. 이미 있는 키는 바꾸지 않는다(호출자 값이 이긴다).
+pub const PROXY_KEYS: [&str; 6] = [
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "NO_PROXY",
+    "no_proxy",
+];
+
+/// 프록시 환경 변수를 더한다. 규칙은 [`PROXY_KEYS`].
+pub fn add_proxy_env(env: &mut Vec<(String, String)>, port: u16) {
+    let proxy = format!("http://127.0.0.1:{port}");
+    for key in PROXY_KEYS {
+        if env.iter().any(|(k, _)| k == key) {
+            continue;
+        }
+        let value = if key.eq_ignore_ascii_case("NO_PROXY") {
+            "localhost,127.0.0.1,::1".to_owned()
+        } else {
+            proxy.clone()
+        };
+        env.push((key.to_owned(), value));
     }
 }
 
