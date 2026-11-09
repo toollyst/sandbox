@@ -51,10 +51,10 @@ Linux KVM(upstream Firecracker)과 CI 자동 실행은 남았다.
 
 | 단계 | 내용 | 상태 |
 |---|---|---|
-| 16 | 실행기 저장소 규약과 `sbx executor install NAME[@VERSION]`, `search`, `repo` | 완료 (`executor-repo`: 정적 호스팅 가능한 `index.json` + `.tar.gz` 묶음, SHA-256 확인. file:// 저장소에서 실제 firecracker 묶음 설치 0.18초, 그 뒤 `run --rm alpine` 0.30초) |
+| 16 | 실행기 저장소 규약과 `sbx executor install NAME[@VERSION]`, `search`, `repo` | 완료 (`executor-repo`: 정적 호스팅 가능한 `index.json` + `.tar.gz` 묶음, SHA-256 확인. file:// 저장소에서 실제 firecracker 묶음 설치 0.18초) |
 | 17 | 공식 저장소 위치와 묶음 빌드(CI) | 남음: 호스팅 위치는 정하지 않았다(자기 서버, GitHub처럼 정적으로 둘 다 되게) |
 | 18 | 커널 | 완료: 보통 이미지는 실행기 묶음의 기본 리눅스 커널(아키텍처당 하나)로, 라벨 `io.github.toollyst.sandbox.kernel`로 커널을 알린 이미지는 그 커널로(실행기 규약 2의 `custom_kernel`). 실제 VM으로 확인. 기본 커널을 CI에서 빌드하는 것은 17과 함께 남음 |
-| 19 | README, 데모, 설치 한 줄, 벤치마크 | 남음 |
+| 19 | README, 데모, 설치 한 줄, 벤치마크 | 벤치마크 완료(`cargo xtask bench`. macOS arm64 HVF: `run --rm alpine true` p50 121ms, `exec` p50 8ms, 10개 동시 0.50초). README, 데모, 설치 한 줄은 남음 |
 | 20 | Linux KVM(upstream Firecracker) 끝-끝과 CI | 남음 |
 
 ## 그 뒤
