@@ -224,7 +224,7 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "usage: cargo xtask check-deps\n       cargo xtask guest-initramfs --arch <x86_64|aarch64> [--binary <file>] [--out <file>]\n       cargo xtask dist [--target <triple>]\n       cargo xtask kernel --arch <x86_64|aarch64> [--out <file>]\n       cargo xtask smoke [--sbx <file>] [--no-internet]\n       cargo xtask repo-add --repo <dir> --bundle <dir> --name <name> --version <version> [--os <os>] [--description <text>]\n       cargo xtask bench [--sbx <file>] [--image <ref>] [--runs <n>] [--parallel <k>]"
+                "usage: cargo xtask check-deps\n       cargo xtask guest-initramfs --arch <x86_64|aarch64> [--binary <file>] [--out <file>]\n       cargo xtask dist [--target <triple>]\n       cargo xtask kernel --arch <x86_64|aarch64> [--out <file>]\n       cargo xtask smoke [--sbx <file>] [--no-internet]\n       cargo xtask repo-add --repo <dir> --bundle <dir> --name <name> --version <version> [--os <os>] [--capabilities <file>] [--url <prefix>] [--description <text>]\n       cargo xtask bench [--sbx <file>] [--image <ref>] [--runs <n>] [--parallel <k>]"
             );
             ExitCode::from(2)
         }

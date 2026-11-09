@@ -57,7 +57,22 @@ Run the benchmark on your own machine: `cargo xtask bench` (see [`xtask/src/benc
 
 ## Quick start
 
-### 1. Build `sbx`
+### Install
+
+```sh
+curl -fsSL https://toollyst.github.io/sandbox/install.sh | sh
+```
+
+This puts `sbx` and `sbx-shim` in `~/.local/bin` (checked against their SHA-256) and installs the `firecracker`
+executor (VMM, adapter, and guest kernel) from the official executor repository. It needs Linux x86_64/aarch64 with
+`/dev/kvm`, or an Apple Silicon Mac. Nothing runs as root. Set `SBX_VERSION`, `SBX_INSTALL_DIR`, or
+`SBX_NO_EXECUTOR=1` to change what it does; the script is [short](install.sh).
+
+> The installer works from the first release on. Until then, build from source.
+
+Then skip to [Run things](#run-things).
+
+### Or build from source
 
 You need Rust (stable) and, for the guest init, the `*-unknown-linux-musl` target of your machine's architecture.
 
@@ -68,13 +83,10 @@ cargo xtask dist        # builds target/release/sbx and target/release/sbx-shim 
 export PATH="$PWD/target/release:$PATH"
 ```
 
-### 2. Install an executor
-
 An executor bundle holds three things: the adapter (`sbx-executor`), the VMM (`firecracker`), and a guest kernel.
 
 ```sh
-# from an executor repository (any static URL; see "Executors")
-sbx executor repo add main https://example.com/sbx/executors
+# from the official repository (built in), or any other static one (see "Executors")
 sbx executor install firecracker
 
 # or from a local bundle directory or .tar.gz
@@ -96,7 +108,7 @@ sbx executor install --from bundle firecracker@local
 cargo xtask smoke                          # 16 checks on a real VM
 ```
 
-### 3. Run things
+### Run things
 
 ```sh
 sbx run --rm alpine echo hello                       # attached, removed afterwards
@@ -225,8 +237,9 @@ Korean.
 ## Status
 
 Pre-release. Done: the full Docker-style lifecycle, images, the egress allow list, the executor protocol v2 and
-repositories, image-provided kernels, and the macOS/HVF end to end. Next: published bundles and kernels (CI), Linux/KVM
-end to end in CI, and the one-line installer. See the [roadmap](docs/roadmap.md).
+repositories, image-provided kernels, the macOS/HVF end to end, and the release pipeline (static Linux binaries,
+executor bundles with a CI-built kernel, the official repository, and the installer). Next: the first release and
+Linux/KVM end to end in CI. See the [roadmap](docs/roadmap.md).
 
 ## License
 

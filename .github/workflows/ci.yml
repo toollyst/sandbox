@@ -34,6 +34,8 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
       - run: cargo xtask check-deps
+      - if: runner.os == 'Linux'
+        run: shellcheck install.sh
       # 게스트 init initramfs. 두 아키텍처 모두 어느 호스트에서나 rust-lld로 링크된다.
       # 호스트 아키텍처의 것을 내장한 sbx로 e2e를 다시 돌리고(내장한 init을 캐시로 꺼내는지), 배포 빌드를 만든다.
       - if: runner.os == 'Linux'
@@ -119,6 +121,15 @@ jobs:
           target/release/sbx executor repo add ci "file://$PWD/executors"
           target/release/sbx executor install firecracker
       - if: steps.kvm.outputs.ok == 'true'
+        name: install.sh (from a local copy of the release files)
+        run: |
+          d="sbx-linux-$ARCH"
+          mkdir -p "rel/$d"
+          cp target/release/sbx target/release/sbx-shim "rel/$d/"
+          tar -czf "rel/$d.tar.gz" -C rel "$d"
+          (cd rel && sha256sum "$d.tar.gz" > "$d.tar.gz.sha256")
+          SBX_DOWNLOAD_URL="file://$PWD/rel" SBX_INSTALL_DIR="$RUNNER_TEMP/bin" sh install.sh
+      - if: steps.kvm.outputs.ok == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: executors-linux-${{ matrix.arch }}
@@ -126,5 +137,5 @@ jobs:
       - if: steps.kvm.outputs.ok == 'true'
         name: smoke and bench
         run: |
-          cargo xtask smoke
+          cargo xtask smoke --sbx "$RUNNER_TEMP/bin/sbx"
           { echo "### $ARCH, Firecracker $FIRECRACKER (KVM)"; cargo xtask bench --runs 20 --parallel 8; } >> "$GITHUB_STEP_SUMMARY"

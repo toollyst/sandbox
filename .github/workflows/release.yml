@@ -1,0 +1,235 @@
+# 릴리스: 태그 `v<버전>`(작업 공간 버전과 같아야 한다)을 push하면
+#
+# 1. sbx: Linux x86_64/aarch64(musl 정적)와 macOS arm64의 `sbx-<os>-<arch>.tar.gz`(+ `.sha256`)
+# 2. 실행기 묶음 `firecracker@<버전>`: 어댑터 + Firecracker + `cargo xtask kernel`로 만든 기본 커널.
+#    Linux는 upstream Firecracker(`FIRECRACKER`)로 만들고, KVM이 있는 러너에서 smoke를 통과해야 올린다.
+#    macOS는 저장소 변수 `FC_FORK_TAG`가 있을 때만 toollyst/firecracker 릴리스로 만든다.
+# 3. GitHub Release에 1과 2의 파일을 올리고, gh-pages 브랜치의 실행기 저장소(`executors/index.json`)에
+#    `cargo xtask repo-add --url <Release 주소>`로 더한다. `install.sh`도 gh-pages 맨 위에 둔다.
+#    (저장소 설정의 Pages 소스를 gh-pages 브랜치로 해 두어야 https://toollyst.github.io/sandbox/ 로 보인다.)
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  FIRECRACKER: v1.17.0
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          want=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "sandbox-cli") | .version')
+          [ "${GITHUB_REF_NAME}" = "v$want" ] || { echo "::error::tag ${GITHUB_REF_NAME} does not match the workspace version $want"; exit 1; }
+          echo "version=$want" >> "$GITHUB_OUTPUT"
+
+  kernel:
+    needs: version
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-latest, arch: x86_64 }
+          - { os: ubuntu-24.04-arm, arch: aarch64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: target/kernel/${{ matrix.arch }}/kernel
+          key: kernel-${{ matrix.arch }}-${{ hashFiles('xtask/kernel/*', 'xtask/src/kernel.rs') }}
+      - run: '[ -f "target/kernel/${{ matrix.arch }}/kernel" ] || cargo xtask kernel --arch ${{ matrix.arch }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ matrix.arch }}
+          path: target/kernel/${{ matrix.arch }}/kernel
+
+  sbx:
+    needs: version
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-latest, platform: linux-x86_64, target: x86_64-unknown-linux-musl }
+          - { os: ubuntu-24.04-arm, platform: linux-aarch64, target: aarch64-unknown-linux-musl }
+          - { os: macos-14, platform: darwin-aarch64, target: '' }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: build
+        run: |
+          arch=$(uname -m | sed s/arm64/aarch64/)
+          rustup target add "$arch-unknown-linux-musl"
+          if [ -n "${{ matrix.target }}" ]; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
+            cargo xtask dist --target "${{ matrix.target }}"
+            out="target/${{ matrix.target }}/release"
+          else
+            cargo xtask dist
+            out=target/release
+          fi
+          d="sbx-${{ matrix.platform }}"
+          mkdir -p "dist/$d"
+          cp "$out/sbx" "$out/sbx-shim" LICENSE-APACHE LICENSE-MIT README.md "dist/$d/"
+          "dist/$d/sbx" --version
+          tar -czf "dist/$d.tar.gz" -C dist "$d"
+          (cd dist && shasum -a 256 "$d.tar.gz" > "$d.tar.gz.sha256" && cat "$d.tar.gz.sha256")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbx-${{ matrix.platform }}
+          path: dist/sbx-${{ matrix.platform }}.tar.gz*
+
+  executor-linux:
+    needs: [version, kernel, sbx]
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-latest, arch: x86_64, require_kvm: true }
+          - { os: ubuntu-24.04-arm, arch: aarch64, require_kvm: false }
+    runs-on: ${{ matrix.os }}
+    env:
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: kernel-${{ matrix.arch }}
+          path: kernel
+      - uses: actions/download-artifact@v4
+        with:
+          name: sbx-linux-${{ matrix.arch }}
+          path: dist
+      - name: bundle
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
+          rustup target add "$ARCH-unknown-linux-musl"
+          cargo build --release -p executor-firecracker --target "$ARCH-unknown-linux-musl"
+          mkdir -p fc bundle && cd fc
+          base="https://github.com/firecracker-microvm/firecracker/releases/download/$FIRECRACKER"
+          curl -fsSLO "$base/firecracker-$FIRECRACKER-$ARCH.tgz"
+          curl -fsSLO "$base/firecracker-$FIRECRACKER-$ARCH.tgz.sha256.txt"
+          sha256sum -c "firecracker-$FIRECRACKER-$ARCH.tgz.sha256.txt"
+          tar xzf "firecracker-$FIRECRACKER-$ARCH.tgz"
+          cd ..
+          cp "fc/release-$FIRECRACKER-$ARCH/firecracker-$FIRECRACKER-$ARCH" bundle/firecracker
+          cp "target/$ARCH-unknown-linux-musl/release/sbx-executor-firecracker" bundle/sbx-executor
+          cp kernel/kernel bundle/kernel
+          bundle/sbx-executor capabilities | tee capabilities.json
+          tar -czf bundle.tar.gz -C bundle .
+      - id: kvm
+        run: |
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+            sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          elif [ "${{ matrix.require_kvm }}" = true ]; then
+            echo "::error::/dev/kvm is missing"; exit 1
+          else
+            echo "::notice::/dev/kvm is missing; publishing the $ARCH bundle without a real-VM run"
+          fi
+      - if: steps.kvm.outputs.ok == 'true'
+        name: smoke (the released sbx with this bundle)
+        run: |
+          tar xzf "dist/sbx-linux-$ARCH.tar.gz" -C dist
+          export PATH="$PWD/dist/sbx-linux-$ARCH:$PATH"
+          sbx executor install --from bundle firecracker@release
+          cargo xtask smoke --sbx "$PWD/dist/sbx-linux-$ARCH/sbx"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: executor-linux-${{ matrix.arch }}
+          path: |
+            bundle.tar.gz
+            capabilities.json
+
+  executor-darwin:
+    needs: [version, kernel]
+    if: vars.FC_FORK_TAG != ''
+    runs-on: macos-14
+    env:
+      FC: ${{ vars.FC_FORK_TAG }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: kernel-aarch64
+          path: kernel
+      - name: bundle (toollyst/firecracker release; macOS runners cannot run HVF guests, so no smoke here)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cargo build --release -p executor-firecracker
+          mkdir -p fc bundle && cd fc
+          name="firecracker-$FC-darwin-aarch64"
+          gh release download "$FC" --repo toollyst/firecracker --pattern "$name.tgz" --pattern "$name.tgz.sha256.txt"
+          shasum -a 256 -c "$name.tgz.sha256.txt"
+          tar xzf "$name.tgz"
+          cd ..
+          cp "fc/release-$FC-darwin-aarch64/$name" bundle/firecracker
+          cp target/release/sbx-executor-firecracker bundle/sbx-executor
+          cp kernel/kernel bundle/kernel
+          bundle/sbx-executor capabilities | tee capabilities.json
+          tar -czf bundle.tar.gz -C bundle .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: executor-darwin-aarch64
+          path: |
+            bundle.tar.gz
+            capabilities.json
+
+  publish:
+    needs: [version, sbx, executor-linux, executor-darwin]
+    if: >-
+      !cancelled() && needs.sbx.result == 'success' && needs.executor-linux.result == 'success' &&
+      (needs.executor-darwin.result == 'success' || needs.executor-darwin.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: release
+        run: |
+          gh release create "$GITHUB_REF_NAME" --title "sbx $VERSION" --generate-notes \
+            artifacts/sbx-*/sbx-*.tar.gz artifacts/sbx-*/sbx-*.tar.gz.sha256
+      - name: executor repository (gh-pages)
+        run: |
+          if git fetch origin gh-pages:gh-pages 2>/dev/null; then
+            git worktree add pages gh-pages
+          else
+            git worktree add --detach pages
+            (cd pages && git checkout --orphan gh-pages && git rm -rfq .)
+          fi
+          url="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME"
+          for a in artifacts/executor-*; do
+            p=${a#artifacts/executor-}
+            mkdir -p "b/$p" && tar xzf "$a/bundle.tar.gz" -C "b/$p"
+            cargo xtask repo-add --repo pages/executors --bundle "b/$p" --name firecracker --version "$VERSION" \
+              --os "${p%%-*}" --capabilities "$a/capabilities.json" --url "$url" \
+              --description "Firecracker microVMs (adapter, VMM, and default guest kernel)"
+          done
+          gh release upload "$GITHUB_REF_NAME" pages/executors/firecracker/"$VERSION"/*.tar.gz
+          rm -rf pages/executors/firecracker
+          cp install.sh pages/install.sh
+          touch pages/.nojekyll
+          cd pages
+          git add -A
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -qm "release $GITHUB_REF_NAME"
+          git push origin gh-pages

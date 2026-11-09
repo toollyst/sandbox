@@ -1,13 +1,18 @@
 //! `repo-add`: 실행기 묶음 디렉터리를 실행기 저장소(정적 디렉터리)에 더한다. 형식은 `executor-repo` 크레이트 문서다.
 //!
 //! ```text
-//! cargo xtask repo-add --repo <디렉터리> --bundle <디렉터리> --name <이름> --version <버전> [--os <os>] [--description <글>]
+//! cargo xtask repo-add --repo <디렉터리> --bundle <디렉터리> --name <이름> --version <버전>
+//!     [--os <os>] [--capabilities <파일>] [--url <접두사>] [--description <글>]
 //! ```
 //!
 //! - 묶음의 `sbx-executor capabilities`를 돌려 규약 버전(`protocol`)과 아키텍처(`architecture`)를 읽는다.
+//!   여기서 돌릴 수 없는 묶음(다른 OS, 아키텍처)은 그 호스트에서 저장해 둔 출력을 `--capabilities`로 준다.
 //!   `--os`의 기본은 이 호스트 OS(OCI 이름: `linux`, `darwin`)다.
 //! - 압축 파일 `<이름>/<버전>/<이름>-<버전>-<os>-<arch>.tar.gz`를 만들고(맨 위 디렉터리 `<이름>-<버전>/`),
 //!   크기와 SHA-256을 재서 `index.json`에 적는다. URL은 저장소 기준 상대 경로다. 없으면 `index.json`을 만든다.
+//! - `--url <접두사>`: 압축 파일을 다른 곳(예: GitHub Releases)에 올릴 때. URL은 `<접두사>/<파일 이름>`이 되고,
+//!   파일은 여전히 저장소 디렉터리의 같은 자리에 만든다(그것을 올린다). 파일 이름에 이름, 버전, 플랫폼이 다 있어
+//!   한 곳에 모아도 겹치지 않는다.
 //! - 같은 이름, 버전, 플랫폼이 이미 있으면 거부한다(올린 파일은 바꾸지 않는다).
 //!
 //! 그 디렉터리를 그대로 어디든(GitHub Pages, S3, 웹 서버) 올리면 저장소다.
@@ -25,6 +30,8 @@ struct Options {
     name: String,
     version: String,
     os: String,
+    capabilities: Option<PathBuf>,
+    url: Option<String>,
     description: Option<String>,
 }
 
@@ -38,6 +45,7 @@ fn host_os() -> &'static str {
 fn parse(args: &[String]) -> Result<Options, String> {
     let (mut repo, mut bundle, mut name, mut version, mut os, mut description) =
         (None, None, None, None, None, None);
+    let (mut capabilities, mut url) = (None, None);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut v = || it.next().cloned().ok_or(format!("{a} needs a value"));
@@ -48,6 +56,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--version" => version = Some(v()?),
             "--os" => os = Some(v()?),
             "--description" => description = Some(v()?),
+            "--capabilities" => capabilities = Some(PathBuf::from(v()?)),
+            "--url" => url = Some(v()?),
             other => return Err(format!("unknown argument {other}")),
         }
     }
@@ -68,26 +78,36 @@ fn parse(args: &[String]) -> Result<Options, String> {
         name,
         version,
         os: os.unwrap_or_else(|| host_os().into()),
+        capabilities,
+        url,
         description,
     })
 }
 
-/// 묶음의 `capabilities`: (규약 버전, OCI 아키텍처 이름).
-fn capabilities(bundle: &Path) -> Result<(u64, String), String> {
-    let exe = bundle.join(format!("sbx-executor{}", std::env::consts::EXE_SUFFIX));
-    let out = Command::new(&exe)
-        .arg("capabilities")
-        .output()
-        .map_err(|e| format!("cannot run {}: {e}", exe.display()))?;
-    if !out.status.success() {
-        return Err(format!(
-            "{} capabilities failed: {}",
-            exe.display(),
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
-    }
-    let caps: Value = serde_json::from_slice(&out.stdout)
-        .map_err(|e| format!("{} capabilities: {e}", exe.display()))?;
+/// 묶음의 `capabilities`(또는 저장해 둔 그 출력): (규약 버전, OCI 아키텍처 이름).
+fn capabilities(bundle: &Path, saved: Option<&Path>) -> Result<(u64, String), String> {
+    let (what, stdout) = match saved {
+        Some(f) => (
+            f.display().to_string(),
+            std::fs::read(f).map_err(|e| format!("{}: {e}", f.display()))?,
+        ),
+        None => {
+            let exe = bundle.join(format!("sbx-executor{}", std::env::consts::EXE_SUFFIX));
+            let out = Command::new(&exe)
+                .arg("capabilities")
+                .output()
+                .map_err(|e| format!("cannot run {}: {e}", exe.display()))?;
+            if !out.status.success() {
+                return Err(format!(
+                    "{} capabilities failed: {}",
+                    exe.display(),
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ));
+            }
+            (format!("{} capabilities", exe.display()), out.stdout)
+        }
+    };
+    let caps: Value = serde_json::from_slice(&stdout).map_err(|e| format!("{what}: {e}"))?;
     let version = caps["version"]
         .as_u64()
         .ok_or("capabilities has no version")?;
@@ -113,13 +133,18 @@ fn archive(dir: &Path, top: &str) -> Result<Vec<u8>, String> {
 /// 더하고 압축 파일 경로를 돌려준다.
 pub fn add(args: &[String]) -> Result<PathBuf, String> {
     let o = parse(args)?;
-    let (protocol, arch) = capabilities(&o.bundle)?;
-    let rel = format!(
-        "{n}/{v}/{n}-{v}-{os}-{arch}.tar.gz",
+    let (protocol, arch) = capabilities(&o.bundle, o.capabilities.as_deref())?;
+    let file_name = format!(
+        "{n}-{v}-{os}-{arch}.tar.gz",
         n = o.name,
         v = o.version,
         os = o.os
     );
+    let rel = format!("{}/{}/{file_name}", o.name, o.version);
+    let url = match &o.url {
+        Some(prefix) => format!("{}/{file_name}", prefix.trim_end_matches('/')),
+        None => rel.clone(),
+    };
     let index_path = o.repo.join("index.json");
     let mut index: Value = match std::fs::read(&index_path) {
         Ok(b) => {
@@ -165,7 +190,7 @@ pub fn add(args: &[String]) -> Result<PathBuf, String> {
     artifacts.push(json!({
         "os": o.os,
         "architecture": arch,
-        "url": rel,
+        "url": url,
         "sha256": sha,
         "size": bytes.len(),
     }));
@@ -216,7 +241,20 @@ mod tests {
             .collect()
         };
         add(&args("1.0", "linux")).unwrap();
-        add(&args("1.0", "darwin")).unwrap();
+        // 다른 호스트에서 저장해 둔 capabilities, 압축 파일은 다른 곳에.
+        let caps = root.join("caps.json");
+        std::fs::write(&caps, r#"{"version":2,"name":"t","arch":"amd64"}"#).unwrap();
+        let mut elsewhere = args("1.0", "darwin");
+        elsewhere.extend(
+            [
+                "--capabilities",
+                caps.to_str().unwrap(),
+                "--url",
+                "https://dl.example/r/",
+            ]
+            .map(String::from),
+        );
+        add(&elsewhere).unwrap();
         // 같은 플랫폼은 다시 올리지 않는다.
         assert!(add(&args("1.0", "linux")).is_err());
 
@@ -229,6 +267,12 @@ mod tests {
         let v = &index.executor("fc").unwrap().versions[0];
         assert_eq!((v.version.as_str(), v.protocol), ("1.0", 2));
         assert_eq!(v.artifacts.len(), 2);
+        let d = &v.artifacts[1];
+        assert_eq!(
+            (d.platform.architecture.as_str(), d.url.as_str()),
+            ("amd64", "https://dl.example/r/fc-1.0-darwin-amd64.tar.gz")
+        );
+        assert!(repo.join("fc/1.0/fc-1.0-darwin-amd64.tar.gz").is_file());
         // 묶음은 저장소 클라이언트로 풀 수 있고, 맨 위 디렉터리 안에 실행 파일이 있다.
         let a = &v.artifacts[0];
         let file = a.url.to_file_path().unwrap();

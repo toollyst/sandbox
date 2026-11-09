@@ -52,10 +52,10 @@ Linux KVM(upstream Firecracker)과 CI 자동 실행은 남았다.
 | 단계 | 내용 | 상태 |
 |---|---|---|
 | 16 | 실행기 저장소 규약과 `sbx executor install NAME[@VERSION]`, `search`, `repo` | 완료 (`executor-repo`: 정적 호스팅 가능한 `index.json` + `.tar.gz` 묶음, SHA-256 확인. file:// 저장소에서 실제 firecracker 묶음 설치 0.18초) |
-| 17 | 공식 저장소 위치와 묶음 빌드(CI) | 묶음 빌드 완료: `cargo xtask repo-add`(묶음 → 저장소 디렉터리의 `.tar.gz`와 `index.json`), CI `vm` 작업이 Linux 묶음을 만들어 저장소로 올리고 거기서 설치해 확인한 뒤 아티팩트로 남긴다. 남음: 공식 호스팅 위치(자기 서버, GitHub처럼 정적으로 둘 다 되게)와 sbx의 기본 저장소 |
+| 17 | 공식 저장소와 릴리스(CI) | 완료(첫 릴리스 전): 공식 저장소는 묶음을 GitHub Releases에, `index.json`을 GitHub Pages(gh-pages 브랜치의 `executors/`)에 둔다. sbx에 `official`로 기본 등록(지우면 남는다). `.github/workflows/release.yml`: 태그 `v<버전>`에서 sbx(Linux musl 정적, macOS arm64), 실행기 묶음(Linux는 upstream Firecracker로 만들고 KVM smoke 통과 뒤, macOS는 저장소 변수 `FC_FORK_TAG`가 있을 때 toollyst/firecracker 릴리스로), `repo-add --url`로 색인. 남음: Pages 소스를 gh-pages로 설정, fc-fork 릴리스 형식 확정, 첫 태그 |
 | 18 | 커널 | 완료: 보통 이미지는 실행기 묶음의 기본 리눅스 커널(아키텍처당 하나)로, 라벨 `io.github.toollyst.sandbox.kernel`로 커널을 알린 이미지는 그 커널로(실행기 규약 2의 `custom_kernel`). 실제 VM으로 확인. 기본 커널은 `cargo xtask kernel`(Linux 6.1.155, upstream Firecracker CI 설정 + `xtask/kernel/sbx.config`)로 CI에서 빌드하고, 이 커널로 macOS HVF smoke 16/16 |
-| 19 | README, 데모, 설치 한 줄, 벤치마크 | 벤치마크 완료(`cargo xtask bench`. macOS arm64 HVF: `run --rm alpine true` p50 121ms, `exec` p50 8ms, 10개 동시 0.50초). README, 데모, 설치 한 줄은 남음 |
-| 20 | Linux KVM(upstream Firecracker) 끝-끝과 CI | CI `vm` 작업 작성(upstream Firecracker v1.17.0 + 빌드한 커널 + `cargo xtask smoke`와 `bench`). 남음: GitHub 러너에서 처음 돌려 확인(아직 push하지 않았다) |
+| 19 | README, 데모, 설치 한 줄, 벤치마크 | 벤치마크 완료(macOS arm64 HVF: `run --rm alpine true` p50 121ms, `exec` p50 8ms, 10개 동시 0.50초). 설치 한 줄 완료(`install.sh`: `curl -fsSL https://toollyst.github.io/sandbox/install.sh \| sh`, SHA-256 확인, `~/.local/bin`, 기본 실행기까지. 로컬 file:// 릴리스로 확인). README 영어 완료. 데모는 남음 |
+| 20 | Linux KVM(upstream Firecracker) 끝-끝과 CI | x86_64 완료: CI `vm` 작업이 GitHub 러너(KVM)에서 upstream Firecracker v1.17.0 + 빌드한 커널로 smoke 16/16과 bench. 남음: aarch64(GitHub arm 러너에 /dev/kvm이 없어 건너뛴다. 묶음은 만든다) |
 
 ## 그 뒤
 
