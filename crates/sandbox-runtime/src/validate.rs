@@ -68,6 +68,7 @@ mod tests {
             arch: Arch::X86_64,
             rootfs_formats: formats,
             live_share,
+            custom_kernel: false,
             snapshot: false,
             max_disks: 2,
         }

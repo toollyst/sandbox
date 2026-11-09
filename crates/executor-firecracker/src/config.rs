@@ -11,8 +11,14 @@ pub const MAX_SOCKET_PATH: usize = 103;
 /// 게스트 vsock CID. 게스트 쪽에서는 의미가 없고, 3 이상이면 된다.
 pub const GUEST_CID: u32 = 3;
 
-/// 설정 파일 내용. `x86_64`면 x86_64 게스트용 명령줄을 쓴다.
-pub fn firecracker_config(vm: &VmSpec, kernel: &Path, x86_64: bool) -> Result<Value, String> {
+/// 설정 파일 내용. 커널은 `vm.kernel`(이미지가 담은 커널), 없으면 `default_kernel`이다.
+/// `x86_64`면 x86_64 게스트용 명령줄을 쓴다.
+pub fn firecracker_config(
+    vm: &VmSpec,
+    default_kernel: &Path,
+    x86_64: bool,
+) -> Result<Value, String> {
+    let kernel = vm.kernel.as_deref().unwrap_or(default_kernel);
     if !vm.shares.is_empty() {
         return Err("this executor cannot attach shared folders (live_share is false)".into());
     }
@@ -88,6 +94,7 @@ mod tests {
     fn vm() -> VmSpec {
         VmSpec {
             guest_init: "/c/initramfs".into(),
+            kernel: None,
             disks: vec![
                 DiskSpec {
                     path: "/c/rootfs.erofs".into(),
@@ -143,6 +150,11 @@ mod tests {
                 .unwrap()
                 .contains(" pci=off ")
         );
+        // 이미지가 담은 커널이 있으면 그것으로 부팅한다.
+        let mut v = vm();
+        v.kernel = Some("/c/images/x/kernel".into());
+        let c = firecracker_config(&v, Path::new("/k/kernel"), false).unwrap();
+        assert_eq!(c["boot-source"]["kernel_image_path"], "/c/images/x/kernel");
     }
 
     #[test]

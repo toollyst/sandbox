@@ -33,6 +33,7 @@ enum T<'a> {
     Dir(&'a str),
     File(&'a str, &'a [u8]),
     Whiteout(&'a str),
+    Symlink(&'a str, &'a str),
 }
 
 /// (gzip blob, Layer 기술)
@@ -58,6 +59,12 @@ fn layer_with(compression: Compression, entries: &[T<'_>]) -> (Vec<u8>, Layer) {
             T::Whiteout(p) => {
                 h.set_entry_type(tar::EntryType::Regular);
                 h.set_mode(0o644);
+                (p, b"")
+            }
+            T::Symlink(p, target) => {
+                h.set_entry_type(tar::EntryType::Symlink);
+                h.set_mode(0o777);
+                h.set_link_name(target).unwrap();
                 (p, b"")
             }
         };
@@ -247,6 +254,69 @@ fn prepare_merges_layers_and_is_idempotent() {
     // 작업 공간이 남지 않는다.
     assert_eq!(std::fs::read_dir(root.join("tmp")).unwrap().count(), 0);
     std::fs::remove_dir_all(root).unwrap();
+}
+
+/// 커널 라벨이 있는 이미지.
+fn with_kernel(label: &str) -> FakeSource {
+    let mut src = FakeSource::new(vec![layer(&[
+        T::Dir("boot"),
+        T::File("boot/vmlinux-6.1", b"KERNEL"),
+        T::Symlink("vmlinux", "boot/vmlinux-6.1"),
+    ])]);
+    src.image
+        .config
+        .labels
+        .insert(ImageConfig::KERNEL_LABEL.into(), label.into());
+    src
+}
+
+#[test]
+fn prepare_extracts_the_image_kernel() {
+    let root = temp_root("kernel");
+    let m = manager(&root, with_kernel("/vmlinux"));
+    let id = ready(m.pull("test", Platform { arch: Arch::X86_64 }))
+        .unwrap()
+        .record
+        .id;
+    let layout = m.store().layout().clone();
+    assert!(!m.is_prepared(&id, RootfsFormat::Erofs));
+    assert!(ready(m.prepare(&id, RootfsFormat::Erofs)).unwrap());
+    assert!(m.is_prepared(&id, RootfsFormat::Erofs));
+    assert_eq!(std::fs::read(layout.kernel(&id)).unwrap(), b"KERNEL");
+    let lease = m.store().lease(&id, RootfsFormat::Erofs).unwrap();
+    assert_eq!(lease.kernel(), Some(layout.kernel(&id).as_path()));
+    drop(lease);
+    assert!(!ready(m.prepare(&id, RootfsFormat::Erofs)).unwrap());
+    // 커널만 없어졌으면 커널만 다시 꺼낸다.
+    std::fs::remove_file(layout.kernel(&id)).unwrap();
+    assert!(matches!(
+        m.store().lease(&id, RootfsFormat::Erofs),
+        Err(LeaseError::KernelNotFound)
+    ));
+    assert!(!m.is_prepared(&id, RootfsFormat::Erofs));
+    assert!(ready(m.prepare(&id, RootfsFormat::Erofs)).unwrap());
+    assert!(layout.kernel(&id).is_file());
+    std::fs::remove_dir_all(&root).unwrap();
+
+    // 라벨이 가리키는 것이 없거나, 일반 파일이 아니거나, 상대 경로면 rootfs도 만들지 않는다.
+    for (label, why) in [
+        ("/nope", "not found"),
+        ("/boot", "not a regular file"),
+        ("vmlinux", "absolute"),
+    ] {
+        let m = manager(&root, with_kernel(label));
+        let id = ready(m.pull("test", Platform { arch: Arch::X86_64 }))
+            .unwrap()
+            .record
+            .id;
+        match ready(m.prepare(&id, RootfsFormat::Erofs)) {
+            Err(ManageError::Kernel { reason, .. }) => assert!(reason.contains(why), "{reason}"),
+            other => panic!("{label}: {other:?}"),
+        }
+        assert!(!m.store().has_rootfs(&id, RootfsFormat::Erofs));
+        assert!(!m.store().layout().kernel(&id).exists());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 }
 
 #[test]

@@ -480,10 +480,12 @@ impl Sandbox {
                     image: spec.image.clone(),
                     format: spec.rootfs_format,
                 },
+                LeaseError::KernelNotFound => RuntimeError::KernelNotPrepared(spec.image.clone()),
                 LeaseError::Io(e) => RuntimeError::Io(e),
             })?;
         let vm_config = VmConfig {
             guest_init,
+            kernel: lease.kernel().map(Path::to_path_buf),
             disks: vec![
                 Disk {
                     path: lease.rootfs().to_owned(),

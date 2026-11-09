@@ -62,13 +62,18 @@ xtask/                  check-deps 등 개발용 작업
 docs/                   기획과 로드맵만
 ```
 
-**책임 분담**: VM을 실제로 띄우는 실행기 실행 파일(VMM, 게스트 커널)은 이 저장소 밖(예: fc-fork)의 책임이다.
-이 저장소는 생명주기, 코어, CLI, 게스트 init, 그리고 실행기가 맞춰야 할 통신 규약(`executor-proto`)을 책임진다.
+**책임 분담**: VMM은 이 저장소 밖(예: fc-fork)의 책임이다. 이 저장소는 생명주기, 코어, CLI, 게스트 init,
+실행기가 맞춰야 할 통신 규약(`executor-proto`), 실행기 저장소 규약(`executor-repo`), Firecracker adapter를 책임진다.
 규약에 맞는 실행기는 그대로 실행한다.
 
 **게스트 init 배포**: 게스트 init initramfs는 `sbx` 실행 파일 안에 들어 있다(`cargo xtask dist`, 빌드 대상 아키텍처의 것 하나).
 사용자의 이미지는 바꾸지 않는다. VM을 켤 때 이미지 rootfs와 별도로 initramfs를 붙이고, 처음 쓸 때 캐시의
-`guest/sha256-<내용 digest>/<arch>/initramfs`로 꺼낸다. `--guest-init`으로 다른 것을 줄 수 있다. 커널은 실행기가 가져온다.
+`guest/sha256-<내용 digest>/<arch>/initramfs`로 꺼낸다. `--guest-init`으로 다른 것을 줄 수 있다.
+
+**커널**: 보통 이미지(Docker Hub의 alpine 등)에는 커널이 없다. 그래서 실행기 묶음에 기본 리눅스 커널이 들어 있고
+(아키텍처당 하나, 모든 이미지가 함께 쓴다) 보통은 그것으로 부팅한다. 이미지가 자기 커널을 담고 있으면
+라벨 `io.github.toollyst.sandbox.kernel=<이미지 안 경로>`로 알린다. 그러면 `prepare`가 그 커널을 캐시의
+`images/<hex>/kernel`로 꺼내고, 그 커널로 부팅한다(실행기가 `custom_kernel`을 알릴 때만. 아니면 띄우지 않는다).
 
 의존 방향은 네 가지로 요약된다.
 - 코어(runtime, manage)는 trait 크레이트에만 의존한다.

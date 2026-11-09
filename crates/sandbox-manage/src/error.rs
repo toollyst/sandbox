@@ -30,6 +30,13 @@ pub enum ManageError {
         /// 이유.
         reason: String,
     },
+    /// 이미지가 알린 커널(`ImageConfig::KERNEL_LABEL`)을 꺼낼 수 없음.
+    Kernel {
+        /// 라벨 값(이미지 안 경로).
+        path: String,
+        /// 이유.
+        reason: String,
+    },
     /// rootfs 생성 오류.
     Rootfs(RootfsError),
     /// 저장소 오류.
@@ -48,6 +55,7 @@ impl fmt::Display for ManageError {
             ManageError::InUse(id) => write!(f, "image {id} is used by a running sandbox"),
             ManageError::Integrity(m) => write!(f, "digest mismatch: {m}"),
             ManageError::Layer { index, reason } => write!(f, "layer {index}: {reason}"),
+            ManageError::Kernel { path, reason } => write!(f, "image kernel {path}: {reason}"),
             ManageError::Rootfs(e) => e.fmt(f),
             ManageError::Store(e) => e.fmt(f),
             ManageError::Io(e) => write!(f, "io: {e}"),

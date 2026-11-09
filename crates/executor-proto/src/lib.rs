@@ -1,6 +1,6 @@
 //! 실행기 통신 규약. sbx가 외부 실행기(예: fc-fork)를 띄우고 다루는 방법이다.
 //!
-//! 이 문서가 규격이다. 실행기는 이것만 지키면 된다. VMM, 커널, 그 설정은 실행기의 책임이다.
+//! 이 문서가 규격이다. 실행기는 이것만 지키면 된다. VMM, 기본 커널, 그 설정은 실행기의 책임이다.
 //! sbx는 규약에 맞는 실행 파일을 그대로 실행한다.
 //!
 //! # 실행기 실행 파일
@@ -40,6 +40,9 @@
 //! 실행기가 띄운 VM은 다음을 지킨다. 게스트 init([`VmSpec::guest_init`])은 sbx가 준다.
 //!
 //! - 커널은 `guest_init`을 initrd로 받아 그 안의 `/init`을 PID 1로 실행한다. `root=`를 주지 않는다.
+//! - 커널은 보통 실행기의 기본 커널이다. [`VmSpec::kernel`]이 있으면(이미지가 자기 커널을 담은 경우) 그 파일로
+//!   부팅한다. 할 수 없는 실행기는 `custom_kernel`을 `false`로 알린다. 그러면 sbx는 커널을 보내지 않고, 그런 이미지는
+//!   그 실행기로 띄우지 않는다. 받은 커널의 형식(VMM이 읽는 형식인지)과 아래 기능은 이미지를 만든 쪽의 책임이다.
 //! - 커널 기능: virtio-blk, vsock(virtio), erofs, ext4(ext2 형식 포함), overlay, devtmpfs, proc, sysfs, tmpfs, devpts(Unix98 pty), 루프백 네트워크.
 //!   커널은 4.7 이상이어야 한다(`newinstance`로 마운트한 `/dev/pts`를 `/dev/ptmx`가 찾는다).
 //! - 디스크는 [`VmSpec::disks`] 순서대로 붙인다. 게스트에서 첫째가 `/dev/vda`(rootfs, 읽기 전용), 둘째가 `/dev/vdb`(scratch)다.
@@ -53,6 +56,12 @@
 //! # 버전
 //!
 //! [`VERSION`]이 바뀌면 호환되지 않는다. 1.0 전까지 규칙은 "같아야 한다"이다.
+//! 버전마다 모양이 다를 수 있으므로 `capabilities`를 읽는 쪽은 [`CapabilitiesHeader`]로 버전을 먼저 본다.
+//!
+//! | 버전 | 바뀐 것 |
+//! |---|---|
+//! | 1 | 처음 |
+//! | 2 | `Capabilities::custom_kernel`, `VmSpec::kernel` (이미지가 담은 커널로 부팅) |
 //!
 //! - 의존: `serde`, `serde_json`만 (실행기 저장소가 이것만 가져다 쓸 수 있게)
 
@@ -64,7 +73,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 pub mod vsock;
 
 /// 규약 버전.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 /// 한 줄 최대 길이(바이트, 줄바꿈 포함).
 pub const MAX_LINE: usize = 1024 * 1024;
@@ -93,10 +102,23 @@ pub struct Capabilities {
     pub rootfs_formats: Vec<String>,
     /// 실시간 폴더 공유([`VmSpec::shares`]) 지원 여부.
     pub live_share: bool,
+    /// [`VmSpec::kernel`]로 부팅할 수 있는지.
+    pub custom_kernel: bool,
     /// 스냅샷 지원 여부.
     pub snapshot: bool,
     /// VM 하나에 붙일 수 있는 디스크 개수.
     pub max_disks: u32,
+}
+
+/// 모든 버전의 [`Capabilities`]에 있는 앞부분. 읽는 쪽은 이것으로 `version`을 먼저 보고, 같을 때만
+/// [`Capabilities`]로 읽는다. 그래야 버전이 다른 실행기에 "규약 버전이 다르다"고 알릴 수 있다(모양이 달라도).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct CapabilitiesHeader {
+    /// 실행기가 구현한 규약 버전.
+    pub version: u32,
+    /// 실행기 이름 (없으면 빈 문자열).
+    #[serde(default)]
+    pub name: String,
 }
 
 /// 디스크 용도.
@@ -139,6 +161,9 @@ pub struct ShareSpec {
 pub struct VmSpec {
     /// 게스트 init initramfs (sbx가 준다).
     pub guest_init: PathBuf,
+    /// 이 커널로 부팅한다. 없으면(필드가 없으면) 실행기의 기본 커널이다. `custom_kernel`인 실행기에만 보낸다.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kernel: Option<PathBuf>,
     /// 붙일 디스크. 순서가 게스트 장치 이름을 정한다.
     pub disks: Vec<DiskSpec>,
     /// vCPU 개수 (1 이상).

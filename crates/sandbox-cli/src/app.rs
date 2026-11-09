@@ -593,7 +593,7 @@ impl Ctx {
         let found = self.lookup(&m, &a.image)?;
         let rootfs_present = found
             .as_ref()
-            .is_some_and(|f| m.store().has_rootfs(f.id(), format));
+            .is_some_and(|f| m.is_prepared(f.id(), format));
         let steps = behavior::create_steps(a.pull, found.is_some(), rootfs_present)
             .map_err(|e| msg(format!("{}: {e}", a.image)))?;
         let mut image = found.map(|f| f.id().clone());

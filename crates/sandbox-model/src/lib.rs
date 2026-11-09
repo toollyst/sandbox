@@ -331,6 +331,18 @@ pub struct ImageConfig {
     pub labels: BTreeMap<String, String>,
 }
 
+impl ImageConfig {
+    /// 이미지가 자기 커널을 담고 있다고 알리는 라벨. 값은 이미지 안 커널 파일의 절대 경로다
+    /// (심볼릭 링크는 이미지 안에서 따라간다). 이 라벨이 있으면 그 커널로 부팅하고, 없으면 실행기의 기본 커널로 부팅한다.
+    /// 커널은 실행기와 게스트 init이 요구하는 기능(`executor-proto` 문서)을 갖춰야 한다.
+    pub const KERNEL_LABEL: &'static str = "io.github.toollyst.sandbox.kernel";
+
+    /// [`Self::KERNEL_LABEL`]의 값.
+    pub fn kernel(&self) -> Option<&str> {
+        self.labels.get(Self::KERNEL_LABEL).map(String::as_str)
+    }
+}
+
 /// 사용자나 그룹을 가리키는 값.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ident {

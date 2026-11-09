@@ -34,6 +34,8 @@ pub struct Capabilities {
     pub rootfs_formats: Vec<RootfsFormat>,
     /// 실시간 폴더 공유(`MountKind::Bind`) 지원 여부.
     pub live_share: bool,
+    /// 호출자가 준 커널(`VmConfig::kernel`)로 부팅할 수 있는지.
+    pub custom_kernel: bool,
     /// 스냅샷 지원 여부.
     pub snapshot: bool,
     /// VM 하나에 붙일 수 있는 디스크 개수.
@@ -90,8 +92,11 @@ pub struct ChannelSpec {
 /// VM 하나를 띄우는 데 필요한 전부.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VmConfig {
-    /// 게스트 init initramfs. 커널은 실행기가 정한다.
+    /// 게스트 init initramfs.
     pub guest_init: PathBuf,
+    /// 이 커널로 부팅한다(이미지가 담은 커널). 없으면 실행기의 기본 커널이다.
+    /// `Capabilities::custom_kernel`일 때만 줄 수 있다.
+    pub kernel: Option<PathBuf>,
     /// 디스크.
     pub disks: Vec<Disk>,
     /// vCPU 개수.
@@ -125,6 +130,12 @@ impl VmConfig {
                 self.disks.len(),
                 caps.name,
                 caps.max_disks
+            )));
+        }
+        if self.kernel.is_some() && !caps.custom_kernel {
+            return Err(ExecutorError::Unsupported(format!(
+                "{} cannot boot the image's own kernel",
+                caps.name
             )));
         }
         if !self.shares.is_empty() && !caps.live_share {
@@ -231,6 +242,7 @@ mod tests {
             arch: Arch::X86_64,
             rootfs_formats: vec![RootfsFormat::Erofs],
             live_share,
+            custom_kernel: false,
             snapshot: false,
             max_disks,
         }
@@ -239,6 +251,7 @@ mod tests {
     fn vm() -> VmConfig {
         VmConfig {
             guest_init: "i".into(),
+            kernel: None,
             disks: vec![Disk {
                 path: "r".into(),
                 role: DiskRole::Rootfs,
@@ -284,6 +297,19 @@ mod tests {
             Err(ExecutorError::Unsupported(_))
         ));
         assert!(v.check(&caps(true, 2)).is_ok());
+    }
+
+    #[test]
+    fn image_kernel_needs_custom_kernel() {
+        let mut v = vm();
+        v.kernel = Some("k".into());
+        assert!(matches!(
+            v.check(&caps(false, 2)),
+            Err(ExecutorError::Unsupported(_))
+        ));
+        let mut c = caps(false, 2);
+        c.custom_kernel = true;
+        assert!(v.check(&c).is_ok());
     }
 
     #[test]

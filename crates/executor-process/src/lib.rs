@@ -39,15 +39,17 @@ fn invalid(m: impl Into<String>) -> ExecutorError {
     ExecutorError::Invalid(m.into())
 }
 
+fn version_mismatch(name: &str, version: u32) -> ExecutorError {
+    ExecutorError::Unsupported(format!(
+        "executor {name} speaks protocol {version}, sbx speaks {}",
+        proto::VERSION
+    ))
+}
+
 /// 규약의 capability를 실행기 타입으로. 모르는 rootfs 형식 이름은 버린다.
 pub fn convert_capabilities(c: proto::Capabilities) -> Result<Capabilities, ExecutorError> {
     if c.version != proto::VERSION {
-        return Err(ExecutorError::Unsupported(format!(
-            "executor {} speaks protocol {}, sbx speaks {}",
-            c.name,
-            c.version,
-            proto::VERSION
-        )));
+        return Err(version_mismatch(&c.name, c.version));
     }
     let name: &'static str = Box::leak(c.name.into_boxed_str());
     Ok(Capabilities {
@@ -62,6 +64,7 @@ pub fn convert_capabilities(c: proto::Capabilities) -> Result<Capabilities, Exec
             .filter_map(|f| f.parse::<RootfsFormat>().ok())
             .collect(),
         live_share: c.live_share,
+        custom_kernel: c.custom_kernel,
         snapshot: c.snapshot,
         max_disks: c.max_disks as usize,
     })
@@ -71,6 +74,7 @@ pub fn convert_capabilities(c: proto::Capabilities) -> Result<Capabilities, Exec
 pub fn convert_vm(vm: &VmConfig) -> proto::VmSpec {
     proto::VmSpec {
         guest_init: vm.guest_init.clone(),
+        kernel: vm.kernel.clone(),
         disks: vm
             .disks
             .iter()
@@ -120,8 +124,16 @@ impl ProcessExecutor {
                 String::from_utf8_lossy(&out.stderr).trim()
             )));
         }
+        let bad = |e: io::Error| invalid(format!("{} capabilities: {e}", binary.display()));
+        // 버전을 먼저 본다. 버전이 다르면 모양도 다를 수 있다.
+        let header: proto::CapabilitiesHeader = proto::read_line(&mut out.stdout.as_slice())
+            .map_err(bad)?
+            .ok_or_else(|| invalid(format!("{} capabilities printed nothing", binary.display())))?;
+        if header.version != proto::VERSION {
+            return Err(version_mismatch(&header.name, header.version));
+        }
         let caps: proto::Capabilities = proto::read_line(&mut out.stdout.as_slice())
-            .map_err(|e| invalid(format!("{} capabilities: {e}", binary.display())))?
+            .map_err(bad)?
             .ok_or_else(|| invalid(format!("{} capabilities printed nothing", binary.display())))?;
         Ok(Self {
             caps: convert_capabilities(caps)?,
@@ -192,6 +204,7 @@ impl Executor for ConnectOnly {
             arch: Arch::host().unwrap_or(Arch::X86_64),
             rootfs_formats: Vec::new(),
             live_share: false,
+            custom_kernel: false,
             snapshot: false,
             max_disks: 0,
         }

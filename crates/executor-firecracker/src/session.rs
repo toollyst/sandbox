@@ -33,6 +33,7 @@ pub fn capabilities_value() -> Capabilities {
         },
         rootfs_formats: vec!["erofs".into()],
         live_share: false,
+        custom_kernel: true,
         snapshot: false,
         max_disks: 8,
     }

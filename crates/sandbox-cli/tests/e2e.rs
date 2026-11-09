@@ -95,6 +95,10 @@ mod unix {
             "executor_is_installed_from_a_repository",
             executor_is_installed_from_a_repository,
         ),
+        (
+            "image_kernel_is_given_to_the_executor",
+            image_kernel_is_given_to_the_executor,
+        ),
         ("attach_tty_and_signal_proxy", attach_tty_and_signal_proxy),
         ("volume_is_shared_live", volume_is_shared_live),
         ("network_allow_list", network_allow_list),
@@ -1123,6 +1127,72 @@ mod unix {
         assert_ne!(
             without(&["executor", "repo", "rm", "broken"]).status.code(),
             Some(0)
+        );
+    }
+
+    fn image_kernel_is_given_to_the_executor() {
+        let e = Env::new();
+        // 커널을 담은 이미지 (관리 쪽이 prepare로 꺼내 두었을 상태).
+        let layout = CacheLayout::new(e.path("cache"));
+        let id = ImageId::new(Digest::parse(&format!("sha256:{}", "4b".repeat(32))).unwrap());
+        let mut config = ImageConfig {
+            cmd: vec!["sh".into()],
+            user: Some(format!("{}:{}", id_output("-u"), id_output("-g"))),
+            ..ImageConfig::default()
+        };
+        config
+            .labels
+            .insert(ImageConfig::KERNEL_LABEL.into(), "/boot/vmlinux".into());
+        let record = ImageRecord {
+            id: id.clone(),
+            reference: "docker.io/library/e2e-kernel:latest".into(),
+            source: "test".into(),
+            arch: Arch::host().unwrap(),
+            config,
+            layers: vec![],
+            ignored_fields: vec![],
+        };
+        write::write_image_record(&layout, &record).unwrap();
+        write::set_ref(&layout, &record.reference, &id).unwrap();
+        std::fs::write(layout.rootfs(&id, RootfsFormat::Erofs), b"fs").unwrap();
+        std::fs::write(layout.kernel(&id), b"kernel").unwrap();
+
+        let run = |image: &str| {
+            let rec = e.path("launch.json");
+            let _ = std::fs::remove_file(&rec);
+            let o = e
+                .cmd(&["run", "--rm", image, "true"])
+                .env("SBX_FAKE_RECORD", &rec)
+                .output()
+                .unwrap();
+            let vm: serde_json::Value = std::fs::read(&rec)
+                .ok()
+                .and_then(|b| serde_json::from_slice(&b).ok())
+                .unwrap_or_default();
+            (o, vm)
+        };
+        let (o, vm) = run("e2e-kernel");
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(
+            vm["kernel"].as_str(),
+            Some(layout.kernel(&id).to_str().unwrap()),
+            "{vm}"
+        );
+        // 보통 이미지에는 커널을 보내지 않는다 (실행기의 기본 커널).
+        let (o, vm) = run(IMAGE);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(
+            vm.get("kernel").is_none() && vm.get("guest_init").is_some(),
+            "{vm}"
+        );
+        // 커널을 꺼내 두지 않았으면 prepare가 다시 꺼내려 하고, 이미지에 없으면 띄우지 않는다.
+        std::fs::remove_file(layout.kernel(&id)).unwrap();
+        let (o, _) = run("e2e-kernel");
+        assert_eq!(o.status.code(), Some(125));
+        assert!(
+            text(&o.stderr).contains("image kernel /boot/vmlinux"),
+            "{}",
+            text(&o.stderr)
         );
     }
 }

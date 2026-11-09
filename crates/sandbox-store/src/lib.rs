@@ -13,6 +13,7 @@
 //!   blobs/.lock                 blob 정리와 pull 표시 생성의 상호 배제
 //!   images/<hex>/image.json     이미지 기록 ([`ImageRecord`])
 //!   images/<hex>/rootfs.<형식>  형식별 읽기 전용 rootfs (prepare한 것만)
+//!   images/<hex>/kernel         이미지가 담은 커널 (`ImageConfig::KERNEL_LABEL`이 있는 이미지만, prepare가 꺼낸다)
 //!   images/<hex>/.lock          사용 중 보호용 잠금 파일
 //!   guest/<version>/<arch>/initramfs  게스트 init. version은 `sha256-<hex>`(sbx에 내장된 것을 관리 코어가
 //!                               꺼낸 것, 내용 digest) 또는 게스트 프로토콜 버전(사용자가 직접 둔 것)
@@ -155,6 +156,11 @@ impl CacheLayout {
             .join(format!("rootfs.{}", format.as_str()))
     }
 
+    /// 이미지에서 꺼낸 커널 (`ImageConfig::KERNEL_LABEL`이 있는 이미지만).
+    pub fn kernel(&self, id: &ImageId) -> PathBuf {
+        self.image_dir(id).join("kernel")
+    }
+
     /// 이미지 잠금 파일.
     pub fn image_lock(&self, id: &ImageId) -> PathBuf {
         self.image_dir(id).join(".lock")
@@ -213,6 +219,8 @@ pub enum LeaseError {
     ImageNotFound,
     /// 이미지는 있지만 그 형식의 rootfs가 없음.
     RootfsNotFound,
+    /// 이미지가 자기 커널을 담고 있다고 하는데 꺼내 둔 커널이 없음 (prepare를 다시 해야 한다).
+    KernelNotFound,
     /// 입출력 오류.
     Io(io::Error),
 }
@@ -222,6 +230,7 @@ impl fmt::Display for LeaseError {
         match self {
             LeaseError::ImageNotFound => f.write_str("image not found"),
             LeaseError::RootfsNotFound => f.write_str("rootfs not prepared"),
+            LeaseError::KernelNotFound => f.write_str("image kernel not prepared"),
             LeaseError::Io(e) => write!(f, "io: {e}"),
         }
     }
@@ -240,12 +249,18 @@ pub struct ImageGuard {
 pub struct RootfsLease {
     _lock: File,
     rootfs: PathBuf,
+    kernel: Option<PathBuf>,
 }
 
 impl RootfsLease {
     /// 잠금으로 보호되는 rootfs 파일.
     pub fn rootfs(&self) -> &Path {
         &self.rootfs
+    }
+
+    /// 잠금으로 보호되는, 이미지가 담은 커널. 없으면 실행기의 기본 커널로 부팅한다.
+    pub fn kernel(&self) -> Option<&Path> {
+        self.kernel.as_deref()
     }
 }
 
@@ -343,15 +358,32 @@ impl Store {
     /// rootfs에 공유 잠금을 건다. 이미지를 지우는 쪽이 배타 잠금을 쥐고 있으면 풀릴 때까지 기다린다.
     ///
     /// 잠금을 잡은 뒤에 존재를 다시 확인한다. 기다리는 동안 지워졌으면 `ImageNotFound`다.
+    /// 이미지가 자기 커널을 담고 있으면(`ImageConfig::KERNEL_LABEL`) 꺼내 둔 커널도 있어야 한다.
     pub fn lease(&self, id: &ImageId, format: RootfsFormat) -> Result<RootfsLease, LeaseError> {
         let lock = self.lock_shared(id)?;
         let rootfs = self.layout.rootfs(id, format);
         if !rootfs.is_file() {
             return Err(LeaseError::RootfsNotFound);
         }
+        let record = self.image(id).map_err(|e| match e {
+            StoreError::ImageNotFound(_) => LeaseError::ImageNotFound,
+            StoreError::Io(e) => LeaseError::Io(e),
+            e => LeaseError::Io(io::Error::other(e.to_string())),
+        })?;
+        let kernel = match record.config.kernel() {
+            None => None,
+            Some(_) => {
+                let k = self.layout.kernel(id);
+                if !k.is_file() {
+                    return Err(LeaseError::KernelNotFound);
+                }
+                Some(k)
+            }
+        };
         Ok(RootfsLease {
             _lock: lock,
             rootfs,
+            kernel,
         })
     }
 }

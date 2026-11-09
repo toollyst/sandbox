@@ -61,6 +61,7 @@ impl FakeExecutor {
             arch: Arch::host().unwrap_or(Arch::X86_64),
             rootfs_formats: RootfsFormat::ALL.to_vec(),
             live_share: true,
+            custom_kernel: true,
             snapshot: false,
             max_disks: 2,
         })

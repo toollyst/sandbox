@@ -243,6 +243,9 @@ fn join(parent: &str, name: &str) -> String {
     }
 }
 
+/// [`MergedTree::resolve`]가 따라가는 심볼릭 링크의 최대 수 (Linux `MAXSYMLINKS`와 같다).
+pub const MAX_SYMLINK_HOPS: usize = 40;
+
 /// 레이어를 합친 결과.
 #[derive(Debug, Clone)]
 pub struct MergedTree {
@@ -277,6 +280,38 @@ impl MergedTree {
     /// 경로의 노드. 루트는 빈 문자열이다.
     pub fn get(&self, path: &str) -> Option<&Node> {
         self.nodes.get(path)
+    }
+
+    /// 경로를 이 트리 안에서 풀어 실제 노드의 경로를 돌려준다. 심볼릭 링크는 중간 경로와 마지막 모두
+    /// 이 트리를 루트로 삼아 따라간다(절대 대상은 트리 루트 기준, `..`는 루트에서 멈춘다. chroot와 같다).
+    /// 없는 경로이거나 링크를 [`MAX_SYMLINK_HOPS`]번 넘게 따라가면 `None`이다.
+    pub fn resolve(&self, path: &str) -> Option<String> {
+        let mut pending: Vec<String> = path.split('/').rev().map(str::to_owned).collect();
+        let mut cur: Vec<String> = Vec::new();
+        let mut hops = 0;
+        while let Some(part) = pending.pop() {
+            match part.as_str() {
+                "" | "." => continue,
+                ".." => {
+                    cur.pop();
+                    continue;
+                }
+                _ => cur.push(part),
+            }
+            let node = self.nodes.get(&cur.join("/"))?;
+            if let NodeKind::Symlink(target) = &node.kind {
+                hops += 1;
+                if hops > MAX_SYMLINK_HOPS {
+                    return None;
+                }
+                cur.pop();
+                if target.starts_with('/') {
+                    cur.clear();
+                }
+                pending.extend(target.split('/').rev().map(str::to_owned));
+            }
+        }
+        Some(cur.join("/"))
     }
 
     /// 모든 노드를 경로 순서로.
@@ -536,6 +571,46 @@ mod tests {
 
     fn whiteout(path: &str) -> LayerEntry {
         file(path, 0, 0)
+    }
+
+    fn symlink(path: &str, target: &str) -> LayerEntry {
+        LayerEntry {
+            path: path.into(),
+            kind: EntryKind::Symlink(target.into()),
+            meta: meta(0o777),
+        }
+    }
+
+    #[test]
+    fn resolve_follows_symlinks_inside_the_tree() {
+        let mut t = MergedTree::new();
+        t.apply_layer(vec![
+            dir("usr"),
+            dir("usr/lib"),
+            dir("boot"),
+            file("boot/vmlinuz-6.8", 0, 0),
+            symlink("boot/vmlinuz", "vmlinuz-6.8"),
+            symlink("vmlinuz", "boot/vmlinuz"),
+            symlink("lib", "usr/lib"),
+            file("usr/lib/k", 0, 1),
+            symlink("up", "../../../boot/vmlinuz"),
+            symlink("abs", "/lib/k"),
+            symlink("loop", "loop"),
+            symlink("dangling", "nope"),
+        ])
+        .unwrap();
+        assert_eq!(t.resolve("/vmlinuz").as_deref(), Some("boot/vmlinuz-6.8"));
+        assert_eq!(t.resolve("/lib/k").as_deref(), Some("usr/lib/k"));
+        assert_eq!(t.resolve("up").as_deref(), Some("boot/vmlinuz-6.8"));
+        assert_eq!(t.resolve("/abs").as_deref(), Some("usr/lib/k"));
+        assert_eq!(
+            t.resolve("/boot/./vmlinuz-6.8").as_deref(),
+            Some("boot/vmlinuz-6.8")
+        );
+        assert_eq!(t.resolve("/").as_deref(), Some(""));
+        assert_eq!(t.resolve("/loop"), None);
+        assert_eq!(t.resolve("/dangling"), None);
+        assert_eq!(t.resolve("/boot/vmlinuz-6.8/x"), None);
     }
 
     fn paths(t: &MergedTree) -> Vec<&str> {

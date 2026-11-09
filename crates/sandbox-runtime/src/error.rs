@@ -19,6 +19,8 @@ pub enum RuntimeError {
         /// 형식.
         format: RootfsFormat,
     },
+    /// 이미지가 자기 커널을 담고 있는데 꺼내 두지 않음 (`prepare`를 다시 해야 한다).
+    KernelNotPrepared(ImageId),
     /// 실행기가 그 rootfs 형식을 받지 않음.
     FormatUnsupported {
         /// 실행기 이름.
@@ -96,6 +98,12 @@ impl fmt::Display for RuntimeError {
             RuntimeError::ImageNotPulled(id) => write!(f, "image {id} is not pulled"),
             RuntimeError::RootfsNotPrepared { image, format } => {
                 write!(f, "image {image} has no {format} rootfs prepared")
+            }
+            RuntimeError::KernelNotPrepared(image) => {
+                write!(
+                    f,
+                    "image {image} carries its own kernel, but it is not prepared"
+                )
             }
             RuntimeError::FormatUnsupported { executor, format } => {
                 write!(f, "executor {executor} does not support {format} rootfs")

@@ -63,6 +63,7 @@ impl Env {
     fn vm(&self) -> VmSpec {
         VmSpec {
             guest_init: self.dir.join("initramfs"),
+            kernel: None,
             disks: vec![DiskSpec {
                 path: self.dir.join("rootfs"),
                 role: DiskRole::Rootfs,

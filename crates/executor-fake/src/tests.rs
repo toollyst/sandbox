@@ -19,6 +19,7 @@ fn ready<F: Future>(f: F) -> F::Output {
 fn vm(sock: &str) -> VmConfig {
     VmConfig {
         guest_init: "i".into(),
+        kernel: None,
         disks: vec![Disk {
             path: "r".into(),
             role: DiskRole::Rootfs,

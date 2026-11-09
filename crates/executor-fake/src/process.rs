@@ -26,6 +26,7 @@ pub fn capabilities() -> proto::Capabilities {
         },
         rootfs_formats: vec!["erofs".into()],
         live_share: true,
+        custom_kernel: true,
         snapshot: false,
         max_disks: 2,
     }

@@ -53,12 +53,26 @@ impl Env {
         ImageId::new(Digest::parse(&format!("sha256:{}", "ef".repeat(32))).unwrap())
     }
 
+    /// 이미지 기록 (`image.json`) 내용.
+    fn record(id: &ImageId) -> Vec<u8> {
+        serde_json::to_vec(&sandbox_store::ImageRecord {
+            id: id.clone(),
+            reference: "docker.io/library/t:latest".into(),
+            source: "test".into(),
+            arch: sandbox_model::Arch::host().unwrap_or(sandbox_model::Arch::X86_64),
+            config: Default::default(),
+            layers: vec![],
+            ignored_fields: vec![],
+        })
+        .unwrap()
+    }
+
     /// 관리 쪽이 해 두었을 일: 이미지 기록, rootfs, 잠금 파일.
     fn prepare_image(&self) {
         let layout = self.rt.inner.store.layout();
         let id = Self::image();
         std::fs::create_dir_all(layout.image_dir(&id)).unwrap();
-        std::fs::write(layout.image_record(&id), b"{}").unwrap();
+        std::fs::write(layout.image_record(&id), Env::record(&id)).unwrap();
         std::fs::write(layout.rootfs(&id, RootfsFormat::Erofs), b"fs").unwrap();
         std::fs::write(layout.image_lock(&id), b"").unwrap();
     }
@@ -162,7 +176,7 @@ fn create_does_not_prepare_missing_rootfs() {
     let layout = e.rt.inner.store.layout();
     let id = Env::image();
     std::fs::create_dir_all(layout.image_dir(&id)).unwrap();
-    std::fs::write(layout.image_record(&id), b"{}").unwrap();
+    std::fs::write(layout.image_record(&id), Env::record(&id)).unwrap();
     assert!(matches!(
         block_on(e.rt.create(e.spec(&["sh"]))),
         Err(RuntimeError::RootfsNotPrepared { .. })

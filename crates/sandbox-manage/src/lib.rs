@@ -8,6 +8,8 @@
 //! - `pull`은 받기만 한다. rootfs는 만들지 않는다. 이미 있는 레이어는 다시 받지 않는다.
 //!   레이어는 digest를 직접 계산해 맞을 때만 저장한다. 모든 레이어가 저장된 뒤에야 이미지 기록과 참조를 쓴다.
 //! - `prepare`는 이미 그 형식의 rootfs가 있으면 아무것도 하지 않는다. 레이어의 diff_id도 직접 계산해 대조한다.
+//!   이미지가 자기 커널을 담고 있으면(`ImageConfig::KERNEL_LABEL`) 그 커널도 `images/<hex>/kernel`로 꺼낸다.
+//!   커널을 꺼낼 수 없으면(라벨의 경로가 없거나 일반 파일이 아니면) rootfs도 만들지 않는다.
 //!   만드는 동안 이미지에 공유 잠금을 쥐므로 그사이 이미지가 지워지지 않는다.
 //! - 자동 정리는 없다. 무엇을 언제 지울지는 관리하는 쪽(임베드한 앱이나 사람)이 정하고 `remove`를 부른다.
 //! - `remove`는 이미지를 지운 뒤 다른 이미지도, 진행 중인 pull도 쓰지 않는 레이어 blob을 지운다(Docker `rmi`와 같다).
@@ -29,7 +31,7 @@ use flate2::read::GzDecoder;
 
 use sandbox_image::{ImageSource, Platform};
 use sandbox_model::{Arch, Compression, Digest, ImageId, RootfsFormat};
-use sandbox_rootfs::{MergedTree, RootfsBuilder};
+use sandbox_rootfs::{ContentSource, MergedTree, NodeKind, RootfsBuilder};
 use sandbox_store::digest::HashingReader;
 use sandbox_store::write::{self, BlobWriter, WorkDir};
 use sandbox_store::{ImageRecord, LeaseError, Store};
@@ -147,7 +149,8 @@ impl Manager {
         self.info(record)
     }
 
-    /// 그 형식의 rootfs를 만든다. 만들었으면 `true`, 이미 있었으면 `false`.
+    /// 그 형식의 rootfs를 만든다. 이미지가 자기 커널을 담고 있으면(`ImageConfig::KERNEL_LABEL`) 그 커널도 꺼낸다.
+    /// 무언가 만들었으면 `true`, 모두 이미 있었으면 `false`.
     pub async fn prepare(
         &self,
         image: &ImageId,
@@ -162,11 +165,16 @@ impl Manager {
             LeaseError::Io(e) => ManageError::Io(e),
             _ => ManageError::ImageNotFound(image.clone()),
         })?;
-        if self.store.has_rootfs(image, format) {
-            return Ok(false);
-        }
         let record = self.store.image(image)?;
         let layout = self.store.layout();
+        let need_rootfs = !self.store.has_rootfs(image, format);
+        let need_kernel = record
+            .config
+            .kernel()
+            .filter(|_| !layout.kernel(image).is_file());
+        if !need_rootfs && need_kernel.is_none() {
+            return Ok(false);
+        }
         let work = WorkDir::create(layout, "prepare")?;
 
         let mut tree = MergedTree::new();
@@ -193,21 +201,47 @@ impl Manager {
             }
             tree.apply_layer(entries)?;
         }
+        let spool = layer::Spool::new(work.path());
 
-        let target = layout.rootfs(image, format);
-        let temp = write::temp_path(&layout.image_dir(image), &format!("rootfs.{format}"));
-        let result = (|| -> Result<(), ManageError> {
-            let mut out = io::BufWriter::new(File::create(&temp)?);
-            builder.build(&tree, &layer::Spool::new(work.path()), &mut out)?;
-            let file = out.into_inner().map_err(|e| e.into_error())?;
-            file.sync_all()?;
-            std::fs::rename(&temp, &target)?;
-            Ok(())
-        })();
-        if result.is_err() {
-            let _ = std::fs::remove_file(&temp);
+        // 커널을 먼저 꺼낸다. 잘못된 라벨이면 rootfs도 만들지 않는다(이 이미지로는 부팅할 수 없다).
+        if let Some(path) = need_kernel {
+            let target = layout.kernel(image);
+            let temp = write::temp_path(&layout.image_dir(image), "kernel");
+            let result = extract_kernel(&tree, &spool, path, &temp)
+                .and_then(|()| Ok(std::fs::rename(&temp, &target)?));
+            if result.is_err() {
+                let _ = std::fs::remove_file(&temp);
+            }
+            result?;
         }
-        result.map(|()| true)
+        if need_rootfs {
+            let target = layout.rootfs(image, format);
+            let temp = write::temp_path(&layout.image_dir(image), &format!("rootfs.{format}"));
+            let result = (|| -> Result<(), ManageError> {
+                let mut out = io::BufWriter::new(File::create(&temp)?);
+                builder.build(&tree, &spool, &mut out)?;
+                let file = out.into_inner().map_err(|e| e.into_error())?;
+                file.sync_all()?;
+                std::fs::rename(&temp, &target)?;
+                Ok(())
+            })();
+            if result.is_err() {
+                let _ = std::fs::remove_file(&temp);
+            }
+            result?;
+        }
+        Ok(true)
+    }
+
+    /// 그 형식으로 띄울 준비가 됐는지: rootfs가 있고, 이미지가 자기 커널을 담고 있으면 그 커널도 꺼내 두었다.
+    /// 아니면 [`Manager::prepare`]가 할 일이 있다.
+    pub fn is_prepared(&self, image: &ImageId, format: RootfsFormat) -> bool {
+        let layout = self.store.layout();
+        self.store.has_rootfs(image, format)
+            && self
+                .store
+                .image(image)
+                .is_ok_and(|r| r.config.kernel().is_none() || layout.kernel(image).is_file())
     }
 
     /// 받아 둔 이미지 목록. ID 순서.
@@ -290,6 +324,34 @@ impl Manager {
             deleted_layers,
         })
     }
+}
+
+/// 이미지 안 `path`(절대 경로, 링크는 이미지 안에서 따라간다)의 일반 파일을 `out`에 쓴다.
+fn extract_kernel(
+    tree: &MergedTree,
+    spool: &layer::Spool,
+    path: &str,
+    out: &std::path::Path,
+) -> Result<(), ManageError> {
+    let bad = |reason: &str| ManageError::Kernel {
+        path: path.to_owned(),
+        reason: reason.to_owned(),
+    };
+    if !path.starts_with('/') {
+        return Err(bad("must be an absolute path"));
+    }
+    let real = tree
+        .resolve(path)
+        .ok_or_else(|| bad("not found in the image"))?;
+    let content = match tree.get(&real).map(|n| &n.kind) {
+        Some(NodeKind::File(c)) => *c,
+        _ => return Err(bad("not a regular file")),
+    };
+    let mut src = spool.open(&content)?;
+    let mut dst = io::BufWriter::new(File::create(out)?);
+    io::copy(&mut src, &mut dst)?;
+    dst.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+    Ok(())
 }
 
 #[cfg(test)]

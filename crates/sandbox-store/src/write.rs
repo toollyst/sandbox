@@ -390,7 +390,7 @@ mod tests {
         let store = Store::open(root);
         let id = image();
         create_image_dir(store.layout(), &id).unwrap();
-        atomic_write(&store.layout().image_record(&id), b"{}").unwrap();
+        write_image_record(store.layout(), &record_with(&[])).unwrap();
         atomic_write(&store.layout().rootfs(&id, RootfsFormat::Erofs), b"fs").unwrap();
         (store, id)
     }
@@ -486,6 +486,31 @@ mod tests {
         assert!(try_lock_image(store.layout(), &id).unwrap().is_none());
         drop(lease);
         assert!(try_lock_image(store.layout(), &id).unwrap().is_some());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lease_needs_the_image_kernel_when_the_image_has_one() {
+        let root = temp_root("kernel");
+        let (store, id) = prepared(&root);
+        assert_eq!(
+            store.lease(&id, RootfsFormat::Erofs).unwrap().kernel(),
+            None
+        );
+        let mut r = record_with(&[]);
+        r.config.labels.insert(
+            sandbox_model::ImageConfig::KERNEL_LABEL.into(),
+            "/boot/vmlinux".into(),
+        );
+        write_image_record(store.layout(), &r).unwrap();
+        assert!(matches!(
+            store.lease(&id, RootfsFormat::Erofs),
+            Err(LeaseError::KernelNotFound)
+        ));
+        atomic_write(&store.layout().kernel(&id), b"k").unwrap();
+        let lease = store.lease(&id, RootfsFormat::Erofs).unwrap();
+        assert_eq!(lease.kernel(), Some(store.layout().kernel(&id).as_path()));
+        drop(lease);
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -10,10 +10,13 @@
 //! | 무엇 | 순서 |
 //! |---|---|
 //! | firecracker 실행 파일 | `SBX_FIRECRACKER` > 이 실행 파일 옆의 `firecracker` > PATH의 `firecracker` |
-//! | 게스트 커널 | `SBX_FIRECRACKER_KERNEL` > 이 실행 파일 옆의 `kernel` |
+//! | 기본 게스트 커널 | `SBX_FIRECRACKER_KERNEL` > 이 실행 파일 옆의 `kernel` |
 //!
 //! 커널은 sbx 게스트 약속(`executor-proto` 문서)의 기능을 갖춰야 한다. 특히 erofs, virtio-vsock, overlay.
-//! 둘 중 하나라도 없으면 `capabilities`가 실패하고 이유를 쓴다.
+//! firecracker와 기본 커널 중 하나라도 없으면 `capabilities`가 실패하고 이유를 쓴다.
+//!
+//! 이미지가 자기 커널을 담고 있으면 sbx가 그것을 `VmSpec::kernel`로 주고(`custom_kernel: true`), 그 커널로 부팅한다.
+//! Firecracker가 읽는 형식이어야 한다(x86_64는 ELF `vmlinux`, aarch64는 `Image`).
 //!
 //! # VM ([`config`])
 //!

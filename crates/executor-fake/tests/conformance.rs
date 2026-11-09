@@ -49,6 +49,7 @@ impl Dir {
     fn vm(&self) -> VmConfig {
         VmConfig {
             guest_init: self.0.join("initramfs"),
+            kernel: None,
             disks: vec![
                 Disk {
                     path: self.0.join("rootfs.erofs"),
@@ -200,12 +201,17 @@ fn launch_failure_is_reported_with_the_log_path() {
 fn broken_executors_are_rejected() {
     let d = Dir::new("broken");
     type Check = fn(&ExecutorError) -> bool;
-    let cases: [(&str, Check); 4] = [
+    let cases: [(&str, Check); 5] = [
         ("echo not-json", |e| matches!(e, ExecutorError::Invalid(_))),
         ("exit 3", |e| matches!(e, ExecutorError::Launch(_))),
         (
             r#"echo '{"version":99,"name":"x","arch":"amd64","rootfs_formats":[],"live_share":false,"snapshot":false,"max_disks":1}'"#,
-            |e| matches!(e, ExecutorError::Unsupported(_)),
+            |e| matches!(e, ExecutorError::Unsupported(m) if m.contains("speaks protocol 99")),
+        ),
+        // 버전이 다르면 모양이 달라도(옛 버전의 필드 구성) 버전 차이로 알린다.
+        (
+            r#"echo '{"version":1,"name":"old","arch":"amd64","rootfs_formats":[],"live_share":false,"snapshot":false,"max_disks":1}'"#,
+            |e| matches!(e, ExecutorError::Unsupported(m) if m.contains("old speaks protocol 1")),
         ),
         ("true", |e| matches!(e, ExecutorError::Invalid(_))),
     ];
