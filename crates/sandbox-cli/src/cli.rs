@@ -35,13 +35,9 @@ pub struct Cli {
     #[arg(long, global = true, env = "SBX_GUEST_INIT")]
     pub guest_init: Option<PathBuf>,
     /// 실행기 실행 파일 (`executor-proto` 규약). 경로가 아니면 PATH에서 찾는다.
-    #[arg(
-        long,
-        global = true,
-        default_value = "sbx-executor",
-        env = "SBX_EXECUTOR"
-    )]
-    pub executor: PathBuf,
+    /// 기본은 설치한 기본 실행기(`sbx executor use`), 없으면 PATH의 `sbx-executor`.
+    #[arg(long, global = true, env = "SBX_EXECUTOR")]
+    pub executor: Option<PathBuf>,
     /// detached 샌드박스를 소유할 shim 실행 파일. 기본은 sbx 옆의 `sbx-shim`, 없으면 PATH의 `sbx-shim`.
     #[arg(long, global = true, env = "SBX_SHIM")]
     pub shim: Option<PathBuf>,
@@ -85,6 +81,11 @@ pub enum Command {
         /// 이미지 참조 또는 ID.
         #[arg(required = true)]
         images: Vec<String>,
+    },
+    #[command(about = about("executor"))]
+    Executor {
+        #[command(subcommand)]
+        command: ExecutorCommand,
     },
     #[command(about = about("run"))]
     Run {
@@ -175,6 +176,34 @@ pub enum Command {
         follow: bool,
         /// 샌드박스 ID.
         id: String,
+    },
+}
+
+/// `executor` 아래 명령.
+#[derive(Debug, Subcommand)]
+pub enum ExecutorCommand {
+    /// 설치한 실행기를 보여준다 (기본 실행기에 *).
+    Ls,
+    /// 실행기를 설치한다. 설치한 실행기는 규약 버전과 아키텍처를 확인한다.
+    Install {
+        /// 묶음 디렉터리(맨 위에 sbx-executor) 또는 실행 파일 하나.
+        #[arg(long)]
+        from: PathBuf,
+        /// NAME@VERSION.
+        #[arg(value_name = "EXECUTOR")]
+        spec: String,
+    },
+    /// 기본 실행기를 정한다. 버전을 빼면 가장 높은 버전.
+    Use {
+        /// `NAME[@VERSION]`.
+        #[arg(value_name = "EXECUTOR")]
+        spec: String,
+    },
+    /// 실행기를 지운다.
+    Rm {
+        /// NAME@VERSION.
+        #[arg(value_name = "EXECUTOR")]
+        spec: String,
     },
 }
 
@@ -314,6 +343,12 @@ mod tests {
         assert_eq!(r.pull, PullPolicy::Missing);
         assert_eq!(r.rootfs_format, RootfsFormat::Erofs);
         assert_eq!(r.network, "none");
+    }
+
+    #[test]
+    fn definition_is_consistent() {
+        // 인자 이름 충돌 같은 정의 오류를 실행하기 전에 잡는다.
+        <Cli as clap::CommandFactory>::command().debug_assert();
     }
 
     #[test]

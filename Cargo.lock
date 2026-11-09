@@ -398,6 +398,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "executor-install"
+version = "0.0.0"
+
+[[package]]
 name = "executor-process"
 version = "0.0.0"
 dependencies = [
@@ -1325,6 +1329,7 @@ dependencies = [
  "clap",
  "crossterm",
  "executor-fake",
+ "executor-install",
  "executor-process",
  "sandbox-executor",
  "sandbox-image",

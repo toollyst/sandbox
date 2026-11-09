@@ -6,7 +6,7 @@
 //! |---|---|
 //! | 이미지 소스 | `sandbox-oci` (OCI 레지스트리) |
 //! | rootfs writer | `sandbox-rootfs`의 erofs |
-//! | 실행기 | `--executor <실행 파일>`(`SBX_EXECUTOR`, 기본 PATH의 `sbx-executor`): `executor-proto` 규약을 말하는 외부 실행기 |
+//! | 실행기 | `--executor <실행 파일>`(`SBX_EXECUTOR`) > 설치한 기본 실행기(`sbx executor use`, `<data_dir>/executors`) > PATH의 `sbx-executor`: `executor-proto` 규약을 말하는 외부 실행기 |
 //!
 //! | detached 소유 | `--shim <실행 파일>`(`SBX_SHIM`, 기본 sbx 옆의 `sbx-shim`, 없으면 PATH): `sandbox-shim` |
 //!
@@ -39,7 +39,7 @@ use sandbox_store::CacheLayout;
 
 use crate::attach::{self, attach};
 use crate::behavior::{self, ImageMatch, LookupError, RmiAction, RmiDecision, Step};
-use crate::cli::{AttachArgs, Cli, Command, ExecArgs, Format, RunArgs, StopArgs};
+use crate::cli::{AttachArgs, Cli, Command, ExecArgs, ExecutorCommand, Format, RunArgs, StopArgs};
 use crate::parse::{self, CpEndpoint};
 use crate::{dirs, guest};
 
@@ -133,6 +133,7 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
     let ctx = Ctx::new(&cli)?;
     match &cli.command {
         Command::Pull { platform, image } => ctx.pull(platform.as_deref(), image).await,
+        Command::Executor { command } => ctx.executor_cmd(command),
         Command::Prepare {
             rootfs_format,
             image,
@@ -187,7 +188,8 @@ struct Ctx {
     cache_dir: PathBuf,
     socket_dir: PathBuf,
     guest_init: Option<PathBuf>,
-    executor: PathBuf,
+    /// `--executor`로 준 것.
+    executor: Option<PathBuf>,
     shim: Option<PathBuf>,
     format: Format,
 }
@@ -277,7 +279,7 @@ impl Ctx {
         let sandbox = self.launcher()?.get(id).await?;
         let config = ShimConfig {
             runtime: self.runtime_config(true)?,
-            executor: self.executor.clone(),
+            executor: self.executor()?,
             remove_on_exit,
         };
         if !config.runtime.guest_init.is_file() {
@@ -339,7 +341,86 @@ impl Ctx {
 
     /// VM을 띄우는 일(`create`의 기능 확인, `start`)에 쓰는 실행 코어. 실행기의 capability를 받아 둔다.
     fn launcher(&self) -> AppResult<Runtime> {
-        self.runtime_with(Arc::new(ProcessExecutor::new(&self.executor)?), true)
+        self.runtime_with(Arc::new(ProcessExecutor::new(self.executor()?)?), true)
+    }
+
+    /// 설치된 실행기들 (`<data_dir>/executors`).
+    fn executors(&self) -> executor_install::Executors {
+        executor_install::Executors::new(self.data_dir.join("executors"))
+    }
+
+    /// 쓸 실행기: `--executor` > 설치한 기본 실행기 > PATH의 `sbx-executor`.
+    fn executor(&self) -> AppResult<PathBuf> {
+        if let Some(p) = &self.executor {
+            return Ok(p.clone());
+        }
+        Ok(match self.executors().default()? {
+            Some(i) => i.executable,
+            None => PathBuf::from("sbx-executor"),
+        })
+    }
+
+    /// `executor ...`.
+    fn executor_cmd(&self, c: &ExecutorCommand) -> AppResult<u8> {
+        use executor_install::Spec;
+        let ex = self.executors();
+        match c {
+            ExecutorCommand::Ls => {
+                let default = ex.default()?;
+                let list = ex.list()?;
+                if self.json() {
+                    let v: Vec<_> = list
+                        .iter()
+                        .map(|i| {
+                            serde_json::json!({
+                                "name": i.name,
+                                "version": i.version,
+                                "default": default.as_ref() == Some(i),
+                                "path": i.executable,
+                            })
+                        })
+                        .collect();
+                    println!("{}", serde_json::to_string_pretty(&v)?);
+                    return Ok(0);
+                }
+                println!("{:<2}{:<20} {:<14} PATH", "", "NAME", "VERSION");
+                for i in &list {
+                    let mark = if default.as_ref() == Some(i) { "*" } else { "" };
+                    println!(
+                        "{mark:<2}{:<20} {:<14} {}",
+                        i.name,
+                        i.version,
+                        i.executable.display()
+                    );
+                }
+                Ok(0)
+            }
+            ExecutorCommand::Install { from, spec } => {
+                let spec: Spec = spec.parse()?;
+                let arch = host_arch()?;
+                let installed = ex.install(&spec, from, |exe| {
+                    let p = ProcessExecutor::new(exe).map_err(|e| e.to_string())?;
+                    let caps = p.capabilities();
+                    if caps.arch != arch {
+                        return Err(format!(
+                            "executor {} runs {:?} guests; this host is {arch:?}",
+                            caps.name, caps.arch
+                        ));
+                    }
+                    Ok(())
+                })?;
+                println!("{installed}");
+                Ok(0)
+            }
+            ExecutorCommand::Use { spec } => {
+                println!("{}", ex.set_default(&spec.parse()?)?);
+                Ok(0)
+            }
+            ExecutorCommand::Rm { spec } => {
+                println!("{}", ex.remove(&spec.parse()?)?);
+                Ok(0)
+            }
+        }
     }
 
     /// 이미지 이름을 찾는다. 없으면 `None`, 그 밖의 문제는 오류.

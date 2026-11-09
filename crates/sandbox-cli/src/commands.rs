@@ -58,6 +58,11 @@ pub const COMMANDS: &[Command] = &[
         "참조를 지우거나 이미지를 지운다 (쓰는 샌드박스가 있으면 거부, -f는 정지된 것만 무시)",
     ),
     cmd(
+        "executor",
+        Group::Manage,
+        "실행기를 설치하고 고른다 (ls, install, use, rm)",
+    ),
+    cmd(
         "run",
         Group::Run,
         "샌드박스를 만들고 시작한다 (--pull=missing이 기본)",

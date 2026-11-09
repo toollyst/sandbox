@@ -28,6 +28,7 @@ sandbox-manage.workspace = true
 sandbox-oci.workspace = true
 sandbox-rootfs = { workspace = true, features = ["erofs"] }
 executor-process.workspace = true
+executor-install.workspace = true
 
 [dev-dependencies]
 # 테스트 실행 파일이 곧 가짜 실행기다(tests/e2e.rs).

@@ -87,6 +87,10 @@ mod unix {
         ),
         ("kill_wait_and_restart", kill_wait_and_restart),
         ("attach_to_a_detached_sandbox", attach_to_a_detached_sandbox),
+        (
+            "installed_executor_is_used_by_default",
+            installed_executor_is_used_by_default,
+        ),
         ("attach_tty_and_signal_proxy", attach_tty_and_signal_proxy),
         ("volume_is_shared_live", volume_is_shared_live),
         ("network_allow_list", network_allow_list),
@@ -925,5 +929,52 @@ mod unix {
         let out = wait_with_timeout(client, Duration::from_secs(20));
         assert_eq!(out.status.code(), Some(7), "{}", text(&out.stderr));
         assert!(reader.text().ends_with("term\n"), "{:?}", reader.text());
+    }
+
+    fn installed_executor_is_used_by_default() {
+        let e = Env::new();
+        let me = std::env::current_exe().unwrap();
+        let without = |args: &[&str]| {
+            let mut c = e.cmd(args);
+            c.env_remove("SBX_EXECUTOR");
+            c.output().unwrap()
+        };
+        // 설치한 것이 없으면 PATH의 sbx-executor (여기에는 없다).
+        let o = without(&["run", "--rm", IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(125), "{}", text(&o.stderr));
+        // 설치: 규약을 확인하고, 처음 설치한 것이 기본이 된다.
+        let o = without(&[
+            "executor",
+            "install",
+            "--from",
+            me.to_str().unwrap(),
+            "fake@1.0",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "fake@1.0\n");
+        let o = without(&["executor", "ls"]);
+        assert!(text(&o.stdout).contains("* fake"), "{}", text(&o.stdout));
+        let o = without(&["run", "--rm", IMAGE, "echo", "via", "installed"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "via installed\n");
+        // 규약을 말하지 않는 것은 설치하지 않는다.
+        let bad = e.path("not-an-executor");
+        std::fs::write(&bad, "#!/bin/sh\nexit 3\n").unwrap();
+        let o = without(&[
+            "executor",
+            "install",
+            "--from",
+            bad.to_str().unwrap(),
+            "bad@1",
+        ]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(!text(&without(&["executor", "ls"]).stdout).contains("bad"));
+        // 지우면 기본도 없어진다.
+        assert_eq!(
+            without(&["executor", "rm", "fake@1.0"]).status.code(),
+            Some(0)
+        );
+        let o = without(&["run", "--rm", IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(125));
     }
 }

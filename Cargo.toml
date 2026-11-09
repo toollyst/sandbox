@@ -42,4 +42,5 @@ sandbox-oci = { path = "crates/sandbox-oci" }
 executor-fake = { path = "crates/executor-fake" }
 executor-proto = { path = "crates/executor-proto" }
 executor-process = { path = "crates/executor-process" }
+executor-install = { path = "crates/executor-install" }
 sandbox-shim = { path = "crates/sandbox-shim" }

@@ -83,6 +83,8 @@ const RULES: &[(&str, Allowed)] = &[
         "executor-firecracker",
         Allowed::Workspace(&["executor-proto"]),
     ),
+    // 설치된 실행기 관리. std만 쓴다.
+    ("executor-install", Allowed::Strict(&[])),
     (
         "sandbox-shim",
         Allowed::Workspace(&[
