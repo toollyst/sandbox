@@ -157,7 +157,7 @@ lookups fail at once instead of hanging.
 **Images.** `pull` (with a progress bar), `prepare` (build the disk image ahead of time), `images [-q]` and `rmi [-f]`.
 `run` pulls and prepares on first use (`--pull=missing|always|never`).
 
-**Scripting.** `--format json` on `ps`, `inspect`, `images`, `executor ls` and `executor search`. `-q` prints IDs only.
+**Scripting.** `--format json` on every command that reports sandboxes, images or executors (commands that stream a process's own output refuse it), with errors as one JSON line on stderr. The shapes and their JSON Schema are in [docs/developers/cli-output.md](docs/developers/cli-output.md). `-q` prints IDs only.
 Exit codes follow Docker: 125 when `sbx` fails, 126 when the command can't run, 127 when it isn't found, and the
 command's own code otherwise.
 

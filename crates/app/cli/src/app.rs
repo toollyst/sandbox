@@ -21,8 +21,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde_json::json;
-
 use sbx_executor::Executor;
 use sbx_executor_process::{ConnectOnly, ProcessExecutor};
 use sbx_image::Platform;
@@ -40,6 +38,7 @@ use sbx_store::CacheLayout;
 use crate::attach::{self, attach};
 use crate::behavior::{self, ImageMatch, LookupError, RmiAction, RmiDecision, Step};
 use crate::cli::{AttachArgs, Cli, Command, ExecArgs, ExecutorCommand, Format, RunArgs, StopArgs};
+use crate::output;
 use crate::parse::{self, CpEndpoint};
 use crate::progress::Status;
 use crate::{dirs, executors, guest, host};
@@ -134,7 +133,7 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
                 return Err(msg("--rm is only supported with run"));
             }
             let id = ctx.create(a).await?;
-            println!("{id}");
+            ctx.print_sandbox_ref(&id, a.name.clone())?;
             Ok(0)
         }
         Command::Start {
@@ -147,7 +146,19 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
             } else {
                 let resolved = ctx.runtime()?.resolve(id).await?;
                 ctx.start_detached(&resolved, false).await?;
-                println!("{id}");
+                if ctx.json() {
+                    let name = ctx
+                        .runtime()?
+                        .get(&resolved)
+                        .await?
+                        .info()
+                        .spec
+                        .name
+                        .clone();
+                    ctx.print_sandbox_ref(&resolved, name)?;
+                } else {
+                    println!("{id}");
+                }
                 Ok(0)
             }
         }
@@ -228,6 +239,19 @@ impl Ctx {
 
     fn json(&self) -> bool {
         self.format == Format::Json
+    }
+
+    /// 만들거나 시작한 샌드박스: ID, JSON이면 [`output::SandboxRef`].
+    fn print_sandbox_ref(&self, id: &SandboxId, name: Option<String>) -> AppResult<()> {
+        if self.json() {
+            output::print_value(&output::SandboxRef {
+                id: id.to_string(),
+                name,
+            })?;
+        } else {
+            println!("{id}");
+        }
+        Ok(())
     }
 
     fn manager(&self) -> AppResult<Manager> {
@@ -443,10 +467,11 @@ impl Ctx {
             .await?;
         status.clear();
         if self.json() {
-            println!(
-                "{}",
-                json!({"reference": info.record.reference, "id": info.record.id, "arch": info.record.arch})
-            );
+            output::print_value(&output::Pulled {
+                reference: info.record.reference.clone(),
+                id: info.record.id.to_string(),
+                arch: info.record.arch.oci_name().to_owned(),
+            })?;
         } else {
             println!("{}: pulled {}", info.record.reference, info.record.id);
         }
@@ -461,10 +486,11 @@ impl Ctx {
         let built = m.prepare(found.id(), format).await?;
         status.clear();
         if self.json() {
-            println!(
-                "{}",
-                json!({"id": found.id(), "format": format, "built": built})
-            );
+            output::print_value(&output::Prepared {
+                id: found.id().to_string(),
+                rootfs_format: format.to_string(),
+                built,
+            })?;
         } else if built {
             println!("{}: {format} rootfs prepared", short(found.id()));
         } else {
@@ -505,30 +531,40 @@ impl Ctx {
             (None, None) => "none installed (sbx executor install firecracker)".into(),
         };
         if self.json() {
-            let caps = match &caps {
-                Ok(c) => json!({
-                    "name": c.name,
-                    "arch": c.arch,
-                    "rootfs_formats": c.rootfs_formats,
-                    "live_share": c.live_share,
-                    "custom_kernel": c.custom_kernel,
-                }),
-                Err(e) => json!({ "error": e }),
+            let (capabilities, error) = match &caps {
+                Ok(c) => (
+                    Some(output::Capabilities {
+                        name: c.name.to_owned(),
+                        arch: c.arch.oci_name().to_owned(),
+                        rootfs_formats: c.rootfs_formats.iter().map(|f| f.to_string()).collect(),
+                        live_share: c.live_share,
+                        custom_kernel: c.custom_kernel,
+                    }),
+                    None,
+                ),
+                Err(e) => (None, Some(e.clone())),
             };
-            let v = json!({
-                "version": env!("CARGO_PKG_VERSION"),
-                "os": host::os(),
-                "arch": arch,
-                "hypervisor": { "usable": vm_ok, "detail": hypervisor },
-                "executor": { "name": executor_name, "program": program, "capabilities": caps },
-                "guest_init": guest,
-                "data_dir": self.data_dir,
-                "cache_dir": self.cache_dir,
-                "sandboxes": sandboxes.len(),
-                "running": running,
-                "images": images,
-            });
-            println!("{}", serde_json::to_string_pretty(&v)?);
+            output::print_value(&output::Info {
+                version: env!("CARGO_PKG_VERSION").to_owned(),
+                os: host::os(),
+                arch: arch.oci_name().to_owned(),
+                hypervisor: output::Hypervisor {
+                    usable: vm_ok,
+                    detail: hypervisor,
+                },
+                executor: output::ExecutorInfo {
+                    name: executor_name,
+                    program: program.display().to_string(),
+                    capabilities,
+                    error,
+                },
+                guest_init: guest,
+                data_dir: self.data_dir.display().to_string(),
+                cache_dir: self.cache_dir.display().to_string(),
+                sandboxes: sandboxes.len(),
+                running,
+                images,
+            })?;
             return Ok(0);
         }
         println!("sbx {}", env!("CARGO_PKG_VERSION"));
@@ -575,18 +611,16 @@ impl Ctx {
         if self.json() {
             let list: Vec<_> = images
                 .iter()
-                .map(|i| {
-                    json!({
-                        "id": i.record.id,
-                        "refs": i.refs,
-                        "arch": i.record.arch,
-                        "prepared": i.prepared,
-                        "compressed_size": i.record.compressed_size(),
-                        "ignored_fields": i.record.ignored_fields,
-                    })
+                .map(|i| output::Image {
+                    id: i.record.id.to_string(),
+                    references: i.refs.clone(),
+                    arch: i.record.arch.oci_name().to_owned(),
+                    prepared: i.prepared.iter().map(|f| f.to_string()).collect(),
+                    compressed_size: i.record.compressed_size(),
+                    ignored_fields: i.record.ignored_fields.clone(),
                 })
                 .collect();
-            println!("{}", serde_json::to_string_pretty(&list)?);
+            output::print_value(&list)?;
             return Ok(0);
         }
         println!(
@@ -625,9 +659,13 @@ impl Ctx {
         let mut failed = 0;
         for name in names {
             match self.rmi_one(&m, &sandboxes, name, force) {
-                Ok(lines) => lines.iter().for_each(|l| println!("{l}")),
+                Ok(r) if self.json() => output::print_line(&r)?,
+                Ok(r) => {
+                    r.untagged.iter().for_each(|u| println!("Untagged: {u}"));
+                    r.deleted.iter().for_each(|d| println!("Deleted: {d}"));
+                }
                 Err(e) => {
-                    eprintln!("sbx: {name}: {e}");
+                    self.target_error(name, &e);
                     failed += 1;
                 }
             }
@@ -647,8 +685,13 @@ impl Ctx {
         sandboxes: &[SandboxInfo],
         name: &str,
         force: bool,
-    ) -> AppResult<Vec<String>> {
+    ) -> AppResult<output::Removed> {
         let found = self.require(m, name)?;
+        let removed = |untagged: Vec<String>, deleted: Vec<String>| output::Removed {
+            target: name.to_owned(),
+            untagged,
+            deleted,
+        };
         let ref_count = m
             .store()
             .refs()?
@@ -658,7 +701,7 @@ impl Ctx {
         match behavior::rmi_action(&found, ref_count, force) {
             RmiAction::Untag(r) => {
                 m.untag(&r)?;
-                Ok(vec![format!("Untagged: {r}")])
+                Ok(removed(vec![r.to_string()], Vec::new()))
             }
             RmiAction::RefuseMultipleRefs(id) => Err(msg(format!(
                 "image {} is referenced by {ref_count} references; remove them or use -f",
@@ -672,14 +715,12 @@ impl Ctx {
                 match behavior::rmi_decision(ids(running), ids(stopped), force) {
                     RmiDecision::Remove => {
                         let r = m.remove(&id)?;
-                        let mut lines: Vec<String> = r
-                            .untagged
-                            .iter()
-                            .map(|u| format!("Untagged: {u}"))
-                            .collect();
-                        lines.push(format!("Deleted: {id}"));
-                        lines.extend(r.deleted_layers.iter().map(|d| format!("Deleted: {d}")));
-                        Ok(lines)
+                        let mut deleted = vec![id.to_string()];
+                        deleted.extend(r.deleted_layers.iter().map(|d| d.to_string()));
+                        Ok(removed(
+                            r.untagged.iter().map(|u| u.to_string()).collect(),
+                            deleted,
+                        ))
                     }
                     RmiDecision::RefuseRunning(ids) => Err(msg(format!(
                         "image is used by running sandbox(es): {}",
@@ -838,7 +879,7 @@ impl Ctx {
                 }
                 return Err(fail(e));
             }
-            println!("{id}");
+            self.print_sandbox_ref(&id, a.name.clone())?;
             return Ok(0);
         }
         let io = attach::io_mode(a.interactive, a.tty).map_err(|e| fail(msg(e)))?;
@@ -959,7 +1000,7 @@ impl Ctx {
     async fn stop(&self, a: &StopArgs) -> AppResult<u8> {
         let rt = self.runtime()?;
         let signal = a.signal.as_deref().map(str::parse::<Signal>).transpose()?;
-        each(&rt, &a.ids, async |id| {
+        self.each(&rt, &a.ids, async |id| {
             let s = rt.get(&id).await?;
             let timeout = behavior::stop_timeout(a.time, s.info().spec.stop.timeout_secs);
             s.stop(signal, timeout).await?;
@@ -972,7 +1013,7 @@ impl Ctx {
     async fn restart(&self, a: &StopArgs) -> AppResult<u8> {
         let rt = self.runtime()?;
         let signal = a.signal.as_deref().map(str::parse::<Signal>).transpose()?;
-        each(&rt, &a.ids, async |id| {
+        self.each(&rt, &a.ids, async |id| {
             let s = rt.get(&id).await?;
             if s.state() == State::Running {
                 let timeout = behavior::stop_timeout(a.time, s.info().spec.stop.timeout_secs);
@@ -986,7 +1027,7 @@ impl Ctx {
     async fn kill(&self, signal: &str, ids: &[String]) -> AppResult<u8> {
         let rt = self.runtime()?;
         let signal: Signal = signal.parse()?;
-        each(&rt, ids, async |id| {
+        self.each(&rt, ids, async |id| {
             rt.get(&id).await?.kill(signal).await?;
             Ok(())
         })
@@ -996,15 +1037,15 @@ impl Ctx {
     /// `wait`: 샌드박스마다 종료 코드를 한 줄씩 출력한다.
     async fn wait(&self, ids: &[String]) -> AppResult<u8> {
         let rt = self.runtime()?;
-        each_print(&rt, ids, async |id| {
-            Ok(rt.get(&id).await?.wait().await?.to_string())
+        self.each_with(&rt, ids, async |id| {
+            Ok(Some(rt.get(&id).await?.wait().await?))
         })
         .await
     }
 
     async fn rm(&self, force: bool, ids: &[String]) -> AppResult<u8> {
         let rt = self.runtime()?;
-        each(&rt, ids, async |id| {
+        self.each(&rt, ids, async |id| {
             let sandbox = rt.get(&id).await?;
             if sandbox.state() == State::Running {
                 if !force {
@@ -1039,8 +1080,8 @@ impl Ctx {
             return Ok(0);
         }
         if self.json() {
-            let v: Vec<_> = list.iter().map(info_json).collect();
-            println!("{}", serde_json::to_string_pretty(&v)?);
+            let v: Vec<_> = list.iter().map(|s| self.sandbox_json(s)).collect();
+            output::print_value(&v)?;
             return Ok(0);
         }
         println!(
@@ -1088,7 +1129,77 @@ impl Ctx {
 
     async fn inspect(&self, id: &str) -> AppResult<u8> {
         let info = self.runtime()?.find(id).await?.info().clone();
-        println!("{}", serde_json::to_string_pretty(&info_json(&info))?);
+        output::print_value(&self.sandbox_json(&info))?;
+        Ok(0)
+    }
+
+    /// [`output::Sandbox`]. 이미지 참조는 캐시에서 찾는다(지워졌으면 `null`).
+    fn sandbox_json(&self, s: &SandboxInfo) -> output::Sandbox {
+        let reference = sbx_store::Store::open(&self.cache_dir)
+            .image(&s.spec.image)
+            .ok()
+            .map(|r| r.reference);
+        output::Sandbox::new(s, reference)
+    }
+
+    /// 여러 대상 중 하나의 오류: `sbx: 대상: 오류`, JSON이면 [`output::ErrorLine`].
+    fn target_error(&self, target: &str, e: &dyn fmt::Display) {
+        if self.json() {
+            output::print_error(Some(target), &e.to_string(), None);
+        } else {
+            eprintln!("sbx: {target}: {e}");
+        }
+    }
+
+    /// ID(또는 그 앞부분, 이름) 여러 개에 같은 동작을 한다. 하나가 실패해도 나머지를 계속하고,
+    /// 성공한 것은 받은 그대로 출력한다(Docker와 같다). JSON이면 [`output::Done`] 한 줄씩.
+    async fn each(
+        &self,
+        rt: &Runtime,
+        ids: &[String],
+        f: impl AsyncFn(SandboxId) -> AppResult<()>,
+    ) -> AppResult<u8> {
+        self.each_with(rt, ids, async |id| f(id).await.map(|()| None))
+            .await
+    }
+
+    /// [`each`](Self::each)와 같고, `f`가 종료 코드를 돌려주면 받은 ID 대신 그 코드를 출력한다
+    /// (JSON이면 [`output::Exited`]).
+    async fn each_with(
+        &self,
+        rt: &Runtime,
+        ids: &[String],
+        f: impl AsyncFn(SandboxId) -> AppResult<Option<i32>>,
+    ) -> AppResult<u8> {
+        let mut failed = 0;
+        for raw in ids {
+            let result = match rt.resolve(raw).await {
+                Ok(id) => f(id.clone()).await.map(|code| (id, code)),
+                Err(e) => Err(e.into()),
+            };
+            match result {
+                Ok((id, code)) if self.json() => {
+                    let (target, id) = (raw.clone(), id.to_string());
+                    match code {
+                        Some(exit_code) => output::print_line(&output::Exited {
+                            target,
+                            id,
+                            exit_code,
+                        })?,
+                        None => output::print_line(&output::Done { target, id })?,
+                    }
+                }
+                Ok((_, Some(code))) => println!("{code}"),
+                Ok((_, None)) => println!("{raw}"),
+                Err(e) => {
+                    self.target_error(raw, &e);
+                    failed += 1;
+                }
+            }
+        }
+        if failed > 0 {
+            return Err(msg(format!("{failed} of {} sandbox(es) failed", ids.len())));
+        }
         Ok(0)
     }
 }
@@ -1107,18 +1218,6 @@ fn env_values(files: &[PathBuf], env: &[String]) -> AppResult<Vec<(String, Strin
     Ok(parse::env(&all, |k| std::env::var(k).ok()))
 }
 
-fn info_json(s: &SandboxInfo) -> serde_json::Value {
-    json!({
-        "id": s.id,
-        "name": s.spec.name,
-        "created": s.created.map(behavior::rfc3339),
-        "state": s.state,
-        "exit_code": s.exit_code,
-        "error": s.error,
-        "spec": s.spec,
-    })
-}
-
 fn join_ids(ids: &[SandboxId]) -> String {
     ids.iter()
         .map(SandboxId::as_str)
@@ -1130,49 +1229,4 @@ fn join_ids(ids: &[SandboxId]) -> String {
 fn short_id(id: &SandboxId) -> &str {
     let s = id.as_str();
     &s[..s.len().min(12)]
-}
-
-/// ID(또는 그 앞부분) 여러 개에 같은 동작을 한다. 하나가 실패해도 나머지를 계속하고,
-/// 성공한 것은 받은 그대로 출력한다(Docker와 같다).
-async fn each(
-    rt: &Runtime,
-    ids: &[String],
-    f: impl AsyncFn(SandboxId) -> AppResult<()>,
-) -> AppResult<u8> {
-    each_with(rt, ids, async |id| f(id).await.map(|()| None)).await
-}
-
-/// [`each`]와 같고, 성공하면 받은 ID 대신 `f`가 돌려준 줄을 출력한다.
-async fn each_print(
-    rt: &Runtime,
-    ids: &[String],
-    f: impl AsyncFn(SandboxId) -> AppResult<String>,
-) -> AppResult<u8> {
-    each_with(rt, ids, async |id| f(id).await.map(Some)).await
-}
-
-/// `f`가 `None`이면 받은 ID를, `Some`이면 그 줄을 출력한다.
-async fn each_with(
-    rt: &Runtime,
-    ids: &[String],
-    f: impl AsyncFn(SandboxId) -> AppResult<Option<String>>,
-) -> AppResult<u8> {
-    let mut failed = 0;
-    for raw in ids {
-        let result = match rt.resolve(raw).await {
-            Ok(id) => f(id).await,
-            Err(e) => Err(e.into()),
-        };
-        match result {
-            Ok(line) => println!("{}", line.as_deref().unwrap_or(raw)),
-            Err(e) => {
-                eprintln!("sbx: {raw}: {e}");
-                failed += 1;
-            }
-        }
-    }
-    if failed > 0 {
-        return Err(msg(format!("{failed} of {} sandbox(es) failed", ids.len())));
-    }
-    Ok(0)
 }

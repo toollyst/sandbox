@@ -8,10 +8,13 @@ This is the guide for working on `sbx` itself. If you only want to use it, the [
 | [crates.md](crates.md) | Know what each folder under `crates/` does, what it may depend on, and what it must not know |
 | [how-it-works.md](how-it-works.md) | Follow one `sbx run` from the command line into the VM and back |
 | [testing-and-releasing.md](testing-and-releasing.md) | Know which test catches what, what CI runs, and how a release is made |
+| [cli-output.md](cli-output.md) | Read or change what `--format json` prints (the contract scripts and tools rely on) |
 
 The rules themselves live in code (doc comments, types, tests and `cargo xtask check-deps`), not in these pages. These
 pages explain the shape and point to the code. When the two disagree, the code is right, and the page is a bug. The
-dependency map in [crates.md](crates.md) is generated, and CI fails when it is stale.
+dependency map in [crates.md](crates.md) is generated, and CI fails when it is stale. So are
+[cli-output.md](cli-output.md) and its JSON Schema: `cargo test` fails when they differ from the output types in
+`crates/app/cli/src/output.rs`, and `SBX_BLESS=1 cargo test -p sbx-cli --lib output` rewrites them.
 
 Doc comments and the design notes in [`docs/plan/`](../plan/) are written in Korean. The developer guide, the README and
 everything a user sees (CLI help, errors) are in English.

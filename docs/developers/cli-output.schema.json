@@ -1,0 +1,859 @@
+{
+  "$defs": {
+    "AvailableExecutor": {
+      "additionalProperties": false,
+      "description": "An executor available from a repository for this host (`executor search`).",
+      "properties": {
+        "architecture": {
+          "description": "Architecture of the bundle (OCI terms).",
+          "type": "string"
+        },
+        "name": {
+          "description": "Name.",
+          "type": "string"
+        },
+        "os": {
+          "description": "Operating system of the bundle.",
+          "type": "string"
+        },
+        "protocol": {
+          "description": "Executor protocol version it speaks.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "repository": {
+          "description": "Repository name.",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "SHA-256 of the bundle, hex.",
+          "type": "string"
+        },
+        "size": {
+          "description": "Bundle size in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "url": {
+          "description": "Bundle URL.",
+          "type": "string"
+        },
+        "version": {
+          "description": "Version.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "protocol",
+        "repository",
+        "os",
+        "architecture",
+        "url",
+        "sha256",
+        "size"
+      ],
+      "type": "object"
+    },
+    "Capabilities": {
+      "additionalProperties": false,
+      "description": "What an executor supports.",
+      "properties": {
+        "arch": {
+          "description": "Guest architecture (OCI terms).",
+          "type": "string"
+        },
+        "custom_kernel": {
+          "description": "Whether it can boot a kernel shipped in the image.",
+          "type": "boolean"
+        },
+        "live_share": {
+          "description": "Whether it can share host folders live (`-v`, bind).",
+          "type": "boolean"
+        },
+        "name": {
+          "description": "Executor name.",
+          "type": "string"
+        },
+        "rootfs_formats": {
+          "description": "Root filesystem formats it can attach.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "arch",
+        "rootfs_formats",
+        "live_share",
+        "custom_kernel"
+      ],
+      "type": "object"
+    },
+    "Done": {
+      "additionalProperties": false,
+      "description": "One sandbox that `stop`, `restart`, `kill` or `rm` acted on.",
+      "properties": {
+        "id": {
+          "description": "Full sandbox ID.",
+          "type": "string"
+        },
+        "target": {
+          "description": "The argument as given (name, ID or ID prefix).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "id"
+      ],
+      "type": "object"
+    },
+    "ErrorBody": {
+      "additionalProperties": false,
+      "description": "What went wrong.",
+      "properties": {
+        "exit_code": {
+          "description": "The exit code sbx ends with. Only on the last line, when the whole command failed.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "message": {
+          "description": "Human-readable message. Its wording may change.",
+          "type": "string"
+        },
+        "target": {
+          "description": "The argument (sandbox or image) this error is about, when a command takes several and this one failed.\nThe others still ran.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "type": "object"
+    },
+    "ErrorLine": {
+      "additionalProperties": false,
+      "description": "An error, written to stderr as one line.",
+      "properties": {
+        "error": {
+          "$ref": "#/$defs/ErrorBody",
+          "description": "The error."
+        }
+      },
+      "required": [
+        "error"
+      ],
+      "type": "object"
+    },
+    "ExecutorInfo": {
+      "additionalProperties": false,
+      "description": "The executor sbx would use.",
+      "properties": {
+        "capabilities": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Capabilities"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What it supports. Null if it could not be asked (see `error`)."
+        },
+        "error": {
+          "description": "Why it could not be asked.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "`name@version` of the installed default, or the `--executor` path.",
+          "type": "string"
+        },
+        "program": {
+          "description": "Executable that would run.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "program"
+      ],
+      "type": "object"
+    },
+    "ExecutorRef": {
+      "additionalProperties": false,
+      "description": "An executor by name and version (`executor install`, `use`, `rm`).",
+      "properties": {
+        "name": {
+          "description": "Name.",
+          "type": "string"
+        },
+        "version": {
+          "description": "Version.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "type": "object"
+    },
+    "Exited": {
+      "additionalProperties": false,
+      "description": "One sandbox that `wait` waited for.",
+      "properties": {
+        "exit_code": {
+          "description": "Exit code of the main process.",
+          "format": "int32",
+          "type": "integer"
+        },
+        "id": {
+          "description": "Full sandbox ID.",
+          "type": "string"
+        },
+        "target": {
+          "description": "The argument as given.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "id",
+        "exit_code"
+      ],
+      "type": "object"
+    },
+    "Hypervisor": {
+      "additionalProperties": false,
+      "description": "Virtualization support.",
+      "properties": {
+        "detail": {
+          "description": "What was found, human-readable.",
+          "type": "string"
+        },
+        "usable": {
+          "description": "Whether VMs can run.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "usable",
+        "detail"
+      ],
+      "type": "object"
+    },
+    "Image": {
+      "additionalProperties": false,
+      "description": "A downloaded image (`images`).",
+      "properties": {
+        "arch": {
+          "description": "Architecture in OCI terms.",
+          "type": "string"
+        },
+        "compressed_size": {
+          "description": "Sum of the compressed layer sizes, in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "id": {
+          "description": "Image ID.",
+          "type": "string"
+        },
+        "ignored_fields": {
+          "description": "Image config fields sbx does not apply.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "prepared": {
+          "description": "Root filesystem formats that are prepared.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "references": {
+          "description": "Normalized references that point to this image. Empty if none does.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "references",
+        "arch",
+        "prepared",
+        "compressed_size",
+        "ignored_fields"
+      ],
+      "type": "object"
+    },
+    "Info": {
+      "additionalProperties": false,
+      "description": "Host and installation diagnostics (`info`).",
+      "properties": {
+        "arch": {
+          "description": "Host architecture (OCI terms).",
+          "type": "string"
+        },
+        "cache_dir": {
+          "description": "Cache directory.",
+          "type": "string"
+        },
+        "data_dir": {
+          "description": "Data directory.",
+          "type": "string"
+        },
+        "executor": {
+          "$ref": "#/$defs/ExecutorInfo",
+          "description": "The executor sbx would use."
+        },
+        "guest_init": {
+          "description": "Guest init in use: a path, or `embedded in sbx`.",
+          "type": "string"
+        },
+        "hypervisor": {
+          "$ref": "#/$defs/Hypervisor",
+          "description": "Whether this host can run VMs."
+        },
+        "images": {
+          "description": "Number of images.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "os": {
+          "description": "Host operating system, human-readable.",
+          "type": "string"
+        },
+        "running": {
+          "description": "Number of running sandboxes.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sandboxes": {
+          "description": "Number of sandboxes.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "description": "sbx version.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "os",
+        "arch",
+        "hypervisor",
+        "executor",
+        "guest_init",
+        "data_dir",
+        "cache_dir",
+        "sandboxes",
+        "running",
+        "images"
+      ],
+      "type": "object"
+    },
+    "InstalledExecutor": {
+      "additionalProperties": false,
+      "description": "An installed executor (`executor ls`).",
+      "properties": {
+        "default": {
+          "description": "Whether it is the default (`executor use`).",
+          "type": "boolean"
+        },
+        "name": {
+          "description": "Name.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Path of its executable.",
+          "type": "string"
+        },
+        "version": {
+          "description": "Version.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "default",
+        "path"
+      ],
+      "type": "object"
+    },
+    "Mount": {
+      "additionalProperties": false,
+      "description": "A folder shared with the host.",
+      "properties": {
+        "destination": {
+          "description": "Guest path.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/MountType",
+          "description": "`bind` (live) or `copy` (copied in at start)."
+        },
+        "readonly": {
+          "description": "Read-only in the guest.",
+          "type": "boolean"
+        },
+        "source": {
+          "description": "Host path.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "destination",
+        "kind",
+        "readonly"
+      ],
+      "type": "object"
+    },
+    "MountType": {
+      "description": "How a folder is shared.",
+      "oneOf": [
+        {
+          "const": "bind",
+          "description": "Live share.",
+          "type": "string"
+        },
+        {
+          "const": "copy",
+          "description": "Copied in when the sandbox starts.",
+          "type": "string"
+        }
+      ]
+    },
+    "Network": {
+      "additionalProperties": false,
+      "description": "Network access.",
+      "properties": {
+        "allow": {
+          "description": "`HOST:PORT` rules (`--allow`). Empty for `none`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "mode": {
+          "$ref": "#/$defs/NetworkMode",
+          "description": "`none` or `allow`."
+        }
+      },
+      "required": [
+        "mode",
+        "allow"
+      ],
+      "type": "object"
+    },
+    "NetworkMode": {
+      "description": "Network mode (`--network`).",
+      "oneOf": [
+        {
+          "const": "none",
+          "description": "No network.",
+          "type": "string"
+        },
+        {
+          "const": "allow",
+          "description": "Only TCP to the allowed `HOST:PORT`s.",
+          "type": "string"
+        }
+      ]
+    },
+    "Prepared": {
+      "additionalProperties": false,
+      "description": "A root filesystem that is ready (`prepare`).",
+      "properties": {
+        "built": {
+          "description": "Whether it was built now (`false`: it already existed).",
+          "type": "boolean"
+        },
+        "id": {
+          "description": "Image ID.",
+          "type": "string"
+        },
+        "rootfs_format": {
+          "description": "Root filesystem format, e.g. `erofs`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "rootfs_format",
+        "built"
+      ],
+      "type": "object"
+    },
+    "Process": {
+      "additionalProperties": false,
+      "description": "A process to run.",
+      "properties": {
+        "args": {
+          "description": "argv.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "cwd": {
+          "description": "Working directory in the guest.",
+          "type": "string"
+        },
+        "env": {
+          "description": "Environment, `NAME=value`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "user": {
+          "description": "User (and group), as `-u` takes it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "args",
+        "env",
+        "cwd",
+        "user"
+      ],
+      "type": "object"
+    },
+    "Pulled": {
+      "additionalProperties": false,
+      "description": "An image that was downloaded (`pull`).",
+      "properties": {
+        "arch": {
+          "description": "Architecture in OCI terms (`amd64`, `arm64`).",
+          "type": "string"
+        },
+        "id": {
+          "description": "Image ID (`sha256:…` of the image config).",
+          "type": "string"
+        },
+        "reference": {
+          "description": "Normalized reference, e.g. `docker.io/library/alpine:3.20`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reference",
+        "id",
+        "arch"
+      ],
+      "type": "object"
+    },
+    "Removed": {
+      "additionalProperties": false,
+      "description": "The result for one image given to `rmi`.",
+      "properties": {
+        "deleted": {
+          "description": "Image ID and layer digests deleted. Empty if only a reference was removed.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "target": {
+          "description": "The argument as given.",
+          "type": "string"
+        },
+        "untagged": {
+          "description": "References removed.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "target",
+        "untagged",
+        "deleted"
+      ],
+      "type": "object"
+    },
+    "Repository": {
+      "additionalProperties": false,
+      "description": "An executor repository (`executor repo ls`, `add`, `rm`).",
+      "properties": {
+        "name": {
+          "description": "Name.",
+          "type": "string"
+        },
+        "url": {
+          "description": "URL. The index is `<url>/index.json`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "url"
+      ],
+      "type": "object"
+    },
+    "Resources": {
+      "additionalProperties": false,
+      "description": "VM size.",
+      "properties": {
+        "memory_mib": {
+          "description": "Memory in MiB.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "scratch_disk_mib": {
+          "description": "Writable disk in MiB.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "vcpus": {
+          "description": "vCPUs.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "vcpus",
+        "memory_mib",
+        "scratch_disk_mib"
+      ],
+      "type": "object"
+    },
+    "Sandbox": {
+      "additionalProperties": false,
+      "description": "A sandbox (`ps`, `inspect`).",
+      "properties": {
+        "created": {
+          "description": "When it was created. Null if the file system does not record it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "error": {
+          "description": "Why it stopped, if an error stopped it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "exit_code": {
+          "description": "Exit code of the main process, once it has exited.",
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "hostname": {
+          "description": "Guest hostname, if set.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Full sandbox ID.",
+          "type": "string"
+        },
+        "image": {
+          "$ref": "#/$defs/SandboxImage",
+          "description": "The image it runs."
+        },
+        "interactive": {
+          "description": "Whether the main process's stdin is open (`-i`).",
+          "type": "boolean"
+        },
+        "labels": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Labels (from the image, then `-l`).",
+          "type": "object"
+        },
+        "mounts": {
+          "description": "Folders shared with the host.",
+          "items": {
+            "$ref": "#/$defs/Mount"
+          },
+          "type": "array"
+        },
+        "name": {
+          "description": "Name given with `--name`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "network": {
+          "$ref": "#/$defs/Network",
+          "description": "Network access."
+        },
+        "process": {
+          "$ref": "#/$defs/Process",
+          "description": "The main process."
+        },
+        "resources": {
+          "$ref": "#/$defs/Resources",
+          "description": "VM size."
+        },
+        "rootfs_format": {
+          "description": "Root filesystem format.",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/SandboxState",
+          "description": "Lifecycle state."
+        },
+        "stop": {
+          "$ref": "#/$defs/Stop",
+          "description": "How `stop` stops it."
+        },
+        "tty": {
+          "description": "Whether the main process has a terminal (`-t`).",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "state",
+        "image",
+        "rootfs_format",
+        "process",
+        "resources",
+        "network",
+        "mounts",
+        "labels",
+        "stop",
+        "interactive",
+        "tty"
+      ],
+      "type": "object"
+    },
+    "SandboxImage": {
+      "additionalProperties": false,
+      "description": "The image a sandbox runs.",
+      "properties": {
+        "id": {
+          "description": "Image ID.",
+          "type": "string"
+        },
+        "reference": {
+          "description": "The reference it was pulled as. Null if the image has since been removed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "SandboxRef": {
+      "additionalProperties": false,
+      "description": "A sandbox that was created or started (`create`, `run -d`, `start`).",
+      "properties": {
+        "id": {
+          "description": "Full sandbox ID.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Name, if it has one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "SandboxState": {
+      "description": "Sandbox lifecycle state (OCI names).",
+      "oneOf": [
+        {
+          "const": "creating",
+          "description": "Being created.",
+          "type": "string"
+        },
+        {
+          "const": "created",
+          "description": "Created, not started yet.",
+          "type": "string"
+        },
+        {
+          "const": "running",
+          "description": "Running.",
+          "type": "string"
+        },
+        {
+          "const": "stopped",
+          "description": "Stopped.",
+          "type": "string"
+        }
+      ]
+    },
+    "Stop": {
+      "additionalProperties": false,
+      "description": "How `stop` stops a sandbox.",
+      "properties": {
+        "signal": {
+          "description": "Signal sent first, e.g. `SIGTERM`.",
+          "type": "string"
+        },
+        "timeout_secs": {
+          "description": "Seconds to wait before powering off. Null: the command's default.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "signal"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "sbx --format json output types"
+}

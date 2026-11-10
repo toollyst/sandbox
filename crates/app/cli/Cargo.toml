@@ -25,6 +25,7 @@ clap_complete.workspace = true
 crossterm.workspace = true
 tokio = { workspace = true, features = ["signal", "time", "net", "io-util", "io-std", "sync"] }
 serde_json.workspace = true
+serde.workspace = true
 sbx-runtime.workspace = true
 sbx-shim.workspace = true
 sbx-manage.workspace = true
@@ -38,6 +39,8 @@ sbx-executor-proto.workspace = true
 base64 = "0.23"
 
 [dev-dependencies]
+# docs/developers/cli-output.schema.json을 출력 자료형에서 만든다(`output` 테스트).
+schemars.workspace = true
 # 테스트 실행 파일이 곧 가짜 실행기다(tests/e2e.rs).
 sbx-executor-fake.workspace = true
 sbx-store = { workspace = true, features = ["write"] }

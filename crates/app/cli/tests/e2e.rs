@@ -61,6 +61,7 @@ mod unix {
         ),
         ("create_start_inspect_rm", create_start_inspect_rm),
         ("names_work_in_place_of_ids", names_work_in_place_of_ids),
+        ("json_output_contract", json_output_contract),
         (
             "exec_cp_stop_on_a_running_sandbox",
             exec_cp_stop_on_a_running_sandbox,
@@ -240,10 +241,12 @@ mod unix {
                 .unwrap()
         }
 
-        /// `ps -a --format json`.
+        /// `ps -a --format json`. 모양이 공개 규약([`sbx_cli::output::Sandbox`])과 정확히 같은지도 본다.
         fn ps(&self) -> Vec<serde_json::Value> {
             let o = self.sbx(&["ps", "-a", "--format", "json"]);
             assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+            let _: Vec<sbx_cli::output::Sandbox> = serde_json::from_slice(&o.stdout)
+                .unwrap_or_else(|e| panic!("ps --format json: {e}: {}", text(&o.stdout)));
             serde_json::from_slice(&o.stdout).unwrap()
         }
 
@@ -492,6 +495,102 @@ mod unix {
         assert_eq!(e.sbx(&["create", "--rm", IMAGE]).status.code(), Some(1));
     }
 
+    /// `--format json`: 명령마다 `sbx_cli::output::JSON_OUTPUT`의 모양, 오류는 stderr에 JSON 한 줄.
+    fn json_output_contract() {
+        use sbx_cli::output::{Done, ErrorLine, Exited, Image, Removed, Sandbox, SandboxRef};
+        let e = Env::new();
+        let json = |args: &[&str]| {
+            let mut all = vec!["--format", "json"];
+            all.extend_from_slice(args);
+            e.sbx(&all)
+        };
+        let lines = |b: &[u8]| -> Vec<serde_json::Value> {
+            text(b)
+                .lines()
+                .map(|l| serde_json::from_str(l).unwrap_or_else(|err| panic!("{err}: {l:?}")))
+                .collect()
+        };
+
+        // create: SandboxRef 하나.
+        let o = json(&["create", "--name", "j1", IMAGE, "sh", "-c", "exit 4"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let r: SandboxRef = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(r.name.as_deref(), Some("j1"));
+        assert!(r.id.len() > 12, "{r:?}");
+
+        // inspect: Sandbox 하나. 저장 형식(spec)이 아니라 공개 모양이다.
+        let o = json(&["inspect", "j1"]);
+        let s: Sandbox = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(s.id, r.id);
+        assert_eq!(s.process.args, ["sh", "-c", "exit 4"]);
+        assert_eq!(
+            s.image.reference.as_deref(),
+            Some(&*format!("docker.io/library/{IMAGE}:latest"))
+        );
+
+        // 붙어서 실행하는 명령은 받지 않는다. 아무것도 하지 않고 JSON 오류로 끝난다.
+        let o = json(&["start", "-a", "j1"]);
+        assert_eq!(o.status.code(), Some(1));
+        assert!(o.stdout.is_empty());
+        let err: ErrorLine = serde_json::from_str(text(&o.stderr).trim()).unwrap();
+        assert!(err.error.message.contains("`start`"), "{err:?}");
+        assert_eq!(err.error.exit_code, Some(1));
+        assert_eq!(e.ps()[0]["state"], "created", "start -a must not have run");
+        for args in [
+            &["exec", "j1", "true"][..],
+            &["logs", "j1"],
+            &["run", IMAGE, "true"],
+        ] {
+            let o = json(args);
+            assert_eq!(o.status.code(), Some(1), "{args:?}");
+            assert!(o.stdout.is_empty(), "{args:?}");
+        }
+
+        // start(붙지 않음) → SandboxRef, wait → 대상마다 Exited 한 줄. 없는 대상은 stderr에 그 대상의 오류 줄.
+        let o = json(&["start", "j1"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let _: SandboxRef = serde_json::from_slice(&o.stdout).unwrap();
+        let o = json(&["wait", "j1", "no-such-sandbox"]);
+        assert_eq!(o.status.code(), Some(1));
+        let out = lines(&o.stdout);
+        assert_eq!(out.len(), 1, "{out:?}");
+        let x: Exited = serde_json::from_value(out[0].clone()).unwrap();
+        assert_eq!(
+            (x.target.as_str(), x.id.as_str(), x.exit_code),
+            ("j1", &*r.id, 4)
+        );
+        let errs: Vec<ErrorLine> = lines(&o.stderr)
+            .into_iter()
+            .map(|v| serde_json::from_value(v).unwrap())
+            .collect();
+        assert_eq!(errs.len(), 2, "{errs:?}");
+        assert_eq!(errs[0].error.target.as_deref(), Some("no-such-sandbox"));
+        assert_eq!(errs[0].error.exit_code, None);
+        assert_eq!(errs[1].error.target, None);
+        assert_eq!(errs[1].error.exit_code, Some(1));
+
+        // rm → Done 한 줄.
+        let o = json(&["rm", "j1"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let d: Done = serde_json::from_value(lines(&o.stdout).remove(0)).unwrap();
+        assert_eq!((d.target.as_str(), d.id.as_str()), ("j1", &*r.id));
+
+        // images → [Image], rmi → Removed 한 줄. -q가 --format을 이긴다.
+        let o = json(&["images"]);
+        let images: Vec<Image> = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(images.len(), 1);
+        let o = json(&["images", "-q"]);
+        assert_eq!(
+            text(&o.stdout),
+            format!("{}\n", &images[0].id["sha256:".len()..][..12])
+        );
+        let o = json(&["rmi", IMAGE]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let rm: Removed = serde_json::from_value(lines(&o.stdout).remove(0)).unwrap();
+        assert_eq!(rm.target, IMAGE);
+        assert_eq!(rm.deleted.first(), Some(&images[0].id));
+    }
+
     fn names_work_in_place_of_ids() {
         let e = Env::new();
         let o = e.sbx(&["create", "--name", "web", IMAGE, "sh", "-c", "echo hi"]);
@@ -695,7 +794,9 @@ mod unix {
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
         let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
         assert_eq!(v["images"], 1);
-        assert!(v["executor"]["capabilities"]["error"].is_string(), "{v}");
+        assert!(v["executor"]["error"].is_string(), "{v}");
+        assert!(v["executor"]["capabilities"].is_null(), "{v}");
+        let _: sbx_cli::output::Info = serde_json::from_value(v).unwrap();
         let o = e.sbx(&["info"]);
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
         assert!(
@@ -850,8 +951,7 @@ mod unix {
             "{}",
             text(&o.stderr)
         );
-        let failed =
-            |s: &serde_json::Value| s["spec"]["process"]["args"][0] == "no-such-command-xyz";
+        let failed = |s: &serde_json::Value| s["process"]["args"][0] == "no-such-command-xyz";
         assert!(!e.ps().iter().any(failed), "{:?}", e.ps());
     }
 

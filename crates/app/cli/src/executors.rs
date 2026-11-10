@@ -22,6 +22,7 @@ use sbx_executor_repo::{Fetcher, Platform, Repository, Sources, index};
 use sbx_model::Arch;
 
 use crate::cli::{ExecutorCommand, RepoCommand};
+use crate::output;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -61,7 +62,7 @@ pub async fn run(cx: &Ctx<'_>, c: &ExecutorCommand) -> Result<u8> {
             spec,
         } => {
             let spec: Spec = spec.parse()?;
-            println!("{}", install_local(cx, &ex, &spec, from)?);
+            print_executor(cx, &install_local(cx, &ex, &spec, from)?)?;
             Ok(0)
         }
         ExecutorCommand::Install { from: None, spec } => {
@@ -70,11 +71,11 @@ pub async fn run(cx: &Ctx<'_>, c: &ExecutorCommand) -> Result<u8> {
         }
         ExecutorCommand::Search { name } => search(cx, name.as_deref()).await,
         ExecutorCommand::Use { spec } => {
-            println!("{}", ex.set_default(&spec.parse()?)?);
+            print_executor(cx, &ex.set_default(&spec.parse()?)?)?;
             Ok(0)
         }
         ExecutorCommand::Rm { spec } => {
-            println!("{}", ex.remove(&spec.parse()?)?);
+            print_executor(cx, &ex.remove(&spec.parse()?)?)?;
             Ok(0)
         }
         ExecutorCommand::Repo { command } => repo(cx, command),
@@ -87,16 +88,14 @@ fn ls(cx: &Ctx<'_>, ex: &Executors) -> Result<u8> {
     if cx.json {
         let v: Vec<_> = list
             .iter()
-            .map(|i| {
-                serde_json::json!({
-                    "name": i.name,
-                    "version": i.version,
-                    "default": default.as_ref() == Some(i),
-                    "path": i.executable,
-                })
+            .map(|i| output::InstalledExecutor {
+                name: i.name.clone(),
+                version: i.version.clone(),
+                default: default.as_ref() == Some(i),
+                path: i.executable.display().to_string(),
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&v)?);
+        output::print_value(&v)?;
         return Ok(0);
     }
     println!("{:<2}{:<20} {:<14} PATH", "", "NAME", "VERSION");
@@ -177,8 +176,7 @@ async fn install_remote(cx: &Ctx<'_>, ex: &Executors, spec: &Spec) -> Result<()>
     let want = c.spec();
     if let Some(i) = ex.find(&want)? {
         eprintln!("{i} is already installed");
-        println!("{i}");
-        return Ok(());
+        return print_executor(cx, &i);
     }
     eprintln!(
         "downloading {}@{} ({}) from {}",
@@ -201,8 +199,19 @@ async fn install_remote(cx: &Ctx<'_>, ex: &Executors, spec: &Spec) -> Result<()>
     }
     .await;
     let _ = std::fs::remove_dir_all(&work);
-    let installed = r?;
-    println!("{installed}");
+    print_executor(cx, &r?)
+}
+
+/// 실행기 하나를 출력한다: `이름@버전`, JSON이면 [`output::ExecutorRef`].
+fn print_executor(cx: &Ctx<'_>, i: &Installed) -> Result<()> {
+    if cx.json {
+        output::print_value(&output::ExecutorRef {
+            name: i.name.clone(),
+            version: i.version.clone(),
+        })?;
+    } else {
+        println!("{i}");
+    }
     Ok(())
 }
 
@@ -212,21 +221,19 @@ async fn search(cx: &Ctx<'_>, name: Option<&str>) -> Result<u8> {
     if cx.json {
         let v: Vec<_> = list
             .iter()
-            .map(|c| {
-                serde_json::json!({
-                    "name": c.name,
-                    "version": c.version,
-                    "protocol": c.protocol,
-                    "repository": c.repository,
-                    "os": c.artifact.platform.os,
-                    "architecture": c.artifact.platform.architecture,
-                    "url": c.artifact.url.as_str(),
-                    "sha256": c.artifact.sha256,
-                    "size": c.artifact.size,
-                })
+            .map(|c| output::AvailableExecutor {
+                name: c.name.clone(),
+                version: c.version.clone(),
+                protocol: c.protocol,
+                repository: c.repository.clone(),
+                os: c.artifact.platform.os.clone(),
+                architecture: c.artifact.platform.architecture.clone(),
+                url: c.artifact.url.to_string(),
+                sha256: c.artifact.sha256.clone(),
+                size: c.artifact.size,
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&v)?);
+        output::print_value(&v)?;
         return Ok(0);
     }
     if list.is_empty() {
@@ -262,11 +269,8 @@ fn repo(cx: &Ctx<'_>, c: &RepoCommand) -> Result<u8> {
         RepoCommand::Ls => {
             let list = s.list()?;
             if cx.json {
-                let v: Vec<_> = list
-                    .iter()
-                    .map(|r| serde_json::json!({"name": r.name, "url": r.url.as_str()}))
-                    .collect();
-                println!("{}", serde_json::to_string_pretty(&v)?);
+                let v: Vec<_> = list.iter().map(repository).collect();
+                output::print_value(&v)?;
             } else {
                 println!("{:<20} URL", "NAME");
                 for r in &list {
@@ -275,12 +279,30 @@ fn repo(cx: &Ctx<'_>, c: &RepoCommand) -> Result<u8> {
             }
         }
         RepoCommand::Add { name, url } => {
-            s.add(Repository::new(name, url)?)?;
-            println!("{name}");
+            let r = Repository::new(name, url)?;
+            s.add(r.clone())?;
+            print_repository(cx, &r)?;
         }
         RepoCommand::Rm { name } => {
-            println!("{}", s.remove(name)?.name);
+            print_repository(cx, &s.remove(name)?)?;
         }
     }
     Ok(0)
+}
+
+fn repository(r: &Repository) -> output::Repository {
+    output::Repository {
+        name: r.name.clone(),
+        url: r.url.to_string(),
+    }
+}
+
+/// 저장소 하나를 출력한다: 이름, JSON이면 [`output::Repository`].
+fn print_repository(cx: &Ctx<'_>, r: &Repository) -> Result<()> {
+    if cx.json {
+        output::print_value(&repository(r))?;
+    } else {
+        println!("{}", r.name);
+    }
+    Ok(())
 }

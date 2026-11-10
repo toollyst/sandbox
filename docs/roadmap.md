@@ -77,6 +77,22 @@ Linux KVM(upstream Firecracker)과 CI 자동 실행은 남았다.
 | 30 | 게스트 프로토콜 디코더에 무작위·변형 입력 20만 개 (패닉 없음, 받아들인 것은 다시 인코딩해도 같음), 프레임은 받은 만큼만 버퍼를 늘린다 | 완료 |
 | 31 | MCP 자원 상한(샌드박스 수, vCPU, 메모리), 커버리지 기반 퍼징 | 남음 |
 
+## M6. CLI 계약과 TUI (2026-11-10~)
+
+M5와 따로 간다. CLI가 주인이고, 사람(`sbx tui`), 스크립트, 에이전트가 같은 CLI 출력을 쓴다. 그래서 기계가 읽는
+출력과 흐름을 CLI에 먼저 갖추고, TUI는 그것만 쓰는 첫 사용자로 둔다. 참고: Docker `events`(JSON Lines, `--since`,
+`--filter`), kubectl `get -w`, gh `--json`·`--jq`, clig.dev(stdout은 데이터만).
+
+| 단계 | 내용 | 상태 |
+|---|---|---|
+| C1 | 출력 계약: 공개 출력 자료형을 저장 형식과 분리(`crates/app/cli/src/output.rs`), 명령마다 모양(값 하나, 대상마다 JSON Lines, 받지 않음), JSON 모드 오류는 stderr에 JSON 한 줄, JSON Schema와 문서 생성(`docs/developers/cli-output.md`) | 완료 (e2e가 모든 `ps` 출력과 계약 테스트의 출력을 자료형으로 엄격히 읽는다) |
+| C2 | `sbx events` (`--since`, `--until`, `--watch`): 상태를 쓰는 자리에서 data_dir에 이벤트 로그를 덧붙이고(이미지 이벤트는 관리 코어가 cache_dir에), 크기 상한 | 남음 |
+| C3 | `--filter KEY=VALUE`(Docker 규칙: 다른 키는 AND, 같은 키는 OR)와 시각 파서 (`ps`, `images`, `events`) | 남음 |
+| C4 | `--jq` (jaq 내장). Go 템플릿 `--format '{{…}}'`은 하지 않는다(Rust로 같게 만들 수 없다, `DOCKER_DIFFERENCES`에 적는다) | 남음 |
+| C5 | 이름·ID·이미지 동적 자동완성 (`clap_complete` `unstable-dynamic`) | 남음 |
+| C6 | 로그 시각 (`logs --timestamps`, `--since`, `--format json`): `main.log` 기록 형식에 시각을 넣고 버전을 둔다 | 남음 |
+| T | `sbx tui`: 인라인(아래쪽만 다시 그림) 화면, `events --watch` 구독, 모든 동작은 `sbx …` 자식 프로세스에 터미널을 넘겨 실행하고 그 명령 줄을 보여준다. S0 스파이크에서 iocraft와 ratatui Inline 중 고른다 | 남음 (C2 뒤) |
+
 ## 그 뒤
 
 - 다른 외부 실행기 (libkrun 등). 규약(`sbx-executor-proto`)만 지키면 된다.
