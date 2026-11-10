@@ -1013,3 +1013,44 @@ fn only_unread_repositories_before_the_chosen_one_block_it() {
     // 고른 저장소가 목록에 없으면(있을 수 없지만) 앞의 읽지 못한 것 모두가 막는다.
     assert_eq!(unread_before(&order[1..], &read, "zzz"), Some("c"));
 }
+
+#[test]
+fn a_version_has_a_bounded_number_of_artifacts() {
+    let with = |n: usize| {
+        let arts: Vec<_> = (0..n)
+            .map(|i| artifact(&format!("os{i}"), "arm64", &format!("{i}.tar.gz")))
+            .collect();
+        let v = json!({"schema": 2, "executors": {"fc": {"versions": {"1.0": {"protocol": 1, "artifacts": arts}}}}});
+        Index::parse(v.to_string().as_bytes(), &base())
+    };
+    assert!(with(index::MAX_ARTIFACTS_PER_VERSION).is_ok());
+    assert!(
+        with(index::MAX_ARTIFACTS_PER_VERSION + 1)
+            .unwrap_err()
+            .contains("at most")
+    );
+}
+
+#[test]
+fn a_large_index_parses_in_linear_time() {
+    // 크기 한도 가까운 색인(이름 2만 개, 버전마다 압축 파일 하나)도 금방 읽힌다. 2차 시간이면 수십 초가 걸린다.
+    let mut ex = serde_json::Map::new();
+    for i in 0..20_000 {
+        ex.insert(
+            format!("e{i}"),
+            json!({"versions": {"1.0": {"protocol": 1, "artifacts": [artifact("darwin", "arm64", "x.tar.gz")]}}}),
+        );
+    }
+    let body = json!({"schema": 2, "executors": ex}).to_string();
+    assert!(body.len() < index::MAX_INDEX_BYTES as usize);
+    let t = std::time::Instant::now();
+    let i = Index::parse(body.as_bytes(), &base()).unwrap();
+    assert_eq!(i.executors.len(), 20_000);
+    let idx = vec![("r".to_owned(), i)];
+    let _ = index::available(&idx, None, &mac(), 1);
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(20),
+        "{:?}",
+        t.elapsed()
+    );
+}

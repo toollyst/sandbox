@@ -64,6 +64,10 @@ pub const SCHEMAS: &[u32] = &[1, 2];
 /// 색인의 크기 한도 (바이트).
 pub const MAX_INDEX_BYTES: u64 = 16 << 20;
 
+/// 버전 하나의 압축 파일 수 상한. 플랫폼마다 하나이므로 수십이면 넉넉하다. 색인 하나가 읽는 데 드는 시간을
+/// 크기에 비례하게 둔다(악의적인 저장소가 목록에 있기만 해도 `search`·`install`이 멈추지 않게).
+pub const MAX_ARTIFACTS_PER_VERSION: usize = 64;
+
 /// 묶음 하나 (플랫폼 하나의 압축 파일).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Artifact {
@@ -293,6 +297,12 @@ fn entries(
                     .ok()
                     .filter(|s| s.version.is_none())
                     .ok_or_else(|| format!("{spec}: invalid adapter name {a:?}"))?;
+            }
+            if v.artifacts.len() > MAX_ARTIFACTS_PER_VERSION {
+                return Err(format!(
+                    "{spec}: {} artifacts; at most {MAX_ARTIFACTS_PER_VERSION} are allowed",
+                    v.artifacts.len()
+                ));
             }
             let mut artifacts: Vec<Artifact> = Vec::new();
             for a in v.artifacts {
