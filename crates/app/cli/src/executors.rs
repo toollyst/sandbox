@@ -142,12 +142,13 @@ fn is_archive(p: &Path) -> bool {
 
 fn install_local(cx: &Ctx<'_>, ex: &Executors, spec: &Spec, from: &Path) -> Result<Installed> {
     if !is_archive(from) {
-        return Ok(ex.install(spec, from, verify)?);
+        return Ok(ex.install(spec, from, None, |i| verify(&i.executable))?);
     }
     let work = work_dir(cx);
-    let r = sbx_executor_repo::unpack::unpack(from, &work)
-        .map_err(Box::<dyn Error>::from)
-        .and_then(|dir| Ok(ex.install(spec, &dir, verify)?));
+    let r =
+        sbx_executor_repo::unpack::unpack(from, &work, sbx_executor_repo::unpack::Layout::Executor)
+            .map_err(Box::<dyn Error>::from)
+            .and_then(|dir| Ok(ex.install(spec, &dir, None, |i| verify(&i.executable))?));
     let _ = std::fs::remove_dir_all(&work);
     r
 }
@@ -188,7 +189,7 @@ async fn install_remote(cx: &Ctx<'_>, ex: &Executors, spec: &Spec) -> Result<()>
     let work = work_dir(cx);
     let r: Result<Installed> = async {
         let dir = sbx_executor_repo::fetch_bundle(&fetcher, &c, &work).await?;
-        match ex.install(&want, &dir, verify) {
+        match ex.install(&want, &dir, None, |i| verify(&i.executable)) {
             Ok(i) => Ok(i),
             // 그사이 다른 쪽이 설치했다.
             Err(InstallError::AlreadyInstalled(_)) => Ok(ex

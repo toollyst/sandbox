@@ -2,8 +2,14 @@
 
 use url::Url;
 
-/// 색인 파일 이름. 저장소 URL(디렉터리) 아래에 있다.
+/// schema 1 색인 파일 이름. 저장소 URL(디렉터리) 아래에 있다.
 pub const INDEX_FILE: &str = "index.json";
+
+/// schema 2 색인 파일 이름. 저장소 URL(디렉터리) 아래에 있다.
+///
+/// 따로 두는 까닭: schema 1만 읽는 sbx는 `index.json`의 schema가 2이면 읽지 않는다.
+/// 저장소는 `index.json`(schema 1, 자체 완결 실행기만)을 그대로 두고 `v2/index.json`을 더한다.
+pub const INDEX_V2_FILE: &str = "v2/index.json";
 
 /// 쓸 수 있는 URL인지. `https`, `file`, 그리고 loopback 호스트(`localhost`, `127.0.0.1`, `[::1]`)의 `http`.
 ///
@@ -42,10 +48,17 @@ pub fn repository(s: &str) -> Result<Url, String> {
     Ok(url)
 }
 
-/// 저장소 URL의 색인 URL.
+/// 저장소 URL의 schema 1 색인 URL.
 pub fn index(repository: &Url) -> Url {
     repository
         .join(INDEX_FILE)
+        .expect("a directory URL joins a file name")
+}
+
+/// 저장소 URL의 schema 2 색인 URL.
+pub fn index_v2(repository: &Url) -> Url {
+    repository
+        .join(INDEX_V2_FILE)
         .expect("a directory URL joins a file name")
 }
 
@@ -79,5 +92,9 @@ mod tests {
         );
         let r = repository("https://example.com/sbx/").unwrap();
         assert_eq!(index(&r).as_str(), "https://example.com/sbx/index.json");
+        assert_eq!(
+            index_v2(&r).as_str(),
+            "https://example.com/sbx/v2/index.json"
+        );
     }
 }

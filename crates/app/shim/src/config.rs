@@ -1,10 +1,11 @@
 //! shim에 넘기는 설정과 그 명령줄 형식.
 //!
 //! ```text
-//! <shim> start --data-dir <D> --cache-dir <C> --socket-dir <S> --guest-init <G> --executor <E> [--rm] <샌드박스 ID>
+//! <shim> start --data-dir <D> --cache-dir <C> --socket-dir <S> --guest-init <G> --executor <E> [--vmm-dir <V>] [--rm] <샌드박스 ID>
 //! ```
 //!
-//! `--rm` 외의 옵션은 모두 있어야 한다. shim은 기본값을 정하지 않는다. 정하는 것은 shim을 띄우는 쪽이다.
+//! `--rm`과 `--vmm-dir` 외의 옵션은 모두 있어야 한다. `--vmm-dir`이면 실행기(어댑터)를 그 VMM 묶음과 함께 띄운다
+//! (`sbx_executor_proto::VMM_DIR_ENV`). shim은 기본값을 정하지 않는다. 정하는 것은 shim을 띄우는 쪽이다.
 //! `--rm`이면 기본 프로세스가 끝난 뒤 샌드박스를 지운다(`run -d --rm`).
 
 use std::ffi::OsString;
@@ -23,6 +24,8 @@ pub struct ShimConfig {
     pub runtime: RuntimeConfig,
     /// 실행기 실행 파일 (`sbx-executor-proto` 규약).
     pub executor: PathBuf,
+    /// 실행기가 어댑터면 함께 쓸 VMM 묶음 디렉터리.
+    pub vmm_dir: Option<PathBuf>,
     /// 기본 프로세스가 끝나면 샌드박스를 지운다.
     pub remove_on_exit: bool,
 }
@@ -50,6 +53,10 @@ impl ShimConfig {
             args.push(name.into());
             args.push(value.into());
         }
+        if let Some(v) = &self.vmm_dir {
+            args.push("--vmm-dir".into());
+            args.push(v.into());
+        }
         if self.remove_on_exit {
             args.push("--rm".into());
         }
@@ -66,10 +73,16 @@ impl ShimConfig {
         let mut values: [Option<PathBuf>; 5] = Default::default();
         let mut id = None;
         let mut remove_on_exit = false;
+        let mut vmm_dir = None;
         while let Some(a) = it.next() {
             let name = a.to_str().unwrap_or("");
             if name == "--rm" {
                 remove_on_exit = true;
+                continue;
+            }
+            if name == "--vmm-dir" {
+                let v = it.next().ok_or("--vmm-dir needs a value")?;
+                vmm_dir = Some(PathBuf::from(v));
                 continue;
             }
             match OPTIONS.iter().position(|o| *o == name) {
@@ -94,6 +107,7 @@ impl ShimConfig {
                 guest_init: need(guest_init, 3)?,
             },
             executor: need(executor, 4)?,
+            vmm_dir,
             remove_on_exit,
         };
         Ok((config, id.ok_or("sandbox id is required")?))
@@ -114,12 +128,21 @@ mod tests {
                 guest_init: "/g".into(),
             },
             executor: "/e".into(),
+            vmm_dir: None,
             remove_on_exit: true,
         };
         let id = SandboxId::new("abc").unwrap();
         assert_eq!(
             ShimConfig::parse(&c.to_args(&id)).unwrap(),
             (c.clone(), id.clone())
+        );
+        let with_vmm = ShimConfig {
+            vmm_dir: Some("/v m".into()),
+            ..c.clone()
+        };
+        assert_eq!(
+            ShimConfig::parse(&with_vmm.to_args(&id)).unwrap(),
+            (with_vmm, id.clone())
         );
         let mut missing = c.to_args(&id);
         missing.drain(1..3);

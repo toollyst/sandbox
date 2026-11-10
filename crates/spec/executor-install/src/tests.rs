@@ -42,14 +42,16 @@ fn install_use_list_remove() {
     assert_eq!(ex.default().unwrap(), None);
 
     // 묶음 디렉터리 설치. 처음 설치한 것이 기본이 된다.
-    let a = ex.install(&spec("fc@1.9"), &src, |_| Ok(())).unwrap();
+    let a = ex.install(&spec("fc@1.9"), &src, None, |_| Ok(())).unwrap();
     assert!(
         a.executable.is_file() && a.dir.join("sub/x").is_file() && a.dir.join("kernel").is_file()
     );
     assert_eq!(ex.default().unwrap(), Some(a.clone()));
     // 실행 파일 하나 설치. 기본은 그대로.
     let b = ex
-        .install(&spec("fc@1.10"), &src.join(executable_name()), |_| Ok(()))
+        .install(&spec("fc@1.10"), &src.join(executable_name()), None, |_| {
+            Ok(())
+        })
         .unwrap();
     assert_eq!(ex.default().unwrap(), Some(a.clone()));
     // 이름만 주면 가장 높은 버전.
@@ -59,19 +61,19 @@ fn install_use_list_remove() {
 
     // 이미 있으면, 버전이 없으면, 확인에 실패하면 거부. 실패하면 아무것도 남지 않는다.
     assert!(matches!(
-        ex.install(&spec("fc@1.9"), &src, |_| Ok(())),
+        ex.install(&spec("fc@1.9"), &src, None, |_| Ok(())),
         Err(InstallError::AlreadyInstalled(_))
     ));
     assert!(matches!(
-        ex.install(&spec("fc"), &src, |_| Ok(())),
+        ex.install(&spec("fc"), &src, None, |_| Ok(())),
         Err(InstallError::NoVersion)
     ));
     assert!(matches!(
-        ex.install(&spec("fc@2"), &src, |_| Err("protocol 9".into())),
+        ex.install(&spec("fc@2"), &src, None, |_| Err("protocol 9".into())),
         Err(InstallError::Rejected(m)) if m == "protocol 9"
     ));
     assert!(matches!(
-        ex.install(&spec("fc@3"), &src.join("sub"), |_| Ok(())),
+        ex.install(&spec("fc@3"), &src.join("sub"), None, |_| Ok(())),
         Err(InstallError::NoExecutable(_))
     ));
     let left: Vec<_> = fs::read_dir(r.join("executors"))
@@ -90,5 +92,47 @@ fn install_use_list_remove() {
     assert_eq!(ex.default().unwrap(), None);
     ex.remove(&spec("fc@1.9")).unwrap();
     assert!(ex.list().unwrap().is_empty());
+    fs::remove_dir_all(r).unwrap();
+}
+
+#[test]
+fn vmm_packages_record_their_adapter() {
+    let r = root("vmm");
+    let src = r.join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("firecracker"), b"\x7fELF").unwrap();
+    let ex = Executors::new(r.join("executors"));
+    // 어댑터를 정하지 않으면 sbx-executor가 없는 묶음은 설치되지 않는다.
+    assert!(matches!(
+        ex.install(&spec("wick@1.18.0"), &src, None, |_| Ok(())),
+        Err(InstallError::NoExecutable(_))
+    ));
+    assert!(matches!(
+        ex.install(&spec("wick@1.18.0"), &src, Some("../x"), |_| Ok(())),
+        Err(InstallError::BadAdapter(_))
+    ));
+    // 확인 함수는 임시 위치의 묶음과 어댑터 이름을 받는다.
+    let mut seen = None;
+    let w = ex
+        .install(&spec("wick@1.18.0"), &src, Some("firecracker"), |s| {
+            seen = Some((s.adapter.clone(), s.dir.join("firecracker").is_file()));
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(seen, Some((Some("firecracker".into()), true)));
+    assert_eq!(w.adapter.as_deref(), Some("firecracker"));
+    assert_eq!(ex.find(&spec("wick")).unwrap(), Some(w.clone()));
+    assert!(w.dir.join("firecracker").is_file());
+    // 실행 파일 하나를 VMM으로 설치하면 이름을 그대로 둔다.
+    let one = ex
+        .install(
+            &spec("myfc@1"),
+            &src.join("firecracker"),
+            Some("firecracker"),
+            |_| Ok(()),
+        )
+        .unwrap();
+    assert!(one.dir.join("firecracker").is_file());
+    assert!(!one.executable.exists());
     fs::remove_dir_all(r).unwrap();
 }

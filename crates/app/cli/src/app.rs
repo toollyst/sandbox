@@ -400,6 +400,7 @@ impl Ctx {
         let config = ShimConfig {
             runtime: self.runtime_config(true)?,
             executor: self.executor()?,
+            vmm_dir: None,
             remove_on_exit,
         };
         if !config.runtime.guest_init.is_file() {

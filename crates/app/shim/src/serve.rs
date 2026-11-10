@@ -64,7 +64,18 @@ pub fn main() -> ExitCode {
 
 async fn serve(config: ShimConfig, id: SandboxId) -> ExitCode {
     let started = async {
-        let executor = ProcessExecutor::new(&config.executor).map_err(|e| e.to_string())?;
+        let env = config
+            .vmm_dir
+            .iter()
+            .map(|d| {
+                (
+                    sbx_executor_proto::VMM_DIR_ENV.into(),
+                    d.clone().into_os_string(),
+                )
+            })
+            .collect();
+        let executor =
+            ProcessExecutor::with_env(&config.executor, env).map_err(|e| e.to_string())?;
         let runtime =
             Runtime::new(config.runtime.clone(), Arc::new(executor)).map_err(|e| e.to_string())?;
         let sandbox = runtime.get(&id).await.map_err(|e| e.to_string())?;

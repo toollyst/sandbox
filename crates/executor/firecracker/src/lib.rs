@@ -9,7 +9,7 @@
 //!
 //! | 무엇 | 순서 |
 //! |---|---|
-//! | firecracker 실행 파일 | `SBX_FIRECRACKER` > 이 실행 파일 옆의 `firecracker` > PATH의 `firecracker` |
+//! | firecracker 실행 파일 | `SBX_FIRECRACKER` > sbx가 준 VMM 묶음(`SBX_EXECUTOR_VMM_DIR`) 안의 `firecracker` > 이 실행 파일 옆의 `firecracker` > PATH의 `firecracker` |
 //! | 기본 게스트 커널 | `SBX_FIRECRACKER_KERNEL` > 이 실행 파일 옆의 `kernel` |
 //!
 //! 커널은 sbx 게스트 약속(`sbx-executor-proto` 문서)의 기능을 갖춰야 한다. 특히 erofs, virtio-vsock, overlay.

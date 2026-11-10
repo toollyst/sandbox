@@ -3,8 +3,12 @@
 //!
 //! ```text
 //! <root>/                       보통 <data_dir>/executors
-//!   <이름>/<버전>/              실행기 묶음 하나. 맨 위에 실행 파일 sbx-executor(Windows는 .exe)가 있다.
-//!                               나머지 파일(예: VMM, 커널)은 실행기가 자기 옆에서 찾는다.
+//!   <이름>/<버전>/              실행기 묶음 하나. 둘 중 하나다.
+//!                               - 자체 완결: 맨 위에 실행 파일 sbx-executor(Windows는 .exe)가 있다.
+//!                                 나머지 파일(예: VMM, 커널)은 실행기가 자기 옆에서 찾는다.
+//!                               - VMM 묶음: sbx-executor가 없고, 설치할 때 정한 어댑터 이름이
+//!                                 .sbx-adapter에 한 줄로 있다. 어댑터가 이 디렉터리를 받아 VMM을 찾는다
+//!                                 (sbx-executor-proto의 VMM_DIR_ENV).
 //!   default                     기본 실행기 "<이름>@<버전>" 한 줄
 //!   .staging-*                  설치 중인 임시 디렉터리 (목록에 나오지 않는다)
 //! ```
@@ -17,6 +21,7 @@
 //!   기본 실행기가 없으면 설치한 것이 기본이 된다.
 //! - 버전을 빼고 이름만 주면 가장 높은 버전이다([`version_cmp`]: 숫자 조각은 숫자로 비교).
 //! - 지우면([`Executors::remove`]) 그것이 기본이었을 때 기본도 지운다(다른 것을 고르지 않는다).
+//! - 어댑터도 같은 배치로 다른 `<root>`에 둔다(보통 `<data_dir>/adapters`). 어댑터는 자체 완결 묶음이다.
 //!
 //! - 의존: 없음 (std만)
 
@@ -87,8 +92,10 @@ pub struct Installed {
     pub version: String,
     /// 묶음 디렉터리.
     pub dir: PathBuf,
-    /// 실행 파일.
+    /// 실행 파일. VMM 묶음([`Installed::adapter`]가 있음)에는 없다.
     pub executable: PathBuf,
+    /// VMM 묶음이면 함께 쓸 어댑터 이름.
+    pub adapter: Option<String>,
 }
 
 impl fmt::Display for Installed {
@@ -104,8 +111,10 @@ pub enum InstallError {
     AlreadyInstalled(String),
     /// 버전 없이 설치하려 했다.
     NoVersion,
-    /// 묶음에 실행 파일이 없다.
+    /// 묶음에 실행 파일이 없다(VMM 묶음으로 설치하려면 어댑터를 정해야 한다).
     NoExecutable(PathBuf),
+    /// 어댑터 이름이 규칙에 맞지 않는다.
+    BadAdapter(String),
     /// 호출자의 확인을 통과하지 못했다.
     Rejected(String),
     /// 입출력.
@@ -119,10 +128,11 @@ impl fmt::Display for InstallError {
             InstallError::NoVersion => f.write_str("a version is required (NAME@VERSION)"),
             InstallError::NoExecutable(d) => write!(
                 f,
-                "{} has no {} at its top level",
+                "{} has no {} at its top level (for a VMM without one, name the adapter that drives it)",
                 d.display(),
                 executable_name()
             ),
+            InstallError::BadAdapter(a) => write!(f, "invalid adapter name {a:?}"),
             InstallError::Rejected(m) => f.write_str(m),
             InstallError::Io(e) => e.fmt(f),
         }
@@ -186,6 +196,7 @@ impl Executors {
             name: name.to_owned(),
             version: version.to_owned(),
             executable: dir.join(executable_name()),
+            adapter: read_adapter(&dir),
             dir,
         }
     }
@@ -255,14 +266,22 @@ impl Executors {
     }
 
     /// `src`(실행 파일 하나 또는 묶음 디렉터리)를 `spec`으로 설치한다. 규칙은 모듈 문서에 있다.
-    /// `verify`는 임시 위치의 실행 파일을 받는다.
+    ///
+    /// `adapter`가 있으면 VMM 묶음으로 설치한다(`sbx-executor`가 없어도 된다. 실행 파일 하나면 그 이름 그대로 둔다).
+    /// `verify`는 임시 위치에 놓인 것([`Installed`], 경로는 임시 위치)을 받는다.
     pub fn install(
         &self,
         spec: &Spec,
         src: &Path,
-        verify: impl FnOnce(&Path) -> Result<(), String>,
+        adapter: Option<&str>,
+        verify: impl FnOnce(&Installed) -> Result<(), String>,
     ) -> Result<Installed, InstallError> {
         let version = spec.version.as_deref().ok_or(InstallError::NoVersion)?;
+        if let Some(a) = adapter
+            && !valid_part(a)
+        {
+            return Err(InstallError::BadAdapter(a.to_owned()));
+        }
         let target = self.installed(&spec.name, version);
         if target.dir.exists() {
             return Err(InstallError::AlreadyInstalled(target.to_string()));
@@ -278,14 +297,32 @@ impl Executors {
                 copy_dir(src, &staging)?;
             } else {
                 fs::create_dir(&staging)?;
-                fs::copy(src, staging.join(executable_name()))?;
+                let name: std::ffi::OsString = match adapter {
+                    // VMM 실행 파일 하나: 어댑터가 찾을 이름 그대로 둔다.
+                    Some(_) => src
+                        .file_name()
+                        .map(|n| n.to_os_string())
+                        .unwrap_or_else(|| "vmm".into()),
+                    None => executable_name().into(),
+                };
+                let to = staging.join(&name);
+                fs::copy(src, &to)?;
+                make_executable(&to)?;
             }
             let exe = staging.join(executable_name());
-            if !exe.is_file() {
-                return Err(InstallError::NoExecutable(src.to_owned()));
+            match adapter {
+                Some(a) => fs::write(staging.join(ADAPTER_FILE), format!("{a}\n"))?,
+                None if !exe.is_file() => return Err(InstallError::NoExecutable(src.to_owned())),
+                None => make_executable(&exe)?,
             }
-            make_executable(&exe)?;
-            verify(&exe).map_err(InstallError::Rejected)?;
+            let staged = Installed {
+                name: spec.name.clone(),
+                version: version.to_owned(),
+                executable: exe.clone(),
+                adapter: adapter.map(str::to_owned),
+                dir: staging.clone(),
+            };
+            verify(&staged).map_err(InstallError::Rejected)?;
             fs::create_dir_all(self.root.join(&spec.name))?;
             fs::rename(&staging, &target.dir)?;
             Ok(())
@@ -294,6 +331,7 @@ impl Executors {
             let _ = fs::remove_dir_all(&staging);
         }
         result?;
+        let target = self.installed(&spec.name, version);
         if self.default()?.is_none() {
             self.set_default(&Spec {
                 name: target.name.clone(),
@@ -322,6 +360,15 @@ impl Executors {
         let _ = fs::remove_dir(self.root.join(&found.name));
         Ok(found)
     }
+}
+
+/// VMM 묶음에 어댑터 이름을 적는 파일.
+pub const ADAPTER_FILE: &str = ".sbx-adapter";
+
+fn read_adapter(dir: &Path) -> Option<String> {
+    let text = fs::read_to_string(dir.join(ADAPTER_FILE)).ok()?;
+    let name = text.trim();
+    valid_part(name).then(|| name.to_owned())
 }
 
 fn copy_dir(src: &Path, dst: &Path) -> io::Result<()> {

@@ -92,7 +92,15 @@ impl Fetcher {
             let path = url
                 .to_file_path()
                 .map_err(|()| fetch_err(url, "not a local file path"))?;
-            let mut f = fs::File::open(&path).map_err(|e| fetch_err(url, e))?;
+            let mut f = fs::File::open(&path).map_err(|e| {
+                if e.kind() == io::ErrorKind::NotFound {
+                    RepoError::Missing {
+                        url: url.to_string(),
+                    }
+                } else {
+                    fetch_err(url, e)
+                }
+            })?;
             let mut buf = vec![0; 64 << 10];
             loop {
                 let n = f.read(&mut buf).map_err(|e| fetch_err(url, e))?;
@@ -111,6 +119,11 @@ impl Fetcher {
             .map_err(|e| fetch_err(url, chain(&e)))?;
         // redirect 뒤의 URL도 같은 규칙을 따라야 한다 (https가 http로 내려가지 않게).
         location::check(resp.url()).map_err(|e| fetch_err(url, format!("redirected: {e}")))?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(RepoError::Missing {
+                url: url.to_string(),
+            });
+        }
         if !resp.status().is_success() {
             return Err(fetch_err(url, resp.status()));
         }
@@ -120,16 +133,22 @@ impl Fetcher {
         Ok(sink.got)
     }
 
-    /// 저장소의 색인을 받아 읽는다.
+    /// 저장소의 색인을 받아 읽는다. `v2/index.json`을 먼저 찾고, 없으면 `index.json`을 읽는다.
     pub async fn index(&self, repo: &Repository) -> Result<Index, RepoError> {
-        let url = repo.index_url();
+        match self.index_at(&repo.index_v2_url()).await {
+            Err(RepoError::Missing { .. }) => self.index_at(&repo.index_url()).await,
+            other => other,
+        }
+    }
+
+    async fn index_at(&self, url: &Url) -> Result<Index, RepoError> {
         let mut body = Vec::new();
-        self.stream(&url, MAX_INDEX_BYTES, &mut |c| {
+        self.stream(url, MAX_INDEX_BYTES, &mut |c| {
             body.extend_from_slice(c);
             Ok(())
         })
         .await?;
-        Index::parse(&body, &url).map_err(|reason| RepoError::Index {
+        Index::parse(&body, url).map_err(|reason| RepoError::Index {
             url: url.to_string(),
             reason,
         })

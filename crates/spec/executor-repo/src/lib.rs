@@ -36,7 +36,7 @@
 //!
 //! | 필드 | 뜻 |
 //! |---|---|
-//! | `schema` | 형식 버전. 이 클라이언트는 [`index::SCHEMA`]만 읽는다. 다른 값이면 색인 전체를 거부한다. |
+//! | `schema` | 형식 버전. 이 클라이언트는 [`index::SCHEMAS`]를 읽는다. 다른 값이면 색인 전체를 거부한다. |
 //! | `executors` | 이름 → 실행기. 이름과 버전은 `sbx-executor-install` 규칙(`[A-Za-z0-9._+-]`, `.`으로 시작하지 않는다). |
 //! | `description` | 한 줄 설명 (선택). |
 //! | `protocol` | 그 버전이 말하는 실행기 규약(`sbx-executor-proto`의 `VERSION`). 클라이언트는 자기가 말하는 규약의 버전만 고른다. |
@@ -50,12 +50,51 @@
 //! **URL**: `https`, `file`, 그리고 loopback 호스트의 `http`만 쓴다([`location::check`]). redirect된 곳도 같다.
 //! 색인의 무결성은 TLS에 기대고, 묶음의 무결성은 색인의 `sha256`이 지킨다. 서명은 아직 없다(다음 schema).
 //!
+//! # 저장소 (schema 2): 어댑터와 VMM 묶음
+//!
+//! 색인은 `<저장소 URL>/v2/index.json`이다([`location::INDEX_V2_FILE`]). 클라이언트는 이것을 먼저 찾고,
+//! 없으면(HTTP 404, 없는 파일) `index.json`을 읽는다. 다른 오류(네트워크, 깨진 색인)는 되돌아가지 않고 알린다.
+//! 그래서 저장소는 schema 1만 읽는 옛 sbx를 위한 `index.json`을 그대로 둔 채 v2를 더할 수 있다.
+//!
+//! schema 1과 같고, 둘이 더해진다.
+//!
+//! - `adapters`: 이름 → 어댑터. 모양은 `executors`와 같다. 어댑터는 실행기 규약을 말하는 자체 완결
+//!   묶음(맨 위에 `sbx-executor`)이므로 버전마다 `protocol`이 있고 `adapter`는 없다.
+//! - 실행기 버전의 `adapter`: 그 버전은 **VMM 묶음**이다. 실행기 규약을 말하지 않는 VMM(과 그것이 쓰는
+//!   파일)만 담고, 이름의 어댑터가 그것을 돌린다(`sbx-executor-proto`의 "어댑터와 VMM 묶음"). 실행기 버전에는
+//!   `protocol`(자체 완결)과 `adapter`(VMM 묶음) 중 **정확히 하나**가 있다.
+//!
+//! ```json
+//! {
+//!   "schema": 2,
+//!   "executors": {
+//!     "wick": {
+//!       "description": "Firecracker builds",
+//!       "versions": {
+//!         "1.18.0": { "adapter": "firecracker", "artifacts": [ { "os": "darwin", "architecture": "arm64", "url": "...", "sha256": "...", "size": 1 } ] }
+//!       }
+//!     }
+//!   },
+//!   "adapters": {
+//!     "firecracker": {
+//!       "versions": {
+//!         "0.2.0": { "protocol": 2, "artifacts": [ { "os": "darwin", "architecture": "arm64", "url": "...", "sha256": "...", "size": 1 } ] }
+//!       }
+//!     }
+//!   }
+//! }
+//! ```
+//!
+//! VMM 묶음은 규약 버전으로 거르지 않는다. 맞는 것은 어댑터 쪽에서 고른다([`index::pick_adapter`]:
+//! 이 플랫폼과 규약 버전의 가장 높은 버전). 상대 URL은 `v2/index.json` 기준이다.
+//!
 //! # 묶음 압축 파일
 //!
 //! gzip으로 압축한 tar(`.tar.gz`). 맨 위에 실행 파일 `sbx-executor`(Windows는 `sbx-executor.exe`)가 있거나,
 //! 맨 위가 디렉터리 하나뿐이고 그 안에 있다(그 디렉터리가 묶음이다). 일반 파일과 디렉터리만 담는다.
 //! 심볼릭 링크, 하드 링크, 장치 파일, 절대 경로, `..`가 있으면 거부한다. 권한 비트(실행 가능)는 지킨다.
 //! sparse 파일은 GNU 형식(`S`)과 pax 형식 1.0(macOS `tar`가 쓴다), 0.1을 읽는다. 다른 sparse 형식은 거부한다.
+//! VMM 묶음에는 `sbx-executor`가 없어도 된다. 맨 위가 디렉터리 하나뿐이면 그 디렉터리가 묶음이고, 비어 있으면 안 된다.
 //! [`unpack::unpack`]이 이 규칙대로 푼다.
 //!
 //! # 고르기 ([`index::pick`])
@@ -120,7 +159,12 @@ pub async fn fetch_bundle(
     std::fs::create_dir_all(work)?;
     let archive = work.join("bundle.tar.gz");
     fetcher.download(&c.artifact, &archive).await?;
-    let dir = unpack::unpack(&archive, &work.join("bundle"))?;
+    let layout = if c.adapter.is_some() {
+        unpack::Layout::Vmm
+    } else {
+        unpack::Layout::Executor
+    };
+    let dir = unpack::unpack(&archive, &work.join("bundle"), layout)?;
     std::fs::remove_file(&archive)?;
     Ok(dir)
 }

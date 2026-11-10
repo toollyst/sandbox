@@ -15,6 +15,7 @@ sbx-model.workspace = true
 sbx-executor.workspace = true
 sbx-runtime.workspace = true
 sbx-executor-process.workspace = true
+sbx-executor-proto.workspace = true
 tokio = { workspace = true, features = ["signal", "net", "io-util", "sync", "time"] }
 
 [[bin]]

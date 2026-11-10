@@ -41,9 +41,14 @@ impl Repository {
         })
     }
 
-    /// 색인 URL.
+    /// schema 1 색인 URL.
     pub fn index_url(&self) -> Url {
         location::index(&self.url)
+    }
+
+    /// schema 2 색인 URL.
+    pub fn index_v2_url(&self) -> Url {
+        location::index_v2(&self.url)
     }
 }
 

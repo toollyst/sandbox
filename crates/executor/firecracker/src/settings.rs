@@ -39,9 +39,12 @@ impl Settings {
         path: &[PathBuf],
     ) -> Result<Self, String> {
         let exe = format!("firecracker{}", std::env::consts::EXE_SUFFIX);
-        let firecracker = match env(ENV_FIRECRACKER) {
-            Some(p) => existing(p, ENV_FIRECRACKER)?,
-            None => beside
+        // sbx가 VMM 묶음과 함께 띄웠으면(sbx_executor_proto::VMM_DIR_ENV) 그 안의 firecracker.
+        let in_vmm_dir = env(sbx_executor_proto::VMM_DIR_ENV).map(|d| d.join(&exe));
+        let firecracker = match (env(ENV_FIRECRACKER), in_vmm_dir) {
+            (Some(p), _) => existing(p, ENV_FIRECRACKER)?,
+            (None, Some(p)) => existing(p, sbx_executor_proto::VMM_DIR_ENV)?,
+            (None, None) => beside
                 .map(|d| d.join(&exe))
                 .filter(|p| p.is_file())
                 .or_else(|| path.iter().map(|d| d.join(&exe)).find(|p| p.is_file()))
@@ -109,6 +112,17 @@ mod tests {
         );
         let env = |v: &str| (v == ENV_FIRECRACKER).then(|| root.join("missing"));
         assert!(Settings::locate_in(env, Some(&bundle), &[]).is_err());
+        // sbx가 준 VMM 묶음 안의 firecracker가 옆의 것보다 먼저. 묶음에 없으면 오류(옆으로 넘어가지 않는다).
+        let vmm = root.join("vmm");
+        std::fs::create_dir_all(&vmm).unwrap();
+        let env = |v: &str| (v == sbx_executor_proto::VMM_DIR_ENV).then(|| vmm.clone());
+        assert!(Settings::locate_in(env, Some(&bundle), &[]).is_err());
+        std::fs::write(vmm.join(&exe), b"").unwrap();
+        let s = Settings::locate_in(env, Some(&bundle), &[]).unwrap();
+        assert_eq!(
+            (s.firecracker, s.kernel),
+            (vmm.join(&exe), bundle.join(BUNDLED_KERNEL))
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 }

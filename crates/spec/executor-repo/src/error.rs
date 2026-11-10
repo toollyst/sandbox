@@ -15,6 +15,11 @@ pub enum RepoError {
         /// 이유.
         reason: String,
     },
+    /// 그 URL에 아무것도 없다 (HTTP 404, 없는 파일).
+    Missing {
+        /// URL.
+        url: String,
+    },
     /// 색인이 규약에 맞지 않는다.
     Index {
         /// URL.
@@ -42,6 +47,7 @@ impl fmt::Display for RepoError {
         match self {
             Self::Config(m) | Self::NotFound(m) => f.write_str(m),
             Self::Fetch { url, reason } => write!(f, "cannot fetch {url}: {reason}"),
+            Self::Missing { url } => write!(f, "cannot fetch {url}: not found"),
             Self::Index { url, reason } => write!(f, "invalid repository index {url}: {reason}"),
             Self::Integrity { url, reason } => {
                 write!(f, "download {url} failed verification: {reason}")

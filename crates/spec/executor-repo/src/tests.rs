@@ -83,7 +83,7 @@ fn bad_indexes_are_refused() {
         f(&mut v);
         parse(v).unwrap_err()
     };
-    assert!(with(&|v| v["schema"] = json!(2)).contains("newer sbx"));
+    assert!(with(&|v| v["schema"] = json!(3)).contains("newer sbx"));
     assert!(parse(json!({"executors": {}})).is_err());
     assert!(
         with(&|v| v["executors"]["fc"]["versions"]["1.9"]["artifacts"][0]["sha256"] = json!("ABC"))
@@ -108,6 +108,135 @@ fn bad_indexes_are_refused() {
             .contains("invalid")
     );
     assert!(Index::parse(b"not json", &base()).is_err());
+}
+
+fn sample_v2() -> serde_json::Value {
+    json!({
+        "schema": 2,
+        "executors": {
+            "wick": {
+                "description": "Firecracker builds",
+                "versions": {
+                    "1.18.0": {"adapter": "firecracker", "artifacts": [artifact("darwin", "arm64", "wick/1.18.0.tar.gz")]},
+                    "1.19.0": {"adapter": "firecracker", "artifacts": [artifact("darwin", "arm64", "wick/1.19.0.tar.gz")]},
+                }
+            },
+            "solo": {"versions": {"1": {"protocol": 2, "artifacts": [artifact("darwin", "arm64", "solo.tar.gz")]}}}
+        },
+        "adapters": {
+            "firecracker": {
+                "versions": {
+                    "0.1.0": {"protocol": 2, "artifacts": [artifact("darwin", "arm64", "a/0.1.0.tar.gz")]},
+                    "0.2.0": {"protocol": 3, "artifacts": [artifact("darwin", "arm64", "a/0.2.0.tar.gz")]},
+                    "0.0.9": {"protocol": 2, "artifacts": [artifact("linux", "amd64", "a/0.0.9.tar.gz")]},
+                }
+            }
+        }
+    })
+}
+
+#[test]
+fn schema_2_has_adapters_and_vmm_packages() {
+    let i = parse(sample_v2()).unwrap();
+    let wick = i.executor("wick").unwrap();
+    assert_eq!(wick.versions[1].adapter.as_deref(), Some("firecracker"));
+    assert_eq!(wick.versions[1].protocol, None);
+    assert_eq!(i.adapter("firecracker").unwrap().versions.len(), 3);
+    let idx = vec![("r".to_owned(), i)];
+    // VMM 묶음은 규약 버전과 상관없이, 자체 완결 실행기는 맞는 규약만.
+    let names: Vec<String> = index::available(&idx, None, &mac(), 2)
+        .into_iter()
+        .map(|c| format!("{}@{}", c.name, c.version))
+        .collect();
+    assert_eq!(names, ["solo@1", "wick@1.19.0", "wick@1.18.0"]);
+    assert!(index::available(&idx, Some("solo"), &mac(), 9).is_empty());
+    assert_eq!(index::available(&idx, Some("wick"), &mac(), 9).len(), 2);
+    // 어댑터는 이 플랫폼과 규약에서 가장 높은 것.
+    assert_eq!(
+        index::pick_adapter(&idx, "firecracker", &mac(), 2)
+            .unwrap()
+            .version,
+        "0.1.0"
+    );
+    assert_eq!(
+        index::pick_adapter(&idx, "firecracker", &mac(), 3)
+            .unwrap()
+            .version,
+        "0.2.0"
+    );
+    assert!(
+        index::pick_adapter(&idx, "firecracker", &mac(), 7)
+            .unwrap_err()
+            .contains("protocol 7")
+    );
+    assert!(
+        index::pick_adapter(
+            &idx,
+            "firecracker",
+            &Platform::from_rust("linux", "aarch64"),
+            2
+        )
+        .unwrap_err()
+        .contains("no build")
+    );
+    assert!(
+        index::pick_adapter(&idx, "nope", &mac(), 2)
+            .unwrap_err()
+            .contains("no adapter")
+    );
+}
+
+#[test]
+fn schema_2_versions_are_checked() {
+    let with = |f: &dyn Fn(&mut serde_json::Value)| {
+        let mut v = sample_v2();
+        f(&mut v);
+        parse(v).unwrap_err()
+    };
+    assert!(
+        with(&|v| v["executors"]["wick"]["versions"]["1.18.0"]["protocol"] = json!(2))
+            .contains("exactly one")
+    );
+    assert!(
+        with(&|v| {
+            v["executors"]["wick"]["versions"]["1.18.0"]
+                .as_object_mut()
+                .unwrap()
+                .remove("adapter");
+        })
+        .contains("exactly one")
+    );
+    assert!(
+        with(&|v| v["executors"]["wick"]["versions"]["1.18.0"]["adapter"] = json!("x@1"))
+            .contains("invalid adapter")
+    );
+    assert!(
+        with(&|v| v["adapters"]["firecracker"]["versions"]["0.1.0"]["adapter"] = json!("y"))
+            .contains("adapter has no")
+    );
+    assert!(
+        with(&|v| {
+            v["adapters"]["firecracker"]["versions"]["0.1.0"]
+                .as_object_mut()
+                .unwrap()
+                .remove("protocol");
+        })
+        .contains("missing")
+    );
+    assert!(
+        with(&|v| v["adapters"]["../x"] = json!({"versions": {"1": {"protocol": 2}}}))
+            .contains("invalid adapter name")
+    );
+}
+
+#[test]
+fn schema_1_ignores_schema_2_fields() {
+    let mut v = sample();
+    v["adapters"] = json!({"firecracker": {"versions": {"1": {}}}});
+    v["executors"]["fc"]["versions"]["1.9"]["adapter"] = json!("firecracker");
+    let i = parse(v).unwrap();
+    assert!(i.adapters.is_empty());
+    assert_eq!(i.executor("fc").unwrap().versions[0].adapter, None);
 }
 
 #[test]
@@ -302,7 +431,32 @@ async fn download_over_http_from_localhost() {
         .await
         .unwrap_err();
     assert!(
-        matches!(&e, RepoError::Fetch { reason, .. } if reason.contains("404")),
+        matches!(&e, RepoError::Missing { url } if url.ends_with("/missing/index.json")),
         "{e}"
     );
+}
+
+#[tokio::test]
+async fn v2_index_is_preferred_and_index_json_is_the_fallback() {
+    let repo = Repo::new("v2");
+    let f = Fetcher::new().unwrap();
+    let r = Repository::new("t", &repo.file_url()).unwrap();
+    // v2가 없으면 index.json (schema 1).
+    let i = f.index(&r).await.unwrap();
+    assert!(i.executor("fc").is_some());
+    // v2가 있으면 그것만 읽는다. 상대 URL은 v2/index.json 기준이다.
+    let v2 = repo.root.join("repo/v2");
+    fs::create_dir_all(&v2).unwrap();
+    fs::write(v2.join("index.json"), sample_v2().to_string()).unwrap();
+    let i = f.index(&r).await.unwrap();
+    assert!(i.executor("fc").is_none());
+    let a = &i.adapter("firecracker").unwrap().versions[0].artifacts[0];
+    assert!(
+        a.url.path().ends_with("/repo/v2/a/0.0.9.tar.gz"),
+        "{}",
+        a.url
+    );
+    // v2가 깨졌으면 되돌아가지 않고 알린다.
+    fs::write(v2.join("index.json"), b"{").unwrap();
+    assert!(matches!(f.index(&r).await, Err(RepoError::Index { .. })));
 }

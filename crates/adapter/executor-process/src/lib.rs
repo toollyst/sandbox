@@ -12,6 +12,7 @@
 //!
 //! - 의존: `sbx-model`, `sbx-executor`, `sbx-executor-proto`
 
+use std::ffi::OsString;
 use std::fs::OpenOptions;
 use std::io::{self, BufReader};
 use std::path::{Path, PathBuf};
@@ -32,6 +33,8 @@ pub const KILL_GRACE: Duration = Duration::from_secs(5);
 #[derive(Debug, Clone)]
 pub struct ProcessExecutor {
     binary: PathBuf,
+    /// 실행기에 더 주는 환경 변수 (예: [`proto::VMM_DIR_ENV`]).
+    env: Vec<(OsString, OsString)>,
     caps: Capabilities,
 }
 
@@ -106,9 +109,18 @@ pub fn convert_vm(vm: &VmConfig) -> proto::VmSpec {
 impl ProcessExecutor {
     /// 실행 파일로 만든다. `<실행기> capabilities`를 실행해 본다(블로킹).
     pub fn new(binary: impl Into<PathBuf>) -> Result<Self, ExecutorError> {
+        Self::with_env(binary, Vec::new())
+    }
+
+    /// 환경 변수 `env`를 더해 띄우는 실행기. 어댑터에 VMM 묶음을 알릴 때 쓴다([`proto::VMM_DIR_ENV`]).
+    pub fn with_env(
+        binary: impl Into<PathBuf>,
+        env: Vec<(OsString, OsString)>,
+    ) -> Result<Self, ExecutorError> {
         let binary = binary.into();
         let out = retry_busy(|| {
             Command::new(&binary)
+                .envs(env.iter().map(|(k, v)| (k, v)))
                 .arg("capabilities")
                 .stdin(Stdio::null())
                 .output()
@@ -138,6 +150,7 @@ impl ProcessExecutor {
         Ok(Self {
             caps: convert_capabilities(caps)?,
             binary,
+            env,
         })
     }
 
@@ -154,10 +167,10 @@ impl Executor for ProcessExecutor {
 
     fn launch(&self, vm: VmConfig) -> BoxFuture<'_, Result<Box<dyn VmHandle>, ExecutorError>> {
         let caps = self.caps.clone();
-        let binary = self.binary.clone();
+        let (binary, env) = (self.binary.clone(), self.env.clone());
         Box::pin(async move {
             vm.check(&caps)?;
-            let r = blocking(move || launch_blocking(&binary, &vm)).await?;
+            let r = blocking(move || launch_blocking(&binary, &env, &vm)).await?;
             Ok(Box::new(r) as Box<dyn VmHandle>)
         })
     }
@@ -239,13 +252,18 @@ fn retry_busy<T>(mut f: impl FnMut() -> io::Result<T>) -> io::Result<T> {
     f()
 }
 
-fn launch_blocking(binary: &Path, vm: &VmConfig) -> Result<ProcessVm, ExecutorError> {
+fn launch_blocking(
+    binary: &Path,
+    env: &[(OsString, OsString)],
+    vm: &VmConfig,
+) -> Result<ProcessVm, ExecutorError> {
     if let Some(dir) = vm.log.parent() {
         std::fs::create_dir_all(dir)?;
     }
     let log = OpenOptions::new().create(true).append(true).open(&vm.log)?;
     let mut child = retry_busy(|| {
         Command::new(binary)
+            .envs(env.iter().map(|(k, v)| (k, v)))
             .arg("run")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

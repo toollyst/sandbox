@@ -3,7 +3,13 @@
 //! ```text
 //! cargo xtask repo-add --repo <디렉터리> --bundle <디렉터리> --name <이름> --version <버전>
 //!     [--os <os>] [--capabilities <파일>] [--url <접두사>] [--description <글>]
+//!     [--schema 1|2] [--adapter-package | --vmm-for <어댑터> --arch <arch>]
 //! ```
+//!
+//! - `--schema 2`: `index.json` 대신 `v2/index.json`에 적는다(schema 2). 기본은 1.
+//! - `--adapter-package`: 실행기가 아니라 어댑터로 `adapters`에 더한다(schema 2). 묶음은 자체 완결 묶음과 같다.
+//! - `--vmm-for <어댑터>`: VMM 묶음으로 더한다(schema 2). 실행기 규약을 말하지 않으므로 `capabilities`를 돌리지
+//!   않고 `--arch`(OCI 이름: `amd64`, `arm64`)를 받는다. 색인의 그 버전에는 `protocol` 대신 `adapter`가 적힌다.
 //!
 //! - 묶음의 `sbx-executor capabilities`를 돌려 규약 버전(`protocol`)과 아키텍처(`architecture`)를 읽는다.
 //!   여기서 돌릴 수 없는 묶음(다른 OS, 아키텍처)은 그 호스트에서 저장해 둔 출력을 `--capabilities`로 준다.
@@ -33,6 +39,15 @@ struct Options {
     capabilities: Option<PathBuf>,
     url: Option<String>,
     description: Option<String>,
+    schema: u32,
+    kind: Kind,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum Kind {
+    Executor,
+    Adapter,
+    Vmm { adapter: String, arch: String },
 }
 
 fn host_os() -> &'static str {
@@ -46,6 +61,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let (mut repo, mut bundle, mut name, mut version, mut os, mut description) =
         (None, None, None, None, None, None);
     let (mut capabilities, mut url) = (None, None);
+    let (mut schema, mut adapter_package, mut vmm_for, mut arch) = (1, false, None, None);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut v = || it.next().cloned().ok_or(format!("{a} needs a value"));
@@ -58,6 +74,16 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--description" => description = Some(v()?),
             "--capabilities" => capabilities = Some(PathBuf::from(v()?)),
             "--url" => url = Some(v()?),
+            "--schema" => {
+                schema = match v()?.as_str() {
+                    "1" => 1,
+                    "2" => 2,
+                    s => return Err(format!("--schema must be 1 or 2 (got {s:?})")),
+                }
+            }
+            "--adapter-package" => adapter_package = true,
+            "--vmm-for" => vmm_for = Some(v()?),
+            "--arch" => arch = Some(v()?),
             other => return Err(format!("unknown argument {other}")),
         }
     }
@@ -71,6 +97,30 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let version = version.ok_or("--version is required")?;
     if !ok(&name) || !ok(&version) {
         return Err(format!("invalid name or version {name}@{version}"));
+    }
+    let kind = match (adapter_package, vmm_for, arch) {
+        (false, None, None) => Kind::Executor,
+        (true, None, None) => Kind::Adapter,
+        (false, Some(adapter), Some(arch)) => {
+            if !ok(&adapter) {
+                return Err(format!("invalid adapter name {adapter:?}"));
+            }
+            if arch != "amd64" && arch != "arm64" {
+                return Err(format!("--arch must be amd64 or arm64 (got {arch:?})"));
+            }
+            Kind::Vmm { adapter, arch }
+        }
+        (false, Some(_), None) => return Err("--vmm-for needs --arch".into()),
+        (_, None, Some(_)) => return Err("--arch is only for --vmm-for".into()),
+        (true, Some(_), _) => {
+            return Err("--adapter-package and --vmm-for do not go together".into());
+        }
+    };
+    if kind != Kind::Executor && schema != 2 {
+        return Err("adapters and VMM packages need --schema 2".into());
+    }
+    if matches!(kind, Kind::Vmm { .. }) && capabilities.is_some() {
+        return Err("a VMM package has no capabilities".into());
     }
     Ok(Options {
         repo: repo.ok_or("--repo is required")?,
@@ -86,6 +136,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
         capabilities,
         url,
         description,
+        schema,
+        kind,
     })
 }
 
@@ -138,41 +190,75 @@ fn archive(dir: &Path, top: &str) -> Result<Vec<u8>, String> {
 /// 더하고 압축 파일 경로를 돌려준다.
 pub fn add(args: &[String]) -> Result<PathBuf, String> {
     let o = parse(args)?;
-    let (protocol, arch) = capabilities(&o.bundle, o.capabilities.as_deref())?;
+    let (protocol, arch) = match &o.kind {
+        Kind::Vmm { arch, .. } => (None, arch.clone()),
+        _ => {
+            let (p, a) = capabilities(&o.bundle, o.capabilities.as_deref())?;
+            (Some(p), a)
+        }
+    };
     let file_name = format!(
         "{n}-{v}-{os}-{arch}.tar.gz",
         n = o.name,
         v = o.version,
         os = o.os
     );
-    let rel = format!("{}/{}/{file_name}", o.name, o.version);
+    let (section, dir) = match o.kind {
+        Kind::Adapter => ("adapters", format!("adapters/{}", o.name)),
+        _ => ("executors", o.name.clone()),
+    };
+    let rel = format!("{dir}/{}/{file_name}", o.version);
+    let (index_file, up) = if o.schema == 2 {
+        ("v2/index.json", "../")
+    } else {
+        ("index.json", "")
+    };
     let url = match &o.url {
         Some(prefix) => format!("{}/{file_name}", prefix.trim_end_matches('/')),
-        None => rel.clone(),
+        // 상대 URL은 색인 기준이다. v2 색인은 한 단계 아래에 있다.
+        None => format!("{up}{rel}"),
     };
-    let index_path = o.repo.join("index.json");
+    let index_path = o.repo.join(index_file);
     let mut index: Value = match std::fs::read(&index_path) {
         Ok(b) => {
             serde_json::from_slice(&b).map_err(|e| format!("{}: {e}", index_path.display()))?
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({"schema": 1, "executors": {}}),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            json!({"schema": o.schema, "executors": {}})
+        }
         Err(e) => return Err(format!("{}: {e}", index_path.display())),
     };
-    if index["schema"] != 1 {
-        return Err(format!("{}: schema is not 1", index_path.display()));
+    if index["schema"] != o.schema {
+        return Err(format!(
+            "{}: schema is not {}",
+            index_path.display(),
+            o.schema
+        ));
     }
-    let exec = &mut index["executors"][&o.name];
+    let exec = &mut index[section][&o.name];
     if let Some(d) = &o.description {
         exec["description"] = json!(d);
     }
     let ver = &mut exec["versions"][&o.version];
-    if !ver["protocol"].is_null() && ver["protocol"] != protocol {
+    let (key, value) = match (&o.kind, protocol) {
+        (Kind::Vmm { adapter, .. }, _) => ("adapter", json!(adapter)),
+        (_, Some(p)) => ("protocol", json!(p)),
+        (_, None) => unreachable!("only VMM packages lack a protocol"),
+    };
+    let other = if key == "adapter" {
+        "protocol"
+    } else {
+        "adapter"
+    };
+    if !ver[other].is_null() || (!ver[key].is_null() && ver[key] != value) {
         return Err(format!(
-            "{}@{} is already published with protocol {}",
-            o.name, o.version, ver["protocol"]
+            "{}@{} is already published with a different {}",
+            o.name,
+            o.version,
+            if ver[other].is_null() { key } else { other }
         ));
     }
-    ver["protocol"] = json!(protocol);
+    ver[key] = value;
     let artifacts = ver["artifacts"].as_array().cloned().unwrap_or_default();
     if artifacts
         .iter()
@@ -200,6 +286,8 @@ pub fn add(args: &[String]) -> Result<PathBuf, String> {
         "size": bytes.len(),
     }));
     ver["artifacts"] = Value::Array(artifacts);
+    std::fs::create_dir_all(index_path.parent().expect("has a parent"))
+        .map_err(|e| e.to_string())?;
     let tmp = index_path.with_extension("json.tmp");
     let mut f = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
     serde_json::to_writer_pretty(&mut f, &index).map_err(|e| e.to_string())?;
@@ -270,7 +358,7 @@ mod tests {
             .unwrap();
         let index = sbx_executor_repo::Index::parse(&bytes, &url).unwrap();
         let v = &index.executor("fc").unwrap().versions[0];
-        assert_eq!((v.version.as_str(), v.protocol), ("1.0", 2));
+        assert_eq!((v.version.as_str(), v.protocol), ("1.0", Some(2)));
         assert_eq!(v.artifacts.len(), 2);
         let d = &v.artifacts[1];
         assert_eq!(
@@ -281,8 +369,135 @@ mod tests {
         // 묶음은 저장소 클라이언트로 풀 수 있고, 맨 위 디렉터리 안에 실행 파일이 있다.
         let a = &v.artifacts[0];
         let file = a.url.to_file_path().unwrap();
-        let got = sbx_executor_repo::unpack::unpack(&file, &root.join("out")).unwrap();
+        let got = sbx_executor_repo::unpack::unpack(
+            &file,
+            &root.join("out"),
+            sbx_executor_repo::unpack::Layout::Executor,
+        )
+        .unwrap();
         assert!(got.ends_with("fc-1.0") && got.join("kernel").is_file());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn schema_2_adapters_and_vmm_packages() {
+        let root = std::env::temp_dir().join(format!("sbx-xtask-repo2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (repo, adapter, vmm) = (root.join("repo"), root.join("adapter"), root.join("vmm"));
+        std::fs::create_dir_all(&adapter).unwrap();
+        std::fs::create_dir_all(&vmm).unwrap();
+        let exe = adapter.join("sbx-executor");
+        std::fs::write(
+            &exe,
+            "#!/bin/sh\necho '{\"version\":2,\"name\":\"firecracker\",\"arch\":\"arm64\"}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(vmm.join("firecracker"), "vmm").unwrap();
+        let s = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let r = repo.to_str().unwrap();
+        // schema 1에는 어댑터와 VMM 묶음이 없다.
+        assert!(
+            add(&s(&[
+                "--repo",
+                r,
+                "--bundle",
+                adapter.to_str().unwrap(),
+                "--name",
+                "firecracker",
+                "--version",
+                "0.1.0",
+                "--adapter-package"
+            ]))
+            .is_err()
+        );
+        add(&s(&[
+            "--repo",
+            r,
+            "--bundle",
+            adapter.to_str().unwrap(),
+            "--name",
+            "firecracker",
+            "--version",
+            "0.1.0",
+            "--adapter-package",
+            "--schema",
+            "2",
+            "--os",
+            "darwin",
+        ]))
+        .unwrap();
+        add(&s(&[
+            "--repo",
+            r,
+            "--bundle",
+            vmm.to_str().unwrap(),
+            "--name",
+            "wick",
+            "--version",
+            "1.18.0",
+            "--vmm-for",
+            "firecracker",
+            "--arch",
+            "arm64",
+            "--schema",
+            "2",
+            "--os",
+            "darwin",
+        ]))
+        .unwrap();
+        // 같은 버전을 자체 완결 실행기로 다시 올리지 못한다.
+        assert!(
+            add(&s(&[
+                "--repo",
+                r,
+                "--bundle",
+                adapter.to_str().unwrap(),
+                "--name",
+                "wick",
+                "--version",
+                "1.18.0",
+                "--schema",
+                "2",
+                "--os",
+                "linux"
+            ]))
+            .is_err()
+        );
+        assert!(!repo.join("index.json").exists());
+
+        let bytes = std::fs::read(repo.join("v2/index.json")).unwrap();
+        let url = url::Url::from_directory_path(&repo)
+            .unwrap()
+            .join("v2/index.json")
+            .unwrap();
+        let index = sbx_executor_repo::Index::parse(&bytes, &url).unwrap();
+        let a = &index.adapter("firecracker").unwrap().versions[0];
+        assert_eq!(a.protocol, Some(2));
+        let w = &index.executor("wick").unwrap().versions[0];
+        assert_eq!(
+            (w.protocol, w.adapter.as_deref()),
+            (None, Some("firecracker"))
+        );
+        let file = w.artifacts[0].url.to_file_path().unwrap();
+        assert_eq!(
+            file,
+            repo.join("wick/1.18.0/wick-1.18.0-darwin-arm64.tar.gz")
+        );
+        assert!(
+            a.artifacts[0]
+                .url
+                .to_file_path()
+                .unwrap()
+                .starts_with(repo.join("adapters/firecracker"))
+        );
+        let got = sbx_executor_repo::unpack::unpack(
+            &file,
+            &root.join("out"),
+            sbx_executor_repo::unpack::Layout::Vmm,
+        )
+        .unwrap();
+        assert!(got.join("firecracker").is_file());
         std::fs::remove_dir_all(root).unwrap();
     }
 }

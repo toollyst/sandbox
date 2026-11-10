@@ -8,9 +8,19 @@ use sbx_executor_install::executable_name;
 
 use crate::error::RepoError;
 
-/// `archive`를 빈 디렉터리 `dest`(없으면 만든다)에 풀고, 묶음 디렉터리(맨 위에 실행 파일이 있는 곳)를 돌려준다.
-/// 맨 위가 디렉터리 하나뿐이고 실행 파일이 그 안에 있으면 그 디렉터리다.
-pub fn unpack(archive: &Path, dest: &Path) -> Result<PathBuf, RepoError> {
+/// 묶음의 종류. 묶음 디렉터리를 찾는 규칙이 다르다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Layout {
+    /// 자체 완결 실행기와 어댑터: 실행 파일 `sbx-executor`가 있는 곳.
+    Executor,
+    /// VMM 묶음: 맨 위가 디렉터리 하나뿐이면 그 디렉터리, 아니면 맨 위. 비어 있으면 안 된다.
+    Vmm,
+}
+
+/// `archive`를 빈 디렉터리 `dest`(없으면 만든다)에 풀고 묶음 디렉터리를 돌려준다.
+/// [`Layout::Executor`]면 맨 위에 실행 파일이 있는 곳이다. 맨 위가 디렉터리 하나뿐이고 실행 파일이
+/// 그 안에 있으면 그 디렉터리다.
+pub fn unpack(archive: &Path, dest: &Path, layout: Layout) -> Result<PathBuf, RepoError> {
     fs::create_dir_all(dest)?;
     if fs::read_dir(dest)?.next().is_some() {
         return Err(RepoError::Io(io::Error::new(
@@ -20,7 +30,24 @@ pub fn unpack(archive: &Path, dest: &Path) -> Result<PathBuf, RepoError> {
     }
     let file = fs::File::open(archive)?;
     unpack_reader(flate2::read::GzDecoder::new(file), dest)?;
-    bundle_root(dest)
+    match layout {
+        Layout::Executor => bundle_root(dest),
+        Layout::Vmm => vmm_root(dest),
+    }
+}
+
+fn vmm_root(dest: &Path) -> Result<PathBuf, RepoError> {
+    let top: Vec<_> = fs::read_dir(dest)?.collect::<Result<_, _>>()?;
+    match top.as_slice() {
+        [] => Err(bad("the archive is empty")),
+        [only] if only.file_type()?.is_dir() => {
+            if fs::read_dir(only.path())?.next().is_none() {
+                return Err(bad("the archive is empty"));
+            }
+            Ok(only.path())
+        }
+        _ => Ok(dest.to_path_buf()),
+    }
 }
 
 fn bad(m: impl Into<String>) -> RepoError {
@@ -273,7 +300,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let ar = root.join("a.tar.gz");
         fs::write(&ar, data).unwrap();
-        let r = unpack(&ar, &root.join("out"));
+        let r = unpack(&ar, &root.join("out"), Layout::Executor);
         (root, r)
     }
 
@@ -308,6 +335,31 @@ mod tests {
         let dir = r.unwrap();
         assert_eq!(dir, root.join("out/fc-1.2.0"));
         assert!(dir.join("sub/kernel").is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn vmm_packages_need_no_executor() {
+        let unpack_vmm = |name: &str, ar: &[u8]| {
+            let root =
+                std::env::temp_dir().join(format!("sbx-unpack-vmm-{name}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&root);
+            fs::create_dir_all(&root).unwrap();
+            fs::write(root.join("a.tar.gz"), ar).unwrap();
+            let r = unpack(&root.join("a.tar.gz"), &root.join("out"), Layout::Vmm);
+            (root, r)
+        };
+        let (root, r) = unpack_vmm("top", &tar_gz(|b| file(b, "firecracker", 0o755, b"x")));
+        assert_eq!(r.unwrap(), root.join("out"));
+        fs::remove_dir_all(root).unwrap();
+        let (root, r) = unpack_vmm(
+            "nested",
+            &tar_gz(|b| file(b, "wick-1/firecracker", 0o755, b"x")),
+        );
+        assert_eq!(r.unwrap(), root.join("out/wick-1"));
+        fs::remove_dir_all(root).unwrap();
+        let (root, r) = unpack_vmm("empty", &tar_gz(|_| {}));
+        assert!(matches!(r, Err(RepoError::Archive(m)) if m.contains("empty")));
         fs::remove_dir_all(root).unwrap();
     }
 
