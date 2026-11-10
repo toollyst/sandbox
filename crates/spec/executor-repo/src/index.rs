@@ -62,6 +62,11 @@ pub struct Index {
     pub executors: Vec<Executor>,
     /// 어댑터들 (이름 순, schema 2). 모양은 실행기와 같고 버전마다 `protocol`이 있다.
     pub adapters: Vec<Executor>,
+    /// 색인의 일련번호(schema 2, 선택). 서명된 색인에는 있어야 하고, 고칠 때마다 커진다. 클라이언트는 본 것보다
+    /// 작은 것을 거부한다(롤백).
+    pub serial: Option<u64>,
+    /// 이 색인을 믿는 기한(schema 2, 선택. Unix 초). 서명된 색인에는 있어야 한다. 지나면 거부한다(동결).
+    pub expires: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -75,6 +80,10 @@ struct RawIndex {
     executors: BTreeMap<String, RawExecutor>,
     #[serde(default)]
     adapters: BTreeMap<String, RawExecutor>,
+    #[serde(default)]
+    serial: Option<u64>,
+    #[serde(default)]
+    expires: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -144,9 +153,17 @@ impl Index {
         } else {
             (Kind::ExecutorV2, raw.adapters)
         };
+        // schema 1에는 없다. 같은 이름의 필드가 있어도 모르는 필드로 본다.
+        let (serial, expires) = if schema.schema == 1 {
+            (None, None)
+        } else {
+            (raw.serial, raw.expires)
+        };
         Ok(Self {
             executors: entries(raw.executors, executor_kind, url)?,
             adapters: entries(adapters, Kind::Adapter, url)?,
+            serial,
+            expires,
         })
     }
 
@@ -391,6 +408,15 @@ fn pick_from(
         available
     };
     // 그 버전과 같거나 그것으로 시작하는 것([`version_matches`]) 중 가장 높은 것. `1.18.0`은 그 주 버전의 가장 새 패치.
+    // 이름은 그것을 내는 첫(우선순위가 가장 높은) 저장소의 것이다. 뒤 저장소는 같은 이름에 더 높은 버전을 내도
+    // 가로채지 못한다(다른 저장소를 고르려면 호출자가 그 저장소만 넘긴다).
+    let owner: Vec<(String, Index)> = indexes
+        .iter()
+        .find(|(_, i)| entry(i, &spec.name).is_some())
+        .cloned()
+        .into_iter()
+        .collect();
+    let indexes = &owner[..];
     let found = list(indexes, Some(&spec.name), platform, protocol)
         .into_iter()
         .find(|c| {

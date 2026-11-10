@@ -37,6 +37,10 @@ unsafe_code = "forbid"
 
 [workspace.dependencies]
 # 외부
+# 저장소 색인 서명(minisign) 확인. 의존성이 없다.
+minisign-verify = "0.3"
+# 색인 서명 만들기(xtask repo-sign, 테스트). sbx 바이너리에는 들어가지 않는다.
+minisign = { version = "0.10", default-features = false }
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

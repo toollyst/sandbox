@@ -19,6 +19,8 @@ flate2.workspace = true
 tar.workspace = true
 reqwest.workspace = true
 url = "2"
+minisign-verify.workspace = true
 
 [dev-dependencies]
+minisign.workspace = true
 tokio = { workspace = true, features = ["net", "io-util"] }

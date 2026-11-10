@@ -11,11 +11,13 @@ use crate::error::RepoError;
 use crate::index::{Artifact, Index, MAX_INDEX_BYTES};
 use crate::location;
 use crate::sources::Repository;
+use crate::trust::{self, MAX_SIGNATURE_BYTES, Seen};
 
 /// HTTP 클라이언트를 들고 있는 내려받는 쪽.
 #[derive(Debug, Clone)]
 pub struct Fetcher {
     http: reqwest::Client,
+    seen: Option<Seen>,
 }
 
 /// 오류와 그 원인들을 `: `로 이은 한 줄. HTTP 클라이언트의 맨 위 오류("error sending request", "builder error")만으로는
@@ -71,7 +73,7 @@ impl Fetcher {
             .map_err(|e| {
                 RepoError::Config(format!("cannot create an HTTP client: {}", chain(&e)))
             })?;
-        Ok(Self { http })
+        Ok(Self { http, seen: None })
     }
 
     /// `url`의 내용을 `limit` 바이트까지 `write`에 넘긴다. 받은 바이트 수를 돌려준다.
@@ -133,25 +135,75 @@ impl Fetcher {
         Ok(sink.got)
     }
 
-    /// 저장소의 색인을 받아 읽는다. `v2/index.json`을 먼저 찾고, 없으면 `index.json`을 읽는다.
-    pub async fn index(&self, repo: &Repository) -> Result<Index, RepoError> {
-        match self.index_at(&repo.index_v2_url()).await {
-            Err(RepoError::Missing { .. }) => self.index_at(&repo.index_url()).await,
-            other => other,
-        }
+    /// 본 일련번호를 여기에 적고, 그보다 오래된 서명된 색인을 거부한다([`Seen`]). 없으면 기억하지 않는다.
+    pub fn with_seen(mut self, seen: Seen) -> Self {
+        self.seen = Some(seen);
+        self
     }
 
-    async fn index_at(&self, url: &Url) -> Result<Index, RepoError> {
+    /// 저장소의 색인을 받아 읽는다.
+    ///
+    /// - 키가 없는 저장소: `v2/index.json`을 먼저 찾고, 없으면 `index.json`을 읽는다.
+    /// - 키가 있는 저장소([`Repository::signed`]): `v2/index.json`과 그 서명 `v2/index.json.minisig`가 있어야 하고,
+    ///   서명이 키 하나와 맞아야 하며, 색인에 `serial`과 `expires`가 있어야 한다. `serial`이 본 것보다 작으면 거부한다.
+    ///
+    /// 어느 쪽이든 `expires`가 지났으면 거부한다.
+    pub async fn index(&self, repo: &Repository) -> Result<Index, RepoError> {
+        let v2 = repo.index_v2_url();
+        let index = if repo.signed() {
+            let untrusted = |reason: String| RepoError::Untrusted {
+                url: v2.to_string(),
+                reason,
+            };
+            let body = match self.bytes(&v2, MAX_INDEX_BYTES).await {
+                Err(RepoError::Missing { .. }) => {
+                    return Err(untrusted("a signed repository needs v2/index.json".into()));
+                }
+                other => other?,
+            };
+            let sig_url = location::signature(&v2);
+            let sig = match self.bytes(&sig_url, MAX_SIGNATURE_BYTES).await {
+                Err(RepoError::Missing { .. }) => {
+                    return Err(untrusted(format!("no signature at {sig_url}")));
+                }
+                other => other?,
+            };
+            let sig = String::from_utf8(sig)
+                .map_err(|_| untrusted("the signature is not text".into()))?;
+            trust::verify(&body, &sig, &repo.keys).map_err(untrusted)?;
+            let index = parse(&body, &v2)?;
+            let (Some(serial), Some(_)) = (index.serial, index.expires) else {
+                return Err(untrusted("a signed index needs serial and expires".into()));
+            };
+            check_expiry(&index, &v2)?;
+            if let Some(seen) = &self.seen {
+                seen.check_and_record(repo, serial, v2.as_str())?;
+            }
+            index
+        } else {
+            let (url, body) = match self.bytes(&v2, MAX_INDEX_BYTES).await {
+                Err(RepoError::Missing { .. }) => {
+                    let v1 = repo.index_url();
+                    let b = self.bytes(&v1, MAX_INDEX_BYTES).await?;
+                    (v1, b)
+                }
+                other => (v2, other?),
+            };
+            let index = parse(&body, &url)?;
+            check_expiry(&index, &url)?;
+            index
+        };
+        Ok(index)
+    }
+
+    async fn bytes(&self, url: &Url, limit: u64) -> Result<Vec<u8>, RepoError> {
         let mut body = Vec::new();
-        self.stream(url, MAX_INDEX_BYTES, &mut |c| {
+        self.stream(url, limit, &mut |c| {
             body.extend_from_slice(c);
             Ok(())
         })
         .await?;
-        Index::parse(&body, url).map_err(|reason| RepoError::Index {
-            url: url.to_string(),
-            reason,
-        })
+        Ok(body)
     }
 
     /// 묶음 압축 파일을 `dest`에 받는다. 크기와 SHA-256이 색인과 같아야 한다. 다르면 `dest`를 지운다.
@@ -189,5 +241,24 @@ impl Fetcher {
         }
         file.sync_all()?;
         Ok(())
+    }
+}
+
+fn parse(body: &[u8], url: &Url) -> Result<Index, RepoError> {
+    Index::parse(body, url).map_err(|reason| RepoError::Index {
+        url: url.to_string(),
+        reason,
+    })
+}
+
+fn check_expiry(index: &Index, url: &Url) -> Result<(), RepoError> {
+    match index.expires {
+        Some(e) if e <= trust::now() => Err(RepoError::Untrusted {
+            url: url.to_string(),
+            reason: format!(
+                "it expired at {e} (Unix time); the repository has not been re-signed (a frozen mirror?)"
+            ),
+        }),
+        _ => Ok(()),
     }
 }

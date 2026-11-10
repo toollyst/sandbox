@@ -55,6 +55,17 @@ pub fn index(repository: &Url) -> Url {
         .expect("a directory URL joins a file name")
 }
 
+/// 색인 서명 파일의 접미사. 서명은 색인 URL에 이것을 붙인 곳에 있다(`v2/index.json.minisig`).
+pub const SIGNATURE_SUFFIX: &str = ".minisig";
+
+/// 색인 URL의 서명 URL.
+pub fn signature(index: &Url) -> Url {
+    let mut u = index.clone();
+    let p = format!("{}{SIGNATURE_SUFFIX}", index.path());
+    u.set_path(&p);
+    u
+}
+
 /// 저장소 URL의 schema 2 색인 URL.
 pub fn index_v2(repository: &Url) -> Url {
     repository
@@ -95,6 +106,10 @@ mod tests {
         assert_eq!(
             index_v2(&r).as_str(),
             "https://example.com/sbx/v2/index.json"
+        );
+        assert_eq!(
+            signature(&index_v2(&r)).as_str(),
+            "https://example.com/sbx/v2/index.json.minisig"
         );
     }
 }

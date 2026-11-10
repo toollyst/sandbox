@@ -48,7 +48,7 @@
 //! 색인 전체를 거부한다. 색인은 [`index::MAX_INDEX_BYTES`] 이하다.
 //!
 //! **URL**: `https`, `file`, 그리고 loopback 호스트의 `http`만 쓴다([`location::check`]). redirect된 곳도 같다.
-//! 색인의 무결성은 TLS에 기대고, 묶음의 무결성은 색인의 `sha256`이 지킨다. 서명은 아직 없다(다음 schema).
+//! 묶음의 무결성은 색인의 `sha256`이 지킨다. 색인은 서명된 저장소(아래 "서명")가 아니면 TLS에만 기댄다.
 //!
 //! # 저장소 (schema 2): 어댑터와 VMM 묶음
 //!
@@ -85,8 +85,25 @@
 //! }
 //! ```
 //!
+//! 맨 위에 둘을 더 둘 수 있다(schema 2): `serial`(색인을 고칠 때마다 커지는 정수)과 `expires`(이 색인을 믿는
+//! 기한, Unix 초). 서명된 색인에는 둘 다 있어야 한다. 클라이언트는 `expires`가 지난 색인을 서명과 상관없이 거부한다.
+//!
 //! VMM 묶음은 규약 버전으로 거르지 않는다. 맞는 것은 어댑터 쪽에서 고른다([`index::pick_adapter`]:
 //! 이 플랫폼과 규약 버전의 가장 높은 버전). 상대 URL은 `v2/index.json` 기준이다.
+//!
+//! # 서명 ([`trust`])
+//!
+//! 저장소에 공개키를 두면(목록 파일의 `key=`) 그 저장소는 **서명된 저장소**다. 클라이언트는 그때
+//!
+//! 1. `v2/index.json`과 그 [minisign](https://jedisct1.github.io/minisign/) 서명 `v2/index.json.minisig`
+//!    ([`location::SIGNATURE_SUFFIX`])를 받는다. 둘 중 하나라도 없으면 거부한다(`index.json`으로 되돌아가지 않는다).
+//! 2. 서명이 키 중 하나와 맞아야 한다(미리 해시한 서명만. 키를 바꾸는 동안에는 옛 키와 새 키를 함께 둔다).
+//! 3. 색인에 `serial`과 `expires`가 있어야 하고, `expires`가 지나지 않아야 한다(동결된 미러).
+//! 4. `serial`이 이 기계가 그 저장소에서 본 가장 큰 값보다 작으면 거부한다(롤백). 본 값은 [`Seen`] 파일에 남는다.
+//!
+//! 서명은 색인 파일의 바이트 그대로에 대한 것이다. 묶음은 색인의 `sha256`으로 확인하므로 따로 서명하지 않는다.
+//! 저장소를 만드는 쪽은 색인을 고칠 때마다 `serial`을 키우고 `expires`를 새로 정해 다시 서명한다
+//! (`cargo xtask repo-sign`).
 //!
 //! # 묶음 압축 파일
 //!
@@ -101,19 +118,25 @@
 //!
 //! 저장소 목록은 우선순위 순서다. 이 호스트 플랫폼([`Platform::host`])의 묶음이 있고 규약 버전이 맞는 것 중에서:
 //!
-//! - `<이름>@<버전>`: 그 버전. 여러 저장소에 있으면 앞 저장소.
-//! - `<이름>`: 가장 높은 버전(`sbx_executor_install::version_cmp`). 같은 버전이면 앞 저장소.
+//! - 이름은 그것을 내는 **첫 저장소**의 것이다. 뒤 저장소가 같은 이름에 더 높은 버전을 내도 그 저장소에서
+//!   고르지 않는다(다른 저장소가 이름을 가로채지 못하게). 다른 저장소에서 받으려면 그 저장소만 넘긴다.
+//! - `<이름>@<버전>`: 그 저장소의 그 버전(`1.18.0`이면 그 주 버전의 가장 새 패치).
+//! - `<이름>`: 그 저장소의 가장 높은 버전(`sbx_executor_install::version_cmp`).
 //! - 없으면 이유를 알린다: 이름이 없다, 버전이 없다, 이 플랫폼 빌드가 없다(있는 플랫폼 목록), 규약 버전이 다르다.
 //!
 //! 받지 못한 저장소는 건너뛰고 경고만 한다([`indexes`]). 남은 저장소로 고른다.
 //!
 //! # 저장소 목록 파일 ([`sources`])
 //!
-//! 한 줄에 `<이름> <URL>`. `#`으로 시작하는 줄과 빈 줄은 무시한다. 줄 순서가 우선순위다. 손으로 고쳐도 된다.
+//! 한 줄에 `<이름> <URL> [key=<minisign 공개키>]...`. `#`으로 시작하는 줄과 빈 줄은 무시한다. 줄 순서가
+//! 우선순위다. 손으로 고쳐도 된다.
 //!
 //! # 모듈
 //!
-//! [`error`], [`location`], [`platform`]이 가장 아래, 그 위에 [`index`], [`sources`], [`unpack`], 그 위에 [`fetch`].
+//! [`error`], [`location`], [`platform`]이 가장 아래, 그 위에 [`index`], [`sources`], [`unpack`], 그 위에 [`trust`],
+//! 그 위에 [`fetch`].
+//!
+//! - 의존: `minisign-verify`(서명 확인, 의존성 없음)
 //!
 //! - 의존: `sbx-executor-install`(이름 규칙, 버전 비교, 묶음 실행 파일 이름)
 
@@ -123,6 +146,7 @@ pub mod index;
 pub mod location;
 pub mod platform;
 pub mod sources;
+pub mod trust;
 pub mod unpack;
 
 use std::path::{Path, PathBuf};
@@ -132,6 +156,7 @@ pub use fetch::Fetcher;
 pub use index::{Artifact, Candidate, Index};
 pub use platform::Platform;
 pub use sources::{Repository, Sources};
+pub use trust::Seen;
 
 /// 저장소들의 색인을 받는다. 받은 것(저장소 순서)과, 받지 못한 저장소의 오류를 돌려준다.
 pub async fn indexes(

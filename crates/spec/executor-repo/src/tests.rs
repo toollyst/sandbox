@@ -303,6 +303,203 @@ fn picking_follows_platform_protocol_version_and_repository_order() {
     assert_eq!(all, ["a:1.10", "b:1.10", "a:1.9", "b:1.9"]);
 }
 
+#[test]
+fn a_name_belongs_to_the_first_repository_that_has_it() {
+    let a = parse(sample()).unwrap();
+    // 뒤 저장소가 같은 이름에 더 높은 버전을 내도 가로채지 못한다.
+    let mut b = sample();
+    b["executors"]["fc"]["versions"]["9.0"] = json!({"protocol": 1, "artifacts": [artifact("darwin", "arm64", "https://evil.example/fc")]});
+    b["executors"]["only-b"] = json!({"versions": {"1.0": {"protocol": 1, "artifacts": [artifact("darwin", "arm64", "x")]}}});
+    let b = parse(b).unwrap();
+    let idx = vec![("a".to_owned(), a), ("b".to_owned(), b)];
+    let c = index::pick(&idx, &spec("fc"), &mac(), 1).unwrap();
+    assert_eq!((c.repository.as_str(), c.version.as_str()), ("a", "1.10"));
+    let e = index::pick(&idx, &spec("fc@9.0"), &mac(), 1).unwrap_err();
+    assert!(e.contains("not in any repository"), "{e}");
+    // 그 저장소만 넘기면 그 저장소에서 고른다. 다른 이름은 그 이름을 내는 첫 저장소에서.
+    let c = index::pick(&idx[1..], &spec("fc"), &mac(), 1).unwrap();
+    assert_eq!((c.repository.as_str(), c.version.as_str()), ("b", "9.0"));
+    let c = index::pick(&idx, &spec("only-b"), &mac(), 1).unwrap();
+    assert_eq!(c.repository, "b");
+}
+
+/// 서명된 v2 저장소: 색인, 서명, 공개키.
+struct Signed {
+    repo: Repo,
+    sk: minisign::SecretKey,
+    key: String,
+}
+
+impl Signed {
+    fn new(name: &str) -> Self {
+        let repo = Repo::new(name);
+        let kp = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let s = Self {
+            repo,
+            key: kp.pk.to_base64(),
+            sk: kp.sk,
+        };
+        fs::create_dir_all(s.dir()).unwrap();
+        s
+    }
+
+    fn dir(&self) -> PathBuf {
+        self.repo.root.join("repo/v2")
+    }
+
+    fn index(serial: Option<u64>, expires: Option<u64>) -> Vec<u8> {
+        let mut v = sample_v2();
+        if let Some(s) = serial {
+            v["serial"] = json!(s);
+        }
+        if let Some(e) = expires {
+            v["expires"] = json!(e);
+        }
+        v.to_string().into_bytes()
+    }
+
+    /// 색인을 쓰고 이 키로 서명한다.
+    fn publish(&self, body: &[u8]) {
+        fs::write(self.dir().join("index.json"), body).unwrap();
+        let sig = minisign::sign(None, &self.sk, body, Some("test"), None).unwrap();
+        fs::write(self.dir().join("index.json.minisig"), sig.into_string()).unwrap();
+    }
+
+    fn repository(&self, keys: Vec<String>) -> Repository {
+        Repository::new("s", &self.repo.file_url())
+            .unwrap()
+            .with_keys(keys)
+            .unwrap()
+    }
+}
+
+fn untrusted(r: Result<Index, RepoError>, why: &str) {
+    match r {
+        Err(RepoError::Untrusted { reason, .. }) => assert!(reason.contains(why), "{reason}"),
+        other => panic!("expected untrusted ({why}), got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn signed_repositories_need_a_matching_fresh_signature() {
+    let s = Signed::new("signed");
+    let later = trust::now() + 3600;
+    let seen = Seen::new(s.repo.root.join("seen"));
+    let f = Fetcher::new().unwrap().with_seen(seen.clone());
+    let r = s.repository(vec![s.key.clone()]);
+
+    // 서명이 맞으면 읽고 일련번호를 적는다.
+    s.publish(&Signed::index(Some(5), Some(later)));
+    let i = f.index(&r).await.unwrap();
+    assert_eq!((i.serial, i.expires), (Some(5), Some(later)));
+    assert_eq!(seen.get(&r).unwrap(), Some(5));
+
+    // 서명 파일이 없으면, 색인을 바꾸면, 키가 다르면 거부한다.
+    fs::remove_file(s.dir().join("index.json.minisig")).unwrap();
+    untrusted(f.index(&r).await, "no signature");
+    s.publish(&Signed::index(Some(5), Some(later)));
+    let mut body = fs::read(s.dir().join("index.json")).unwrap();
+    body.push(b' ');
+    fs::write(s.dir().join("index.json"), &body).unwrap();
+    untrusted(f.index(&r).await, "matches none");
+    s.publish(&Signed::index(Some(5), Some(later)));
+    let other = minisign::KeyPair::generate_unencrypted_keypair()
+        .unwrap()
+        .pk
+        .to_base64();
+    untrusted(
+        f.index(&s.repository(vec![other.clone()])).await,
+        "matches none",
+    );
+    // 키 둘 중 하나만 맞아도 된다(키를 바꾸는 동안).
+    f.index(&s.repository(vec![other, s.key.clone()]))
+        .await
+        .unwrap();
+
+    // serial·expires가 없으면, 기한이 지났으면, 본 것보다 오래됐으면 거부한다.
+    s.publish(&Signed::index(None, Some(later)));
+    untrusted(f.index(&r).await, "needs serial and expires");
+    s.publish(&Signed::index(Some(6), Some(trust::now() - 1)));
+    untrusted(f.index(&r).await, "expired");
+    s.publish(&Signed::index(Some(4), Some(later)));
+    untrusted(f.index(&r).await, "older than 5");
+    assert_eq!(seen.get(&r).unwrap(), Some(5));
+    s.publish(&Signed::index(Some(7), Some(later)));
+    f.index(&r).await.unwrap();
+    assert_eq!(seen.get(&r).unwrap(), Some(7));
+
+    // 서명된 저장소는 v1로 되돌아가지 않는다.
+    fs::remove_dir_all(s.dir()).unwrap();
+    untrusted(f.index(&r).await, "needs v2/index.json");
+}
+
+#[tokio::test]
+async fn unsigned_indexes_still_honor_their_own_expiry() {
+    let s = Signed::new("unsigned-expiry");
+    let f = Fetcher::new().unwrap();
+    let r = Repository::new("u", &s.repo.file_url()).unwrap();
+    fs::write(
+        s.dir().join("index.json"),
+        Signed::index(None, Some(trust::now() - 1)),
+    )
+    .unwrap();
+    untrusted(f.index(&r).await, "expired");
+    fs::write(s.dir().join("index.json"), Signed::index(Some(1), None)).unwrap();
+    f.index(&r).await.unwrap();
+}
+
+#[test]
+fn repository_keys_are_checked_and_kept_in_the_list_file() {
+    let root = std::env::temp_dir().join(format!("sbx-exrepo-keys-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let key = minisign::KeyPair::generate_unencrypted_keypair()
+        .unwrap()
+        .pk
+        .to_base64();
+    let src = Sources::new(root.join("repos"));
+    let r = Repository::new("k", "https://example.com/r")
+        .unwrap()
+        .with_keys(vec![key.clone()])
+        .unwrap();
+    assert!(r.signed());
+    src.add(r.clone()).unwrap();
+    src.add(Repository::new("plain", "https://example.com/p").unwrap())
+        .unwrap();
+    assert_eq!(
+        src.list().unwrap(),
+        [
+            r,
+            Repository::new("plain", "https://example.com/p").unwrap()
+        ]
+    );
+    assert!(
+        fs::read_to_string(root.join("repos"))
+            .unwrap()
+            .contains(&format!(" key={key}"))
+    );
+    assert!(
+        Repository::new("k", "https://example.com/r")
+            .unwrap()
+            .with_keys(vec!["nope".into()])
+            .is_err()
+    );
+    fs::write(root.join("repos"), "x https://example.com/x what\n").unwrap();
+    assert!(
+        src.list()
+            .unwrap_err()
+            .to_string()
+            .contains("unknown field")
+    );
+    fs::write(root.join("repos"), "x https://example.com/x key=bad\n").unwrap();
+    assert!(
+        src.list()
+            .unwrap_err()
+            .to_string()
+            .contains("invalid minisign public key")
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
 struct Repo {
     root: PathBuf,
 }

@@ -27,6 +27,13 @@ pub enum RepoError {
         /// 이유.
         reason: String,
     },
+    /// 색인을 믿을 수 없다: 서명이 없거나 맞지 않는다, 기한이 지났다, 본 것보다 오래됐다.
+    Untrusted {
+        /// 색인 URL.
+        url: String,
+        /// 이유.
+        reason: String,
+    },
     /// 찾는 실행기, 버전, 플랫폼 빌드가 없다.
     NotFound(String),
     /// 내려받은 파일의 크기나 SHA-256이 색인과 다르다.
@@ -49,6 +56,9 @@ impl fmt::Display for RepoError {
             Self::Fetch { url, reason } => write!(f, "cannot fetch {url}: {reason}"),
             Self::Missing { url } => write!(f, "cannot fetch {url}: not found"),
             Self::Index { url, reason } => write!(f, "invalid repository index {url}: {reason}"),
+            Self::Untrusted { url, reason } => {
+                write!(f, "repository index {url} is not trusted: {reason}")
+            }
             Self::Integrity { url, reason } => {
                 write!(f, "download {url} failed verification: {reason}")
             }
