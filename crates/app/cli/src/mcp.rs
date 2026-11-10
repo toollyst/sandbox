@@ -8,6 +8,8 @@
 //!     서버를 띄우는 쪽이 정할 일이다. 파일은 `write_file`과 `read_file`로 옮긴다.
 //!   - 인자는 언제나 `--이름=값`으로 넘기고, `-`로 시작하는 이미지 이름은 거부한다. 그래서 도구 인자가
 //!     다른 플래그(예: `-v`)로 읽히지 않는다.
+//! - 도구는 MCP로 만든 샌드박스만 본다(라벨 [`OWNER_LABEL`]). CLI로 만든 샌드박스는 호스트 폴더를 붙였을 수
+//!   있으므로 `exec`, 파일 도구, `list`, `remove`에 없는 것과 같다. `sbx mcp --all-sandboxes`로 넓힌다.
 //! - 도구([`tools`]): `run`(새 샌드박스에서 명령 하나, 끝나면 지운다), `create`(오래 사는 샌드박스, 이 서버가
 //!   끝나도 남는다), `exec`, `write_file`, `read_file`, `list`, `remove`.
 //! - 시간 제한: `run`은 넘으면 VM을 끄고 지운다. `exec`은 넘으면 그 프로세스에 SIGKILL을 보낸다.
@@ -51,16 +53,69 @@ const SIGKILL: i32 = 9;
 
 type Stdout = Rc<Mutex<tokio::io::Stdout>>;
 
+/// MCP로 만든 샌드박스에 붙이는 라벨과 값. 도구는 이 라벨이 있는 샌드박스만 본다
+/// (`sbx mcp --all-sandboxes`로 넓힐 수 있다).
+pub const OWNER_LABEL: &str = "io.github.toollyst.sandbox.owner";
+/// [`OWNER_LABEL`]의 값.
+pub const OWNER_MCP: &str = "mcp";
+
+/// 서버 하나의 설정.
+struct Server {
+    ctx: Ctx,
+    /// `--all-sandboxes`: 같은 data_dir의 다른 샌드박스(CLI로 만든 것)도 다룬다.
+    all_sandboxes: bool,
+}
+
+impl std::ops::Deref for Server {
+    type Target = Ctx;
+    fn deref(&self) -> &Ctx {
+        &self.ctx
+    }
+}
+
+impl Server {
+    fn mine(&self, info: &sbx_runtime::SandboxInfo) -> bool {
+        self.all_sandboxes
+            || info.spec.labels.get(OWNER_LABEL).map(String::as_str) == Some(OWNER_MCP)
+    }
+
+    /// `query`(이름, ID, ID 앞부분)로 찾는다. 이 서버가 다룰 수 없는 샌드박스는 없는 것과 같다.
+    async fn find(
+        &self,
+        rt: &sbx_runtime::Runtime,
+        query: &str,
+    ) -> AppResult<sbx_runtime::Sandbox> {
+        let sandbox = rt.find(query).await?;
+        if !self.mine(sandbox.info()) {
+            return Err(format!(
+                "no sandbox {query:?} created through MCP (sandboxes made with the sbx CLI are not \
+                 available here unless the server runs with --all-sandboxes)"
+            )
+            .into());
+        }
+        Ok(sandbox)
+    }
+}
+
 /// 표준 입출력으로 MCP 서버를 돌린다. 표준 입력이 닫히면 끝난다.
 ///
 /// 도구 호출은 한 스레드([`tokio::task::LocalSet`])에서 동시에 돈다. CLI의 코어 호출은 `Send`가 아닌 오류를
 /// 쓰므로 여러 스레드로 옮길 수 없다. 오래 걸리는 일(VM 실행, 기다리기)은 어차피 기다림이다.
 pub async fn serve(cli: &Cli) -> AppResult<u8> {
-    let ctx = Rc::new(Ctx::new(cli)?);
+    let all_sandboxes = matches!(
+        cli.command,
+        Command::Mcp {
+            all_sandboxes: true
+        }
+    );
+    let ctx = Rc::new(Server {
+        ctx: Ctx::new(cli)?,
+        all_sandboxes,
+    });
     tokio::task::LocalSet::new().run_until(serve_on(ctx)).await
 }
 
-async fn serve_on(ctx: Rc<Ctx>) -> AppResult<u8> {
+async fn serve_on(ctx: Rc<Server>) -> AppResult<u8> {
     let out: Stdout = Rc::new(Mutex::new(tokio::io::stdout()));
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     let mut calls = Vec::new();
@@ -312,7 +367,7 @@ pub fn tools() -> Value {
 
 /// 도구 하나를 부르고 MCP `CallToolResult`를 돌려준다. 도구가 실패하면 `isError`다(명령의 0 아닌 종료 코드는
 /// 실패가 아니다).
-async fn call(ctx: &Ctx, params: &Value, progress: &Progress) -> Value {
+async fn call(ctx: &Server, params: &Value, progress: &Progress) -> Value {
     let args = Args(params.get("arguments").unwrap_or(&Value::Null));
     let r = match params["name"].as_str().unwrap_or_default() {
         "run" => run(ctx, &args, progress).await,
@@ -431,7 +486,11 @@ fn run_args(a: &Args, stdin: bool, default_command: &[&str]) -> AppResult<RunArg
     if image.starts_with('-') || image.trim().is_empty() {
         return Err(format!("invalid image {image:?}").into());
     }
-    let mut argv: Vec<String> = vec!["sbx".into(), "create".into()];
+    let mut argv: Vec<String> = vec![
+        "sbx".into(),
+        "create".into(),
+        format!("--label={OWNER_LABEL}={OWNER_MCP}"),
+    ];
     let allow = a.strings("allow")?;
     if !allow.is_empty() {
         argv.push("--network=allow".into());
@@ -510,7 +569,7 @@ fn feed(p: &Process, stdin: Option<&str>) {
     }
 }
 
-async fn run(ctx: &Ctx, a: &Args<'_>, progress: &Progress) -> AppResult<Value> {
+async fn run(ctx: &Server, a: &Args<'_>, progress: &Progress) -> AppResult<Value> {
     let stdin = a.str("stdin")?;
     let timeout = a.timeout()?;
     let spec = run_args(a, stdin.is_some(), &[])?;
@@ -552,7 +611,7 @@ async fn run(ctx: &Ctx, a: &Args<'_>, progress: &Progress) -> AppResult<Value> {
     Ok(r?)
 }
 
-async fn create(ctx: &Ctx, a: &Args<'_>, progress: &Progress) -> AppResult<Value> {
+async fn create(ctx: &Server, a: &Args<'_>, progress: &Progress) -> AppResult<Value> {
     let spec = run_args(a, false, KEEP_ALIVE)?;
     let id = ctx
         .create_with(&spec, &|p| progress.pull(spec.image(), p))
@@ -573,7 +632,7 @@ async fn create(ctx: &Ctx, a: &Args<'_>, progress: &Progress) -> AppResult<Value
     Ok(json!({ "id": id }))
 }
 
-async fn exec(ctx: &Ctx, a: &Args<'_>) -> AppResult<Value> {
+async fn exec(ctx: &Server, a: &Args<'_>) -> AppResult<Value> {
     let id = a.required("id")?;
     let command = a.strings("command")?;
     if command.is_empty() {
@@ -589,7 +648,7 @@ async fn exec(ctx: &Ctx, a: &Args<'_>) -> AppResult<Value> {
         tty: false,
     };
     let rt = ctx.runtime()?;
-    let sandbox = rt.find(&id).await?;
+    let sandbox = ctx.find(&rt, &id).await?;
     let mut p = sandbox
         .exec_with(
             spec,
@@ -639,7 +698,7 @@ fn scratch() -> AppResult<PathBuf> {
     Err("could not create a temporary directory".into())
 }
 
-async fn write_file(ctx: &Ctx, a: &Args<'_>) -> AppResult<Value> {
+async fn write_file(ctx: &Server, a: &Args<'_>) -> AppResult<Value> {
     let id = a.required("id")?;
     let path = a.required("path")?;
     let content = a.required("content")?;
@@ -659,7 +718,7 @@ async fn write_file(ctx: &Ctx, a: &Args<'_>) -> AppResult<Value> {
     let r: AppResult<()> = async {
         std::fs::write(&host, &bytes)?;
         let rt = ctx.runtime()?;
-        let sandbox = rt.find(&id).await?;
+        let sandbox = ctx.find(&rt, &id).await?;
         let first = sandbox.copy_in(&host, &path).await;
         let Err(e) = first else { return Ok(()) };
         // 부모 디렉터리가 없을 수 있다. 에이전트는 보통 만들어 주기를 기대하므로 `mkdir -p`로 만들고 한 번 더
@@ -692,11 +751,11 @@ async fn write_file(ctx: &Ctx, a: &Args<'_>) -> AppResult<Value> {
     Ok(json!({ "path": path, "bytes": bytes.len() }))
 }
 
-async fn read_file(ctx: &Ctx, a: &Args<'_>) -> AppResult<Value> {
+async fn read_file(ctx: &Server, a: &Args<'_>) -> AppResult<Value> {
     let id = a.required("id")?;
     let path = a.required("path")?;
     let rt = ctx.runtime()?;
-    let sandbox = rt.find(&id).await?;
+    let sandbox = ctx.find(&rt, &id).await?;
     // 호스트에 꺼내지 않고 메모리로 받는다. 게스트가 만든 링크가 호스트 파일을 가리켜도 따라가지 않는다.
     let bytes = sandbox.read_file(&path, FILE_LIMIT).await?;
     Ok(match String::from_utf8(bytes) {
@@ -709,11 +768,12 @@ async fn read_file(ctx: &Ctx, a: &Args<'_>) -> AppResult<Value> {
     })
 }
 
-async fn list(ctx: &Ctx) -> AppResult<Value> {
+async fn list(ctx: &Server) -> AppResult<Value> {
     let rt = ctx.runtime()?;
     let sandboxes = rt.list().await?;
     let all: Vec<Value> = sandboxes
         .iter()
+        .filter(|s| ctx.mine(s))
         .map(|s| {
             json!({
                 "id": s.id,
@@ -729,10 +789,10 @@ async fn list(ctx: &Ctx) -> AppResult<Value> {
     Ok(json!({ "sandboxes": all }))
 }
 
-async fn remove(ctx: &Ctx, a: &Args<'_>) -> AppResult<Value> {
+async fn remove(ctx: &Server, a: &Args<'_>) -> AppResult<Value> {
     let wanted = a.required("id")?;
     let rt = ctx.runtime()?;
-    let sandbox = rt.find(&wanted).await?;
+    let sandbox = ctx.find(&rt, &wanted).await?;
     let id = sandbox.id().clone();
     if sandbox.state() == sbx_model::State::Running {
         sandbox.stop(None, Duration::ZERO).await?;

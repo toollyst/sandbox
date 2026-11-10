@@ -196,7 +196,11 @@ pub enum Command {
         id: String,
     },
     #[command(about = about("mcp"))]
-    Mcp,
+    Mcp {
+        /// Let tools use every sandbox in the data directory, not only the ones created through MCP.
+        #[arg(long)]
+        all_sandboxes: bool,
+    },
     #[command(
         about = about("completion"),
         after_help = "Examples:\n  sbx completion bash > ~/.local/share/bash-completion/completions/sbx\n  sbx completion zsh > \"${fpath[1]}/_sbx\"\n  sbx completion fish > ~/.config/fish/completions/sbx.fish"

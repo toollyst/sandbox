@@ -1460,6 +1460,32 @@ mod unix {
             .unwrap_err();
         assert!(err.contains("invalid image"), "{err}");
 
+        // CLI로 만든 샌드박스는 MCP 도구에 보이지 않는다(호스트 폴더를 붙였을 수 있다).
+        let o = e.sbx(&["run", "-d", "--name", "by-cli", IMAGE, "sleep", "600"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        for (tool, args) in [
+            (
+                "exec",
+                serde_json::json!({"id": "by-cli", "command": ["true"]}),
+            ),
+            (
+                "read_file",
+                serde_json::json!({"id": "by-cli", "path": "/etc/hostname"}),
+            ),
+            (
+                "write_file",
+                serde_json::json!({"id": "by-cli", "path": "/tmp/x", "content": "x"}),
+            ),
+            ("remove", serde_json::json!({"id": "by-cli"})),
+        ] {
+            let err = m.call(tool, args).unwrap_err();
+            assert!(err.contains("created through MCP"), "{tool}: {err}");
+        }
+        let r = m.call("list", serde_json::json!({})).unwrap();
+        assert_eq!(r["sandboxes"].as_array().unwrap().len(), 0, "{r}");
+        let o = e.sbx(&["rm", "-f", "by-cli"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+
         // create, exec, write_file, read_file, list, remove.
         let id = m
             .call(

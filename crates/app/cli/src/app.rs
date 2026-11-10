@@ -168,7 +168,9 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
         Command::Ps { all, quiet } => ctx.ps(*all, *quiet).await,
         Command::Inspect { id } => ctx.inspect(id).await,
         // `mcp`는 이 위(`sbx_cli::run`)에서 [`crate::mcp`]로 간다.
-        Command::Mcp | Command::Completion { .. } => Err(msg("internal: served by sbx_cli::run")),
+        Command::Mcp { .. } | Command::Completion { .. } => {
+            Err(msg("internal: served by sbx_cli::run"))
+        }
     }
 }
 
