@@ -239,7 +239,9 @@ impl Jq {
                         jaq_core::compile::Undefined::Filter(arity) => {
                             format!("undefined function {name}/{arity}")
                         }
-                        jaq_core::compile::Undefined::Var => format!("undefined variable ${name}"),
+                        jaq_core::compile::Undefined::Var => {
+                            format!("undefined variable ${}", name.trim_start_matches('$'))
+                        }
                         other => {
                             format!("undefined {} {name}", format!("{other:?}").to_lowercase())
                         }

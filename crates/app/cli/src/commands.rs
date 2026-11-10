@@ -69,7 +69,7 @@ pub const COMMANDS: &[Command] = &[
     cmd(
         "executor",
         Group::Manage,
-        "Install and choose executors (ls, install, search, use, rm, repo)",
+        "Install, choose and switch executors and adapters (ls, install, search, use, current, which, rm, prune, adapter, repo)",
     ),
     cmd(
         "info",
@@ -134,7 +134,7 @@ pub const COMMANDS: &[Command] = &[
     cmd(
         "tui",
         Group::Ui,
-        "Watch and manage sandboxes and images in a full-screen terminal UI",
+        "Watch and manage sandboxes, images, events and executors in a full-screen terminal UI",
     ),
     cmd(
         "mcp",

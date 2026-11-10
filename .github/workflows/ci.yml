@@ -77,7 +77,7 @@ jobs:
             require_kvm: false
     runs-on: ${{ matrix.os }}
     env:
-      # upstream Firecracker 버전. 로컬 저장소에는 wick@<이 버전>-ci로 올린다(공개 wick 버전과 겹치지 않게).
+      # upstream Firecracker 버전. 로컬 저장소에는 wick@<이 버전>+ci로 올린다(공개 wick 버전과 겹치지 않게).
       FIRECRACKER: 1.17.0
       ARCH: ${{ matrix.arch }}
     steps:

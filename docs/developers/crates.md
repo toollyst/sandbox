@@ -16,7 +16,7 @@ normal dependencies are shown: tests may use crates from higher layers (for exam
 | --- | --- |
 | `model` | Shared data types. No I/O. |
 | `spec` | Public protocols and formats that other programs implement. No workspace dependencies beyond `spec`. |
-| `port` | What the cores build on: interfaces (executor, image source) and shared building blocks (rootfs, store). |
+| `port` | What the cores build on: interfaces (executor, image source) and shared building blocks (rootfs, store, events). |
 | `adapter` | Implementations of the interfaces in `port`. |
 | `core` | Sandbox lifecycle (`runtime`) and images (`manage`). They never pick implementations. |
 | `app` | Binaries that pick implementations and put the pieces together. |
@@ -194,31 +194,53 @@ guest. **This is what a new VMM integration implements.**
 
 ### `sbx-executor-install` · [`crates/spec/executor-install`](../../crates/spec/executor-install)
 
-How installed executors sit on disk: `<data_dir>/executors/<name>/<version>/sbx-executor` plus whatever files the
-executor finds next to itself, and a `default` file with `<name>@<version>`.
+How installed executors and adapters sit on disk, and how a `NAME[@VERSION]` picks one of them.
+`<data_dir>/executors/<name>/<version>/` is either self-contained (`sbx-executor` at the top, plus whatever files it
+finds next to itself) or a **VMM package** (no `sbx-executor`, and a `.sbx-adapter` file naming the adapter that runs
+it). A `default` file holds `<name>@<version>`. Adapters use the same layout under `<data_dir>/adapters`.
 
 - Installs copy into a staging directory, run the caller's check (protocol version, architecture), then rename, so
-  there is never a half-installed executor.
-- Name and version rules (`[A-Za-z0-9._+-]`), and `version_cmp`, which compares numeric parts as numbers.
+  there is never a half-installed executor. The first one installed becomes the default.
+- Name and version rules (`[A-Za-z0-9._+-]`). A version is a **main version** and a **patch** (before and after the
+  first `-` or `+`): `wick@1.18.0` means the newest patch of 1.18.0, the full version means exactly that,
+  and no version or `@latest` means the highest. `version_cmp` orders them like semver, with `+` patches above the
+  plain version (`1.18.0` < `1.18.0+wick.1` < `1.18.0+wick.10`).
 - Standard library only.
 
 ### `sbx-executor-repo` · [`crates/spec/executor-repo`](../../crates/spec/executor-repo)
 
-Static executor repositories (schema 1) and the client that reads them. A repository is a directory of files, so
-GitHub Pages, S3 or `file://` all work.
+Static executor repositories (schemas 1 and 2) and the client that reads them. A repository is a directory of
+files, so GitHub Pages, S3 or `file://` all work.
 
-- `index.json` lists executors → versions → per-platform artifacts (`os`/`architecture` in OCI terms, `url`,
-  `sha256`, `size`). Unknown fields are ignored, and anything malformed rejects the whole index.
+- `index.json` (schema 1) lists executors → versions → per-platform artifacts (`os`/`architecture` in OCI terms,
+  `url`, `sha256`, `size`). Unknown fields are ignored, and anything malformed rejects the whole index.
+- `v2/index.json` (schema 2) adds `adapters`, and lets an executor version name an `adapter` instead of a `protocol`
+  (a VMM package). The client reads `v2/index.json` first and falls back to `index.json` only when it doesn't exist,
+  so one repository can serve old and new `sbx`.
 - Only `https`, `file` and loopback `http`. The download must match `sha256` and `size` before unpacking, and
   unpacking refuses links, device files, absolute paths and `..` (`unpack`).
-- `index::pick` chooses across repositories in priority order, for this host's platform and protocol version.
-  When nothing matches, it says why (no such name, no such version, no build for this platform, wrong protocol).
+- `index::pick` chooses across repositories in priority order, for this host's platform and protocol version, with
+  the same main-version rule as installed executors. When nothing matches, it says why (no such name, no such
+  version, no build for this platform, wrong protocol).
 - Modules: `error`, `location`, `platform` → `index`, `sources`, `unpack` → `fetch`.
 
 ## port
 
 What the cores build on: the interfaces they call (`executor`, `image`), and the shared building blocks
-(`rootfs`, `store`).
+(`rootfs`, `store`, `events`).
+
+### `sbx-events` · [`crates/port/events`](../../crates/port/events)
+
+The event log behind `sbx events`: a directory of JSON Lines files that any process can append to and follow.
+There is no daemon, so the process that changes something appends the event itself.
+
+- `Log::append` takes a file lock, stamps the time and writes one whole line, so concurrent writers never interleave.
+- A generation that reaches 1 MiB rolls over to the next. Only the previous one is kept, so old events are dropped
+  by design.
+- `Reader` returns what is there and `None` at the end; following means calling it again. Half-written last lines
+  wait, broken lines are skipped, and a reader that fell more than a generation behind jumps to what is left.
+- It decides nothing about what is recorded or where. The cores choose that (see below). Depends only on `serde`
+  and `serde_json`.
 
 ### `sbx-executor` · [`crates/port/executor`](../../crates/port/executor)
 
@@ -259,6 +281,7 @@ The cache directory: layout, locks and reads. Writes are behind the `write` feat
   images/<hex>/.lock              in-use lock (a running sandbox holds it shared)
   guest/<version>/<arch>/initramfs
   refs.json                       reference → image ID
+  events/images/                  image events (sbx-events), appended by sbx-manage
 ```
 
 - Every write goes to a temporary file and is renamed into place, and each image has its own lock file. Several
@@ -309,6 +332,8 @@ The sandbox lifecycle: `Runtime::create`, `resolve` (ID, name or ID prefix) and 
   and `logs/`. Sandboxes are created in a temporary directory and renamed into place, and deleted by renaming first,
   so half-created and half-deleted sandboxes never show up in `list`. Names are files under `<data_dir>/names/`,
   claimed with a hard link so two processes can't take the same name.
+- **Events:** every time it records a sandbox as created, running, stopped or removed, it appends an event to
+  `<data_dir>/events/sandboxes`. A failed append never fails the operation.
 - **Egress** (`egress`): runs in the VM's owner. It checks each connection the guest proxy asks for against the
   allow list, refuses names that resolve to private addresses, and relays bytes.
 - Modules: `lib` → `egress` → `client` → `hostfs`, `records` → `process`, `validate`, `cpplan`, `chan` → `error`.
@@ -324,6 +349,8 @@ Images and the cache: `pull` (with `pull_with` for progress), `prepare`, `images
   kernel when the image is labelled with one, and holds a shared lock so the image can't be removed meanwhile.
 - `remove` deletes an image and the blobs nothing else uses, and refuses while a running sandbox uses the image.
   Whether a *stopped* sandbox's image may go is the caller's decision, because this crate doesn't know `data_dir`.
+- After a pull, a prepare that built something, an untag or a delete, it appends an event to
+  `<cache_dir>/events/images`.
 - It never cleans up on its own.
 
 ## app
@@ -339,7 +366,11 @@ cores in order, and prints.
 | `commands` | the command list and groups that `sbx help` prints |
 | `app` | one function per command: wires `sbx-manage`, `sbx-runtime`, `sbx-oci` and the executor together |
 | `attach` | attached runs: stdin, TTY raw mode, resize, signals |
-| `executors` | `sbx executor …`: install, use, repositories (`sbx-executor-install`, `sbx-executor-repo`) |
+| `executors` | `sbx executor …`: install, use, current, which, rm, prune, adapters, repositories (`sbx-executor-install`, `sbx-executor-repo`) |
+| `choose` | which executor a command runs: `--executor`, the sandbox's pin, `.sbx-executor`, the default, `PATH` |
+| `output` | the public `--format json` types, `--jq` (built-in jaq), JSON errors, and the generated [cli-output.md](cli-output.md) |
+| `filter` | `--filter KEY=VALUE` for `ps`, `images` and `events` (Docker's rules), no I/O |
+| `tui` | `sbx tui`: `keys` (the key list), `model` (keys to `sbx` command lines, no I/O), `view` (drawing), and `mod` (runs `sbx` children, hands over the terminal) |
 | `mcp` | `sbx mcp`: the same operations as MCP tools over stdio, with progress notifications |
 | `complete` | `sbx completion` and `COMPLETE=<shell> sbx`: sandbox names and IDs, image references and installed executors as tab candidates, read-only |
 | `behavior` | exit codes, `--pull`, `rmi` protection, time formatting, and `DOCKER_DIFFERENCES` |
@@ -357,7 +388,8 @@ The owner of a detached sandbox (`run -d`, `start`), one process per sandbox, wi
 - `launch` starts the shim in its own process group (so Ctrl-C in your terminal doesn't reach it) and waits for one
   line: `ready` or `error <reason>`.
 - `serve` (the shim process) starts the sandbox through `sbx-runtime`, so it owns the VM. It writes the main
-  process's output to `logs/main.log`, serves `sbx attach` on a socket, turns SIGTERM and SIGINT into a stop, and exits
+  process's output to `logs/main.log` (`log`: each record carries the time it arrived; files from before timestamps are
+  still read and appended to), serves `sbx attach` on a socket, turns SIGTERM and SIGINT into a stop, and exits
   when the main process does (deleting the sandbox first with `--rm`).
 - Everything else (`exec`, `cp`, `stop`) talks to the guest directly through `sbx-runtime`. The shim doesn't need
   to be involved.
@@ -382,15 +414,16 @@ mounts run as root in a privileged container in CI (`SANDBOX_PRIVILEGED_TESTS=1`
 
 ### `sbx-executor-firecracker` · [`crates/executor/firecracker`](../../crates/executor/firecracker) · bin `sbx-executor-firecracker`
 
-The executor for Firecracker. It is shipped in a bundle as `sbx-executor`, next to a `firecracker` binary and a
-`kernel`.
+The `firecracker` adapter. It is shipped as an adapter package: `sbx-executor` next to the default `kernel`. The
+`firecracker` binary comes from a VMM package (such as `wick`), whose directory `sbx` passes in `SBX_EXECUTOR_VMM_DIR`.
 
 - It uses only Firecracker's public interface (`firecracker --no-api --config-file`, vsock `CONNECT`), so the same
   adapter runs upstream Firecracker on Linux/KVM and [wick](https://github.com/toollyst/wick)
   on macOS/Hypervisor.framework.
-- `settings` finds `firecracker` and the kernel (`SBX_FIRECRACKER`, `SBX_FIRECRACKER_KERNEL`, then next to itself,
-  then `PATH`). `config` writes the VM config (initrd, disks, vsock, kernel command line). `session` runs the
-  protocol session.
+- `settings` finds `firecracker` (`SBX_FIRECRACKER`, then the VMM package directory, then next to itself, then
+  `PATH`) and the kernel (`SBX_FIRECRACKER_KERNEL`, then next to itself). `config` writes the VM config (initrd,
+  disks, vsock, kernel command line). `session` runs the protocol session and writes the config file next to the
+  control socket as a new `0600` file.
 - It knows nothing about `sbx` except the executor protocol (`sbx-executor-proto` is its only workspace dependency).
 
 ### `sbx-executor-fake` · [`crates/executor/fake`](../../crates/executor/fake) · bin `sbx-executor-fake`

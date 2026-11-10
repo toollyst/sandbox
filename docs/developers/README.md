@@ -39,6 +39,7 @@ docs/
 assets/demo.svg      the README recording, made by cargo xtask demo
 install.sh           the installer served from GitHub Pages
 .github/workflows/   ci.yml (every push), release.yml (tags v*), executors.yml (by hand)
+.github/scripts/     shell steps the workflows share (VMM packages, kernel notice, smoke with wick)
 ```
 
 Three programs come out of the workspace, plus one that runs inside the VM:
@@ -137,5 +138,12 @@ Two principles shape most review comments:
 | Layer merge rules (whiteouts, opaque dirs, hard links) | [`sbx-rootfs`](../../crates/port/rootfs/src/lib.rs) |
 | Image references and the OCI scope | [`reference.rs`](../../crates/adapter/oci/src/reference.rs), [`scope.rs`](../../crates/adapter/oci/src/scope.rs) |
 | CLI commands, behavior and Docker differences | [`commands.rs`](../../crates/app/cli/src/commands.rs), [`behavior.rs`](../../crates/app/cli/src/behavior.rs) |
+| What `--format json` prints, `--jq`, JSON errors ([cli-output.md](cli-output.md)) | [`output.rs`](../../crates/app/cli/src/output.rs) |
+| `--filter` keys and how they combine | [`filter.rs`](../../crates/app/cli/src/filter.rs) |
+| Event log files (`sbx events`): append, rotation, following | [`sbx-events`](../../crates/port/events/src/lib.rs); what is recorded: the `//!` docs of [`sbx-runtime`](../../crates/core/runtime/src/lib.rs) and [`sbx-manage`](../../crates/core/manage/src/lib.rs) |
+| `main.log` format (timestamps, old files without them) | [`crates/app/shim/src/log.rs`](../../crates/app/shim/src/log.rs) |
+| Shell completion candidates | [`complete.rs`](../../crates/app/cli/src/complete.rs) |
+| `sbx tui` keys (the help and `sbx tui --help` come from it) and how it runs `sbx` | [`tui/keys.rs`](../../crates/app/cli/src/tui/keys.rs), [`tui/mod.rs`](../../crates/app/cli/src/tui/mod.rs) |
+| Where the `firecracker` adapter finds `firecracker` and the kernel | [`sbx-executor-firecracker`](../../crates/executor/firecracker/src/lib.rs) |
 | Default directories | [`dirs.rs`](../../crates/app/cli/src/dirs.rs) |
 | Guest boot sequence | [`boot.rs`](../../crates/app/guest/src/boot.rs) |

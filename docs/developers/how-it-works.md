@@ -9,8 +9,10 @@ that does it. The doc comment there is the precise rule.
 ```text
  your terminal
      │
- sbx (sbx-cli) ──────────── cache_dir: blobs, images/<id>/rootfs.erofs, guest/…/initramfs   (sbx-manage writes)
-     │  sbx-runtime ─────── data_dir:  sandboxes/<id>/{spec.json,state.json,scratch.img,owner.lock,logs/}
+ sbx (sbx-cli) ──────────── cache_dir: blobs, images/<id>/rootfs.erofs, guest/…/initramfs,   (sbx-manage writes)
+     │                                 events/images/
+     │  sbx-runtime ─────── data_dir:  sandboxes/<id>/{spec.json,state.json,scratch.img,owner.lock,logs/},
+     │                                 events/sandboxes/, executors/, adapters/ (the last two: sbx executor)
      │                      socket_dir: short paths for Unix sockets (macOS caps them at 104 bytes)
      │  stdin/stdout: executor protocol (line-delimited JSON)
      ▼
@@ -84,7 +86,8 @@ neither. The CLI then calls the management core:
    `Started`. The executor's stderr goes to `logs/executor.log`.
 4. **The executor starts the VMM.** [`sbx-executor-firecracker`](../../crates/executor/firecracker) writes a
    Firecracker config with vsock at `control_socket`, guest CID 3 and the kernel command line
-   (`sbx.hostname=…`, `sbx.halt=reboot`), and runs `firecracker --no-api --config-file`.
+   (`sbx.hostname=…`, `sbx.halt=reboot`), and runs `firecracker --no-api --config-file`. The config file sits next to
+   `control_socket`, in the socket directory `sbx` made for this user, and is always written as a new `0600` file.
 
 Whoever started the VM owns it. If that process dies, its pipe to the executor closes and the executor kills the VM
 ([executor protocol](../../crates/spec/executor-proto/src/lib.rs) rule 5). Every other process sees `owner.lock`
@@ -142,7 +145,8 @@ and releases the name.
 1. `sbx` creates the sandbox as above, then starts `sbx-shim start …` in a new process group and waits for one line:
    `ready` or `error <reason>`.
 2. The shim runs `Sandbox::start` itself, so it holds `owner.lock` and the executor's pipe. It writes the main
-   process's output to `logs/main.log` (read by `sbx logs`) and listens on a socket for `sbx attach`.
+   process's output to `logs/main.log`, each chunk with the time it arrived, so `sbx logs -t`, `--since` and `--until`
+   work ([`log.rs`](../../crates/app/shim/src/log.rs) has the format). It listens on a socket for `sbx attach`.
 3. `sbx` prints the ID and exits. The VM keeps running because its owner, the shim, is still alive.
 4. When the main process exits, the shim records the result and exits too. SIGTERM or SIGINT to the shim stops the
    sandbox. If the shim is killed, the executor stops the VM, as in step 4 above.
@@ -153,6 +157,27 @@ These don't go through the owner. Any process with the same `data_dir` reads `st
 `control_socket` of the running VM, connects with `ConnectOnly`, and opens its own guest connection: `Exec`, `CopyIn`,
 `CopyOut` or `Shutdown`. That is why `sbx exec` takes milliseconds and works the same for attached and detached
 sandboxes. `cp` targets follow `docker cp` ([`cpplan.rs`](../../crates/core/runtime/src/cpplan.rs)).
+
+## Events, JSON output and the TUI
+
+There is no daemon to ask what changed, so the process that changes something writes it down.
+`sbx-runtime` appends a line to `data_dir/events/sandboxes` whenever it records a sandbox as created, running,
+stopped or removed, and `sbx-manage` appends to `cache_dir/events/images` after a pull, prepare, untag or delete.
+Both use [`sbx-events`](../../crates/port/events/src/lib.rs): one JSON object per line, appended under a file lock,
+two generations of 1 MiB. `sbx events` reads both directories, merges them by time, replays from `--since`, and
+keeps following until `--until` or Ctrl-C. A VM whose owner was killed has no `stop` event, because nobody was left
+to write it (it is listed in `DOCKER_DIFFERENCES`).
+
+`--format json` prints the public types in [`output.rs`](../../crates/app/cli/src/output.rs), never the on-disk
+records, so the storage format can change without breaking scripts. [cli-output.md](cli-output.md) is generated from
+those types. `--jq` runs on that output in-process.
+
+`sbx tui` ([`tui/`](../../crates/app/cli/src/tui/mod.rs)) is the first user of that contract. It never calls the
+cores. It runs the same `sbx` binary as children: `ps -a`, `images` and the `executor` listings with
+`--format json`, and `events --since 1h` followed in the background. A sandbox event re-reads `ps -a`, an image
+event re-reads `images`. Every key becomes an `sbx` command line, shown in the status bar, and commands that need the
+terminal (`exec -it`, `attach`, `logs -f`, the `:` prompt) get it handed over until they exit. `model` (keys to
+command lines, no I/O) and `view` (drawing) are unit-tested without a terminal.
 
 ## The network
 

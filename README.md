@@ -87,6 +87,12 @@ its own has no VMM. `sbx executor install wick` adds one from the
 [wick](https://github.com/toollyst/wick) release (upstream Firecracker on Linux when that release has no Linux build), plus the `firecracker` adapter and guest kernel it runs with. See
 [Executors and versions](#executors-and-versions). Nothing runs as root.
 
+> [!NOTE]
+> This README describes `main`. The latest release, v0.1.1, predates separate VMM packages: its installer also
+> installs the `firecracker` executor, and it has no `sbx executor install wick`, `sbx tui` or `executor adapter`.
+> The next release brings them; until the official repository publishes wick, `sbx executor install wick` on a
+> build from `main` reports `no executor named "wick" in any repository`.
+
 You can change what the installer does with `SBX_VERSION` or `SBX_INSTALL_DIR`. The script is
 [short enough to read](install.sh).
 
@@ -132,6 +138,7 @@ sbx run -d --name dev alpine sleep 600               # detached
 sbx exec -it dev sh                                  # a name, an ID, or an ID prefix
 sbx cp dev:/etc/alpine-release .
 sbx logs -f dev
+sbx logs -t --since 10m dev                          # with timestamps, the last 10 minutes only
 sbx stop dev && sbx rm dev
 
 sbx rm -f $(sbx ps -aq)                              # clean up everything
@@ -167,7 +174,15 @@ lookups fail at once instead of hanging.
 **Images.** `pull` (with a progress bar), `prepare` (build the disk image ahead of time), `images [-q]` and `rmi [-f]`.
 `run` pulls and prepares on first use (`--pull=missing|always|never`).
 
-**Scripting.** `--format json` on every command that reports sandboxes, images or executors (commands that stream a process's own output refuse it), with errors as one JSON line on stderr. Add `--jq EXPR` to pick fields with a built-in jq (`sbx --format json ps --jq '.[].name'`). `--filter KEY=VALUE` on `ps`, `images` and `events`, and `sbx events` streams what changes. `sbx tui` is built on exactly these: every key runs an `sbx` command and shows its command line. The shapes and their JSON Schema are in [docs/developers/cli-output.md](docs/developers/cli-output.md). `-q` prints IDs only.
+**Scripting.** `--format json` prints only JSON on stdout, with errors as one JSON line on stderr. Commands that
+report something print a value or JSON Lines; commands whose output is a process's own bytes (`exec`, attached `run`)
+refuse it. `--jq EXPR` picks fields with a built-in jq, so you don't need jq installed
+(`sbx --format json ps --jq '.[].name'`). `ps`, `images` and `events` take `--filter KEY=VALUE` with Docker's rules.
+`sbx events` streams what changes (sandboxes created, started, stopped and removed; images pulled, prepared, untagged
+and deleted) with no daemon, and `--since 10m` replays the recent past first. `sbx logs` takes `-t`, `--since`,
+`--until` and `--format json`. `sbx tui` is built on exactly these: every key runs an `sbx` command and shows its
+command line. The shapes and their JSON Schema are in [docs/developers/cli-output.md](docs/developers/cli-output.md).
+`-q` prints IDs only.
 Exit codes follow Docker: 125 when `sbx` fails, 126 when the command can't run, 127 when it isn't found, and the
 command's own code otherwise.
 
@@ -266,19 +281,19 @@ version and you get its newest patch; name the full version to pin one exactly. 
 version.
 
 | You write | You get |
-|---|---|
+| --- | --- |
 | `wick`, `wick@latest` | the highest version |
 | `wick@1.18.0` | the newest of `1.18.0`, `1.18.0+wick.1`, `1.18.0+wick.2`, … |
 | `wick@1.18.0+wick.1` | exactly that patch |
 
 `wick` versions are [wick release](https://github.com/toollyst/wick/releases) versions, registered as wick
-publishes them: release `v1.18.0` is `wick@1.18.0`, release `v1.18.0+wick.1` is `wick@1.18.0+wick.1`. Each
-platform gets that release's build, or upstream Firecracker 1.18.0 on Linux if the release has no Linux build. Each platform gets that release's build, or upstream
-Firecracker 1.18.0 on Linux if the release has no Linux build. It is a **VMM package**, just the `firecracker` binary
-for your host, run by the **`firecracker` adapter** (the program that speaks the executor protocol, with its default
-guest kernel). `install` fetches the adapter first if it is missing, and `sbx executor adapter ls|install|search|rm`
-manages adapters directly. A VMM package runs under the highest installed version of its adapter, so an adapter you
-install yourself, from any repository, is the one that runs it.
+publishes them: release `v1.18.0` is `wick@1.18.0`, release `v1.18.0+wick.1` is `wick@1.18.0+wick.1`. Each platform
+gets that release's build, or upstream Firecracker of the same version (1.18.0) on Linux if the release has no Linux
+build. It is a **VMM package**, just the `firecracker` binary for your host, run by the **`firecracker` adapter** (the
+program that speaks the executor protocol, with its default guest kernel). `install` fetches the adapter first if it
+is missing, and `sbx executor adapter ls|install|search|rm` manages adapters directly. A VMM package always runs under
+the highest installed version of its adapter, so installing a newer adapter, from any repository, changes what runs
+every VMM package that names it.
 
 ## Bring your own VMM
 
@@ -316,8 +331,8 @@ packages for `firecracker` doesn't need to carry the adapter itself.
 | Host | VMM | Status |
 | --- | --- | --- |
 | macOS 15+, Apple Silicon | [wick](https://github.com/toollyst/wick): Firecracker on Hypervisor.framework | Works. Real-VM checks run on a Mac, since CI's macOS runners can't start guests. Sandboxed with Seatbelt instead of seccomp ([SECURITY.md](SECURITY.md)) |
-| Linux x86_64 | Upstream Firecracker on KVM | Works. Real VMs boot in CI on every push and before every release |
-| Linux aarch64 | Upstream Firecracker on KVM | Released and tested, but CI's arm runners have no KVM, so no real-VM run yet |
+| Linux x86_64 | Upstream Firecracker on KVM (as the `wick` VMM package) | Works. Real VMs boot in CI on every push and before every release |
+| Linux aarch64 | Upstream Firecracker on KVM (as the `wick` VMM package) | Released and tested, but CI's arm runners have no KVM, so no real-VM run yet |
 | Windows | – | Not yet. `pull`, `prepare` and `images` work; [wick](https://github.com/toollyst/wick) has a Windows Hypervisor Platform preview |
 
 ## Use it as a library

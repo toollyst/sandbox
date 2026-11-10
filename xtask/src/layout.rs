@@ -19,7 +19,7 @@ pub const LAYERS: &[(&str, &str)] = &[
     ),
     (
         "port",
-        "What the cores build on: interfaces (executor, image source) and shared building blocks (rootfs, store).",
+        "What the cores build on: interfaces (executor, image source) and shared building blocks (rootfs, store, events).",
     ),
     ("adapter", "Implementations of the interfaces in `port`."),
     (

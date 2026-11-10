@@ -71,7 +71,7 @@ pub const KEYS: &[KeyHelp] = &[
 pub fn help_text() -> String {
     let mut s = String::from(
         "Every action runs an sbx command and shows its command line. Commands that need the terminal\n\
-         (exec, attach, logs -f, `:`) take it over and give it back when they exit.\n\nKeys:\n",
+         (exec, attach, logs -f, executor install and search, `:`) take it over and give it back when they exit.\n\nKeys:\n",
     );
     for h in KEYS {
         s.push_str(&format!("  {:<28} {:<10} {}\n", h.keys, h.tabs, h.does));

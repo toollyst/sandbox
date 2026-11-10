@@ -1,6 +1,6 @@
 # 프로젝트 구조와 OCI 적용 기획
 
-2026년 11월 9일 · 상위 문서: sandbox 기획서
+2026년 11월 10일 · 상위 문서: sandbox 기획서
 
 이 문서는 방향과 범위만 다룬다. 세부 규칙의 정본은 코드다. 규칙은 각 크레이트의 문서 주석에 적고, 타입과 테스트로 강제한다. 결정이 바뀌면 코드와 테스트를 바꾸고, 이 문서는 방향이 바뀔 때만 고친다.
 
@@ -20,6 +20,14 @@
 | CLI 명령 목록 | `crates/app/cli/src/commands.rs` (`sbx help`가 그대로 출력) |
 | CLI 동작 (`--pull`, `rmi` 보호, Docker와 다른 점) | `crates/app/cli/src/behavior.rs` |
 | 호스트-게스트 메시지 (연결 단위, 순서, 인코딩, 신뢰 경계) | `sbx-guest-proto` |
+| 실행기 저장소 (schema 1 `index.json`, schema 2 `v2/index.json`, 어댑터와 VMM 묶음) | `sbx-executor-repo` |
+| 설치한 실행기·어댑터 배치, 버전 고르기 (주 버전과 패치, `@latest`) | `sbx-executor-install` |
+| 어느 실행기를 쓸지 (`--executor`, 샌드박스 고정, `.sbx-executor`, 기본, PATH) | `crates/app/cli/src/choose.rs` |
+| CLI 출력 계약 (`--format json`의 모양, `--jq`, JSON 오류) | `crates/app/cli/src/output.rs` (`docs/developers/cli-output.md`를 만든다) |
+| `--filter` 키와 결합 규칙 | `crates/app/cli/src/filter.rs` |
+| 이벤트 기록 장치 (덧붙이기, 세대, 따라 읽기) | `sbx-events`. 무엇을 기록하는지는 `sbx-runtime`, `sbx-manage` 문서 |
+| 셸 자동완성 후보 | `crates/app/cli/src/complete.rs` |
+| `sbx tui` 키와 동작 | `crates/app/cli/src/tui/keys.rs`(키 목록 정본), `crates/app/cli/src/tui/mod.rs` |
 
 ## 1. 원칙
 
@@ -32,6 +40,8 @@
   - 실행(`sbx-runtime`): 샌드박스 생명주기. 캐시는 읽기만 하고 data_dir만 쓴다.
   - Docker처럼 `run`이 이미지를 받아오는 동작은 CLI가 관리와 실행을 차례로 불러서 만든다.
 - 수명은 attached(호출 프로세스와 함께 끝남)와 detached(남음)를 모두 지원하고, Docker처럼 시작할 때 고른다. detached는 데몬 없이 샌드박스마다 `sbx-shim`을 하나씩 띄운다.
+- 변화 알림(`sbx events`)도 데몬 없이, 상태를 바꾸는 프로세스가 바꾸는 자리에서 data_dir(샌드박스)과 cache_dir(이미지)에 직접 덧붙인다.
+- CLI 출력이 계약이다. 사람(`sbx tui`), 스크립트, 에이전트가 같은 `--format json` 출력을 쓰고, 그 모양은 저장 형식과 떨어진 공개 자료형이다. TUI는 코어를 부르지 않고 같은 `sbx`를 자식으로 부른다.
 - data_dir과 cache_dir은 설정으로 받는다. 같은 경로를 주면 공유되고, 다른 경로를 주면 따로 쓴다.
 - 폴더 공유는 bind(실시간, 실행기가 지원할 때만)와 copy(복사 후 명시적 회수)를 둘 다 두고 호출자가 고른다.
 - 네트워크는 기본 차단이다. VM에는 네트워크 장치를 붙이지 않는다. 허용은 호출자가 준 `HOST:PORT` 목록이고,
@@ -54,6 +64,7 @@ crates/                      계층 폴더. 아래 계층만 쓴다(cargo xtask 
     executor/                sbx-executor          실행기 trait        ← sbx-executor-process, sbx-executor-fake
     image/                   sbx-image             이미지 소스 trait   ← sbx-oci
     rootfs/                  sbx-rootfs            레이어 병합 + rootfs writer trait (형식별 구현은 feature)
+    events/                  sbx-events            이벤트 기록 장치 (JSON Lines, 잠금, 세대 둘)
     store/                   sbx-store             cache_dir 레이아웃, 잠금 (쓰기는 feature "write")
   adapter/                   port 구현
     oci/                     sbx-oci               OCI 레지스트리 이미지 소스
@@ -116,7 +127,8 @@ OCI는 입력 형식이다. OCI 자료형은 `sbx-oci` 밖으로 나가지 않�
 | 실행 코어 | `sbx-executor-fake` | 모든 OS |
 | 실행기 적합성 | 같은 테스트를 fake와 실제 어댑터에 돌림 | 실제: Linux x64 |
 | 통합 | 공개 이미지 pull → prepare → run → exec → cp | Linux x64 |
-| KVM 사용 가능 여부 | `kvm-probe` 작업이 기록만 함 | Linux x64, arm64 |
+| 실제 VM | CI `vm` 작업: 로컬 v2 저장소에서 사용자처럼 설치한 뒤 `cargo xtask smoke`, `bench` (arm64는 러너에 KVM이 있을 때만) | Linux x64, arm64 |
+| CLI 출력 계약 | 생성 문서(`cli-output.md`, JSON Schema)가 자료형과 같은지, e2e가 모든 JSON 출력을 자료형으로 엄격히 읽는다 | 모든 OS |
 
 ## 5. 아직 정하지 않은 것
 

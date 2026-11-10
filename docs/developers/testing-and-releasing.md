@@ -14,7 +14,10 @@ fake executor serves it over the same protocol. Real VMs are the last check, not
 | Runtime with the in-process fake | [`crates/core/runtime/src/tests.rs`](../../crates/core/runtime/src/tests.rs) | Unix | lifecycle, ownership, names, records, egress, `cp` targets |
 | Executor protocol conformance | [`crates/executor/fake/tests/conformance.rs`](../../crates/executor/fake/tests/conformance.rs) | Unix | `sbx-executor-process` against a protocol-speaking binary, including misbehaving ones |
 | Firecracker adapter sessions | [`crates/executor/firecracker/tests/session.rs`](../../crates/executor/firecracker/tests/session.rs) | Unix | the protocol session and Firecracker config, with a shell script standing in for `firecracker` |
-| CLI end to end | [`crates/app/cli/tests/e2e.rs`](../../crates/app/cli/tests/e2e.rs) | nothing (Windows skips the parts that need Unix sockets) | the real `sbx` binary: flags, output, exit codes, `--rm`, names, `ps`, `logs`, `cp`, MCP |
+| Event log | [`crates/port/events/src/tests.rs`](../../crates/port/events/src/tests.rs) | nothing | concurrent appends, rotation, following across generations, half-written and broken lines |
+| CLI output contract | `cargo test -p sbx-cli --lib output` | nothing | that [cli-output.md](cli-output.md) and its JSON Schema match the types in `output.rs` (`SBX_BLESS=1` rewrites them), `--jq` |
+| TUI without a terminal | [`tui/model/tests.rs`](../../crates/app/cli/src/tui/model/tests.rs), [`tui/view/tests.rs`](../../crates/app/cli/src/tui/view/tests.rs) | nothing | every key's `sbx` command line, filtering, virtual scrolling, drawing (ratatui `TestBackend`) |
+| CLI end to end | [`crates/app/cli/tests/e2e.rs`](../../crates/app/cli/tests/e2e.rs) | nothing (Windows skips the parts that need Unix sockets) | the real `sbx` binary: flags, output, exit codes, `--rm`, names, `ps`, `logs` (timestamps, `--since`), `cp`, `events`, `--filter`, `--jq`, every JSON output read back strictly as its type, completion candidates, executor versions and pins, MCP |
 | Dependency rules | `cargo xtask check-deps` | nothing | layers, per-crate allow lists, forbidden features, module cycles, the map in `crates.md` |
 | Real VMs | `cargo xtask smoke` | an installed executor | 17 checks: output and exit codes, stdin, no network device, fast DNS failure, writable root, detached `exec`/`cp`/`logs`/`stop`/`rm`, allow list |
 | Numbers | `cargo xtask bench [--docker]` | an installed executor (and Docker for `--docker`) | regressions on the hot path: `run`, `exec`, parallel runs |
@@ -40,9 +43,9 @@ needs an HTTPS site.
 
 | Job | Runs on | Does |
 | --- | --- | --- |
-| `test` | Linux x86_64 and arm64, macOS, Windows | `fmt --check`, `clippy -D warnings`, `test --no-fail-fast`, `doc -D warnings`, `check-deps`. On Linux also `shellcheck install.sh`, both guest initramfs builds, the e2e tests again with the init embedded, and `cargo xtask dist` |
+| `test` | Linux x86_64 and arm64, macOS, Windows | `fmt --check`, `clippy -D warnings`, `test --no-fail-fast`, `doc -D warnings`, `check-deps`. On Linux also `shellcheck` on `install.sh` and `.github/scripts/*.sh`, both guest initramfs builds, the e2e tests again with the init embedded, and `cargo xtask dist` |
 | `privileged` | Linux, in a `--privileged` container | the guest tests that need root and loop devices |
-| `vm` | Linux x86_64 with KVM (arm64 runs when the runner has KVM) | builds `sbx`, the adapter and the kernel (cached by its config). It publishes a bundle with upstream Firecracker to a `file://` repository, installs it from there and installs `sbx` with `install.sh`, then runs `smoke` and `bench` (the numbers go to the job summary) |
+| `vm` | Linux x86_64 with KVM (arm64 runs when the runner has KVM) | builds `sbx`, the adapter and the kernel (cached by its config), and makes a VMM package from upstream Firecracker (checked by its sha256). It installs `sbx` with `install.sh`, puts the adapter and the VMM package (as `wick@1.17.0+ci`) in a local schema 2 `file://` repository, and installs from there the way a user does (`.github/scripts/smoke-wick.sh`). Then it runs `smoke` and `bench` (the numbers go to the job summary) |
 
 GitHub's macOS runners can't start guests, so the macOS real-VM path (Hypervisor.framework through
 [wick](https://github.com/toollyst/wick)) is checked on a Mac with `cargo xtask smoke`,
@@ -101,9 +104,11 @@ Versions are wick's release tags without the `v`, registered as wick publishes t
 `wick@latest`) picks the highest, and `wick@1.18.0` the newest patch of 1.18.0. The empty input takes the release
 wick marks as latest. The workflow publishes it for every platform the
 official repository doesn't have yet, and never rebuilds or overwrites what is already there. For each platform, the
-VMM package is a directory with `firecracker`: that wick release's build for the platform, or, on Linux when the
-release has none, upstream Firecracker of the same upstream version (checked by its sha256). The
-adapter is `sbx-executor-firecracker` plus the default kernel. An adapter version that is already published is reused
+VMM package is a directory with `firecracker`, `LICENSE` and `NOTICE`: that wick release's build for the platform, or,
+on Linux when the release has none, upstream Firecracker of the same upstream version (checked by its sha256). macOS
+is skipped with a warning when the release has no macOS build (`-f require_darwin=true` makes that an error). The
+adapter is `sbx-executor-firecracker` plus the default kernel and `KERNEL-SOURCE.txt` (where its GPL-2.0 source
+and config are). An adapter version that is already published is reused
 as is; a new one is built from the commit you run it on. On Linux with KVM it installs both from a local repository
 and runs `cargo xtask smoke`. Then it adds them to `executors/v2/index.json` on `gh-pages` and uploads the archives to
 the GitHub releases `wick-<version>` and `firecracker-adapter-<version>`. The comment at the top of the workflow lists

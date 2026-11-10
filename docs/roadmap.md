@@ -1,6 +1,6 @@
 # 로드맵
 
-2026년 11월 9일 · 상위 문서: sandbox 기획서, [docs/plan/architecture.md](plan/architecture.md)
+2026년 11월 10일 · 상위 문서: sandbox 기획서, [docs/plan/architecture.md](plan/architecture.md)
 
 순서는 기획서의 성공 기준 1 "Linux에서 공개 OCI 이미지를 받아 microVM 안에서 명령을 실행하고 결과를 받는다"까지의 최단 경로다. 각 단계는 "어떻게 검증되면 끝인가"를 함께 적는다.
 
@@ -52,10 +52,10 @@ Linux KVM(upstream Firecracker)과 CI 자동 실행은 남았다.
 | 단계 | 내용 | 상태 |
 |---|---|---|
 | 16 | 실행기 저장소 규약과 `sbx executor install NAME[@VERSION]`, `search`, `repo` | 완료 (`sbx-executor-repo`: 정적 호스팅 가능한 `index.json` + `.tar.gz` 묶음, SHA-256 확인. file:// 저장소에서 실제 firecracker 묶음 설치 0.18초) |
-| 17 | 공식 저장소와 릴리스(CI) | 완료, 첫 릴리스 `v0.1.1`(2026-11-10. `v0.1.0`은 macos-14 러너 지원 종료로 릴리스 없이 멈췄다). `install.sh`로 macOS에 설치해 실제 VM smoke 17/17: 공식 저장소는 묶음을 GitHub Releases에, `index.json`을 GitHub Pages(gh-pages 브랜치의 `executors/`)에 둔다. sbx에 `official`로 기본 등록(지우면 남는다). `.github/workflows/release.yml`: 태그 `v<버전>`에서 sbx(Linux musl 정적, macOS arm64), 실행기 묶음(Linux는 upstream Firecracker로 만들고 KVM smoke 통과 뒤, macOS는 저장소 변수 `FC_FORK_TAG`가 있을 때 toollyst/firecracker 릴리스로), `repo-add --url`로 색인. toollyst/firecracker `v1.18.0-fork.1` 릴리스(macOS 15+, hypervisor 권한 서명)를 `FC_FORK_TAG`로 지정, 그 자산으로 macOS 단계를 재현해 실제 VM smoke 17/17(2026-11-10). Pages 소스는 gh-pages. 그 뒤 toollyst/firecracker는 toollyst/wick으로 바뀌었다: 변수는 `WICK_TAG`(wick 릴리스 태그, 예: `v1.18.0+wick.1`), 없으면 macOS 묶음 없이 릴리스한다. 그 뒤 실행기는 sbx 릴리스와 떼어 `executors.yml`로 올린다(34). |
+| 17 | 공식 저장소와 릴리스(CI) | 완료, 첫 릴리스 `v0.1.1`(2026-11-10. `v0.1.0`은 macos-14 러너 지원 종료로 릴리스 없이 멈췄다). `install.sh`로 macOS에 설치해 실제 VM smoke 17/17: 공식 저장소는 묶음을 GitHub Releases에, `index.json`을 GitHub Pages(gh-pages 브랜치의 `executors/`)에 둔다. sbx에 `official`로 기본 등록(지우면 남는다). `.github/workflows/release.yml`: 태그 `v<버전>`에서 sbx(Linux musl 정적, macOS arm64), 실행기 묶음(Linux는 upstream Firecracker로 만들고 KVM smoke 통과 뒤, macOS는 저장소 변수 `FC_FORK_TAG`가 있을 때 toollyst/firecracker 릴리스로), `repo-add --url`로 색인. toollyst/firecracker `v1.18.0-fork.1` 릴리스(macOS 15+, hypervisor 권한 서명)를 `FC_FORK_TAG`로 지정, 그 자산으로 macOS 단계를 재현해 실제 VM smoke 17/17(2026-11-10). Pages 소스는 gh-pages. 그 뒤 toollyst/firecracker는 toollyst/wick으로 바뀌었고, 실행기는 sbx 릴리스와 떼어 `executors.yml`로 올린다(34). 지금 `release.yml`은 sbx만 올리고 `FC_FORK_TAG`·`WICK_TAG` 변수는 쓰지 않는다. |
 | 18 | 커널 | 완료: 보통 이미지는 실행기 묶음의 기본 리눅스 커널(아키텍처당 하나)로, 라벨 `io.github.toollyst.sandbox.kernel`로 커널을 알린 이미지는 그 커널로(실행기 규약 2의 `custom_kernel`). 실제 VM으로 확인. 기본 커널은 `cargo xtask kernel`(Linux 6.1.155, upstream Firecracker CI 설정 + `xtask/kernel/sbx.config`)로 CI에서 빌드하고, 이 커널로 macOS HVF smoke 17/17 |
 | 19 | README, 데모, 설치 한 줄, 벤치마크 | 벤치마크 완료(macOS arm64 HVF: `run --rm alpine true` p50 121ms, `exec` p50 8ms, 10개 동시 0.50초). 설치 한 줄 완료(`install.sh`: `curl -fsSL https://toollyst.github.io/sandbox/install.sh \| sh`, SHA-256 확인, `~/.local/bin`, 기본 실행기까지. 로컬 file:// 릴리스로 확인. 그 뒤 실행기는 설치하지 않게 바뀌었다(35)). README 영어 완료. 데모 완료(`cargo xtask demo`: 실제 명령을 실제 시각대로 담은 움직이는 SVG `assets/demo.svg`, 바깥 도구 없이 CSS만. 머신이 한가할 때 다시 담는다) |
-| 20 | Linux KVM(upstream Firecracker) 끝-끝과 CI | x86_64 완료: CI `vm` 작업이 GitHub 러너(KVM)에서 upstream Firecracker v1.17.0 + 빌드한 커널로 smoke 17/17과 bench. 남음: aarch64(GitHub arm 러너에 /dev/kvm이 없어 건너뛴다. 묶음은 만든다) |
+| 20 | Linux KVM(upstream Firecracker) 끝-끝과 CI | x86_64 완료: CI `vm` 작업이 GitHub 러너(KVM)에서 upstream Firecracker v1.17.0 + 빌드한 커널로 smoke 17/17과 bench. 32 뒤로는 사용자와 같은 v2 경로다: 이 커밋의 어댑터와 upstream Firecracker VMM 묶음을 로컬 v2 저장소(file://)에 `wick@1.17.0+ci`로 올리고, `install.sh`로 설치한 sbx로 `sbx executor install`한 뒤 smoke(`.github/scripts/smoke-wick.sh`). 남음: aarch64(GitHub arm 러너에 /dev/kvm이 없어 건너뛴다. 묶음은 만든다) |
 | 21 | AI 에이전트 입구: MCP 서버 | 완료: `sbx mcp`(stdio, JSON-RPC 직접 구현). 도구 `run`, `create`, `exec`, `write_file`, `read_file`, `list`, `remove`. 정책 없음: 인자를 CLI 인자(`--이름=값`)로 바꿔 같은 파서로 해석, 네트워크는 `allow`로만, 호스트 마운트는 내보내지 않는다. 시간 제한(기본 300초). 이미지를 받는 동안 `notifications/progress`. e2e(가짜 실행기)와 macOS 실제 VM으로 확인 |
 | 22 | Docker 사용 편의 | 완료: `--name`(ID 대신 어디서나, `cp 이름:경로`도), `ps -q`·`images -q`, `ps`의 CREATED·NAMES와 새것부터, `--env-file`, `logs --tail`, `sbx completion`(bash, zsh, fish, powershell, elvish), `sbx info`(호스트, 가상화, 실행기, 디렉터리), 받기 진행 막대(터미널일 때만). e2e로 확인 |
 
@@ -73,7 +73,7 @@ Linux KVM(upstream Firecracker)과 CI 자동 실행은 남았다.
 | 26 | 이미지 받기: realm·redirect는 인터넷 쪽·https만, 읽기 시간 제한, blob 크기 상한, `is_public_ip` 범위 보강 | 완료 (가짜 레지스트리 테스트) |
 | 27 | 자원: 출력 채널 4 MiB, `main.log` 256 MiB, egress 동시 연결 256, socket 디렉터리 소유자 확인 | 완료 |
 | 28 | MCP: 취소, 클라이언트가 사라지면 정리, 출력 끝 보존, 규약 오류 코드 | 완료 (e2e) |
-| 29 | Firecracker adapter의 설정 파일을 공용 `/tmp`에 예측 가능한 이름으로 쓴다 (Linux 다중 사용자) | 남음: adapter 수정 중이라 그쪽에서 |
+| 29 | Firecracker adapter의 설정 파일을 공용 `/tmp`에 예측 가능한 이름으로 쓴다 (Linux 다중 사용자) | 완료: 제어 소켓 옆(sbx가 이 사용자만 쓰게 만든 socket 디렉터리)에 `<소켓>.firecracker.json`으로, 있던 것은 지우고 새 파일로만(`create_new`, 링크를 따라가지 않는다), 모드 0600. 테스트 `config_sits_beside_the_socket_and_never_follows_links` |
 | 30 | 게스트 프로토콜 디코더에 무작위·변형 입력 20만 개 (패닉 없음, 받아들인 것은 다시 인코딩해도 같음), 프레임은 받은 만큼만 버퍼를 늘린다 | 완료 |
 | 31 | MCP 자원 상한(샌드박스 수, vCPU, 메모리), 커버리지 기반 퍼징 | 남음 |
 
@@ -86,8 +86,8 @@ CLI는 nvm, gvm처럼 버전을 고른다. 규칙은 `sbx-executor-proto`("어�
 |---|---|---|
 | 32 | VMM 묶음과 어댑터: VMM 묶음은 VMM만 담고(`.sbx-adapter`에 어댑터 이름), sbx가 어댑터를 `SBX_EXECUTOR_VMM_DIR`와 함께 띄운다(shim `--vmm-dir` 포함). `firecracker` 어댑터는 그 디렉터리에서 `firecracker`를 찾고 기본 커널은 자기 옆에 둔다. 저장소 schema 2(`v2/index.json`, 없으면 `index.json`. `adapters` 섹션, 버전마다 `protocol`과 `adapter` 중 하나), `cargo xtask repo-add --schema 2 --adapter-package \| --vmm-for <어댑터> --arch` | 완료 (단위 테스트) |
 | 33 | CLI 버전 관리: 고르는 순서(`--executor` 경로 또는 `NAME[@VERSION]` > 샌드박스 고정 라벨 `io.github.toollyst.sandbox.executor` > `.sbx-executor` > 기본 > PATH), `executor current`, `which`, `prune [-n]`, `search`(별칭 `ls-remote`), `@latest`, `install --from --adapter`, 원격 install은 어댑터부터(그 VMM 묶음의 저장소, 없으면 목록 순서로 처음 가진 저장소), 고정된 실행기 `rm`은 `-f`가 있어야, `executor adapter ls\|install\|search\|rm`. 출력 계약 자료형(`ChosenExecutor`, `InstalledAdapter`, `Pruned`) | 완료 (e2e, 가짜 실행기) |
-| 34 | 공식 저장소 배포를 sbx 릴리스와 떼기: 손으로 돌리는 `executors.yml`이 wick 릴리스(입력 `wick`, 비우면 최신)를 받아 `wick@<wick 릴리스 버전>`(예: 태그 `v1.18.0` → `wick@1.18.0`, 수정 릴리스 `v1.18.0+wick.1` → `wick@1.18.0+wick.1`. `wick@1.18.0`은 그 주 버전의 가장 새 패치. 플랫폼마다 그 릴리스의 빌드, Linux 빌드가 없으면 같은 upstream 버전의 upstream Firecracker)과 `firecracker` 어댑터를 `executors/v2/index.json`에 올린다. `release.yml`은 sbx만 올리고, 공식 저장소의 `wick`으로 smoke를 통과해야 한다. schema 1 `index.json`(sbx 0.1.x)은 그대로 둔다 | 진행 중 (워크플로 작성 중, 첫 실행 전) |
-| 35 | 설치 스크립트는 실행기를 설치하지 않고 다음 단계(`sbx executor install wick`)를 알린다. README, 개발자 문서, SECURITY.md를 맞춘다 | 진행 중 |
+| 34 | 공식 저장소 배포를 sbx 릴리스와 떼기: 손으로 돌리는 `executors.yml`이 wick 릴리스(입력 `wick`, 비우면 최신)를 받아 `wick@<wick 릴리스 버전>`(예: 태그 `v1.18.0` → `wick@1.18.0`, 수정 릴리스 `v1.18.0+wick.1` → `wick@1.18.0+wick.1`. `wick@1.18.0`은 그 주 버전의 가장 새 패치. 플랫폼마다 그 릴리스의 빌드, Linux 빌드가 없으면 같은 upstream 버전의 upstream Firecracker)과 `firecracker` 어댑터를 `executors/v2/index.json`에 올린다. `release.yml`은 sbx만 올리고, 공식 저장소의 `wick`으로 smoke를 통과해야 한다. schema 1 `index.json`(sbx 0.1.x)은 그대로 둔다 | 워크플로 작성 완료, 첫 실행 전: wick의 첫 태그 `v1.18.0`을 기다린다. 그때까지 공식 저장소에는 `v2/index.json`이 없어 sbx가 schema 1 `index.json`(`firecracker` 0.1.1)을 읽고, `sbx executor install wick`은 실패한다 |
+| 35 | 설치 스크립트는 실행기를 설치하지 않고 다음 단계(`sbx executor install wick`)를 알린다. README, 개발자 문서, SECURITY.md를 맞춘다 | 완료 (스크립트와 문서). 문서에 적은 `sbx executor install wick`이 실제로 되는지는 34의 첫 실행 뒤 36에서 확인 |
 | 36 | 공식 저장소의 `wick`으로 macOS(HVF)와 Linux(KVM)에서 실제 VM smoke | 남음 (34의 첫 실행 뒤) |
 
 ## M6. CLI 계약과 TUI (2026-11-10~)
