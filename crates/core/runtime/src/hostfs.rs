@@ -226,7 +226,7 @@ fn set_mode(_p: &Path, _mode: u32) -> io::Result<()> {
 }
 
 /// `dest` 아래에 받는다. `next`는 다음 메시지를 준다. `End`에서 끝난다.
-/// 게스트가 보낸 맨 위 이름 `from`은 [`rename_top`]으로 `to`로 바꾼다. 맨 위 밖의 경로는 규약 위반이다.
+/// 게스트가 보낸 맨 위 이름 `from`은 `rename_top`으로 `to`로 바꾼다. 맨 위 밖의 경로는 규약 위반이다.
 pub fn receive(
     dest: &Path,
     from: &str,

@@ -67,7 +67,7 @@ pub mod process;
 mod records;
 pub mod validate;
 
-/// 퍼징(`fuzz/`)만 쓰는 입구: 게스트가 보낸 파일을 호스트에 받는 [`hostfs`]. `fuzzing` feature를 켜야 있다.
+/// 퍼징(`fuzz/`)만 쓰는 입구: 게스트가 보낸 파일을 호스트에 받는 `hostfs`. `fuzzing` feature를 켜야 있다.
 /// 배포하는 바이너리는 이 feature를 켜지 않는다(`cargo xtask check-deps`가 확인한다).
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
