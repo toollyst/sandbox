@@ -130,6 +130,10 @@ impl Server {
             )
             .into());
         }
+        // 기다리기(목록 읽기) 전에 자리를 잡는다. 호출은 동시에 돌므로, 읽은 뒤에 잡으면 동시에 온 호출들이 모두
+        // 같은 빈자리를 보고 통과한다. 실패하면 자리는 놓인다(Drop).
+        self.reserved.set(self.reserved.get() + 1);
+        let seat = Seat(&self.reserved);
         let rt = self.runtime()?;
         let existing = rt
             .list()
@@ -137,7 +141,8 @@ impl Server {
             .iter()
             .filter(|s| s.spec.labels.get(OWNER_LABEL).map(String::as_str) == Some(OWNER_MCP))
             .count() as u32;
-        let taken = existing + self.reserved.get();
+        // 자기 자리를 뺀, 이미 있거나 만드는 중인 것.
+        let taken = existing + self.reserved.get() - 1;
         if taken >= l.sandboxes {
             return Err(format!(
                 "this server already has {taken} sandboxes, its limit (sbx mcp --max-sandboxes {}); remove one first",
@@ -145,8 +150,7 @@ impl Server {
             )
             .into());
         }
-        self.reserved.set(self.reserved.get() + 1);
-        Ok(Seat(&self.reserved))
+        Ok(seat)
     }
 
     /// `query`(이름, ID, ID 앞부분)로 찾는다. 이 서버가 다룰 수 없는 샌드박스는 없는 것과 같다.

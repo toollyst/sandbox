@@ -244,3 +244,60 @@ fn a_name_comes_from_one_origin_and_packages_cannot_claim_one() {
     );
     let _ = fs::remove_dir_all(&r);
 }
+
+#[test]
+fn bad_origins_and_hostile_marker_files_leave_nothing_behind() {
+    let r = root("origin-hostile");
+    let src = r.join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join(executable_name()), b"#!/bin/sh\n").unwrap();
+    let ex = Executors::new(r.join("executors"));
+    // 출처 이름은 줄 하나, 경로가 아닌 이름이어야 한다.
+    for bad in ["", "a b", "a\nb", ".hidden", "../x", "a/b", "über"] {
+        assert!(
+            ex.install_from(&spec("fc@1"), &src, None, Some(bad), |_| Ok(()))
+                .is_err(),
+            "{bad:?}"
+        );
+    }
+    // 묶음이 출처 파일 자리에 디렉터리를 두면 설치하지 않는다(지울 수 없는 것을 출처로 남기지 않는다).
+    fs::create_dir_all(src.join(ORIGIN_FILE)).unwrap();
+    assert!(
+        ex.install_from(&spec("fc@1"), &src, None, Some("mine"), |_| Ok(()))
+            .is_err()
+    );
+    fs::remove_dir_all(src.join(ORIGIN_FILE)).unwrap();
+    // 확인이 실패하면 설치하지 않고, 임시 디렉터리도 기본값도 남기지 않는다.
+    assert!(matches!(
+        ex.install_from(&spec("fc@1"), &src, None, Some("mine"), |_| Err("no".into())),
+        Err(InstallError::Rejected(m)) if m == "no"
+    ));
+    assert!(ex.list().unwrap().is_empty());
+    assert_eq!(ex.default().unwrap(), None);
+    let left: Vec<_> = fs::read_dir(r.join("executors"))
+        .map(|d| d.map(|e| e.unwrap().file_name()).collect())
+        .unwrap_or_default();
+    assert!(left.is_empty(), "{left:?}");
+    let _ = fs::remove_dir_all(&r);
+}
+
+#[test]
+fn an_unreadable_origin_record_counts_as_no_origin() {
+    let r = root("origin-corrupt");
+    let src = r.join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join(executable_name()), b"#!/bin/sh\n").unwrap();
+    let ex = Executors::new(r.join("executors"));
+    let a = ex
+        .install_from(&spec("fc@1"), &src, None, Some("mine"), |_| Ok(()))
+        .unwrap();
+    // 손으로 깨뜨린 기록(이름이 아닌 내용)은 출처로 읽지 않는다.
+    fs::write(a.dir.join(ORIGIN_FILE), "../../etc\n").unwrap();
+    assert_eq!(ex.find(&spec("fc@1")).unwrap().unwrap().origin, None);
+    fs::write(a.dir.join(ORIGIN_FILE), "  mine \n").unwrap();
+    assert_eq!(
+        ex.find(&spec("fc@1")).unwrap().unwrap().origin.as_deref(),
+        Some("mine")
+    );
+    let _ = fs::remove_dir_all(&r);
+}

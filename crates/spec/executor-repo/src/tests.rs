@@ -483,6 +483,152 @@ async fn signed_repositories_need_a_matching_fresh_signature() {
     untrusted(f.index(&r).await, "needs v2/index.json");
 }
 
+/// 서명 파일만 바꿔 쓴다.
+fn write_signature(s: &Signed, text: impl AsRef<[u8]>) {
+    fs::write(s.dir().join("index.json.minisig"), text).unwrap();
+}
+
+#[tokio::test]
+async fn hostile_signature_files_are_refused_and_never_raise_the_seen_serial() {
+    let s = Signed::new("hostile-sig");
+    let later = trust::now() + 3600;
+    let seen = Seen::new(s.repo.root.join("seen"));
+    let f = Fetcher::new().unwrap().with_seen(seen.clone());
+    let r = s.repository(vec![s.key.clone()]);
+    s.publish(&Signed::index(Some(10), Some(later)));
+    f.index(&r).await.unwrap();
+
+    // 같은 키로 서명된 다른 색인의 서명을 붙여도 맞지 않는다(서명은 본문 전체에 묶인다).
+    let old = Signed::index(Some(3), Some(later));
+    let old_sig = minisign::sign(None, &s.sk, &old[..], Some("test"), None)
+        .unwrap()
+        .into_string();
+    fs::write(
+        s.dir().join("index.json"),
+        Signed::index(Some(99), Some(later)),
+    )
+    .unwrap();
+    write_signature(&s, &old_sig);
+    untrusted(f.index(&r).await, "matches none");
+    // 서명이 맞지 않은 색인의 serial은 적지 않는다(누구나 큰 serial을 내밀어 진짜 색인을 막을 수 없게).
+    assert_eq!(seen.get(&r).unwrap(), Some(10));
+
+    // 서명은 맞지만 오래된 색인을 통째로 다시 내밀면 거부한다(롤백).
+    fs::write(s.dir().join("index.json"), &old).unwrap();
+    untrusted(f.index(&r).await, "older than 10");
+
+    // 기한이 지난 색인은 serial이 더 커도 적지 않는다.
+    s.publish(&Signed::index(Some(50), Some(trust::now() - 1)));
+    untrusted(f.index(&r).await, "expired");
+    assert_eq!(seen.get(&r).unwrap(), Some(10));
+
+    // 같은 serial을 다시 받는 것은 괜찮다(같은 색인을 다시 읽는다).
+    s.publish(&Signed::index(Some(10), Some(later)));
+    f.index(&r).await.unwrap();
+
+    // 읽을 수 없는 서명, 텍스트가 아닌 서명, 너무 큰 서명.
+    write_signature(&s, "not a minisign signature");
+    untrusted(f.index(&r).await, "unreadable signature");
+    write_signature(&s, [0xff, 0xfe, 0x00, 0x01]);
+    untrusted(f.index(&r).await, "not text");
+    write_signature(&s, vec![b'a'; trust::MAX_SIGNATURE_BYTES as usize + 1]);
+    match f.index(&r).await {
+        Err(RepoError::Fetch { reason, .. }) => assert!(reason.contains("larger"), "{reason}"),
+        other => panic!("expected a size error, got {other:?}"),
+    }
+    assert_eq!(seen.get(&r).unwrap(), Some(10));
+}
+
+#[test]
+fn verify_needs_a_key_and_reports_bad_keys() {
+    let kp = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+    let sig = minisign::sign(None, &kp.sk, &b"body"[..], None, None)
+        .unwrap()
+        .into_string();
+    let pk = kp.pk.to_base64();
+    assert!(trust::verify(b"body", &sig, std::slice::from_ref(&pk)).is_ok());
+    assert!(
+        trust::verify(b"body", &sig, &[])
+            .unwrap_err()
+            .contains("no keys")
+    );
+    assert!(trust::verify(b"bodyx", &sig, std::slice::from_ref(&pk)).is_err());
+    assert!(
+        trust::verify(b"body", &sig, &["garbage".into()])
+            .unwrap_err()
+            .contains("invalid key")
+    );
+}
+
+#[test]
+fn the_seen_file_is_kept_per_name_and_url_and_survives_junk() {
+    let root = std::env::temp_dir().join(format!("sbx-exrepo-seen-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let seen = Seen::new(root.join("dir/seen"));
+    let a = Repository::new("a", "https://example.com/a").unwrap();
+    let a_moved = Repository::new("a", "https://example.com/elsewhere").unwrap();
+    let b = Repository::new("b", "https://example.com/b").unwrap();
+    // 없는 파일(과 디렉터리)은 본 것이 없다.
+    assert_eq!(seen.get(&a).unwrap(), None);
+    seen.check_and_record(&a, 7, "u").unwrap();
+    seen.check_and_record(&b, 3, "u").unwrap();
+    // 같은 이름이라도 URL이 다르면 새로 센다. 옛 줄은 남는다(되돌아가면 다시 쓴다).
+    assert_eq!(seen.get(&a_moved).unwrap(), None);
+    seen.check_and_record(&a_moved, 1, "u").unwrap();
+    assert_eq!(seen.get(&a).unwrap(), Some(7));
+    assert!(seen.check_and_record(&a, 6, "u").is_err());
+    // 손으로 고친 줄이나 깨진 줄은 건너뛴다. 다른 저장소의 기록은 지우지 않는다.
+    let path = root.join("dir/seen");
+    let mut text = fs::read_to_string(&path).unwrap();
+    text.push_str("garbage\nb notanumber https://example.com/b\n\n");
+    fs::write(&path, text).unwrap();
+    seen.check_and_record(&a, 8, "u").unwrap();
+    assert_eq!(
+        (
+            seen.get(&a).unwrap(),
+            seen.get(&b).unwrap(),
+            seen.get(&a_moved).unwrap()
+        ),
+        (Some(8), Some(3), Some(1))
+    );
+    // 임시 파일을 남기지 않는다.
+    let names: Vec<_> = fs::read_dir(root.join("dir"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert_eq!(names, ["seen"]);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[tokio::test]
+async fn a_signed_repository_ignores_a_v1_index_and_unsigned_serials_are_not_tracked() {
+    let s = Signed::new("v1-only");
+    let later = trust::now() + 3600;
+    let seen = Seen::new(s.repo.root.join("seen"));
+    let f = Fetcher::new().unwrap().with_seen(seen.clone());
+    // Repo::new가 둔 v1 index.json이 있어도 서명된 저장소는 그것을 읽지 않는다.
+    assert!(s.repo.root.join("repo/index.json").is_file());
+    untrusted(
+        f.index(&s.repository(vec![s.key.clone()])).await,
+        "needs v2/index.json",
+    );
+    // 서명 없는 저장소의 serial은 믿을 근거가 없으므로 적지도 막지도 않는다.
+    let u = Repository::new("u", &s.repo.file_url()).unwrap();
+    fs::write(
+        s.dir().join("index.json"),
+        Signed::index(Some(9), Some(later)),
+    )
+    .unwrap();
+    f.index(&u).await.unwrap();
+    fs::write(
+        s.dir().join("index.json"),
+        Signed::index(Some(1), Some(later)),
+    )
+    .unwrap();
+    f.index(&u).await.unwrap();
+    assert_eq!(seen.get(&u).unwrap(), None);
+}
+
 #[tokio::test]
 async fn unsigned_indexes_still_honor_their_own_expiry() {
     let s = Signed::new("unsigned-expiry");

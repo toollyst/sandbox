@@ -138,6 +138,10 @@ mod unix {
             mcp_limits_what_an_agent_can_ask_for,
         ),
         (
+            "mcp_limits_hold_under_concurrent_calls",
+            mcp_limits_hold_under_concurrent_calls,
+        ),
+        (
             "mcp_serves_sandboxes_to_agents",
             mcp_serves_sandboxes_to_agents,
         ),
@@ -2426,6 +2430,60 @@ mod unix {
             )
             .unwrap();
         assert_eq!(r["stdout"], "ok\n", "{r}");
+    }
+
+    fn mcp_limits_hold_under_concurrent_calls() {
+        let e = Env::new();
+        let mut child = e
+            .cmd(&["mcp", "--max-sandboxes", "2"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let out = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut m = Mcp {
+            child,
+            out,
+            next: 0,
+        };
+        m.request("initialize", serde_json::json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "e2e", "version": "0"}}));
+        // 응답을 기다리지 않고 create 다섯 개를 한꺼번에 보낸다. 서버는 이것들을 동시에 처리한다.
+        for id in 100..105 {
+            let msg = serde_json::json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
+                "params": {"name": "create", "arguments": {"image": IMAGE}}});
+            m.write_raw(msg.to_string().as_bytes());
+        }
+        let (mut ok, mut refused) = (Vec::new(), 0);
+        while ok.len() + refused < 5 {
+            let v = m.read();
+            if v.get("id").is_none() {
+                continue; // 진행 알림
+            }
+            let r = &v["result"];
+            if r["isError"] == true {
+                let text = r["content"][0]["text"].as_str().unwrap_or_default();
+                assert!(text.contains("--max-sandboxes 2"), "{text}");
+                refused += 1;
+            } else {
+                ok.push(r["structuredContent"]["id"].as_str().unwrap().to_owned());
+            }
+        }
+        assert_eq!((ok.len(), refused), (2, 3), "{ok:?}");
+        let listed = m.call("list", serde_json::json!({})).unwrap();
+        assert_eq!(listed["sandboxes"].as_array().unwrap().len(), 2, "{listed}");
+        // 실패한 호출은 자리를 남기지 않는다: 지우면 그만큼 다시 만들 수 있다.
+        for id in &ok {
+            m.call("remove", serde_json::json!({"id": id})).unwrap();
+        }
+        for _ in 0..2 {
+            m.call("create", serde_json::json!({"image": IMAGE}))
+                .unwrap();
+        }
+        assert!(
+            m.call("create", serde_json::json!({"image": IMAGE}))
+                .is_err()
+        );
     }
 
     fn mcp_serves_sandboxes_to_agents() {
