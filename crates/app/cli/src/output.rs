@@ -383,6 +383,9 @@ pub struct InstalledExecutor {
     pub path: String,
     /// For a VMM package: the adapter that runs it. Null for a self-contained executor.
     pub adapter: Option<String>,
+    /// The repository it was downloaded from, or `local` (installed with `--from`). Null if installed by an sbx that
+    /// did not record it.
+    pub origin: Option<String>,
 }
 
 /// An installed adapter (`executor adapter ls`).
@@ -398,6 +401,8 @@ pub struct InstalledAdapter {
     pub path: String,
     /// Installed VMM packages (`name@version`) that use an adapter of this name.
     pub used_by: Vec<String>,
+    /// The repository it was downloaded from, or `local`. Null if not recorded.
+    pub origin: Option<String>,
 }
 
 /// The executor sbx would use (`executor current`, `which`).
@@ -482,8 +487,10 @@ pub struct AvailableExecutor {
 pub struct Repository {
     /// Name.
     pub name: String,
-    /// URL. The index is `<url>/index.json`.
+    /// URL. The index is `<url>/v2/index.json` (or `<url>/index.json` for an old unsigned repository).
     pub url: String,
+    /// minisign public keys that sign its index. Empty for an unsigned repository.
+    pub keys: Vec<String>,
 }
 
 /// Host and installation diagnostics (`info`).

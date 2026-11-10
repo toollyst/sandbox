@@ -54,6 +54,8 @@ tar.workspace = true
 flate2.workspace = true
 sha2.workspace = true
 serde_json.workspace = true
+# 서명된 저장소 테스트에서 색인에 서명한다.
+minisign.workspace = true
 
 [[test]]
 name = "e2e"

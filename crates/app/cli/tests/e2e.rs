@@ -126,6 +126,10 @@ mod unix {
             vmm_packages_pins_and_version_files,
         ),
         (
+            "signed_repositories_and_names_that_stay_put",
+            signed_repositories_and_names_that_stay_put,
+        ),
+        (
             "image_kernel_is_given_to_the_executor",
             image_kernel_is_given_to_the_executor,
         ),
@@ -1974,6 +1978,129 @@ mod unix {
         (bytes, sha)
     }
 
+    fn signed_repositories_and_names_that_stay_put() {
+        let e = Env::new();
+        let sbx = |args: &[&str]| {
+            let mut c = e.cmd(args);
+            c.env_remove("SBX_EXECUTOR");
+            c.output().unwrap()
+        };
+        let ok = |o: &Output| assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        ok(&sbx(&["executor", "repo", "rm", "official"]));
+        let (bytes, sha) = bundle_of_me();
+        let host = sbx_executor_repo::Platform::host();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // 저장소 하나: v2 색인(fake 버전들, serial), 서명, 공개키.
+        let make = |name: &str, versions: &[&str], serial: u64, kp: &minisign::KeyPair| {
+            let dir = e.path(name);
+            std::fs::create_dir_all(dir.join("v2")).unwrap();
+            std::fs::write(dir.join("v2/fake.tar.gz"), &bytes).unwrap();
+            let mut vs = serde_json::Map::new();
+            for v in versions {
+                vs.insert((*v).into(), serde_json::json!({"protocol": sbx_executor_proto::VERSION, "artifacts": [
+                    {"os": host.os, "architecture": host.architecture, "url": "fake.tar.gz", "sha256": sha, "size": bytes.len()}]}));
+            }
+            let index = serde_json::json!({"schema": 2, "serial": serial, "expires": now + 3600,
+                "executors": {"fake": {"versions": vs}}})
+            .to_string();
+            std::fs::write(dir.join("v2/index.json"), &index).unwrap();
+            let sig = minisign::sign(None, &kp.sk, index.as_bytes(), None, None).unwrap();
+            std::fs::write(dir.join("v2/index.json.minisig"), sig.into_string()).unwrap();
+            format!("file://{}", dir.display())
+        };
+        let ka = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let kb = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let a = make("a", &["1.0"], 10, &ka);
+        let b = make("b", &["1.0", "9.0"], 1, &kb);
+
+        // 맞는 키로 더한 저장소에서 설치한다. ls는 출처를 보인다.
+        let o = sbx(&[
+            "executor",
+            "repo",
+            "add",
+            "a",
+            &a,
+            "--key",
+            &kb.pk.to_base64(),
+        ]);
+        ok(&o);
+        let o = sbx(&["executor", "install", "fake"]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("matches none"),
+            "{}",
+            text(&o.stderr)
+        );
+        ok(&sbx(&["executor", "repo", "rm", "a"]));
+        ok(&sbx(&[
+            "executor",
+            "repo",
+            "add",
+            "a",
+            &a,
+            "--key",
+            &ka.pk.to_base64(),
+        ]));
+        ok(&sbx(&[
+            "executor",
+            "repo",
+            "add",
+            "b",
+            &b,
+            "--key",
+            &kb.pk.to_base64(),
+        ]));
+        let o = sbx(&["executor", "repo", "ls"]);
+        assert!(text(&o.stdout).contains("SIGNED"), "{}", text(&o.stdout));
+        let o = sbx(&["executor", "install", "fake"]);
+        ok(&o);
+        assert!(
+            !text(&o.stderr).contains("not signed"),
+            "{}",
+            text(&o.stderr)
+        );
+        assert_eq!(text(&o.stdout), "fake@1.0\n");
+        let o = sbx(&["executor", "ls"]);
+        assert!(
+            text(&o.stdout).contains("FROM") && text(&o.stdout).contains(" a "),
+            "{}",
+            text(&o.stdout)
+        );
+
+        // 이름은 그것을 내는 첫 저장소(a)의 것이다. 뒤 저장소 b의 9.0은 고르지 않는다.
+        let o = sbx(&["executor", "install", "fake@9.0"]);
+        assert_ne!(o.status.code(), Some(0));
+        // --repo b로 고를 수는 있지만, 이미 a에서 받은 이름이라 섞지 않는다.
+        let o = sbx(&["executor", "install", "--repo", "b", "fake@9.0"]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("fake is installed from a, not b"),
+            "{}",
+            text(&o.stderr)
+        );
+
+        // 이 기계가 본 것보다 오래된 색인(롤백)과 기한이 지난 색인은 거부한다.
+        make("a", &["1.0"], 9, &ka);
+        let o = sbx(&["executor", "search"]);
+        assert!(
+            text(&o.stderr).contains("older than 10"),
+            "{}",
+            text(&o.stderr)
+        );
+        let dir = e.path("a");
+        let index =
+            serde_json::json!({"schema": 2, "serial": 11, "expires": now - 1, "executors": {}})
+                .to_string();
+        std::fs::write(dir.join("v2/index.json"), &index).unwrap();
+        let sig = minisign::sign(None, &ka.sk, index.as_bytes(), None, None).unwrap();
+        std::fs::write(dir.join("v2/index.json.minisig"), sig.into_string()).unwrap();
+        let o = sbx(&["executor", "search"]);
+        assert!(text(&o.stderr).contains("expired"), "{}", text(&o.stderr));
+    }
+
     fn executor_is_installed_from_a_repository() {
         let e = Env::new();
         let without = |args: &[&str]| {
@@ -2017,8 +2144,12 @@ mod unix {
         let url = format!("file://{}", repo.display());
         // 앞 저장소는 읽을 수 없다: 경고하고 건너뛴다.
         let missing = format!("file://{}", e.path("missing").display());
+        // 키도 --unsigned도 없으면 더하지 않는다.
+        let o = without(&["executor", "repo", "add", "local", &url]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(text(&o.stderr).contains("--key"), "{}", text(&o.stderr));
         for (name, u) in [("broken", missing.as_str()), ("local", url.as_str())] {
-            let o = without(&["executor", "repo", "add", name, u]);
+            let o = without(&["executor", "repo", "add", name, u, "--unsigned"]);
             assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
         }
         let o = without(&["executor", "repo", "ls"]);

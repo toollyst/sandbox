@@ -143,6 +143,26 @@ pub fn adapters(data_dir: &Path, current: &str) -> Vec<CompletionCandidate> {
     installed_in(&dirs::adapters_dir(data_dir), current)
 }
 
+/// 저장소 이름 후보(`--repo`). 목록 파일이 없으면 기본(`official`)이다.
+pub fn repositories(data_dir: &Path, current: &str) -> Vec<CompletionCandidate> {
+    let file = dirs::repositories_file(data_dir);
+    let names: Vec<String> = if file.exists() {
+        sbx_executor_repo::Sources::new(file)
+            .list()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| r.name)
+            .collect()
+    } else {
+        vec!["official".into()]
+    };
+    names
+        .into_iter()
+        .filter(|n| keep(n, current))
+        .map(CompletionCandidate::new)
+        .collect()
+}
+
 fn installed_in(root: &Path, current: &str) -> Vec<CompletionCandidate> {
     let list = sbx_executor_install::Executors::new(root)
         .list()
@@ -307,6 +327,11 @@ pub fn executor() -> ArgValueCompleter {
 /// 설치한 어댑터 인자의 완성기.
 pub fn adapter() -> ArgValueCompleter {
     completer(|d, c| in_data(adapters, d, c), None)
+}
+
+/// 저장소 이름(`--repo`)의 완성기.
+pub fn repository() -> ArgValueCompleter {
+    completer(|d, c| in_data(repositories, d, c), None)
 }
 
 /// `shell`에 등록하는 스크립트를 쓴다. `COMPLETE=<shell> sbx`가 쓰는 것과 같다: 셸이 다시 부를 sbx는

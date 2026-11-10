@@ -261,6 +261,10 @@ pub enum ExecutorCommand {
         /// With --from: install it as a VMM package run by this installed adapter (it has no sbx-executor).
         #[arg(long, requires = "from")]
         adapter: Option<String>,
+        /// Take it from this repository. Without it, a name comes from the first repository (in `repo ls` order)
+        /// that publishes it, and a name already installed only comes from where it came from before.
+        #[arg(long, conflicts_with = "from", add = complete::repository())]
+        repo: Option<String>,
         /// `NAME[@VERSION]`. A main version (`wick@1.18.0`) installs its newest patch (`1.18.0+wick.2`);
         /// no version or `@latest` installs the highest version.
         #[arg(value_name = "EXECUTOR")]
@@ -331,6 +335,9 @@ pub enum AdapterCommand {
         /// Requires NAME@VERSION.
         #[arg(long)]
         from: Option<PathBuf>,
+        /// Take it from this repository (see `executor install --repo`).
+        #[arg(long, conflicts_with = "from", add = complete::repository())]
+        repo: Option<String>,
         /// `NAME[@VERSION]`.
         #[arg(value_name = "ADAPTER")]
         spec: String,
@@ -361,13 +368,21 @@ pub enum AdapterCommand {
 pub enum RepoCommand {
     /// List repositories in priority order.
     Ls,
-    /// Add a repository at the end of the list. Its index is fetched when used.
+    /// Add a repository at the end of the list. Its index is fetched when used. Give the repository's minisign
+    /// public key with --key (its index must then be signed and fresh), or --unsigned to rely on TLS alone.
     Add {
         /// Repository name.
         name: String,
         /// Repository URL (https, file, or http on localhost). The index is `<URL>/v2/index.json`, or
-        /// `<URL>/index.json` if there is none.
+        /// `<URL>/index.json` if there is none (unsigned repositories only).
         url: String,
+        /// A minisign public key (the one-line `RW…` base64) that signs the index. Repeat it while the repository
+        /// rotates keys: any one of them may sign.
+        #[arg(long = "key", value_name = "PUBLIC_KEY")]
+        keys: Vec<String>,
+        /// Add it without a key: whoever controls the repository host or its TLS controls what you install.
+        #[arg(long, conflicts_with = "keys")]
+        unsigned: bool,
     },
     /// Remove a repository from the list (including `official`; the removal is kept).
     Rm {

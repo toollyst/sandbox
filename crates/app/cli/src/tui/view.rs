@@ -263,13 +263,22 @@ fn executors(frame: &mut Frame, model: &mut Model, area: Rect) {
         title: "Executors and adapters",
         len: rows.len(),
         loaded: model.executors.is_some(),
-        header: &["", "KIND", "NAME", "VERSION", "ADAPTER / USED BY", "PATH"],
+        header: &[
+            "",
+            "KIND",
+            "NAME",
+            "VERSION",
+            "ADAPTER / USED BY",
+            "FROM",
+            "PATH",
+        ],
         widths: &[
             Constraint::Length(2),
             Constraint::Length(8),
             Constraint::Max(20),
             Constraint::Max(20),
             Constraint::Max(28),
+            Constraint::Max(12),
             Constraint::Fill(1),
         ],
     };
@@ -288,12 +297,13 @@ fn executors(frame: &mut Frame, model: &mut Model, area: Rect) {
                     }
                     ExecutorRow::Adapter(_) => "",
                 };
-                let (kind, name, version, link, path) = match r {
+                let (kind, name, version, link, origin, path) = match r {
                     ExecutorRow::Executor(e) => (
                         "executor",
                         &e.name,
                         &e.version,
                         e.adapter.clone().unwrap_or_else(|| "-".into()),
+                        &e.origin,
                         &e.path,
                     ),
                     ExecutorRow::Adapter(a) => (
@@ -305,6 +315,7 @@ fn executors(frame: &mut Frame, model: &mut Model, area: Rect) {
                         } else {
                             a.used_by.join(", ")
                         },
+                        &a.origin,
                         &a.path,
                     ),
                 };
@@ -314,6 +325,7 @@ fn executors(frame: &mut Frame, model: &mut Model, area: Rect) {
                     Cell::from(name.clone()),
                     Cell::from(version.clone()),
                     Cell::from(link),
+                    Cell::from(origin.clone().unwrap_or_else(|| "-".into())),
                     Cell::from(path.clone()),
                 ])
             })

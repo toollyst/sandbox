@@ -71,6 +71,7 @@ pub(crate) fn executors() -> Executors {
             serde_json::from_value(serde_json::json!({
                 "name": name, "version": version, "default": default,
                 "path": format!("/d/executors/{name}/{version}"), "adapter": adapter,
+                "origin": adapter.map(|_| "official"),
             }))
             .unwrap()
         };

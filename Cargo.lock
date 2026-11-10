@@ -2428,6 +2428,7 @@ dependencies = [
  "jaq-core",
  "jaq-json",
  "jaq-std",
+ "minisign",
  "ratatui",
  "sbx-events",
  "sbx-executor",

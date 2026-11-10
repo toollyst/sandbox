@@ -151,6 +151,8 @@ fn executors_tab_shows_current_marks_and_adapters() {
     // 지금 쓸 것은 >, 어댑터 줄에는 그것을 쓰는 VMM 묶음.
     let wick = s.lines().find(|l| l.contains("/d/executors/wick")).unwrap();
     assert!(wick.contains(">") && wick.contains("firecracker"), "{wick}");
+    // 어디서 받았는지(FROM).
+    assert!(s.contains("FROM") && wick.contains("official"), "{wick}");
     let adapter = s
         .lines()
         .find(|l| l.contains("/d/adapters/firecracker"))

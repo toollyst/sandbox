@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use sbx_executor::Executor;
-use sbx_executor_install::{Executors, InstallError, Installed, Spec};
+use sbx_executor_install::{Executors, InstallError, Installed, LOCAL_ORIGIN, Spec};
 use sbx_executor_process::ProcessExecutor;
 use sbx_executor_repo::{Candidate, Fetcher, Platform, Repository, Sources, index};
 use sbx_model::Arch;
@@ -48,15 +48,44 @@ pub fn adapters(data_dir: &Path) -> Executors {
     Executors::new(crate::dirs::adapters_dir(data_dir))
 }
 
-/// 공식 실행기 저장소. 묶음은 GitHub Releases에, 색인은 GitHub Pages에 있다(CI가 올린다).
+/// 공식 실행기 저장소. 묶음은 GitHub Releases에, 색인은 GitHub Pages에 있다(`executors.yml`이 올린다).
 pub const OFFICIAL_REPOSITORY: (&str, &str) =
     ("official", "https://toollyst.github.io/sandbox/executors/");
 
+/// 공식 저장소의 색인에 서명하는 minisign 공개키들. 비밀키는 `executors.yml`만 쓴다(저장소 비밀 값).
+pub const OFFICIAL_KEYS: &[&str] = &[];
+
+fn official() -> Repository {
+    let (name, url) = OFFICIAL_REPOSITORY;
+    Repository::new(name, url)
+        .and_then(|r| r.with_keys(OFFICIAL_KEYS.iter().map(|k| k.to_string()).collect()))
+        .expect("valid")
+}
+
 /// 저장소 목록 파일. 파일이 없으면 공식 저장소 하나다(`sbx executor repo rm official`로 뺄 수 있다).
 pub fn sources(data_dir: &Path) -> Sources {
-    let (name, url) = OFFICIAL_REPOSITORY;
-    Sources::new(data_dir.join("executor-repositories"))
-        .with_defaults(vec![Repository::new(name, url).expect("valid")])
+    Sources::new(crate::dirs::repositories_file(data_dir)).with_defaults(vec![official()])
+}
+
+/// 저장소 목록. 키를 적기 전의 sbx가 쓴 목록의 공식 저장소(이름과 URL이 같고 키가 없다)에는 공식 키를 붙인다.
+fn repositories(data_dir: &Path) -> Result<Vec<Repository>> {
+    let o = official();
+    Ok(sources(data_dir)
+        .list()?
+        .into_iter()
+        .map(|r| {
+            if r.name == o.name && r.url == o.url && r.keys.is_empty() {
+                o.clone()
+            } else {
+                r
+            }
+        })
+        .collect())
+}
+
+/// 본 색인 일련번호를 적는 파일.
+fn seen(data_dir: &Path) -> sbx_executor_repo::Seen {
+    sbx_executor_repo::Seen::new(data_dir.join("executor-repositories.seen"))
 }
 
 /// `executor` 명령에 필요한 것.
@@ -91,6 +120,7 @@ pub async fn run(cx: &Ctx<'_>, c: &ExecutorCommand) -> Result<u8> {
             from: Some(from),
             adapter,
             spec,
+            ..
         } => {
             let spec: Spec = spec.parse()?;
             let i = install_local(cx, &ex, &ad, &spec, from, adapter.as_deref())?;
@@ -98,9 +128,12 @@ pub async fn run(cx: &Ctx<'_>, c: &ExecutorCommand) -> Result<u8> {
             Ok(0)
         }
         ExecutorCommand::Install {
-            from: None, spec, ..
+            from: None,
+            spec,
+            repo,
+            ..
         } => {
-            install_remote(cx, &ex, &ad, &spec.parse()?).await?;
+            install_remote(cx, &ex, &ad, &spec.parse()?, repo.as_deref()).await?;
             Ok(0)
         }
         ExecutorCommand::Search { name, all } => {
@@ -210,22 +243,24 @@ fn ls(cx: &Ctx<'_>, ex: &Executors) -> Result<u8> {
                 default: default.as_ref() == Some(i),
                 path: path(i),
                 adapter: i.adapter.clone(),
+                origin: i.origin.clone(),
             })
             .collect();
         output::print_value(&v)?;
         return Ok(0);
     }
     println!(
-        "{:<2}{:<20} {:<14} {:<14} PATH",
-        "", "NAME", "VERSION", "ADAPTER"
+        "{:<2}{:<20} {:<14} {:<14} {:<12} PATH",
+        "", "NAME", "VERSION", "ADAPTER", "FROM"
     );
     for i in &list {
         let mark = if default.as_ref() == Some(i) { "*" } else { "" };
         println!(
-            "{mark:<2}{:<20} {:<14} {:<14} {}",
+            "{mark:<2}{:<20} {:<14} {:<14} {:<12} {}",
             i.name,
             i.version,
             i.adapter.as_deref().unwrap_or("-"),
+            i.origin.as_deref().unwrap_or("-"),
             path(i)
         );
     }
@@ -260,13 +295,15 @@ fn install_adapter_local(
     from: &Path,
 ) -> Result<Installed> {
     if !is_archive(from) {
-        return Ok(ad.install(spec, from, None, adapter_check)?);
+        return Ok(ad.install_from(spec, from, None, Some(LOCAL_ORIGIN), adapter_check)?);
     }
     let work = work_dir(cx);
     let r =
         sbx_executor_repo::unpack::unpack(from, &work, sbx_executor_repo::unpack::Layout::Executor)
             .map_err(Box::<dyn Error>::from)
-            .and_then(|dir| Ok(ad.install(spec, &dir, None, adapter_check)?));
+            .and_then(|dir| {
+                Ok(ad.install_from(spec, &dir, None, Some(LOCAL_ORIGIN), adapter_check)?)
+            });
     let _ = std::fs::remove_dir_all(&work);
     r
 }
@@ -323,7 +360,11 @@ fn install_local(
     adapter: Option<&str>,
 ) -> Result<Installed> {
     if !is_archive(from) {
-        return Ok(ex.install(spec, from, adapter, |i| verify_installed(ad, i))?);
+        return Ok(
+            ex.install_from(spec, from, adapter, Some(LOCAL_ORIGIN), |i| {
+                verify_installed(ad, i)
+            })?,
+        );
     }
     let layout = match adapter {
         Some(_) => sbx_executor_repo::unpack::Layout::Vmm,
@@ -332,19 +373,44 @@ fn install_local(
     let work = work_dir(cx);
     let r = sbx_executor_repo::unpack::unpack(from, &work, layout)
         .map_err(Box::<dyn Error>::from)
-        .and_then(|dir| Ok(ex.install(spec, &dir, adapter, |i| verify_installed(ad, i))?));
+        .and_then(|dir| {
+            Ok(
+                ex.install_from(spec, &dir, adapter, Some(LOCAL_ORIGIN), |i| {
+                    verify_installed(ad, i)
+                })?,
+            )
+        });
     let _ = std::fs::remove_dir_all(&work);
     r
 }
 
-async fn indexes(cx: &Ctx<'_>) -> Result<(Fetcher, Vec<(String, index::Index)>)> {
-    let repos = sources(cx.data_dir).list()?;
+/// 저장소들의 색인. `only`가 있으면 그 저장소 하나만.
+async fn indexes(
+    cx: &Ctx<'_>,
+    only: Option<&str>,
+) -> Result<(Fetcher, Vec<(String, index::Index)>)> {
+    let mut repos = repositories(cx.data_dir)?;
+    if let Some(name) = only {
+        repos.retain(|r| r.name == name);
+        if repos.is_empty() {
+            return Err(
+                format!("no repository named {name:?} (see `sbx executor repo ls`)").into(),
+            );
+        }
+    }
     if repos.is_empty() {
         return Err(
-            "no executor repositories; add one with `sbx executor repo add NAME URL`".into(),
+            "no executor repositories; add one with `sbx executor repo add NAME URL --key KEY`"
+                .into(),
         );
     }
-    let fetcher = Fetcher::new()?;
+    for r in repos.iter().filter(|r| !r.signed()) {
+        eprintln!(
+            "warning: repository {} is not signed; only TLS protects its index (add it with --key)",
+            r.name
+        );
+    }
+    let fetcher = Fetcher::new()?.with_seen(seen(cx.data_dir));
     let (ok, failed) = sbx_executor_repo::indexes(&fetcher, &repos).await;
     for e in &failed {
         eprintln!("warning: {e}");
@@ -355,8 +421,14 @@ async fn indexes(cx: &Ctx<'_>) -> Result<(Fetcher, Vec<(String, index::Index)>)>
     Ok((fetcher, ok))
 }
 
-async fn install_remote(cx: &Ctx<'_>, ex: &Executors, ad: &Executors, spec: &Spec) -> Result<()> {
-    let (fetcher, idx) = indexes(cx).await?;
+async fn install_remote(
+    cx: &Ctx<'_>,
+    ex: &Executors,
+    ad: &Executors,
+    spec: &Spec,
+    repo: Option<&str>,
+) -> Result<()> {
+    let (fetcher, idx) = indexes(cx, repo).await?;
     let platform = Platform::host();
     let c = index::pick(&idx, spec, &platform, sbx_executor_proto::VERSION)?;
     // VMM 묶음이면 어댑터부터. 이미 있으면(어느 버전이든) 그것을 쓴다.
@@ -426,7 +498,13 @@ async fn fetch_and_install(
     let work = work_dir(cx);
     let r: Result<Installed> = async {
         let dir = sbx_executor_repo::fetch_bundle(fetcher, c, &work).await?;
-        match into.install(&want, &dir, c.adapter.as_deref(), check) {
+        match into.install_from(
+            &want,
+            &dir,
+            c.adapter.as_deref(),
+            Some(&c.repository),
+            check,
+        ) {
             Ok(i) => Ok(i),
             // 그사이 다른 쪽이 설치했다.
             Err(InstallError::AlreadyInstalled(_)) => Ok(into
@@ -475,7 +553,7 @@ fn newest_patches(list: Vec<Candidate>) -> Vec<Candidate> {
 }
 
 async fn search(cx: &Ctx<'_>, name: Option<&str>, all: bool, kind: Kind) -> Result<u8> {
-    let (_, idx) = indexes(cx).await?;
+    let (_, idx) = indexes(cx, None).await?;
     let (p, v) = (Platform::host(), sbx_executor_proto::VERSION);
     let every = match kind {
         Kind::Executor => index::available(&idx, name, &p, v),
@@ -586,6 +664,7 @@ async fn adapter(cx: &Ctx<'_>, ex: &Executors, ad: &Executors, c: &AdapterComman
                         version: i.version.clone(),
                         path: i.executable.display().to_string(),
                         used_by: used(i),
+                        origin: i.origin.clone(),
                     })
                     .collect();
                 output::print_value(&v)?;
@@ -611,14 +690,19 @@ async fn adapter(cx: &Ctx<'_>, ex: &Executors, ad: &Executors, c: &AdapterComman
         AdapterCommand::Install {
             from: Some(from),
             spec,
+            ..
         } => {
             let spec: Spec = spec.parse()?;
             let i = install_adapter_local(cx, ad, &spec, from)?;
             print_ref(cx, &i)?;
             Ok(0)
         }
-        AdapterCommand::Install { from: None, spec } => {
-            let (fetcher, idx) = indexes(cx).await?;
+        AdapterCommand::Install {
+            from: None,
+            spec,
+            repo,
+        } => {
+            let (fetcher, idx) = indexes(cx, repo.as_deref()).await?;
             let c = index::pick_adapter(
                 &idx,
                 &spec.parse()?,
@@ -707,19 +791,32 @@ fn repo(cx: &Ctx<'_>, c: &RepoCommand) -> Result<u8> {
     let s = sources(cx.data_dir);
     match c {
         RepoCommand::Ls => {
-            let list = s.list()?;
+            let list = repositories(cx.data_dir)?;
             if cx.json {
                 let v: Vec<_> = list.iter().map(repository).collect();
                 output::print_value(&v)?;
             } else {
-                println!("{:<20} URL", "NAME");
+                println!("{:<20} {:<8} URL", "NAME", "SIGNED");
                 for r in &list {
-                    println!("{:<20} {}", r.name, r.url);
+                    let signed = if r.signed() { "yes" } else { "no" };
+                    println!("{:<20} {signed:<8} {}", r.name, r.url);
                 }
             }
         }
-        RepoCommand::Add { name, url } => {
-            let r = Repository::new(name, url)?;
+        RepoCommand::Add {
+            name,
+            url,
+            keys,
+            unsigned,
+        } => {
+            if keys.is_empty() && !unsigned {
+                return Err(format!(
+                    "give the repository's minisign public key with --key (ask whoever runs {url}), or add it \
+                     with --unsigned to rely on TLS alone"
+                )
+                .into());
+            }
+            let r = Repository::new(name, url)?.with_keys(keys.clone())?;
             s.add(r.clone())?;
             print_repository(cx, &r)?;
         }
@@ -734,6 +831,7 @@ fn repository(r: &Repository) -> output::Repository {
     output::Repository {
         name: r.name.clone(),
         url: r.url.to_string(),
+        keys: r.keys.clone(),
     }
 }
 
