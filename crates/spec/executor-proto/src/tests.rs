@@ -44,7 +44,7 @@ fn wire_shape_is_stable() {
         "{\"type\":\"kill\"}\n{\"type\":\"started\",\"pid\":7}\n{\"type\":\"exited\",\"reason\":\"guest powered off\"}\n"
     );
     let caps: Capabilities = serde_json::from_str(
-        r#"{"version":2,"name":"fc-fork","arch":"amd64","rootfs_formats":["erofs"],"live_share":false,"custom_kernel":true,"snapshot":true,"max_disks":2}"#,
+        r#"{"version":2,"name":"other-vmm","arch":"amd64","rootfs_formats":["erofs"],"live_share":false,"custom_kernel":true,"snapshot":true,"max_disks":2}"#,
     )
     .unwrap();
     assert_eq!(caps.arch, Arch::Amd64);

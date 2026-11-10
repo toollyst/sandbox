@@ -72,7 +72,7 @@ xtask/                       check-deps, deps-doc, dist, smoke 등 개발용 작
 docs/                        기획(plan/), 로드맵, 개발자 문서(developers/, 영어)
 ```
 
-**책임 분담**: VMM은 이 저장소 밖(예: fc-fork)의 책임이다. 이 저장소는 생명주기, 코어, CLI, 게스트 init,
+**책임 분담**: VMM은 이 저장소 밖(Firecracker, macOS에서는 그 빌드인 wick)의 책임이다. 이 저장소는 생명주기, 코어, CLI, 게스트 init,
 실행기가 맞춰야 할 통신 규약(`sbx-executor-proto`), 실행기 저장소 규약(`sbx-executor-repo`), Firecracker adapter를 책임진다.
 규약에 맞는 실행기는 그대로 실행한다.
 

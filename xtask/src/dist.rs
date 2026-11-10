@@ -8,7 +8,7 @@
 //! `--target <triple>`: 그 대상으로 빌드한다(결과는 `target/<triple>/release/`). 릴리스는 Linux에서
 //! `<arch>-unknown-linux-musl`로 정적 실행 파일을 만든다(어느 배포판에서나 돈다). 게스트 init의 아키텍처는 대상의
 //! 아키텍처다.
-//! 실행기(`sbx-executor`, fc-fork)는 따로 설치한다. 다른 아키텍처용 배포는 그 아키텍처 호스트에서 만든다.
+//! 실행기(`sbx-executor`와 VMM)는 따로 설치한다. 다른 아키텍처용 배포는 그 아키텍처 호스트에서 만든다.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

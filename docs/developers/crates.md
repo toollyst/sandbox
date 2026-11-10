@@ -385,7 +385,7 @@ The executor for Firecracker. It is shipped in a bundle as `sbx-executor`, next 
 `kernel`.
 
 - It uses only Firecracker's public interface (`firecracker --no-api --config-file`, vsock `CONNECT`), so the same
-  adapter runs upstream Firecracker on Linux/KVM and [toollyst/firecracker](https://github.com/toollyst/firecracker)
+  adapter runs upstream Firecracker on Linux/KVM and [wick](https://github.com/toollyst/wick)
   on macOS/Hypervisor.framework.
 - `settings` finds `firecracker` and the kernel (`SBX_FIRECRACKER`, `SBX_FIRECRACKER_KERNEL`, then next to itself,
   then `PATH`). `config` writes the VM config (initrd, disks, vsock, kernel command line). `session` runs the

@@ -1,6 +1,6 @@
 //! 외부 실행기 어댑터. `sbx-executor-proto` 규약을 말하는 실행 파일을 띄우고 다룬다.
 //!
-//! sbx 쪽 어댑터는 이것 하나다. VMM마다 다른 것은 실행기 실행 파일(예: fc-fork)이 맡는다.
+//! sbx 쪽 어댑터는 이것 하나다. VMM마다 다른 것은 실행기 실행 파일(예: wick의 firecracker를 쓰는 sbx-executor-firecracker)이 맡는다.
 //!
 //! - [`ProcessExecutor::new`]는 `<실행기> capabilities`를 한 번 실행해 capability를 받아 둔다.
 //! - `launch`는 `<실행기> run`을 띄우고 `Launch`를 보낸 뒤 `Started`를 기다린다. 실행기의 표준 오류는 [`VmConfig::log`]에 붙인다.
