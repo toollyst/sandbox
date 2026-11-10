@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # toollyst/wick 릴리스 TAG(예: v1.18.0+wick.1)의 OS/ARCH 산출물에서 VMM 묶음 디렉터리 OUT을 만든다:
-# firecracker, LICENSE, NOTICE. 산출물은 wick-<TAG>-<OS>-<ARCH>.tgz(.sha256.txt로 확인)이고, 안에
+# firecracker, LICENSE, NOTICE, 그리고 릴리스에 있으면 jailer(Linux). 산출물은 wick-<TAG>-<OS>-<ARCH>.tgz(.sha256.txt로 확인)이고, 안에
 # release-<TAG>-<OS>-<ARCH>/{firecracker-<TAG>-<OS>-<ARCH>,LICENSE,NOTICE}가 있다(wick의 tools/package-release.sh).
 # macOS 바이너리는 hypervisor 권한으로 서명돼 있어야 한다. gh(GH_TOKEN)가 필요하다. 받은 파일은 WORK(기본: 임시
 # 디렉터리)에 둔다. executors.yml이 쓴다.
@@ -20,6 +20,7 @@ mkdir -p "$work" "$out"
 rel="$work/release-$tag-$os-$arch"
 install -m 755 "$rel/firecracker-$tag-$os-$arch" "$out/firecracker"
 if [ "$os" = darwin ]; then codesign --verify --strict "$out/firecracker"; fi
+if [ -f "$rel/jailer-$tag-$os-$arch" ]; then install -m 755 "$rel/jailer-$tag-$os-$arch" "$out/jailer"; fi
 for f in LICENSE NOTICE; do
     if [ -f "$rel/$f" ]; then
         cp "$rel/$f" "$out/"

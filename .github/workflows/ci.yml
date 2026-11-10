@@ -166,6 +166,35 @@ jobs:
           av=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "sbx-executor-firecracker") | .version')
           .github/scripts/smoke-local.sh "$RUNNER_TEMP/bin/sbx" executors adapter "$av" vmm firecracker "$FIRECRACKER"
       - if: steps.kvm.outputs.ok == 'true'
+        name: as root, firecracker runs in the jailer (own uid, chroot, cgroup)
+        run: |
+          set -euo pipefail
+          sbx="$RUNNER_TEMP/bin/sbx"
+          r() { sudo env HOME=/root PATH="$PATH" "$@"; }
+          r "$sbx" executor repo rm official
+          r "$sbx" executor repo add local "file://$PWD/executors" --unsigned
+          r "$sbx" executor install "firecracker@$FIRECRACKER"
+          r "$sbx" executor use "firecracker@$FIRECRACKER"
+          # 위에서 만든 xtask를 root로(cargo는 root의 HOME에 툴체인이 없다).
+          r target/debug/xtask smoke --sbx "$sbx"
+          id=$(r "$sbx" run -d alpine:3.20 sleep 120)
+          pid=$(pgrep -x firecracker | head -1)
+          uid=$(ps -o uid= -p "$pid" | tr -d ' ')
+          root=$(sudo readlink "/proc/$pid/root")
+          cg=$(cat "/proc/$pid/cgroup")
+          echo "firecracker pid $pid uid $uid root $root cgroup $cg"
+          [ "$uid" -gt 2100000000 ] || { echo "::error::firecracker runs as uid $uid, not a jail uid"; exit 1; }
+          case $root in /srv/jailer/firecracker/sbx-*/root) ;; *) echo "::error::firecracker is not chrooted ($root)"; exit 1 ;; esac
+          case $cg in *firecracker/sbx-*) ;; *) echo "::error::firecracker is not in its cgroup ($cg)"; exit 1 ;; esac
+          r "$sbx" rm -f "$id"
+          # 실행기는 VM이 끝난 뒤 jail을 지운다. 조금 기다린다.
+          for _ in $(seq 50); do
+            [ -z "$(sudo find /srv/jailer/firecracker -mindepth 1 -maxdepth 1)" ] && break
+            sleep 0.1
+          done
+          [ -z "$(sudo find /srv/jailer/firecracker -mindepth 1 -maxdepth 1)" ] \
+            || { echo "::error::jails left behind"; sudo ls -la /srv/jailer/firecracker; exit 1; }
+      - if: steps.kvm.outputs.ok == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: executors-linux-${{ matrix.arch }}

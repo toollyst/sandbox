@@ -1,5 +1,6 @@
 //! `capabilities`, `run` 세션, 그리고 firecracker를 감시하는 `vmm` 모드. 규칙은 크레이트 문서에 있다.
 
+use std::ffi::OsString;
 use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, ExitStatus, Stdio};
@@ -95,14 +96,112 @@ pub fn run() -> ExitCode {
         Ok(s) => s,
         Err(e) => return fail(e),
     };
+    #[cfg(unix)]
+    if let Some(jailer) = settings.jailer.clone() {
+        let result = jailed(input, &vm, &settings, &jailer);
+        let _ = std::fs::remove_file(&vm.control_socket);
+        return result;
+    }
     let config = match firecracker_config(&vm, &settings.kernel, cfg!(target_arch = "x86_64")) {
         Ok(c) => c,
         Err(e) => return fail(e),
     };
     let config_path = config_path(&vm.control_socket);
-    let result = launch_and_watch(input, &vm, &settings, &config, &config_path);
+    let result = match prepare(&vm.control_socket).and_then(|()| {
+        write_config(&config_path, &config.to_string())
+            .map_err(|e| format!("{}: {e}", config_path.display()))
+    }) {
+        Ok(()) => {
+            let args = vec![
+                "--no-api".into(),
+                "--config-file".into(),
+                config_path.clone().into(),
+            ];
+            launch_and_watch(input, &vm.control_socket, &settings.firecracker, args)
+        }
+        Err(e) => fail(e),
+    };
     let _ = std::fs::remove_file(&config_path);
     let _ = std::fs::remove_file(&vm.control_socket);
+    result
+}
+
+/// Firecracker는 소켓 파일이 이미 있으면 VM을 만들지 못한다.
+fn prepare(control_socket: &Path) -> Result<(), String> {
+    match std::fs::remove_file(control_socket) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("{}: {e}", control_socket.display())),
+    }
+}
+
+/// root: jailer로 가둔 firecracker로 돌린다(크레이트 문서의 "jailer" 절). 제어 소켓 자리에는 jail 안 vsock 소켓을
+/// 가리키는 링크를 둔다.
+#[cfg(unix)]
+fn jailed(
+    input: impl BufRead + Send + 'static,
+    vm: &VmSpec,
+    settings: &Settings,
+    jailer: &Path,
+) -> ExitCode {
+    use crate::jail;
+    let base = std::env::var_os(jail::ENV_CHROOT_BASE)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| jail::DEFAULT_CHROOT_BASE.into());
+    let id_base = match std::env::var(jail::ENV_ID_BASE) {
+        Err(_) => jail::DEFAULT_ID_BASE,
+        Ok(v) => match v.parse::<u32>() {
+            Ok(n) if n > 0 && n.checked_add(jail::SLOTS + 1).is_some() => n,
+            _ => return fail(format!("{}={v}: not a usable uid", jail::ENV_ID_BASE)),
+        },
+    };
+    if let Err(e) = jail::check_base(&base) {
+        return fail(e);
+    }
+    let slot = match jail::take_slot(&base) {
+        Ok(s) => s,
+        Err(e) => return fail(e),
+    };
+    let kernel = vm.kernel.as_deref().unwrap_or(&settings.kernel);
+    let plan = jail::Plan::new(vm, kernel, &base, id_base, slot.n);
+    let config = match firecracker_config(&plan.spec, &plan.kernel, cfg!(target_arch = "x86_64")) {
+        Ok(c) => c,
+        Err(e) => return fail(e),
+    };
+    if let Err(e) = prepare(&vm.control_socket) {
+        return fail(e);
+    }
+    let owners = match jail::stage(&plan) {
+        Ok(o) => o,
+        Err(e) => {
+            jail::finish(&plan, &[]);
+            return fail(e);
+        }
+    };
+    let result = match jail::write_config(&plan, &config.to_string()).and_then(|()| {
+        std::os::unix::fs::symlink(plan.socket(), &vm.control_socket)
+            .map_err(|e| format!("{}: {e}", vm.control_socket.display()))
+    }) {
+        Ok(()) => {
+            let cgroups = if std::env::var(jail::ENV_CGROUPS).as_deref() == Ok("off") {
+                Vec::new()
+            } else {
+                std::fs::read_to_string(Path::new(jail::CGROUP_ROOT).join("cgroup.controllers"))
+                    .map(|c| jail::cgroup_limits(vm, &c))
+                    .unwrap_or_default()
+            };
+            launch_and_watch(
+                input,
+                &vm.control_socket,
+                jailer,
+                plan.args(&settings.firecracker, &cgroups),
+            )
+        }
+        Err(e) => fail(e),
+    };
+    let _ = std::fs::remove_file(&vm.control_socket);
+    jail::finish(&plan, &owners);
+    drop(slot);
     result
 }
 
@@ -131,30 +230,22 @@ fn write_config(path: &Path, text: &str) -> io::Result<()> {
     io::Write::write_all(&mut o.open(path)?, text.as_bytes())
 }
 
+/// `program args...`(firecracker나 jailer)를 감시 프로세스 아래에서 띄우고, `socket`이 생기면 `Started`를 보낸 뒤
+/// VM이 끝날 때까지 지켜본다.
 fn launch_and_watch(
     mut input: impl BufRead + Send + 'static,
-    vm: &VmSpec,
-    settings: &Settings,
-    config: &serde_json::Value,
-    config_path: &Path,
+    socket: &Path,
+    program: &Path,
+    args: Vec<OsString>,
 ) -> ExitCode {
-    // Firecracker는 소켓 파일이 이미 있으면 VM을 만들지 못한다.
-    match std::fs::remove_file(&vm.control_socket) {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return fail(format!("{}: {e}", vm.control_socket.display())),
-    }
-    if let Err(e) = write_config(config_path, &config.to_string()) {
-        return fail(format!("{}: {e}", config_path.display()));
-    }
-    let mut vmm = match spawn_vmm(&settings.firecracker, config_path) {
+    let mut vmm = match spawn_vmm(program, args) {
         Ok(c) => c,
         Err(e) => return fail(e),
     };
     // 준비: 소켓 파일이 생기면.
     let deadline = Instant::now() + READY_TIMEOUT;
     loop {
-        if vm.control_socket.exists() {
+        if socket.exists() {
             break;
         }
         if let Ok(Some(status)) = vmm.try_wait() {
@@ -166,7 +257,7 @@ fn launch_and_watch(
             stop_vmm(&mut vmm);
             return fail(format!(
                 "firecracker did not create {} within {READY_TIMEOUT:?}",
-                vm.control_socket.display()
+                socket.display()
             ));
         }
         thread::sleep(POLL);
@@ -218,20 +309,18 @@ fn exit_reason(s: ExitStatus) -> String {
 }
 
 /// 감시 프로세스를 띄운다. 그 표준 입력을 쥐고 있는 동안만 VM이 산다.
-fn spawn_vmm(firecracker: &Path, config: &Path) -> Result<Child, String> {
+fn spawn_vmm(program: &Path, args: Vec<OsString>) -> Result<Child, String> {
     let me = std::env::current_exe().map_err(|e| format!("cannot find this executable: {e}"))?;
     Command::new(me)
         .arg(VMM)
-        .arg(firecracker)
-        .arg("--no-api")
-        .arg("--config-file")
-        .arg(config)
+        .arg(program)
+        .args(args)
         .stdin(Stdio::piped())
         // firecracker의 출력(게스트 콘솔)은 실행기 로그로. 표준 출력은 규약 메시지만 쓴다.
         .stdout(Stdio::from(io::stderr()))
         .stderr(Stdio::inherit())
         .spawn()
-        .map_err(|e| format!("cannot start {}: {e}", firecracker.display()))
+        .map_err(|e| format!("cannot start {}: {e}", program.display()))
 }
 
 /// 감시 프로세스의 입력을 닫아 VM을 끝내고 기다린다.

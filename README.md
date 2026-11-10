@@ -90,8 +90,11 @@ reads them, and works the same without them once an executor is installed. One c
 (<https://toollyst.github.io/sandbox/executors/>), and you can remove it or add your own. In it, `wick` is our
 Firecracker build ([toollyst/wick](https://github.com/toollyst/wick), the one that runs on macOS), run by the
 `firecracker` adapter with its guest kernel. Upstream Firecracker and your own builds run under the same adapter; see
-[Bring your own VMM](#bring-your-own-vmm) and [Executors and versions](#executors-and-versions). Nothing runs as
-root.
+[Bring your own VMM](#bring-your-own-vmm) and [Executors and versions](#executors-and-versions). Nothing needs
+root. If you do run `sbx` as root on Linux (a CI runner or a server), the `firecracker` adapter starts each VM inside
+Firecracker's official [jailer](https://github.com/firecracker-microvm/firecracker/blob/main/docs/jailer.md): its
+own uid, a chroot holding only that VM's files, and cgroup limits on CPU, memory and processes. It won't run
+Firecracker as root without it.
 
 > [!NOTE]
 > This README describes `main`. The latest release, v0.1.1, predates separate VMM packages: its installer also
