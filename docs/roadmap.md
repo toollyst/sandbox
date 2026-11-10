@@ -108,8 +108,37 @@ M5와 따로 간다. CLI가 주인이고, 사람(`sbx tui`), 스크립트, 에�
 | T | `sbx tui`: 전체 화면(ratatui, 대체 화면). 탭 셋(샌드박스, 이미지, 이벤트)과 최근 이벤트 칸, 보이는 줄만 그리는 표와 스크롤 막대, 거르기(`/`), 상세(JSON)·도움말·확인 창. `ps -a`·`images` 뒤 `events --since 1h`를 따라 읽고 이벤트마다 목록을 다시 읽는다. 모든 동작은 같은 `sbx`를 자식으로 부르고 상태 줄에 그 명령 줄을 보인다. 터미널이 필요한 명령(`exec -it`, `attach`, `logs -f`, `:` 아무 명령)은 대체 화면을 닫고 터미널을 넘겼다가 Enter로 돌아온다 | 완료 (규칙은 `crates/app/cli/src/tui/`. 단위 테스트가 키→명령 줄, 가상 스크롤, 그리기(TestBackend)를 보고, pty 위에서 바깥 `run -d`가 바로 보이는지, stop·rm·logs·exec·`:`·창 크기·종료 뒤 자식이 남지 않는지 확인했다. 스파이크: iocraft는 ScrollView가 가상 스크롤이 아니고 창·다이얼로그를 직접 만들어야 해서, 전체 화면 앱에는 ratatui를 골랐다. 대가 +0.3 MB) |
 | T2 | `sbx tui` 실행기 탭(CLI에 더한 실행기 기능을 TUI에도): `executor ls`·`executor adapter ls`·`executor current`를 읽어 실행기와 어댑터를 한 표에(`*` 기본, `>` 지금 쓸 것, 어댑터를 쓰는 VMM 묶음), 위 줄에 지금 쓸 실행기와 까닭. 키 `u` use, `i` install(명령 줄을 채워 고쳐 친 뒤 터미널을 넘긴다), `S` search, `D` rm·adapter rm(묻는다), `P` prune(묻는다). 실행기는 이벤트가 없으므로 열 때, `executor` 명령이 끝날 때, 터미널을 돌려받을 때 다시 읽는다 | 완료 (단위 테스트: 키→명령 줄, 그리기. pty 위에서 `u`로 기본이 바뀌는 것을 확인) |
 
+## M7. 프로덕션·상용 급 (2026-11-10~)
+
+오픈소스로 두되, 보안 검토와 도입 심사를 통과할 수준으로 올린다. 기준은 도입하는 쪽의 질문이다: 무엇을 받는지
+확인할 수 있나(공급망), 경계를 넘으면 어떻게 되나(격리, 상한), 문제가 나면 누가 얼마나 빨리 고치나(절차), 업그레이드에
+무엇이 깨지나(호환성), 누가 무엇을 했나(감사). 참고한 것: Firecracker(RELEASE_POLICY, prod-host-setup, jailer),
+Cloud Hypervisor·Kata·gVisor의 보안 절차, microsandbox COMPATIBILITY, OpenSSF Best Practices·Scorecard·OSPS Baseline,
+SLSA, TUF(색인 신선도), EU CRA. root는 금지 조건이 아니다: 쓸 수 있으면 공개 표준(Firecracker 공식 jailer)을 쓰고,
+없으면 권한 없이 할 수 있는 격리를 쓴다.
+
+| 단계 | 내용 | 상태 |
+|---|---|---|
+| P1 | 공급망: `deny.toml`(RustSec 권고, 허용형 라이선스, crates.io만), CI `supply-chain` 작업, 모든 Actions를 커밋 SHA로 고정, dependabot(Actions·cargo) | 완료 |
+| P2 | 릴리스 서명: 묶음마다 Sigstore keyless 번들, GitHub 출처 증명(SLSA build provenance), SBOM(SPDX) 증명. `install.sh`의 `SBX_VERIFY`(auto/require/off). `release.yml`을 손으로 돌리면 리허설(빌드·smoke·SBOM·서명만) | 작성, 리허설로 확인 중 |
+| P3 | 공급망 2: `cargo auditable`로 바이너리에 의존성 목록, 실행기 묶음(어댑터·커널·VMM)에도 SBOM과 증명(`executors.yml`), publish를 승인이 필요한 environment로, SLSA Build L3(재사용 빌드 워크플로와 `--signer-workflow`) | 남음 |
+| P4 | 커버리지 기반 퍼징(cargo-fuzz): 게스트·실행기 규약 디코더, 저장소 색인과 버전, 묶음 풀기(경로 탈출), OCI manifest·index, egress 규칙. CI에서 짧게, 손으로 길게. 그 뒤 ClusterFuzzLite나 OSS-Fuzz | 진행 중 |
+| P5 | 저장소 색인 서명(minisign): 저장소마다 공개키(여럿 고정, 교체·폐기), 서명 범위 안의 `serial`(본 것보다 낮으면 거부)과 `expires`(롤백·동결 공격), 실행기 이름을 저장소에 고정(다른 저장소가 같은 이름을 가로채지 못하게). CLI와 tui, `xtask repo-add`, `executors.yml` | 남음 |
+| P6 | Linux 격리: root가 있으면 Firecracker 공식 jailer(chroot, namespace, cgroup, 인스턴스마다 uid), 없으면 Landlock·seccomp와 위임받은 cgroup v2로 CPU·메모리·IO 상한. scratch 디스크 속도 제한. macOS는 wick에 jailer 상당이 생길 때까지 다중 테넌트용이 아니라고 적는다. 어댑터가 맡는다 | 남음 |
+| P7 | 자원 상한: MCP의 샌드박스 수·vCPU·메모리 합계, detached 샌드박스의 수명·유휴 시간, pull·prepare 디스크 사용량, egress 전송량, scratch 디스크 합계 (31의 MCP 부분) | 남음 |
+| P8 | 취약점 처리 절차(SECURITY.md): 첫 응답 기한, 엠바고(최대 14일), GHSA로 CVE, "위협 모델 표의 경계를 넘으면 CVE", 지원 버전과 기간, 어댑터·커널·wick의 신고처, 릴리스 노트의 Security 절 | 남음 |
+| P9 | 호환성 정책(COMPATIBILITY.md): 계약 목록(CLI 플래그·종료 코드, `--format json` 스키마는 더하기만, MCP 도구, 실행기·게스트 규약, 저장소 색인, data/cache 배치, `.sbx-executor`), 디스크 배치 버전과 마이그레이션 또는 거부, 실행기 규약을 같은 버전 대신 범위 협상으로 | 남음 |
+| P10 | 거버넌스: CODE_OF_CONDUCT, MAINTAINERS, GOVERNANCE, DCO, 브랜치·태그 rulesets. 릴리스 권한을 가진 두 번째 메인테이너(사람이 정한다) | 남음 |
+| P11 | OpenSSF Scorecard 작업과 배지, Best Practices 배지(passing), OSPS Baseline 자가 증명 | 남음 |
+| P12 | 커널·VMM 패치 정책(추적, 재빌드 주기), 색인의 `yanked`·`advisory`, `executor ls`와 tui가 설치된 취약 버전을 알린다 | 남음 |
+| P13 | 운영: 감사 기록(누가 언제 무엇을 만들고 실행했나, 이미지 digest, 실행기 버전, allow 목록, exec argv·종료 코드, egress 허용·거부. JSONL, 보존 기간 설정, 선택적으로 OTel), `sbx stats`, `sbx system df`·`prune`, 고아 VM 정리 | 남음 |
+| P14 | 호스트 강화 점검 `sbx info --security`(SMT, KSM, swap, KVM 권한, 시리얼 출력) | 남음 |
+| P15 | SDK(Python, TypeScript): CLI JSON 계약을 감싸고 `cli-output.schema.json`으로 타입을 만든다(데몬 없음) | 남음 |
+| P16 | 이름: Docker Sandboxes도 `sbx` 바이너리를 brew·winget·apt로 배포해 PATH가 겹친다. 1.0 전에 정한다 | 결정 필요 |
+
 ## 그 뒤
 
 - 다른 외부 실행기 (libkrun 등). 규약(`sbx-executor-proto`)만 지키면 된다.
+- Kubernetes·containerd(shim v2, RuntimeClass), 스냅샷과 빠른 시작(복제본마다 난수·boot_id를 새로), 다중 테넌트 서버 배포
 - 언어 바인딩
 - OCI 범위 확대 (`docs/plan/architecture.md` 3장의 "나중")
