@@ -356,7 +356,12 @@ impl Executors {
         adapter: Option<&str>,
         verify: impl FnOnce(&Installed) -> Result<(), String>,
     ) -> Result<Installed, InstallError> {
-        let version = spec.version.as_deref().ok_or(InstallError::NoVersion)?;
+        // `latest`는 버전이 아니다(이름으로 가리킬 수 없는 설치가 생긴다). `Spec`을 직접 만든 호출자도 막는다.
+        let version = spec
+            .version
+            .as_deref()
+            .filter(|v| *v != LATEST)
+            .ok_or(InstallError::NoVersion)?;
         if let Some(a) = adapter
             && !valid_part(a)
         {

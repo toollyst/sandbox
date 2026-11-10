@@ -44,6 +44,25 @@ fn specs_and_versions() {
 }
 
 #[test]
+fn a_version_named_latest_is_not_installed() {
+    let r = root("latest");
+    let src = r.join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join(executable_name()), b"#!/bin/sh\n").unwrap();
+    let ex = Executors::new(r.join("executors"));
+    let latest = Spec {
+        name: "fc".into(),
+        version: Some(LATEST.into()),
+    };
+    assert!(matches!(
+        ex.install(&latest, &src, None, |_| Ok(())),
+        Err(InstallError::NoVersion)
+    ));
+    assert!(ex.list().unwrap().is_empty());
+    fs::remove_dir_all(r).unwrap();
+}
+
+#[test]
 fn install_use_list_remove() {
     let r = root("flow");
     let src = r.join("src");
