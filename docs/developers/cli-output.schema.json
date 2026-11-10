@@ -15,6 +15,10 @@
           "description": "Architecture of the bundle (OCI terms).",
           "type": "string"
         },
+        "line": {
+          "description": "Main version: `version` up to its first `-` (`1.18.0` for `1.18.0-wick.2`). Without `--all`, only the newest\npatch of each main version is listed.",
+          "type": "string"
+        },
         "name": {
           "description": "Name.",
           "type": "string"
@@ -58,6 +62,7 @@
       "required": [
         "name",
         "version",
+        "line",
         "repository",
         "os",
         "architecture",

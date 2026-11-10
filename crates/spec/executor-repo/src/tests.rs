@@ -187,6 +187,29 @@ fn schema_2_has_adapters_and_vmm_packages() {
 }
 
 #[test]
+fn a_main_version_picks_its_newest_patch() {
+    let mut v = sample_v2();
+    for p in ["1.18.0-wick.1", "1.18.0-wick.10", "1.18.0-wick.2"] {
+        v["executors"]["wick"]["versions"][p] = json!({"adapter": "firecracker", "artifacts": [artifact("darwin", "arm64", "w.tar.gz")]});
+    }
+    let idx = vec![("r".to_owned(), parse(v).unwrap())];
+    let pick = |s: &str| index::pick(&idx, &spec(s), &mac(), 2).map(|c| c.version);
+    assert_eq!(
+        pick("wick@1.18.0").unwrap(),
+        "1.18.0",
+        "an exact version wins"
+    );
+    assert_eq!(pick("wick@1.18.0-wick").unwrap(), "1.18.0-wick.10");
+    assert_eq!(pick("wick@1.18.0-wick.2").unwrap(), "1.18.0-wick.2");
+    assert_eq!(pick("wick@1").unwrap(), "1.19.0");
+    assert!(
+        pick("wick@1.17")
+            .unwrap_err()
+            .contains("not in any repository")
+    );
+}
+
+#[test]
 fn schema_2_versions_are_checked() {
     let with = |f: &dyn Fn(&mut serde_json::Value)| {
         let mut v = sample_v2();

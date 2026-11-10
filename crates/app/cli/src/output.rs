@@ -452,6 +452,9 @@ pub struct AvailableExecutor {
     pub name: String,
     /// Version.
     pub version: String,
+    /// Main version: `version` up to its first `-` (`1.18.0` for `1.18.0-wick.2`). Without `--all`, only the newest
+    /// patch of each main version is listed.
+    pub line: String,
     /// Executor protocol version it speaks. Null for a VMM package (see `adapter`).
     pub protocol: Option<u32>,
     /// For a VMM package: the adapter that runs it. Null for a self-contained executor.

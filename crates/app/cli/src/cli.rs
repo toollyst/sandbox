@@ -261,13 +261,17 @@ pub enum ExecutorCommand {
         /// With --from: install it as a VMM package run by this installed adapter (it has no sbx-executor).
         #[arg(long, requires = "from")]
         adapter: Option<String>,
-        /// `NAME[@VERSION]` (`@latest` is the highest version).
+        /// `NAME[@VERSION]`. A main version (`wick@1.18.0`) installs its newest patch (`1.18.0-wick.2`);
+        /// no version or `@latest` installs the highest version.
         #[arg(value_name = "EXECUTOR")]
         spec: String,
     },
-    /// List executors in the repositories that can be installed on this host.
+    /// List executors in the repositories that can be installed on this host: the newest patch of each main version.
     #[command(visible_alias = "ls-remote")]
     Search {
+        /// Every patch, not just the newest of each main version.
+        #[arg(short, long)]
+        all: bool,
         /// Only this name.
         #[arg(value_name = "NAME")]
         name: Option<String>,
@@ -331,9 +335,12 @@ pub enum AdapterCommand {
         #[arg(value_name = "ADAPTER")]
         spec: String,
     },
-    /// List adapters in the repositories that can be installed on this host.
+    /// List adapters in the repositories that can be installed on this host: the newest patch of each main version.
     #[command(visible_alias = "ls-remote")]
     Search {
+        /// Every patch, not just the newest of each main version.
+        #[arg(short, long)]
+        all: bool,
         /// Only this name.
         #[arg(value_name = "NAME")]
         name: Option<String>,

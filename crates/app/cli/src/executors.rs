@@ -103,7 +103,9 @@ pub async fn run(cx: &Ctx<'_>, c: &ExecutorCommand) -> Result<u8> {
             install_remote(cx, &ex, &ad, &spec.parse()?).await?;
             Ok(0)
         }
-        ExecutorCommand::Search { name } => search(cx, name.as_deref(), Kind::Executor).await,
+        ExecutorCommand::Search { name, all } => {
+            search(cx, name.as_deref(), *all, Kind::Executor).await
+        }
         ExecutorCommand::Use { spec } => {
             print_ref(cx, &ex.set_default(&spec.parse()?)?)?;
             Ok(0)
@@ -371,6 +373,12 @@ async fn install_remote(cx: &Ctx<'_>, ex: &Executors, ad: &Executors, spec: &Spe
             fetch_and_install(cx, &fetcher, ad, &ac, adapter_check).await?;
         }
     }
+    if let Some(want) = spec.version.as_deref().filter(|w| *w != c.version) {
+        eprintln!(
+            "{}@{want}: the newest patch is {}@{}",
+            c.name, c.name, c.version
+        );
+    }
     let i = fetch_and_install(cx, &fetcher, ex, &c, |i| verify_installed(ad, i)).await?;
     print_ref(cx, &i)
 }
@@ -452,19 +460,37 @@ enum Kind {
     Adapter,
 }
 
-async fn search(cx: &Ctx<'_>, name: Option<&str>, kind: Kind) -> Result<u8> {
+/// 주 버전마다 가장 새 패치만 남긴다. `list`는 이름 순, 같은 이름은 높은 버전부터다.
+fn newest_patches(list: Vec<Candidate>) -> Vec<Candidate> {
+    let mut out: Vec<Candidate> = Vec::new();
+    for c in list {
+        let line = sbx_executor_install::version_line(&c.version);
+        if !out
+            .iter()
+            .any(|o| o.name == c.name && sbx_executor_install::version_line(&o.version) == line)
+        {
+            out.push(c);
+        }
+    }
+    out
+}
+
+async fn search(cx: &Ctx<'_>, name: Option<&str>, all: bool, kind: Kind) -> Result<u8> {
     let (_, idx) = indexes(cx).await?;
     let (p, v) = (Platform::host(), sbx_executor_proto::VERSION);
-    let list = match kind {
+    let every = match kind {
         Kind::Executor => index::available(&idx, name, &p, v),
         Kind::Adapter => index::available_adapters(&idx, name, &p, v),
     };
+    let total = every.len();
+    let list = if all { every } else { newest_patches(every) };
     if cx.json {
         let v: Vec<_> = list
             .iter()
             .map(|c| output::AvailableExecutor {
                 name: c.name.clone(),
                 version: c.version.clone(),
+                line: sbx_executor_install::version_line(&c.version).to_owned(),
                 protocol: c.protocol,
                 adapter: c.adapter.clone(),
                 repository: c.repository.clone(),
@@ -494,6 +520,13 @@ async fn search(cx: &Ctx<'_>, name: Option<&str>, kind: Kind) -> Result<u8> {
             } else {
                 " (sbx cannot run sandboxes on this OS yet)"
             }
+        );
+    }
+    if list.len() < total {
+        eprintln!(
+            "sbx: showing the newest patch of each main version; {} older patch{} with --all",
+            total - list.len(),
+            if total - list.len() == 1 { "" } else { "es" }
         );
     }
     if kind == Kind::Executor {
@@ -597,7 +630,9 @@ async fn adapter(cx: &Ctx<'_>, ex: &Executors, ad: &Executors, c: &AdapterComman
             print_ref(cx, &i)?;
             Ok(0)
         }
-        AdapterCommand::Search { name } => search(cx, name.as_deref(), Kind::Adapter).await,
+        AdapterCommand::Search { name, all } => {
+            search(cx, name.as_deref(), *all, Kind::Adapter).await
+        }
         AdapterCommand::Rm { force, spec } => {
             let spec: Spec = spec.parse()?;
             if !force && let Some(found) = ad.find(&spec)?.filter(|_| spec.version.is_some()) {
@@ -733,6 +768,28 @@ mod tests {
         let repo = sbx_executor_repo::location::repository("https://example.com/").unwrap();
         let url = sbx_executor_repo::location::index_v2(&repo);
         index::Index::parse(v.to_string().as_bytes(), &url).unwrap()
+    }
+
+    #[test]
+    fn search_shows_the_newest_patch_of_each_main_version() {
+        let mut idx = index(None, true);
+        let w = idx.executors[0].versions[0].clone();
+        idx.executors[0].versions = [
+            "1.18.0-wick.1",
+            "1.18.0-wick.10",
+            "1.19.0-wick.1",
+            "1.18.0-wick.2",
+        ]
+        .iter()
+        .map(|v| index::Version {
+            version: (*v).to_owned(),
+            ..w.clone()
+        })
+        .collect();
+        let idx = vec![("r".to_owned(), idx)];
+        let all = index::available(&idx, None, &Platform::host(), sbx_executor_proto::VERSION);
+        let got: Vec<String> = newest_patches(all).into_iter().map(|c| c.version).collect();
+        assert_eq!(got, ["1.19.0-wick.1", "1.18.0-wick.10"]);
     }
 
     #[test]

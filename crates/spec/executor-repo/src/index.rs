@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use sbx_executor_install::{Spec, version_cmp};
+use sbx_executor_install::{Spec, version_cmp, version_matches};
 use serde::Deserialize;
 use url::Url;
 
@@ -390,9 +390,15 @@ fn pick_from(
     } else {
         available
     };
-    let found = list(indexes, Some(&spec.name), platform, protocol)
-        .into_iter()
-        .find(|c| spec.version.as_deref().is_none_or(|v| v == c.version));
+    // 정확히 그 버전이 먼저, 없으면 그 주 버전(이나 접두사)의 가장 높은 것([`version_matches`]).
+    let all = list(indexes, Some(&spec.name), platform, protocol);
+    let found = match spec.version.as_deref() {
+        None => all.into_iter().next(),
+        Some(v) => match all.iter().position(|c| c.version == v) {
+            Some(n) => all.into_iter().nth(n),
+            None => all.into_iter().find(|c| version_matches(v, &c.version)),
+        },
+    };
     if let Some(c) = found {
         return Ok(c);
     }
@@ -401,7 +407,11 @@ fn pick_from(
         .iter()
         .filter_map(|(_, i)| entry(i, &spec.name))
         .flat_map(|e| &e.versions)
-        .filter(|v| spec.version.as_deref().is_none_or(|x| x == v.version))
+        .filter(|v| {
+            spec.version
+                .as_deref()
+                .is_none_or(|x| version_matches(x, &v.version))
+        })
         .collect();
     let what = match &spec.version {
         Some(v) => format!("{}@{v}", spec.name),
