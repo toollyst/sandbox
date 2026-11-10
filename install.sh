@@ -7,8 +7,11 @@
 #   SBX_VERSION       release tag to install (default: the latest release), e.g. v0.1.0
 #   SBX_INSTALL_DIR   where sbx and sbx-shim go (default: ~/.local/bin)
 #   SBX_DOWNLOAD_URL  where the release files are (default: GitHub Releases of toollyst/sandbox)
+#   SBX_VERIFY        auto (default), require or off: check the release's Sigstore signature with cosign.
+#                     auto checks it when cosign is on PATH, require fails without cosign or a signature.
 #
-# What it does: downloads sbx-<os>-<arch>.tar.gz and its .sha256, checks the checksum, and copies sbx and sbx-shim into
+# What it does: downloads sbx-<os>-<arch>.tar.gz and its .sha256, checks the checksum and (see SBX_VERIFY) the
+# Sigstore signature that release.yml made for it, and copies sbx and sbx-shim into
 # SBX_INSTALL_DIR. It does not install an executor (the VMM that runs sandboxes); choosing one is the next step it
 # prints. Nothing is written outside SBX_INSTALL_DIR, and nothing runs as root.
 
@@ -68,6 +71,27 @@ curl -fsSL --retry 3 -o "$tmp/$asset.sha256" "$base/$asset.sha256" || die "downl
 want=$(cut -d' ' -f1 <"$tmp/$asset.sha256")
 got=$(sha256 "$tmp/$asset")
 [ "$want" = "$got" ] || die "checksum mismatch for $asset (expected $want, got $got)"
+
+# The signature says the archive was built by this repository's release workflow from a v* tag. The checksum above
+# only says the download is complete; whoever controls the download URL controls both files.
+verify=${SBX_VERIFY:-auto}
+case "$verify" in auto | require | off) ;; *) die "SBX_VERIFY must be auto, require or off (got $verify)" ;; esac
+if [ "$verify" != off ]; then
+    if ! command -v cosign >/dev/null 2>&1; then
+        [ "$verify" = auto ] || die "SBX_VERIFY=require needs cosign (https://docs.sigstore.dev/cosign/system_config/installation/)"
+        say "note: cosign is not on PATH, so only the SHA-256 was checked. To check the signature too, install cosign, or"
+        say "      run: gh attestation verify $asset -R $REPO"
+    elif ! curl -fsSL --retry 3 -o "$tmp/$asset.sigstore.json" "$base/$asset.sigstore.json"; then
+        [ "$verify" = auto ] || die "no signature for $asset at $base (releases before v0.2.0 are unsigned)"
+        say "note: this release has no signature ($asset.sigstore.json); only the SHA-256 was checked"
+    else
+        cosign verify-blob --bundle "$tmp/$asset.sigstore.json" \
+            --certificate-identity-regexp "^https://github[.]com/$REPO/[.]github/workflows/release[.]yml@refs/tags/v" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$tmp/$asset" >/dev/null 2>&1 || die "the Sigstore signature of $asset does not verify"
+        say "verified the Sigstore signature (built by $REPO release.yml from a v* tag)"
+    fi
+fi
 
 mkdir -p "$tmp/x"
 tar -xzf "$tmp/$asset" -C "$tmp/x"
