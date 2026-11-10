@@ -6,7 +6,7 @@
 //! |---|---|
 //! | 이미지 소스 | `sbx-oci` (OCI 레지스트리) |
 //! | rootfs writer | `sbx-rootfs`의 erofs |
-//! | 실행기 | `--executor <실행 파일>`(`SBX_EXECUTOR`) > 설치한 기본 실행기(`sbx executor use`, `<data_dir>/executors`) > PATH의 `sbx-executor`: `sbx-executor-proto` 규약을 말하는 외부 실행기 |
+//! | 실행기 | [`crate::choose`]의 순서(`--executor`, 샌드박스 고정, `.sbx-executor`, 기본, PATH)로 고른 외부 실행기: `sbx-executor-proto` 규약을 말한다 |
 //!
 //! | detached 소유 | `--shim <실행 파일>`(`SBX_SHIM`, 기본 sbx 옆의 `sbx-shim`, 없으면 PATH): `sbx-shim` |
 //!
@@ -44,7 +44,7 @@ use crate::filter::{self, Filters};
 use crate::output;
 use crate::parse::{self, CpEndpoint};
 use crate::progress::Status;
-use crate::{dirs, executors, guest, host};
+use crate::{choose, dirs, executors, guest, host};
 
 /// `logs -f`, `events`가 새 기록을 보러 가는 간격.
 const FOLLOW_POLL: Duration = Duration::from_millis(100);
@@ -271,17 +271,6 @@ impl LogSink {
     }
 }
 
-/// `program`(경로 구분자 없는 이름)이 PATH에 있는지. Windows에서는 `.exe`도 본다.
-fn on_path(program: &std::path::Path) -> bool {
-    let Some(paths) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&paths).any(|dir| {
-        let p = dir.join(program);
-        p.is_file() || (cfg!(windows) && p.with_extension("exe").is_file())
-    })
-}
-
 /// 명령들이 함께 쓰는 설정과 코어. `mcp`도 이것으로 코어를 부른다.
 pub(crate) struct Ctx {
     data_dir: PathBuf,
@@ -292,8 +281,8 @@ pub(crate) struct Ctx {
     executor: Option<PathBuf>,
     shim: Option<PathBuf>,
     format: Format,
-    /// [`Ctx::launcher`]를 한 번만 만든다(실행기 `capabilities`와 게스트 init 확인을 되풀이하지 않는다).
-    launcher: std::sync::OnceLock<Runtime>,
+    /// 고른 실행기마다 실행 코어를 한 번만 만든다(실행기 `capabilities`와 게스트 init 확인을 되풀이하지 않는다).
+    launchers: std::sync::Mutex<Vec<(choose::Chosen, Runtime)>>,
 }
 
 impl Ctx {
@@ -319,7 +308,7 @@ impl Ctx {
             executor: cli.executor.clone(),
             shim: cli.shim.clone(),
             format: cli.format,
-            launcher: std::sync::OnceLock::new(),
+            launchers: std::sync::Mutex::new(Vec::new()),
         })
     }
 
@@ -396,11 +385,12 @@ impl Ctx {
         remove_on_exit: bool,
     ) -> AppResult<()> {
         // 실행기와 이미지를 먼저 확인한다(shim 안에서 실패하면 이유가 덜 분명하다).
-        let sandbox = self.launcher()?.get(id).await?;
+        let chosen = self.choose_for(id).await?;
+        let sandbox = self.launcher_with(&chosen)?.get(id).await?;
         let config = ShimConfig {
             runtime: self.runtime_config(true)?,
-            executor: self.executor()?,
-            vmm_dir: None,
+            executor: chosen.program.clone(),
+            vmm_dir: chosen.vmm_dir().map(ToOwned::to_owned),
             remove_on_exit,
         };
         if !config.runtime.guest_init.is_file() {
@@ -486,47 +476,90 @@ impl Ctx {
         self.runtime_with(Arc::new(ConnectOnly), false)
     }
 
-    /// VM을 띄우는 일(`create`의 기능 확인, `start`)에 쓰는 실행 코어. 실행기의 capability를 받아 둔다.
-    pub(crate) fn launcher(&self) -> AppResult<Runtime> {
-        if let Some(rt) = self.launcher.get() {
-            return Ok(rt.clone());
-        }
-        let rt = self.runtime_with(Arc::new(ProcessExecutor::new(self.executor()?)?), true)?;
-        Ok(self.launcher.get_or_init(|| rt).clone())
+    /// 있는 샌드박스를 띄우는 일(`start`)에 쓰는 실행 코어. 그 샌드박스에 고정된 실행기를 따른다.
+    pub(crate) async fn launcher_for(&self, id: &SandboxId) -> AppResult<Runtime> {
+        let chosen = self.choose_for(id).await?;
+        self.launcher_with(&chosen)
     }
 
-    /// 쓸 실행기: `--executor` > 설치한 기본 실행기 > PATH의 `sbx-executor`.
-    fn executor(&self) -> AppResult<PathBuf> {
-        if let Some(p) = &self.executor {
-            return Ok(p.clone());
+    fn launcher_with(&self, chosen: &choose::Chosen) -> AppResult<Runtime> {
+        let mut cache = self.launchers.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, rt)) = cache.iter().find(|(c, _)| c == chosen) {
+            return Ok(rt.clone());
         }
-        if let Some(i) = executors::installed(&self.data_dir).default()? {
-            return Ok(i.executable);
-        }
-        let fallback = PathBuf::from("sbx-executor");
-        if on_path(&fallback) {
-            return Ok(fallback);
-        }
-        // 무엇을 하면 되는지 알린다. 실행기가 없는 OS(지금은 Windows)에서는 설치할 것도 없다.
-        Err(msg(match std::env::consts::OS {
-            "linux" | "macos" => {
-                "no executor is installed; install one with: sbx executor install firecracker"
-                    .to_owned()
-            }
-            os => format!(
-                "sandboxes cannot run on {os} yet: there is no executor for this platform \
-                 (pull, prepare and images work)"
-            ),
-        }))
+        let executor = ProcessExecutor::with_env(&chosen.program, chosen.env())?;
+        let rt = self.runtime_with(Arc::new(executor), true)?;
+        cache.push((chosen.clone(), rt.clone()));
+        Ok(rt)
+    }
+
+    /// 있는 샌드박스에 쓸 실행기.
+    async fn choose_for(&self, id: &SandboxId) -> AppResult<choose::Chosen> {
+        let pinned = self
+            .runtime()?
+            .get(id)
+            .await?
+            .info()
+            .spec
+            .labels
+            .get(choose::PIN_LABEL)
+            .cloned();
+        self.choose(pinned.as_deref())
+    }
+
+    /// 쓸 실행기. 순서는 [`crate::choose`]에 있다. `pinned`는 샌드박스에 고정된 것.
+    pub(crate) fn choose(&self, pinned: Option<&str>) -> AppResult<choose::Chosen> {
+        self.try_choose(pinned)?.ok_or_else(|| {
+            // 무엇을 하면 되는지 알린다. 실행기가 없는 OS(지금은 Windows)에서는 설치할 것도 없다.
+            msg(match std::env::consts::OS {
+                "linux" | "macos" => {
+                    "no executor is installed; install one with: sbx executor install wick"
+                        .to_owned()
+                }
+                os => format!(
+                    "sandboxes cannot run on {os} yet: there is no executor for this platform \
+                     (pull, prepare and images work)"
+                ),
+            })
+        })
+    }
+
+    /// [`Ctx::choose`]와 같고, 아무것도 없으면 `None`.
+    pub(crate) fn try_choose(&self, pinned: Option<&str>) -> AppResult<Option<choose::Chosen>> {
+        let cwd = std::env::current_dir().ok();
+        choose::choose(&choose::Inputs {
+            executors: &executors::installed(&self.data_dir),
+            adapters: &executors::adapters(&self.data_dir),
+            flag: self.executor.as_deref(),
+            pinned,
+            cwd: cwd.as_deref(),
+            on_path: &choose::on_path,
+        })
+        .map_err(msg)
     }
 
     /// `executor ...`.
     async fn executor_cmd(&self, c: &ExecutorCommand) -> AppResult<u8> {
+        let pins: Vec<(String, String)> = if executors::needs_pins(c) {
+            self.runtime()?
+                .list()
+                .await?
+                .into_iter()
+                .filter_map(|i| {
+                    let pin = i.spec.labels.get(choose::PIN_LABEL)?.clone();
+                    Some((i.spec.name.clone().unwrap_or_else(|| i.id.to_string()), pin))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         executors::run(
             &executors::Ctx {
                 data_dir: &self.data_dir,
                 cache_dir: &self.cache_dir,
                 json: self.json(),
+                flag: self.executor.as_deref(),
+                pins: &pins,
             },
             c,
         )
@@ -597,17 +630,18 @@ impl Ctx {
     async fn info(&self) -> AppResult<u8> {
         let arch = host_arch()?;
         let (vm_ok, hypervisor) = host::hypervisor();
-        let installed = executors::installed(&self.data_dir)
-            .default()
-            .ok()
-            .flatten();
-        let program = self.executor()?;
-        let caps = ProcessExecutor::new(&program)
-            .map(|e| e.capabilities())
-            .map_err(|e| match e {
-                sbx_executor::ExecutorError::Launch(m) => m,
-                e => e.to_string(),
-            });
+        let chosen = self.try_choose(None).map_err(|e| e.to_string());
+        let caps = match &chosen {
+            Ok(Some(c)) => ProcessExecutor::with_env(&c.program, c.env())
+                .map(|e| e.capabilities())
+                .map_err(|e| match e {
+                    sbx_executor::ExecutorError::Launch(m) => m,
+                    e => e.to_string(),
+                }),
+            Ok(None) => Err("no executor is installed (sbx executor install wick)".to_owned()),
+            Err(e) => Err(e.clone()),
+        };
+        let chosen = chosen.ok().flatten();
         let guest = match &self.guest_init {
             Some(p) => p.display().to_string(),
             None if guest::embedded(arch).is_some() => "embedded in sbx".into(),
@@ -619,11 +653,15 @@ impl Ctx {
             .filter(|s| s.state == State::Running)
             .count();
         let images = self.manager()?.images()?.len();
-        let executor_name = match (&self.executor, &installed) {
-            (Some(p), _) => p.display().to_string(),
-            (None, Some(i)) => i.to_string(),
-            (None, None) => "none installed (sbx executor install firecracker)".into(),
-        };
+        let executor_name = chosen
+            .as_ref()
+            .map_or_else(|| "none".to_owned(), choose::Chosen::label);
+        let program = chosen.as_ref().map(|c| c.program.display().to_string());
+        let source = chosen.as_ref().map(|c| c.source.to_string());
+        let adapter = chosen
+            .as_ref()
+            .and_then(|c| c.adapter.as_ref())
+            .map(ToString::to_string);
         if self.json() {
             let (capabilities, error) = match &caps {
                 Ok(c) => (
@@ -648,7 +686,9 @@ impl Ctx {
                 },
                 executor: output::ExecutorInfo {
                     name: executor_name,
-                    program: program.display().to_string(),
+                    source,
+                    program,
+                    adapter,
                     capabilities,
                     error,
                 },
@@ -669,8 +709,16 @@ impl Ctx {
             arch.oci_name()
         );
         println!(" Hypervisor:  {hypervisor}");
-        println!(" Executor:    {executor_name}");
-        println!(" Program:     {}", program.display());
+        match &source {
+            Some(s) => println!(" Executor:    {executor_name} ({s})"),
+            None => println!(" Executor:    {executor_name}"),
+        }
+        if let Some(a) = &adapter {
+            println!(" Adapter:     {a}");
+        }
+        if let Some(p) = &program {
+            println!(" Program:     {p}");
+        }
         match &caps {
             Ok(c) => {
                 let formats: Vec<&str> = c.rootfs_formats.iter().map(|f| f.as_str()).collect();
@@ -950,6 +998,11 @@ impl Ctx {
                         signal: sbx_runtime::process::stop_signal(&record.config, stop_signal)?,
                         timeout_secs: a.stop_timeout,
                     };
+                    let chosen = self.choose(None)?;
+                    let mut labels = sbx_runtime::process::labels(&record.config, &labels);
+                    if let Some(pin) = chosen.pin() {
+                        labels.insert(choose::PIN_LABEL.to_owned(), pin);
+                    }
                     let spec = SandboxSpec {
                         image: id,
                         rootfs_format: format,
@@ -958,13 +1011,13 @@ impl Ctx {
                         mounts: mounts.clone(),
                         network: network.clone(),
                         hostname: a.hostname.clone(),
-                        labels: sbx_runtime::process::labels(&record.config, &labels),
+                        labels,
                         stop,
                         open_stdin: a.interactive,
                         tty: a.tty,
                         name: a.name.clone(),
                     };
-                    let sandbox = self.launcher()?.create(spec).await?;
+                    let sandbox = self.launcher_with(&chosen)?.create(spec).await?;
                     return Ok(sandbox.id().clone());
                 }
             }
@@ -991,7 +1044,7 @@ impl Ctx {
         }
         let io = attach::io_mode(a.interactive, a.tty).map_err(|e| fail(msg(e)))?;
         let id = self.create(a).await.map_err(fail)?;
-        let rt = self.launcher().map_err(fail)?;
+        let rt = self.launcher_for(&id).await.map_err(fail)?;
         let sandbox = rt.get(&id).await.map_err(|e| fail(e.into()))?;
         let started = sandbox.start(io).await;
         let result = match started {
@@ -1016,8 +1069,9 @@ impl Ctx {
     /// `start -a`: 시작하고 붙어서 기본 프로세스가 끝날 때까지 기다린다. 표준 입력은 샌드박스가 `-i`이거나
     /// `start -i`이면 열고, `start -i`일 때만 sbx의 입력을 보낸다. 터미널은 샌드박스 설정대로다(Docker와 같다).
     async fn start(&self, interactive: bool, id: &str) -> AppResult<u8> {
-        let rt = self.launcher()?;
-        let sandbox = rt.find(id).await?;
+        let id = self.runtime()?.resolve(id).await?;
+        let rt = self.launcher_for(&id).await?;
+        let sandbox = rt.get(&id).await?;
         let spec = &sandbox.info().spec;
         let mut io = attach::io_mode(interactive, spec.tty)?;
         io.stdin |= spec.open_stdin;

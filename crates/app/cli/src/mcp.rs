@@ -714,7 +714,7 @@ async fn run(ctx: &Server, a: &Args<'_>, progress: &Progress, cancel: &Cancel) -
         id = ctx.create_with(&spec, &report) => id?,
         () = cancel.cancelled() => return Err("cancelled".into()),
     };
-    let rt = ctx.launcher()?;
+    let rt = ctx.launcher_for(&id).await?;
     let r: AppResult<Value> = async {
         // `?`가 만드는 값(Send가 아닌 오류를 담는다)이 다음 await까지 남지 않게 문장을 나눈다.
         let sandbox = rt.get(&id).await?;

@@ -153,26 +153,26 @@ fn schema_2_has_adapters_and_vmm_packages() {
     assert_eq!(index::available(&idx, Some("wick"), &mac(), 9).len(), 2);
     // 어댑터는 이 플랫폼과 규약에서 가장 높은 것.
     assert_eq!(
-        index::pick_adapter(&idx, "firecracker", &mac(), 2)
+        index::pick_adapter(&idx, &spec("firecracker"), &mac(), 2)
             .unwrap()
             .version,
         "0.1.0"
     );
     assert_eq!(
-        index::pick_adapter(&idx, "firecracker", &mac(), 3)
+        index::pick_adapter(&idx, &spec("firecracker"), &mac(), 3)
             .unwrap()
             .version,
         "0.2.0"
     );
     assert!(
-        index::pick_adapter(&idx, "firecracker", &mac(), 7)
+        index::pick_adapter(&idx, &spec("firecracker"), &mac(), 7)
             .unwrap_err()
-            .contains("protocol 7")
+            .contains("this sbx speaks 7")
     );
     assert!(
         index::pick_adapter(
             &idx,
-            "firecracker",
+            &spec("firecracker"),
             &Platform::from_rust("linux", "aarch64"),
             2
         )
@@ -180,7 +180,7 @@ fn schema_2_has_adapters_and_vmm_packages() {
         .contains("no build")
     );
     assert!(
-        index::pick_adapter(&idx, "nope", &mac(), 2)
+        index::pick_adapter(&idx, &spec("nope"), &mac(), 2)
             .unwrap_err()
             .contains("no adapter")
     );

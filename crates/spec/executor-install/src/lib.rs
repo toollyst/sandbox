@@ -20,6 +20,7 @@
 //!   통과한 뒤 rename한다. 그래서 반쯤 설치된 실행기는 없다. 같은 이름과 버전이 이미 있으면 거부한다.
 //!   기본 실행기가 없으면 설치한 것이 기본이 된다.
 //! - 버전을 빼고 이름만 주면 가장 높은 버전이다([`version_cmp`]: 숫자 조각은 숫자로 비교).
+//!   `<이름>@latest`도 같다([`LATEST`]). 그래서 `latest`라는 버전은 설치할 수 없다.
 //! - 지우면([`Executors::remove`]) 그것이 기본이었을 때 기본도 지운다(다른 것을 고르지 않는다).
 //! - 어댑터도 같은 배치로 다른 `<root>`에 둔다(보통 `<data_dir>/adapters`). 어댑터는 자체 완결 묶음이다.
 //!
@@ -32,6 +33,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+
+/// 버전 자리의 이 말은 "가장 높은 버전"이다(버전을 뺀 것과 같다).
+pub const LATEST: &str = "latest";
 
 /// 묶음 안의 실행 파일 이름.
 pub fn executable_name() -> String {
@@ -69,7 +73,7 @@ impl FromStr for Spec {
         }
         Ok(Self {
             name: name.to_owned(),
-            version: version.map(str::to_owned),
+            version: version.filter(|v| *v != LATEST).map(str::to_owned),
         })
     }
 }
@@ -96,6 +100,16 @@ pub struct Installed {
     pub executable: PathBuf,
     /// VMM 묶음이면 함께 쓸 어댑터 이름.
     pub adapter: Option<String>,
+}
+
+impl Installed {
+    /// `NAME@VERSION`.
+    pub fn spec(&self) -> Spec {
+        Spec {
+            name: self.name.clone(),
+            version: Some(self.version.clone()),
+        }
+    }
 }
 
 impl fmt::Display for Installed {

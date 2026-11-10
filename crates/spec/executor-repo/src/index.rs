@@ -349,35 +349,6 @@ fn candidates(
     out
 }
 
-/// 어댑터 `name`에서 이 플랫폼과 규약 버전에 맞는 가장 높은 버전을 고른다. 없으면 이유를 알린다.
-pub fn pick_adapter(
-    indexes: &[(String, Index)],
-    name: &str,
-    platform: &Platform,
-    protocol: u32,
-) -> Result<Candidate, String> {
-    if let Some(c) = available_adapters(indexes, Some(name), platform, protocol)
-        .into_iter()
-        .next()
-    {
-        return Ok(c);
-    }
-    let versions: Vec<&Version> = indexes
-        .iter()
-        .filter_map(|(_, i)| i.adapter(name))
-        .flat_map(|e| &e.versions)
-        .collect();
-    if versions.is_empty() {
-        return Err(format!("no adapter named {name:?} in any repository"));
-    }
-    if !versions.iter().any(|v| v.artifact(platform).is_some()) {
-        return Err(format!("adapter {name} has no build for {platform}"));
-    }
-    Err(format!(
-        "no build of adapter {name} speaks executor protocol {protocol} (this sbx); a different sbx version is needed"
-    ))
-}
-
 /// 하나를 고른다. 버전을 주면 그 버전, 아니면 가장 높은 버전. 같은 버전이 여러 저장소에 있으면 앞 저장소.
 /// 없으면 왜 없는지(이름이 없다, 버전이 없다, 이 플랫폼 빌드가 없다, 규약 버전이 다르다) 알려 준다.
 pub fn pick(
@@ -386,7 +357,40 @@ pub fn pick(
     platform: &Platform,
     protocol: u32,
 ) -> Result<Candidate, String> {
-    let found = available(indexes, Some(&spec.name), platform, protocol)
+    pick_from(
+        indexes,
+        Index::executor,
+        "executor",
+        spec,
+        platform,
+        protocol,
+    )
+}
+
+/// [`pick`]과 같고 어댑터를 고른다. VMM 묶음이 이름으로 가리킨 어댑터를 이렇게 고른다(버전 없이: 가장 높은 것).
+pub fn pick_adapter(
+    indexes: &[(String, Index)],
+    spec: &Spec,
+    platform: &Platform,
+    protocol: u32,
+) -> Result<Candidate, String> {
+    pick_from(indexes, Index::adapter, "adapter", spec, platform, protocol)
+}
+
+fn pick_from(
+    indexes: &[(String, Index)],
+    entry: for<'a> fn(&'a Index, &str) -> Option<&'a Executor>,
+    kind: &str,
+    spec: &Spec,
+    platform: &Platform,
+    protocol: u32,
+) -> Result<Candidate, String> {
+    let list = if kind == "adapter" {
+        available_adapters
+    } else {
+        available
+    };
+    let found = list(indexes, Some(&spec.name), platform, protocol)
         .into_iter()
         .find(|c| spec.version.as_deref().is_none_or(|v| v == c.version));
     if let Some(c) = found {
@@ -395,7 +399,7 @@ pub fn pick(
     // 이유를 찾는다.
     let versions: Vec<&Version> = indexes
         .iter()
-        .filter_map(|(_, i)| i.executor(&spec.name))
+        .filter_map(|(_, i)| entry(i, &spec.name))
         .flat_map(|e| &e.versions)
         .filter(|v| spec.version.as_deref().is_none_or(|x| x == v.version))
         .collect();
@@ -405,13 +409,10 @@ pub fn pick(
     };
     if versions.is_empty() {
         return Err(
-            if indexes
-                .iter()
-                .any(|(_, i)| i.executor(&spec.name).is_some())
-            {
+            if indexes.iter().any(|(_, i)| entry(i, &spec.name).is_some()) {
                 format!("{what} is not in any repository")
             } else {
-                format!("no executor named {:?} in any repository", spec.name)
+                format!("no {kind} named {:?} in any repository", spec.name)
             },
         );
     }

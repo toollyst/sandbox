@@ -2,8 +2,15 @@
   "$defs": {
     "AvailableExecutor": {
       "additionalProperties": false,
-      "description": "An executor available from a repository for this host (`executor search`).",
+      "description": "An executor or adapter available from a repository for this host (`executor search`, `adapter search`).",
       "properties": {
+        "adapter": {
+          "description": "For a VMM package: the adapter that runs it. Null for a self-contained executor.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "architecture": {
           "description": "Architecture of the bundle (OCI terms).",
           "type": "string"
@@ -17,10 +24,13 @@
           "type": "string"
         },
         "protocol": {
-          "description": "Executor protocol version it speaks.",
+          "description": "Executor protocol version it speaks. Null for a VMM package (see `adapter`).",
           "format": "uint32",
           "minimum": 0,
-          "type": "integer"
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "repository": {
           "description": "Repository name.",
@@ -48,7 +58,6 @@
       "required": [
         "name",
         "version",
-        "protocol",
         "repository",
         "os",
         "architecture",
@@ -92,6 +101,53 @@
         "rootfs_formats",
         "live_share",
         "custom_kernel"
+      ],
+      "type": "object"
+    },
+    "ChosenExecutor": {
+      "additionalProperties": false,
+      "description": "The executor sbx would use (`executor current`, `which`).",
+      "properties": {
+        "adapter": {
+          "description": "For a VMM package: the adapter (`name@version`) that runs it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Name of the installed executor. Null for a path given with `--executor` or found on PATH.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "program": {
+          "description": "Executable that runs (for a VMM package, its adapter).",
+          "type": "string"
+        },
+        "source": {
+          "description": "Where it was chosen from: `--executor`, a `.sbx-executor` file path, the default, or PATH.",
+          "type": "string"
+        },
+        "version": {
+          "description": "Version of the installed executor. Null when `name` is null.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "vmm_dir": {
+          "description": "For a VMM package: its directory, passed to the adapter as `SBX_EXECUTOR_VMM_DIR`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "source",
+        "program"
       ],
       "type": "object"
     },
@@ -200,6 +256,13 @@
       "additionalProperties": false,
       "description": "The executor sbx would use.",
       "properties": {
+        "adapter": {
+          "description": "For a VMM package: the adapter (`name@version`) that runs it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "capabilities": {
           "anyOf": [
             {
@@ -219,23 +282,32 @@
           ]
         },
         "name": {
-          "description": "`name@version` of the installed default, or the `--executor` path.",
+          "description": "`name@version` of the installed executor that a new sandbox would use, its `--executor` path, or `none`.",
           "type": "string"
         },
         "program": {
-          "description": "Executable that would run.",
-          "type": "string"
+          "description": "Executable that would run (for a VMM package, its adapter). Null if none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "Where it was chosen from: `--executor`, a `.sbx-executor` file path, the default, or PATH. Null if none.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
-        "name",
-        "program"
+        "name"
       ],
       "type": "object"
     },
     "ExecutorRef": {
       "additionalProperties": false,
-      "description": "An executor by name and version (`executor install`, `use`, `rm`).",
+      "description": "An executor or adapter by name and version (`executor install`, `use`, `rm`, `adapter install`, `adapter rm`).",
       "properties": {
         "name": {
           "description": "Name.",
@@ -416,10 +488,49 @@
       ],
       "type": "object"
     },
+    "InstalledAdapter": {
+      "additionalProperties": false,
+      "description": "An installed adapter (`executor adapter ls`).",
+      "properties": {
+        "name": {
+          "description": "Name.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Path of its executable.",
+          "type": "string"
+        },
+        "used_by": {
+          "description": "Installed VMM packages (`name@version`) that use an adapter of this name.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "version": {
+          "description": "Version.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "path",
+        "used_by"
+      ],
+      "type": "object"
+    },
     "InstalledExecutor": {
       "additionalProperties": false,
       "description": "An installed executor (`executor ls`).",
       "properties": {
+        "adapter": {
+          "description": "For a VMM package: the adapter that runs it. Null for a self-contained executor.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "default": {
           "description": "Whether it is the default (`executor use`).",
           "type": "boolean"
@@ -429,7 +540,7 @@
           "type": "string"
         },
         "path": {
-          "description": "Path of its executable.",
+          "description": "Path of its executable; for a VMM package, its directory.",
           "type": "string"
         },
         "version": {
@@ -613,6 +724,35 @@
         "env",
         "cwd",
         "user"
+      ],
+      "type": "object"
+    },
+    "Pruned": {
+      "additionalProperties": false,
+      "description": "An executor or adapter version that `executor prune` removed, or would remove with `--dry-run`.",
+      "properties": {
+        "kind": {
+          "description": "`executor` or `adapter`.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Name.",
+          "type": "string"
+        },
+        "removed": {
+          "description": "Whether it was removed (false with `--dry-run`).",
+          "type": "boolean"
+        },
+        "version": {
+          "description": "Version.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "version",
+        "removed"
       ],
       "type": "object"
     },

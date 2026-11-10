@@ -15,6 +15,18 @@ fn main() -> ExitCode {
         args.get(1).map(String::as_str),
         Some("capabilities" | "run")
     ) {
+        // 설치한 어댑터로 불렸으면 VMM 묶음 디렉터리를 받아야 한다(테스트의 묶음에는 `vmm` 파일이 있다).
+        let as_adapter = std::env::current_exe()
+            .is_ok_and(|p| p.components().any(|c| c.as_os_str() == "adapters"));
+        let dir = std::env::var_os(sbx_executor_proto::VMM_DIR_ENV);
+        let has_vmm = dir
+            .as_ref()
+            .is_some_and(|d| std::path::Path::new(d).join("vmm").is_file());
+        if (as_adapter || dir.is_some()) && !has_vmm {
+            // 실제 어댑터(firecracker)처럼 VMM 없이는 capabilities에도 답하지 않는다.
+            eprintln!("fake adapter: no VMM package in {dir:?}");
+            return ExitCode::FAILURE;
+        }
         #[cfg(unix)]
         return sbx_executor_fake::process::main();
     }
@@ -108,6 +120,10 @@ mod unix {
         (
             "executor_is_installed_from_a_repository",
             executor_is_installed_from_a_repository,
+        ),
+        (
+            "vmm_packages_pins_and_version_files",
+            vmm_packages_pins_and_version_files,
         ),
         (
             "image_kernel_is_given_to_the_executor",
@@ -1751,6 +1767,190 @@ mod unix {
         );
         let o = without(&["run", "--rm", IMAGE, "true"]);
         assert_eq!(o.status.code(), Some(125));
+    }
+
+    /// VMM 묶음(어댑터가 돌린다), 샌드박스 고정, 폴더 파일, 지우기 보호, prune.
+    fn vmm_packages_pins_and_version_files() {
+        let e = Env::new();
+        let me = std::env::current_exe().unwrap();
+        let me = me.to_str().unwrap();
+        let in_dir = |dir: &Path, args: &[&str]| {
+            let mut c = e.cmd(args);
+            c.env_remove("SBX_EXECUTOR").current_dir(dir);
+            c.output().unwrap()
+        };
+        let plain = e.path("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        let without = |args: &[&str]| in_dir(&plain, args);
+        let ok = |o: &Output| assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        // sbx만 있으면 아무것도 설치돼 있지 않다.
+        let o = without(&["executor", "ls"]);
+        ok(&o);
+        assert_eq!(text(&o.stdout).lines().count(), 1, "{}", text(&o.stdout));
+        let o = without(&["executor", "current"]);
+        assert!(
+            text(&o.stderr).contains("sbx executor install wick"),
+            "{}",
+            text(&o.stderr)
+        );
+
+        // VMM 묶음은 어댑터가 있어야 설치된다.
+        let vmm = e.path("wick-src");
+        std::fs::create_dir_all(&vmm).unwrap();
+        std::fs::write(vmm.join("vmm"), "x").unwrap();
+        let vmm = vmm.to_str().unwrap();
+        let o = without(&[
+            "executor",
+            "install",
+            "--from",
+            vmm,
+            "--adapter",
+            "fakead",
+            "wick@1.0",
+        ]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("adapter install fakead"),
+            "{}",
+            text(&o.stderr)
+        );
+        ok(&without(&[
+            "executor",
+            "adapter",
+            "install",
+            "--from",
+            me,
+            "fakead@0.1",
+        ]));
+        let o = without(&[
+            "executor",
+            "install",
+            "--from",
+            vmm,
+            "--adapter",
+            "fakead",
+            "wick@1.0",
+        ]);
+        ok(&o);
+        let o = without(&["executor", "ls"]);
+        assert!(
+            text(&o.stdout).contains("* wick") && text(&o.stdout).contains("fakead"),
+            "{}",
+            text(&o.stdout)
+        );
+        let o = without(&["executor", "adapter", "ls", "--format", "json"]);
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(v[0]["used_by"], serde_json::json!(["wick@1.0"]), "{v}");
+        let o = without(&["executor", "current", "--format", "json"]);
+        ok(&o);
+        let v: sbx_cli::output::ChosenExecutor = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(
+            (v.name.as_deref(), v.adapter.as_deref()),
+            (Some("wick"), Some("fakead@0.1"))
+        );
+        assert!(v.vmm_dir.unwrap().ends_with("executors/wick/1.0"));
+        let o = without(&["executor", "which"]);
+        assert!(
+            text(&o.stdout)
+                .trim_end()
+                .ends_with("adapters/fakead/0.1/sbx-executor"),
+            "{}",
+            text(&o.stdout)
+        );
+        // 어댑터가 VMM 묶음 디렉터리를 받아 돌린다(붙어서, 그리고 shim으로).
+        let o = without(&["run", "--rm", IMAGE, "echo", "via", "wick"]);
+        ok(&o);
+        assert_eq!(text(&o.stdout), "via wick\n");
+
+        // 만든 샌드박스는 그 실행기에 고정된다. 기본을 바꿔도 그것으로 시작한다.
+        let o = without(&["create", "--name", "pinned", IMAGE, "echo", "pinned"]);
+        ok(&o);
+        let o = without(&["inspect", "pinned", "--format", "json"]);
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(
+            v["labels"]["io.github.toollyst.sandbox.executor"], "wick@1.0",
+            "{v}"
+        );
+        ok(&without(&["executor", "install", "--from", me, "fake@2.0"]));
+        ok(&without(&["executor", "use", "fake@2.0"]));
+        let o = without(&["start", "-a", "pinned"]);
+        ok(&o);
+        assert_eq!(text(&o.stdout), "pinned\n");
+        // shim으로(붙지 않고) 시작해도 같다.
+        ok(&without(&["start", "pinned"]));
+        let o = without(&["wait", "pinned"]);
+        ok(&o);
+        assert_eq!(text(&o.stdout), "0\n");
+        // 고정한 샌드박스가 있으면 지우지 않는다. 마지막 어댑터도.
+        let o = without(&["executor", "rm", "wick@1.0"]);
+        assert!(
+            text(&o.stderr).contains("pinned by sandbox pinned"),
+            "{}",
+            text(&o.stderr)
+        );
+        let o = without(&["executor", "adapter", "rm", "fakead@0.1"]);
+        assert!(
+            text(&o.stderr).contains("wick@1.0 needs it"),
+            "{}",
+            text(&o.stderr)
+        );
+        ok(&without(&["executor", "rm", "-f", "wick@1.0"]));
+        let o = without(&["start", "-a", "pinned"]);
+        assert!(
+            text(&o.stderr).contains("no longer installed"),
+            "{}",
+            text(&o.stderr)
+        );
+        // --executor로 다른 것을 고를 수 있다(명령마다).
+        let o = without(&["--executor", "fake@2.0", "start", "-a", "pinned"]);
+        ok(&o);
+
+        // 폴더 파일: 지금 폴더부터 위로.
+        let project = e.path("project/sub");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            e.path("project/.sbx-executor"),
+            "# this project\nfake@1.5\n",
+        )
+        .unwrap();
+        let o = in_dir(&project, &["run", "--rm", IMAGE, "true"]);
+        assert!(
+            text(&o.stderr).contains("sbx executor install fake@1.5"),
+            "{}",
+            text(&o.stderr)
+        );
+        ok(&without(&["executor", "install", "--from", me, "fake@1.5"]));
+        let o = in_dir(&project, &["executor", "current"]);
+        assert!(
+            text(&o.stdout).starts_with("fake@1.5 ("),
+            "{}",
+            text(&o.stdout)
+        );
+        assert!(
+            text(&o.stdout).contains(".sbx-executor"),
+            "{}",
+            text(&o.stdout)
+        );
+        let o = in_dir(&project, &["executor", "current", "--format", "json"]);
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(v["version"], "1.5", "{v}");
+
+        // prune: 기본(2.0)과 가장 높은 버전(2.0)은 남고 1.5는 지운다. 먼저 미리 보기.
+        ok(&without(&["executor", "install", "--from", me, "fake@1.0"]));
+        let o = without(&["executor", "prune", "-n"]);
+        ok(&o);
+        assert_eq!(
+            text(&o.stdout),
+            "would remove executor fake@1.0\nwould remove executor fake@1.5\n"
+        );
+        ok(&without(&["executor", "prune"]));
+        let o = without(&["executor", "ls"]);
+        let ls = text(&o.stdout);
+        assert!(
+            ls.contains("2.0") && !ls.contains("1.5") && !ls.contains("1.0"),
+            "{ls}"
+        );
+        ok(&without(&["rm", "pinned"]));
     }
 
     /// 이 실행 파일(가짜 실행기)을 `sbx-executor`로 담은 묶음 압축 파일. (내용, SHA-256)

@@ -249,17 +249,22 @@ pub enum ExecutorCommand {
     /// List installed executors (* marks the default).
     Ls,
     /// Install an executor. Without --from, download it from the executor repositories (latest version unless given).
-    /// The protocol version and architecture are checked before installing.
+    /// If it is a VMM package, the adapter it needs is installed first. The protocol version and architecture are
+    /// checked before installing.
     Install {
         /// Install this instead of downloading: a bundle directory (sbx-executor at the top), a .tar.gz bundle,
         /// or a single executable. Requires NAME@VERSION.
         #[arg(long)]
         from: Option<PathBuf>,
-        /// `NAME[@VERSION]`.
+        /// With --from: install it as a VMM package run by this installed adapter (it has no sbx-executor).
+        #[arg(long, requires = "from")]
+        adapter: Option<String>,
+        /// `NAME[@VERSION]` (`@latest` is the highest version).
         #[arg(value_name = "EXECUTOR")]
         spec: String,
     },
     /// List executors in the repositories that can be installed on this host.
+    #[command(visible_alias = "ls-remote")]
     Search {
         /// Only this name.
         #[arg(value_name = "NAME")]
@@ -271,17 +276,74 @@ pub enum ExecutorCommand {
         #[arg(value_name = "EXECUTOR", add = complete::executor())]
         spec: String,
     },
-    /// Remove an installed executor.
+    /// Show the executor a new sandbox would use here, and why (--executor, .sbx-executor, default, or PATH).
+    Current,
+    /// Print the program that runs an installed executor (for a VMM package, its adapter).
+    Which {
+        /// `NAME[@VERSION]`. Defaults to the current executor.
+        #[arg(value_name = "EXECUTOR")]
+        spec: Option<String>,
+    },
+    /// Remove an installed executor. Refused while a sandbox is pinned to it, unless --force.
     Rm {
+        /// Remove even if sandboxes are pinned to it (they will not start until it is installed again).
+        #[arg(short, long)]
+        force: bool,
         /// NAME@VERSION.
         #[arg(value_name = "EXECUTOR", add = complete::executor())]
         spec: String,
+    },
+    /// Remove executor and adapter versions nothing uses: not the default, not the highest version of their name,
+    /// not pinned by a sandbox, and (for adapters) not the highest version.
+    Prune {
+        /// Only print what would be removed.
+        #[arg(short = 'n', long)]
+        dry_run: bool,
+    },
+    /// Manage adapters: programs that speak the executor protocol and run a VMM package.
+    Adapter {
+        /// Subcommand.
+        #[command(subcommand)]
+        command: AdapterCommand,
     },
     /// Manage executor repositories (earlier ones take precedence). The list starts with `official`.
     Repo {
         /// Subcommand.
         #[command(subcommand)]
         command: RepoCommand,
+    },
+}
+
+/// `executor adapter` 아래 명령.
+#[derive(Debug, Subcommand)]
+pub enum AdapterCommand {
+    /// List installed adapters and the VMM packages that use them.
+    Ls,
+    /// Install an adapter (latest version unless given). Without --from, download it from the repositories.
+    Install {
+        /// Install this instead of downloading: a bundle directory, a .tar.gz bundle, or a single executable.
+        /// Requires NAME@VERSION.
+        #[arg(long)]
+        from: Option<PathBuf>,
+        /// `NAME[@VERSION]`.
+        #[arg(value_name = "ADAPTER")]
+        spec: String,
+    },
+    /// List adapters in the repositories that can be installed on this host.
+    #[command(visible_alias = "ls-remote")]
+    Search {
+        /// Only this name.
+        #[arg(value_name = "NAME")]
+        name: Option<String>,
+    },
+    /// Remove an installed adapter. Refused if it is the last version an installed VMM package needs, unless --force.
+    Rm {
+        /// Remove even if VMM packages need it.
+        #[arg(short, long)]
+        force: bool,
+        /// NAME@VERSION.
+        #[arg(value_name = "ADAPTER")]
+        spec: String,
     },
 }
 

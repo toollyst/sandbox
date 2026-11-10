@@ -20,6 +20,7 @@ fn specs_and_versions() {
         }
     );
     assert_eq!(spec("fc").version, None);
+    assert_eq!(spec("fc@latest"), spec("fc"));
     for bad in ["", "@1", "a@", "a@b@c", "../x", ".hidden", "a/b", "a b"] {
         assert!(bad.parse::<Spec>().is_err(), "{bad}");
     }

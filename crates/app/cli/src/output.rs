@@ -59,7 +59,17 @@ pub const JSON_OUTPUT: &[(&str, Form)] = &[
     ("executor install", Form::Value("ExecutorRef")),
     ("executor search", Form::Value("[AvailableExecutor]")),
     ("executor use", Form::Value("ExecutorRef")),
+    ("executor current", Form::Value("ChosenExecutor")),
+    ("executor which", Form::Value("ChosenExecutor")),
     ("executor rm", Form::Value("ExecutorRef")),
+    ("executor prune", Form::Value("[Pruned]")),
+    ("executor adapter ls", Form::Value("[InstalledAdapter]")),
+    ("executor adapter install", Form::Value("ExecutorRef")),
+    (
+        "executor adapter search",
+        Form::Value("[AvailableExecutor]"),
+    ),
+    ("executor adapter rm", Form::Value("ExecutorRef")),
     ("executor repo ls", Form::Value("[Repository]")),
     ("executor repo add", Form::Value("Repository")),
     ("executor repo rm", Form::Value("Repository")),
@@ -367,11 +377,62 @@ pub struct InstalledExecutor {
     pub version: String,
     /// Whether it is the default (`executor use`).
     pub default: bool,
-    /// Path of its executable.
+    /// Path of its executable; for a VMM package, its directory.
     pub path: String,
+    /// For a VMM package: the adapter that runs it. Null for a self-contained executor.
+    pub adapter: Option<String>,
 }
 
-/// An executor by name and version (`executor install`, `use`, `rm`).
+/// An installed adapter (`executor adapter ls`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct InstalledAdapter {
+    /// Name.
+    pub name: String,
+    /// Version.
+    pub version: String,
+    /// Path of its executable.
+    pub path: String,
+    /// Installed VMM packages (`name@version`) that use an adapter of this name.
+    pub used_by: Vec<String>,
+}
+
+/// The executor sbx would use (`executor current`, `which`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ChosenExecutor {
+    /// Name of the installed executor. Null for a path given with `--executor` or found on PATH.
+    pub name: Option<String>,
+    /// Version of the installed executor. Null when `name` is null.
+    pub version: Option<String>,
+    /// Where it was chosen from: `--executor`, a `.sbx-executor` file path, the default, or PATH.
+    pub source: String,
+    /// Executable that runs (for a VMM package, its adapter).
+    pub program: String,
+    /// For a VMM package: the adapter (`name@version`) that runs it.
+    pub adapter: Option<String>,
+    /// For a VMM package: its directory, passed to the adapter as `SBX_EXECUTOR_VMM_DIR`.
+    pub vmm_dir: Option<String>,
+}
+
+/// An executor or adapter version that `executor prune` removed, or would remove with `--dry-run`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct Pruned {
+    /// `executor` or `adapter`.
+    pub kind: String,
+    /// Name.
+    pub name: String,
+    /// Version.
+    pub version: String,
+    /// Whether it was removed (false with `--dry-run`).
+    pub removed: bool,
+}
+
+/// An executor or adapter by name and version (`executor install`, `use`, `rm`, `adapter install`, `adapter rm`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
@@ -382,7 +443,7 @@ pub struct ExecutorRef {
     pub version: String,
 }
 
-/// An executor available from a repository for this host (`executor search`).
+/// An executor or adapter available from a repository for this host (`executor search`, `adapter search`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
@@ -391,8 +452,10 @@ pub struct AvailableExecutor {
     pub name: String,
     /// Version.
     pub version: String,
-    /// Executor protocol version it speaks.
-    pub protocol: u32,
+    /// Executor protocol version it speaks. Null for a VMM package (see `adapter`).
+    pub protocol: Option<u32>,
+    /// For a VMM package: the adapter that runs it. Null for a self-contained executor.
+    pub adapter: Option<String>,
     /// Repository name.
     pub repository: String,
     /// Operating system of the bundle.
@@ -463,10 +526,14 @@ pub struct Hypervisor {
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ExecutorInfo {
-    /// `name@version` of the installed default, or the `--executor` path.
+    /// `name@version` of the installed executor that a new sandbox would use, its `--executor` path, or `none`.
     pub name: String,
-    /// Executable that would run.
-    pub program: String,
+    /// Where it was chosen from: `--executor`, a `.sbx-executor` file path, the default, or PATH. Null if none.
+    pub source: Option<String>,
+    /// Executable that would run (for a VMM package, its adapter). Null if none.
+    pub program: Option<String>,
+    /// For a VMM package: the adapter (`name@version`) that runs it.
+    pub adapter: Option<String>,
     /// What it supports. Null if it could not be asked (see `error`).
     pub capabilities: Option<Capabilities>,
     /// Why it could not be asked.
@@ -919,6 +986,9 @@ mod tests {
         g.subschema_for::<Image>();
         g.subschema_for::<Removed>();
         g.subschema_for::<InstalledExecutor>();
+        g.subschema_for::<InstalledAdapter>();
+        g.subschema_for::<ChosenExecutor>();
+        g.subschema_for::<Pruned>();
         g.subschema_for::<ExecutorRef>();
         g.subschema_for::<AvailableExecutor>();
         g.subschema_for::<Repository>();

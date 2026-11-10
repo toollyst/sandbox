@@ -25,7 +25,14 @@ The JSON Schema (draft 2020-12) of every type is in [cli-output.schema.json](cli
 | `executor install` | value: `ExecutorRef` |
 | `executor search` | value: `[AvailableExecutor]` |
 | `executor use` | value: `ExecutorRef` |
+| `executor current` | value: `ChosenExecutor` |
+| `executor which` | value: `ChosenExecutor` |
 | `executor rm` | value: `ExecutorRef` |
+| `executor prune` | value: `[Pruned]` |
+| `executor adapter ls` | value: `[InstalledAdapter]` |
+| `executor adapter install` | value: `ExecutorRef` |
+| `executor adapter search` | value: `[AvailableExecutor]` |
+| `executor adapter rm` | value: `ExecutorRef` |
 | `executor repo ls` | value: `[Repository]` |
 | `executor repo add` | value: `Repository` |
 | `executor repo rm` | value: `Repository` |

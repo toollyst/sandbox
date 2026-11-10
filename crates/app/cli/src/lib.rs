@@ -20,6 +20,7 @@
 pub mod app;
 pub mod attach;
 pub mod behavior;
+pub mod choose;
 pub mod cli;
 pub mod commands;
 pub mod complete;
