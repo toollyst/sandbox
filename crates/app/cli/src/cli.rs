@@ -8,6 +8,7 @@ use sbx_model::RootfsFormat;
 
 use crate::behavior::{DEFAULT_ROOTFS_FORMAT, PullPolicy};
 use crate::commands::about;
+use crate::complete;
 
 /// 출력 형식.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -71,6 +72,7 @@ pub enum Command {
         #[arg(long)]
         platform: Option<String>,
         /// Image reference.
+        #[arg(add = complete::image())]
         image: String,
     },
     #[command(about = about("prepare"))]
@@ -79,6 +81,7 @@ pub enum Command {
         #[arg(long, default_value = DEFAULT_ROOTFS_FORMAT.as_str())]
         rootfs_format: RootfsFormat,
         /// Image reference or ID.
+        #[arg(add = complete::image())]
         image: String,
     },
     #[command(about = about("images"))]
@@ -96,7 +99,7 @@ pub enum Command {
         #[arg(short, long)]
         force: bool,
         /// Image references or IDs.
-        #[arg(required = true)]
+        #[arg(required = true, add = complete::image())]
         images: Vec<String>,
     },
     #[command(about = about("executor"))]
@@ -124,6 +127,7 @@ pub enum Command {
         #[arg(short = 'i', long)]
         interactive: bool,
         /// Sandbox name, ID, or unique ID prefix.
+        #[arg(add = complete::sandbox())]
         id: String,
     },
     #[command(about = about("exec"), override_usage = "sbx exec [OPTIONS] SANDBOX COMMAND [ARG...]")]
@@ -131,8 +135,10 @@ pub enum Command {
     #[command(about = about("cp"))]
     Cp {
         /// Source (host path, or SANDBOX:PATH where SANDBOX is a name or ID).
+        #[arg(add = complete::cp_endpoint_arg())]
         src: String,
         /// Destination (host path, or SANDBOX:PATH where SANDBOX is a name or ID).
+        #[arg(add = complete::cp_endpoint_arg())]
         dst: String,
     },
     #[command(about = about("stop"))]
@@ -145,13 +151,13 @@ pub enum Command {
         #[arg(short = 's', long, default_value = "KILL")]
         signal: String,
         /// Sandbox name, ID, or unique ID prefix.
-        #[arg(required = true)]
+        #[arg(required = true, add = complete::sandbox())]
         ids: Vec<String>,
     },
     #[command(about = about("wait"))]
     Wait {
         /// Sandbox name, ID, or unique ID prefix.
-        #[arg(required = true)]
+        #[arg(required = true, add = complete::sandbox())]
         ids: Vec<String>,
     },
     #[command(about = about("rm"))]
@@ -160,7 +166,7 @@ pub enum Command {
         #[arg(short, long)]
         force: bool,
         /// Sandbox name, ID, or unique ID prefix.
-        #[arg(required = true)]
+        #[arg(required = true, add = complete::sandbox())]
         ids: Vec<String>,
     },
     #[command(about = about("attach"))]
@@ -175,6 +181,7 @@ pub enum Command {
         #[arg(long, default_value = crate::attach::DetachKeys::DEFAULT)]
         detach_keys: String,
         /// Sandbox name, ID, or unique ID prefix.
+        #[arg(add = complete::sandbox())]
         id: String,
     },
     #[command(about = about("ps"))]
@@ -193,6 +200,7 @@ pub enum Command {
     #[command(about = about("inspect"))]
     Inspect {
         /// Sandbox name, ID, or unique ID prefix.
+        #[arg(add = complete::sandbox())]
         id: String,
     },
     #[command(about = about("logs"))]
@@ -219,10 +227,16 @@ pub enum Command {
     },
     #[command(
         about = about("completion"),
-        after_help = "Examples:\n  sbx completion bash > ~/.local/share/bash-completion/completions/sbx\n  sbx completion zsh > \"${fpath[1]}/_sbx\"\n  sbx completion fish > ~/.config/fish/completions/sbx.fish"
+        long_about = "Print the shell script that enables tab completion. Besides commands and options, it completes \
+sandbox names and IDs, image references, and installed executors: on each TAB the shell runs \
+`COMPLETE=<shell> sbx -- <words>`, which reads the data and cache directories (--data-dir and --cache-dir \
+typed on the line, then SBX_DATA_DIR and SBX_CACHE_DIR, then the defaults) and never changes anything. \
+The script is the same as `COMPLETE=<shell> sbx` prints. Load it at shell startup instead of saving it to a file, \
+so it always matches the installed sbx.",
+        after_help = "Examples:\n  echo 'source <(sbx completion bash)' >> ~/.bashrc\n  echo 'source <(sbx completion zsh)' >> ~/.zshrc\n  echo 'sbx completion fish | source' > ~/.config/fish/completions/sbx.fish\n  echo 'sbx completion powershell | Out-String | Invoke-Expression' >> $PROFILE"
     )]
     Completion {
-        /// Shell to generate for.
+        /// Shell to enable completion for.
         shell: clap_complete::Shell,
     },
 }
@@ -252,13 +266,13 @@ pub enum ExecutorCommand {
     /// Set the default executor (latest installed version unless given).
     Use {
         /// `NAME[@VERSION]`.
-        #[arg(value_name = "EXECUTOR")]
+        #[arg(value_name = "EXECUTOR", add = complete::executor())]
         spec: String,
     },
     /// Remove an installed executor.
     Rm {
         /// NAME@VERSION.
-        #[arg(value_name = "EXECUTOR")]
+        #[arg(value_name = "EXECUTOR", add = complete::executor())]
         spec: String,
     },
     /// Manage executor repositories (earlier ones take precedence). The list starts with `official`.
@@ -307,6 +321,7 @@ pub struct LogsArgs {
     #[arg(long)]
     pub until: Option<String>,
     /// Sandbox name, ID, or unique ID prefix.
+    #[arg(add = complete::sandbox())]
     pub id: String,
 }
 
@@ -320,7 +335,7 @@ pub struct StopArgs {
     #[arg(short = 't', long = "time")]
     pub time: Option<u64>,
     /// Sandbox name, ID, or unique ID prefix.
-    #[arg(required = true)]
+    #[arg(required = true, add = complete::sandbox())]
     pub ids: Vec<String>,
 }
 
@@ -405,7 +420,8 @@ pub struct RunArgs {
         required = true,
         num_args = 1..,
         trailing_var_arg = true,
-        allow_hyphen_values = true
+        allow_hyphen_values = true,
+        add = complete::first_image(<Cli as clap::CommandFactory>::command, "image_and_command")
     )]
     pub image_and_command: Vec<String>,
 }
@@ -450,7 +466,8 @@ pub struct ExecArgs {
         required = true,
         num_args = 2..,
         trailing_var_arg = true,
-        allow_hyphen_values = true
+        allow_hyphen_values = true,
+        add = complete::first_sandbox(<Cli as clap::CommandFactory>::command, "id_and_command")
     )]
     pub id_and_command: Vec<String>,
 }
@@ -522,6 +539,29 @@ mod tests {
     fn definition_is_consistent() {
         // 인자 이름 충돌 같은 정의 오류를 실행하기 전에 잡는다.
         <Cli as clap::CommandFactory>::command().debug_assert();
+    }
+
+    #[test]
+    fn completion_finds_the_first_value_by_parsing_the_words_before() {
+        use clap::CommandFactory;
+        let n = |id: &str, words: &[&str]| {
+            let words: Vec<std::ffi::OsString> = words.iter().map(Into::into).collect();
+            complete::given_values(Cli::command(), id, &words)
+        };
+        let image = "image_and_command";
+        assert_eq!(n(image, &["sbx", "run"]), 0);
+        assert_eq!(
+            n(
+                image,
+                &["sbx", "--data-dir", "/d", "run", "-e", "A=1", "--rm"]
+            ),
+            0
+        );
+        assert_eq!(n(image, &["sbx", "run", "-e"]), 0);
+        assert_eq!(n(image, &["sbx", "run", "alpine"]), 1);
+        assert_eq!(n(image, &["sbx", "create", "alpine", "sh", "-c"]), 3);
+        assert_eq!(n(image, &["sbx", "ps"]), 0);
+        assert_eq!(n("id_and_command", &["sbx", "exec", "-i", "web"]), 1);
     }
 
     #[test]

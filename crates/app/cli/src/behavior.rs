@@ -367,6 +367,14 @@ pub const DOCKER_DIFFERENCES: &[(&str, &str, &str)] = &[
          갑자기 죽어 아무도 stopped를 기록하지 못하면 stop 이벤트도 없다",
     ),
     (
+        "sbx completion",
+        "등록 스크립트를 찍는다. 탭마다 셸이 `COMPLETE=<셸> sbx -- <단어들>`로 sbx를 다시 불러 샌드박스 이름·ID, 이미지 참조, \
+         설치한 실행기를 후보로 받는다(crate::complete). 그래서 환경 변수 COMPLETE가 있으면(비어 있지 않고 0이 아니면) \
+         sbx는 명령을 실행하지 않고 자동완성만 한다. 샌드박스를 상태로 거르지 않는다(Docker는 stop에 실행 중인 것만 낸다)",
+        "데몬이 없어서 sbx가 data_dir과 cache_dir을 직접 읽는다. 상태를 알려면 소유 잠금을 건드려야 하는데, 자동완성은 \
+         아무것도 바꾸지 않는다",
+    ),
+    (
         "sbx prepare",
         "Docker에 없는 명령",
         "이미지를 VM용 rootfs 디스크로 만드는 단계가 따로 있다",

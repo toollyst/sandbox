@@ -340,6 +340,7 @@ cores in order, and prints.
 | `attach` | attached runs: stdin, TTY raw mode, resize, signals |
 | `executors` | `sbx executor …`: install, use, repositories (`sbx-executor-install`, `sbx-executor-repo`) |
 | `mcp` | `sbx mcp`: the same operations as MCP tools over stdio, with progress notifications |
+| `complete` | `sbx completion` and `COMPLETE=<shell> sbx`: sandbox names and IDs, image references and installed executors as tab candidates, read-only |
 | `behavior` | exit codes, `--pull`, `rmi` protection, time formatting, and `DOCKER_DIFFERENCES` |
 | `dirs` | default `data_dir`, `cache_dir` and `socket_dir` per OS |
 | `guest` | the embedded guest initramfs (empty in a plain `cargo build`) |

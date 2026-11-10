@@ -12,7 +12,7 @@
 //! 그 파일은 `cargo xtask guest-initramfs --arch <x86_64|aarch64>`로 만든다.
 
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn home() -> Option<PathBuf> {
     env::var_os("HOME")
@@ -61,4 +61,9 @@ pub fn socket_dir() -> Option<PathBuf> {
     }
     let user = env::var("USER").unwrap_or_else(|_| "user".into());
     Some(PathBuf::from(format!("/tmp/sbx-{user}")))
+}
+
+/// 설치한 실행기를 두는 곳: `<data_dir>/executors`.
+pub fn executors_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("executors")
 }

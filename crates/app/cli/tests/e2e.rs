@@ -61,6 +61,10 @@ mod unix {
         ),
         ("create_start_inspect_rm", create_start_inspect_rm),
         ("names_work_in_place_of_ids", names_work_in_place_of_ids),
+        (
+            "completion_offers_sandboxes_and_images",
+            completion_offers_sandboxes_and_images,
+        ),
         ("json_output_contract", json_output_contract),
         ("events_replay_and_follow", events_replay_and_follow),
         ("filters", filters),
@@ -904,6 +908,65 @@ mod unix {
             "{}",
             text(&o.stderr)
         );
+    }
+
+    /// 셸 스크립트가 하는 것처럼 `COMPLETE=bash sbx -- <단어들>`로 부른다. 마지막 단어가 완성할 자리다.
+    fn complete(e: &Env, words: &[&str]) -> Vec<String> {
+        let mut args = vec!["--", "sbx"];
+        args.extend(words);
+        let o = e
+            .cmd(&args)
+            .env("COMPLETE", "bash")
+            .env("_CLAP_COMPLETE_INDEX", words.len().to_string())
+            .env("_CLAP_IFS", "\n")
+            .output()
+            .unwrap();
+        assert_eq!(o.status.code(), Some(0), "{words:?}: {}", text(&o.stderr));
+        text(&o.stdout).lines().map(str::to_owned).collect()
+    }
+
+    fn completion_offers_sandboxes_and_images() {
+        let e = Env::new();
+        let o = e.sbx(&["create", "--name", "web", IMAGE]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let id = text(&o.stdout).trim().to_owned();
+        let short = &id[..12];
+        let image = format!("{IMAGE}:latest");
+        let has = |words: &[&str], want: &str| {
+            let got = complete(&e, words);
+            assert!(got.iter().any(|c| c == want), "{words:?}: {got:?}");
+            got
+        };
+        for cmd in [
+            "start", "stop", "rm", "inspect", "logs", "attach", "kill", "wait", "restart",
+        ] {
+            has(&[cmd, ""], "web");
+            has(&[cmd, ""], short);
+        }
+        // 친 앞부분으로 거른다. exec는 첫 인자만 샌드박스다.
+        assert_eq!(complete(&e, &["exec", "w"]), ["web"]);
+        assert!(!complete(&e, &["exec", "web", ""]).contains(&"web".to_owned()));
+        assert_eq!(complete(&e, &["cp", "we"]), ["web:"]);
+        // 이미지: 줄인 참조. run과 create는 첫 인자만.
+        for cmd in ["run", "create", "rmi", "prepare", "pull"] {
+            has(&[cmd, ""], &image);
+        }
+        assert_eq!(complete(&e, &["run", "--rm", "e2e"]), [image.as_str()]);
+        assert!(!complete(&e, &["run", &image, ""]).contains(&image));
+        // 줄에 친 --data-dir이 SBX_DATA_DIR보다 앞선다. 없는 디렉터리는 후보가 없고, 만들지도 않는다.
+        let none = e.path("none");
+        let none = none.to_str().unwrap();
+        assert!(!complete(&e, &["--data-dir", none, "rm", ""]).contains(&"web".to_owned()));
+        assert!(!complete(&e, &[&format!("--cache-dir={none}"), "run", ""]).contains(&image));
+        assert!(!e.path("none").exists());
+        // `sbx completion <셸>`은 `COMPLETE=<셸> sbx`와 같은 등록 스크립트다.
+        for shell in ["bash", "zsh", "fish", "powershell", "elvish"] {
+            let a = e.sbx(&["completion", shell]);
+            let b = e.cmd(&[]).env("COMPLETE", shell).output().unwrap();
+            assert_eq!(a.status.code(), Some(0), "{}", text(&a.stderr));
+            assert_eq!(text(&a.stdout), text(&b.stdout), "{shell}");
+            assert!(text(&a.stdout).contains("COMPLETE"), "{shell}");
+        }
     }
 
     fn names_work_in_place_of_ids() {

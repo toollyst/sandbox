@@ -88,7 +88,7 @@ You can change what it does with `SBX_VERSION`, `SBX_INSTALL_DIR` or `SBX_NO_EXE
 
 ```sh
 sbx info                    # check it worked: host, virtualization, executor
-sbx completion zsh --help   # tab completion (bash, zsh, fish, PowerShell)
+sbx completion zsh --help   # tab completion, sandbox names and images too (bash, zsh, fish, PowerShell)
 ```
 
 <details>

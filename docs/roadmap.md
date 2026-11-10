@@ -89,7 +89,7 @@ M5와 따로 간다. CLI가 주인이고, 사람(`sbx tui`), 스크립트, 에�
 | C2 | `sbx events` (`--since`, `--until`, Docker와 같다): 기록 장치 `sbx-events`(JSON Lines, 잠금, 1 MiB 세대 둘). 실행 코어가 상태를 쓰는 자리에서 `data_dir/events/sandboxes`에(create, start, stop, remove), 관리 코어가 `cache_dir/events/images`에(pull, prepare, untag, delete) 덧붙이고 CLI가 시각 순으로 합친다. `--watch`는 두지 않는다: TUI는 시각 T를 적고 `ps` 뒤 `events --since T` | 완료 (shim이 소유한 샌드박스 포함 e2e. 소유 프로세스가 갑자기 죽으면 stop이 없다는 한계는 `DOCKER_DIFFERENCES`에) |
 | C3 | `--filter KEY=VALUE`(Docker 규칙: 다른 키는 AND, 같은 키는 OR) (`ps`, `images`, `events`). 키는 `crates/app/cli/src/filter.rs`의 표가 정본, 모르는 키·값은 오류. 시각 파서는 C2에서 함께 | 완료 (e2e `filters`) |
 | C4 | `--jq EXPR` (jaq 내장, gh와 같다): `--format json`일 때만, 값이나 줄마다 식을 돌려 결과마다 한 줄(문자열은 따옴표 없이). 틀린 식은 실행 전에 오류. Go 템플릿 `--format '{{…}}'`은 하지 않는다(`DOCKER_DIFFERENCES`) | 완료 (e2e `jq_shapes_json_output`). 대가: macOS arm64 release `sbx`가 11.8 MB → 15.5 MB. jaq-std 기본 함수만 쓰면 14.5 MB지만 정규식·`@base64`·날짜 함수가 빠진 반쪽 jq라 전체를 둔다 |
-| C5 | 이름·ID·이미지 동적 자동완성 (`clap_complete` `unstable-dynamic`) | 남음 |
+| C5 | 이름·ID·이미지 동적 자동완성 (`clap_complete` `unstable-dynamic`) | 완료 (`sbx completion <셸>`이 등록 스크립트를 찍고 탭마다 `COMPLETE=<셸> sbx`가 읽기만 해서 샌드박스 이름·ID, 이미지 참조, 설치한 실행기를 낸다. 규칙은 `crates/app/cli/src/complete.rs`, e2e `completion_offers_sandboxes_and_images`) |
 | C6 | 로그 시각 (`logs --timestamps`, `--since`, `--format json`): `main.log` 기록 형식에 시각을 넣고 버전을 둔다 | 완료 (판 2: 머리 `sbx-log\x02`, 기록마다 받은 시각(나노초). 머리 없는 옛 파일은 읽고, 다시 시작해도 그 판으로 이어 쓴다. 시각 없는 로그에 `-t`/`--since`/`--until`은 오류. `--format json`은 줄 조각마다 `LogLine`(UTF-8 아니면 base64). e2e `logs_timestamps_since_until_and_json`) |
 | T | `sbx tui`: 인라인(아래쪽만 다시 그림) 화면, `ps` 뒤 `events --since` 구독, 모든 동작은 `sbx …` 자식 프로세스에 터미널을 넘겨 실행하고 그 명령 줄을 보여준다. S0 스파이크에서 iocraft와 ratatui Inline 중 고른다 | 남음 (C2 뒤) |
 

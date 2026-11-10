@@ -663,6 +663,31 @@ fn list_never_fails_while_sandboxes_are_removed() {
     assert!(left.is_empty(), "{left:?}");
 }
 
+#[test]
+fn sandbox_names_reads_records_without_touching_locks() {
+    let e = Env::new("names");
+    let data = e.root.join("d");
+    assert!(sandbox_names(&e.root.join("none")).unwrap().is_empty());
+    let mut spec = e.spec(&["true"]);
+    spec.name = Some("web".into());
+    e.prepare_image();
+    let named = block_on(e.rt.create(spec)).unwrap();
+    let plain = e.sandbox(&["true"]);
+    let lock = Paths::new(&data, plain.id()).owner_lock();
+    let _ = std::fs::remove_file(&lock);
+    let mut want = vec![
+        (named.id().clone(), Some("web".to_owned())),
+        (plain.id().clone(), None),
+    ];
+    want.sort();
+    assert_eq!(sandbox_names(&data).unwrap(), want);
+    // 소유 잠금 파일을 만들지 않는다(Runtime::list는 만든다).
+    assert!(!lock.exists());
+    // 만드는 중인 것(상태 기록이 아직 없는 것)은 건너뛴다.
+    std::fs::remove_file(Paths::new(&data, plain.id()).state()).unwrap();
+    assert_eq!(sandbox_names(&data).unwrap().len(), 1);
+}
+
 /// 시그널을 받으면 `code`로 끝나고, 다른 시그널(TERM 포함)은 무시하는 기본 프로세스.
 #[cfg(unix)]
 fn trapping(sig: &str, code: i32) -> Vec<String> {

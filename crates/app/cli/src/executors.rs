@@ -28,7 +28,7 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 /// 설치한 실행기들.
 pub fn installed(data_dir: &Path) -> Executors {
-    Executors::new(data_dir.join("executors"))
+    Executors::new(crate::dirs::executors_dir(data_dir))
 }
 
 /// 공식 실행기 저장소. 묶음은 GitHub Releases에, `index.json`은 GitHub Pages에 있다(CI가 올린다).

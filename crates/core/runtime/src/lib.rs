@@ -156,6 +156,27 @@ pub fn events_log(data_dir: &Path) -> sbx_events::Log {
     sbx_events::Log::new(data_dir.join("events").join("sandboxes"))
 }
 
+/// `data_dir`의 샌드박스 ID와 이름. ID 순서. 셸 자동완성처럼 빨리 훑어볼 때 쓴다.
+///
+/// [`Runtime::list`]와 달리 기록(`spec.json`)만 읽는다: 소유 잠금을 열거나 쥐지 않고(그래서 상태는 모른다),
+/// 디렉터리나 파일을 만들거나 쓰지 않는다. data_dir이 없으면 빈 목록이다.
+/// 만드는 중이거나 읽을 수 없는 기록은 건너뛴다(오류로 보지 않는다).
+pub fn sandbox_names(data_dir: &Path) -> Result<Vec<(SandboxId, Option<String>)>, RuntimeError> {
+    let mut out = Vec::new();
+    for id in records::ids(data_dir)? {
+        let paths = Paths::new(data_dir, &id);
+        if !paths.state().is_file() {
+            continue;
+        }
+        if let Ok(bytes) = std::fs::read(paths.spec())
+            && let Ok(spec) = serde_json::from_slice::<SandboxSpec>(&bytes)
+        {
+            out.push((id, spec.name));
+        }
+    }
+    Ok(out)
+}
+
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
