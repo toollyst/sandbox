@@ -135,6 +135,7 @@ SLSA, TUF(색인 신선도), EU CRA. 범위는 sbx 자신이다. sbx는 실행�
 | P14 | ~~호스트 강화 점검(SMT, KSM, KVM 권한 등)~~: VMM을 돌리는 호스트 설정은 실행기·VMM 쪽의 일이다 | 뺌 |
 | P15 | SDK(Python, TypeScript): CLI JSON 계약을 감싸고 `cli-output.schema.json`으로 타입을 만든다(데몬 없음) | 남음 |
 | P16 | 이름을 `cowl`로 바꾼다: Docker Sandboxes도 `sbx` 바이너리를 brew·winget·apt로 배포해 PATH가 겹치고, USPTO에 DOCKER, INC.의 `SBX`(9류)가 있다. 후보(cowl, husk, glim, onggi 등)를 Homebrew·Debian·Ubuntu 바이너리, crates·npm·PyPI, USPTO로 조사해 골랐다(EU·한국 상표는 남음). 바이너리·크레이트·환경 변수·라벨·데이터 디렉터리(옛 디렉터리 옮기기)·문서 | 결정(cowl), 남음 |
+| P17 | 적대적 검토 1차(2026-11-11, 저장소·설치·MCP·install.sh·서명 도구): 고친 것은 대소문자만 다른 이름으로 출처 고정 피하기(이름·버전은 소문자), 앞 저장소가 실패하면 뒤 저장소로 이름이 넘어감(거부, `--repo`), 어댑터가 같은 이름의 다른 저장소로 넘어감, 이미지가 sbx 라벨(owner=mcp, 실행기 고정)을 줌, MCP 동시 create의 상한 경합, 원격 색인이 `file:`·loopback을 가리킴, redirect 중간 단계의 https→http, 색인 파싱 2차 시간(버전당 압축 파일 64개), install.sh에서 서명만 지우면 auto가 통과함·옛 서명본으로 바꿔치기(`SBX_VERSION`이면 그 태그), seen·목록 파일의 동시 쓰기(잠금), 설치의 검사–rename 경합(잠금), 받기 전 출처 검사, 저장소 이름 `local` 예약, Windows 장치 이름, `repo-sign`의 기한·serial 넘침, 키를 넣은 뒤 서명 없이 올리기(CI가 실패). 각각 회귀 테스트(잠금은 빼면 실패하는 동시성 테스트), install.sh는 가짜 릴리스·cosign으로 18가지 | 완료 |
 
 ## 그 뒤
 
