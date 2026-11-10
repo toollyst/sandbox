@@ -1789,7 +1789,8 @@ mod unix {
         assert_eq!(text(&o.stdout).lines().count(), 1, "{}", text(&o.stdout));
         let o = without(&["executor", "current"]);
         assert!(
-            text(&o.stderr).contains("sbx executor install wick"),
+            text(&o.stderr).contains("no executor is installed")
+                && !text(&o.stderr).contains("wick"),
             "{}",
             text(&o.stderr)
         );

@@ -27,6 +27,10 @@ pub const PIN_LABEL: &str = "io.github.toollyst.sandbox.executor";
 /// 폴더별 실행기 파일.
 pub const VERSION_FILE: &str = ".sbx-executor";
 
+/// 실행기가 하나도 없을 때의 안내. 특정 실행기나 저장소를 권하지 않는다(sbx는 어느 VMM에도 묶이지 않는다).
+pub const NO_EXECUTOR: &str = "no executor is installed; find one with `sbx executor search` and install it with \
+     `sbx executor install NAME`, or install your own with `sbx executor install --from DIR NAME@VERSION`";
+
 /// 어디서 골랐는지.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {

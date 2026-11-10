@@ -111,8 +111,7 @@ pub async fn run(cx: &Ctx<'_>, c: &ExecutorCommand) -> Result<u8> {
             Ok(0)
         }
         ExecutorCommand::Current => {
-            let c = chosen(cx, &ex, &ad, None)?
-                .ok_or("no executor is installed; install one with: sbx executor install wick")?;
+            let c = chosen(cx, &ex, &ad, None)?.ok_or(crate::choose::NO_EXECUTOR)?;
             print_chosen(cx, &c, false)
         }
         ExecutorCommand::Which { spec } => {

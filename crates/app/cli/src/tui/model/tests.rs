@@ -417,9 +417,9 @@ fn executors_tab_lists_executors_then_adapters_and_runs_executor_commands() {
             "firecracker@0.2.0"
         ])))
     );
-    // 어댑터 줄에서 i는 기본 이름을 채운다.
+    // 어댑터 줄에서 i는 이름을 비워 둔다(특정 실행기를 권하지 않는다).
     press(&mut m, KeyCode::Char('i'));
-    assert_eq!(m.prompt.take().unwrap().text, "executor install wick");
+    assert_eq!(m.prompt.take().unwrap().text, "executor install ");
     press(&mut m, KeyCode::Char('P'));
     assert_eq!(
         m.popup,

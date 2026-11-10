@@ -35,9 +35,6 @@ pub enum Tab {
 /// 탭 순서.
 pub const TABS: [Tab; 4] = [Tab::Sandboxes, Tab::Images, Tab::Events, Tab::Executors];
 
-/// 셸 키(`i`)가 처음 채우는 설치 명령. 고른 줄이 있으면 그 이름이다.
-pub const INSTALL_DEFAULT: &str = "wick";
-
 impl Tab {
     /// 제목.
     pub const fn title(self) -> &'static str {
@@ -507,8 +504,8 @@ impl Model {
                 let name = self
                     .selected_executor_row()
                     .filter(|r| matches!(r, ExecutorRow::Executor(_)))
-                    .map_or(INSTALL_DEFAULT.to_owned(), |r| r.name().to_owned());
-                // 고쳐 칠 수 있게 명령 줄에 채운다. 받는 동안 진행을 보이도록 터미널을 넘긴다.
+                    .map_or(String::new(), |r| r.name().to_owned());
+                // 고쳐 칠 수 있게 명령 줄에 채운다. 고른 실행기가 없으면 이름은 비워 둔다(특정 실행기를 권하지 않는다). 받는 동안 진행을 보이도록 터미널을 넘긴다.
                 self.prompt = Some(Prompt {
                     kind: PromptKind::Command,
                     text: format!("executor install {name}"),

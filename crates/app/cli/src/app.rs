@@ -512,10 +512,7 @@ impl Ctx {
         self.try_choose(pinned)?.ok_or_else(|| {
             // 무엇을 하면 되는지 알린다. 실행기가 없는 OS(지금은 Windows)에서는 설치할 것도 없다.
             msg(match std::env::consts::OS {
-                "linux" | "macos" => {
-                    "no executor is installed; install one with: sbx executor install wick"
-                        .to_owned()
-                }
+                "linux" | "macos" => choose::NO_EXECUTOR.to_owned(),
                 os => format!(
                     "sandboxes cannot run on {os} yet: there is no executor for this platform \
                      (pull, prepare and images work)"
@@ -638,7 +635,7 @@ impl Ctx {
                     sbx_executor::ExecutorError::Launch(m) => m,
                     e => e.to_string(),
                 }),
-            Ok(None) => Err("no executor is installed (sbx executor install wick)".to_owned()),
+            Ok(None) => Err(choose::NO_EXECUTOR.to_owned()),
             Err(e) => Err(e.clone()),
         };
         let chosen = chosen.ok().flatten();

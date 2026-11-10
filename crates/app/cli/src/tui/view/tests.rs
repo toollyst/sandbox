@@ -161,11 +161,11 @@ fn executors_tab_shows_current_marks_and_adapters() {
     let mut x = executors();
     x.executors.clear();
     x.adapters.clear();
-    x.current = Err("no executor is installed; install one with: sbx executor install wick".into());
+    x.current = Err(crate::choose::NO_EXECUTOR.into());
     m.apply(Msg::Executors(Ok(x)));
     let s = render(&mut m, 140, 20);
     assert!(
-        s.contains("sbx executor install wick") && s.contains("nothing here"),
+        s.contains("no executor is installed") && s.contains("nothing here"),
         "{s}"
     );
 }
