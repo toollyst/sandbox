@@ -716,7 +716,8 @@ impl FromStr for Signal {
                 .strip_prefix(if sign > 0 { '+' } else { '-' })?
                 .parse::<i32>()
                 .ok()?;
-            let n = base + sign * off;
+            // 이미지의 `StopSignal`에서도 오므로 아무 수나 올 수 있다. 넘치면 범위 밖이다.
+            let n = off.checked_mul(sign).and_then(|d| base.checked_add(d))?;
             (Self::RTMIN..=Self::RTMAX).contains(&n).then_some(Self(n))
         };
         let found = if let Some(rest) = name.strip_prefix("RTMIN") {
@@ -1016,6 +1017,21 @@ mod signal_tests {
         for i in 1..=64 {
             let s = Signal::new(i).unwrap();
             assert_eq!(s.to_string().parse::<Signal>(), Ok(s), "{i}");
+        }
+    }
+
+    /// 퍼징 대상 oci_documents를 만들며 찾았다: 이미지 config의 `StopSignal`이 `RTMIN+2147483647`이면 덧셈이
+    /// 넘쳐 debug 빌드가 패닉했다(release에서는 감싸져 우연히 범위 밖이 됐다).
+    #[test]
+    fn huge_realtime_offsets_are_errors_not_overflows() {
+        for bad in [
+            "RTMIN+2147483647",
+            "SIGRTMIN+2147483647",
+            "RTMAX--2147483648",
+            "RTMAX-2147483647",
+            "RTMIN+-2147483648",
+        ] {
+            assert!(bad.parse::<Signal>().is_err(), "{bad}");
         }
     }
 
