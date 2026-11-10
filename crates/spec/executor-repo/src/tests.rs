@@ -539,6 +539,46 @@ async fn hostile_signature_files_are_refused_and_never_raise_the_seen_serial() {
     assert_eq!(seen.get(&r).unwrap(), Some(10));
 }
 
+#[tokio::test]
+async fn a_signed_schema_1_body_cannot_shed_its_serial() {
+    // schema 1에는 serial·expires가 없다. 서명된 저장소의 v2 자리에 schema 1을 두면(서명이 맞아도) 거부한다.
+    let s = Signed::new("schema1-signed");
+    let f = Fetcher::new().unwrap();
+    let r = s.repository(vec![s.key.clone()]);
+    let mut v = sample();
+    v["serial"] = json!(5);
+    v["expires"] = json!(trust::now() + 3600);
+    s.publish(v.to_string().as_bytes());
+    untrusted(f.index(&r).await, "needs serial and expires");
+}
+
+#[test]
+fn serial_and_expires_must_be_plain_numbers_once() {
+    for bad in [
+        json!({"schema": 2, "serial": "5", "executors": {}}),
+        json!({"schema": 2, "serial": -1, "executors": {}}),
+        json!({"schema": 2, "serial": 1.5, "executors": {}}),
+        json!({"schema": 2, "expires": "never", "executors": {}}),
+    ] {
+        assert!(
+            Index::parse(bad.to_string().as_bytes(), &base()).is_err(),
+            "{bad}"
+        );
+    }
+    // u64를 넘는 수.
+    let big = br#"{"schema": 2, "serial": 18446744073709551616, "executors": {}}"#;
+    assert!(Index::parse(big, &base()).is_err());
+    // 같은 키가 두 번이면 거부한다(읽는 쪽마다 다른 값을 고를 수 없게).
+    let dup = br#"{"schema": 2, "serial": 1, "serial": 999, "executors": {}}"#;
+    assert!(Index::parse(dup, &base()).is_err());
+    let i = Index::parse(
+        br#"{"schema": 2, "serial": 7, "expires": 9, "executors": {}}"#,
+        &base(),
+    )
+    .unwrap();
+    assert_eq!((i.serial, i.expires), (Some(7), Some(9)));
+}
+
 #[test]
 fn verify_needs_a_key_and_reports_bad_keys() {
     let kp = minisign::KeyPair::generate_unencrypted_keypair().unwrap();

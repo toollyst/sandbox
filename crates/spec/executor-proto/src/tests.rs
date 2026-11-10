@@ -150,3 +150,34 @@ fn the_highest_common_version_is_used() {
     let c: Capabilities = serde_json::from_str(&line).unwrap();
     assert_eq!(c.min_version, Some(VERSION));
 }
+
+#[test]
+fn negotiation_matches_its_definition_everywhere() {
+    // 정의: 두 범위 [min, max]와 [MIN_VERSION, VERSION]이 겹치면 겹친 곳의 가장 큰 값, 아니면 없음.
+    let edges = [
+        0,
+        1,
+        MIN_VERSION - 1,
+        MIN_VERSION,
+        VERSION,
+        VERSION + 1,
+        1000,
+        u32::MAX - 1,
+        u32::MAX,
+    ];
+    let mut values: Vec<u32> = (0..=VERSION + 3).chain(edges).collect();
+    values.sort_unstable();
+    values.dedup();
+    for &min in &values {
+        for &max in &values {
+            let want = (min <= max)
+                .then(|| (min.max(MIN_VERSION), max.min(VERSION)))
+                .filter(|(lo, hi)| lo <= hi)
+                .map(|(_, hi)| hi);
+            assert_eq!(negotiate(min, max), want, "negotiate({min}, {max})");
+            if let Some(v) = want {
+                assert!((min..=max).contains(&v) && (MIN_VERSION..=VERSION).contains(&v));
+            }
+        }
+    }
+}
