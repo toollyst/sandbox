@@ -260,10 +260,10 @@ pub fn write_doc(root: &Path) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// 문서가 지금 코드와 같은지.
+/// 문서가 지금 코드와 같은지. 줄 끝은 보지 않는다(Windows의 git은 꺼낼 때 CRLF로 바꾼다).
 pub fn check_doc(root: &Path, crates: &[Crate]) -> Option<String> {
     let doc = match std::fs::read_to_string(root.join(DOC)) {
-        Ok(d) => d,
+        Ok(d) => d.replace("\r\n", "\n"),
         Err(e) => return Some(format!("cannot read {DOC}: {e}")),
     };
     match splice(&doc, &render(crates)) {
