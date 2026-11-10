@@ -64,7 +64,7 @@ jobs:
         include:
           - { os: ubuntu-latest, platform: linux-x86_64, target: x86_64-unknown-linux-musl }
           - { os: ubuntu-24.04-arm, platform: linux-aarch64, target: aarch64-unknown-linux-musl }
-          - { os: macos-14, platform: darwin-aarch64, target: '' }
+          - { os: macos-15, platform: darwin-aarch64, target: '' }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
