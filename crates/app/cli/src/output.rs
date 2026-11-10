@@ -1084,7 +1084,10 @@ mod tests {
                 std::fs::write(&path, &want).unwrap();
                 continue;
             }
-            let have = std::fs::read_to_string(&path).unwrap_or_default();
+            // Windows의 git은 줄 끝을 CRLF로 꺼낼 수 있다. 내용만 비교한다.
+            let have = std::fs::read_to_string(&path)
+                .unwrap_or_default()
+                .replace("\r\n", "\n");
             assert!(
                 have == want,
                 "docs/developers/{name} is out of date: run `SBX_BLESS=1 cargo test -p sbx-cli --lib output`"

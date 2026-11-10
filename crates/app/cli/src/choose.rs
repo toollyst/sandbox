@@ -403,7 +403,7 @@ mod tests {
         assert_eq!(c.label(), "wick@1.18.0");
         assert_eq!(c.adapter.as_ref().unwrap().to_string(), "firecracker@0.2.0");
         assert_eq!(c.program, c.adapter.as_ref().unwrap().executable);
-        let dir = t.root.join("executors/wick/1.18.0");
+        let dir = t.root.join("executors").join("wick").join("1.18.0");
         assert_eq!(c.vmm_dir(), Some(dir.as_path()));
         assert_eq!(
             c.env(),

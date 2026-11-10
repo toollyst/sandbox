@@ -451,7 +451,11 @@ mod tests {
         let host = format!("{}/da", root.display());
         assert_eq!(
             values(&cp_endpoints(&data, &host)),
-            [format!("{}/data/", root.display())]
+            [format!(
+                "{}{sep}data{sep}",
+                root.display(),
+                sep = std::path::MAIN_SEPARATOR
+            )]
         );
     }
 
