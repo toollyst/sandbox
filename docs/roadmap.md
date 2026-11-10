@@ -111,28 +111,28 @@ M5와 따로 간다. CLI가 주인이고, 사람(`sbx tui`), 스크립트, 에�
 ## M7. 프로덕션·상용 급 (2026-11-10~)
 
 오픈소스로 두되, 보안 검토와 도입 심사를 통과할 수준으로 올린다. 기준은 도입하는 쪽의 질문이다: 무엇을 받는지
-확인할 수 있나(공급망), 경계를 넘으면 어떻게 되나(격리, 상한), 문제가 나면 누가 얼마나 빨리 고치나(절차), 업그레이드에
-무엇이 깨지나(호환성), 누가 무엇을 했나(감사). 참고한 것: Firecracker(RELEASE_POLICY, prod-host-setup, jailer),
+확인할 수 있나(공급망), 쓰는 쪽이 정한 상한을 지키나(상한), 문제가 나면 누가 얼마나 빨리 고치나(절차), 업그레이드에
+무엇이 깨지나(호환성), 누가 무엇을 했나(감사). 참고한 것: Firecracker RELEASE_POLICY,
 Cloud Hypervisor·Kata·gVisor의 보안 절차, microsandbox COMPATIBILITY, OpenSSF Best Practices·Scorecard·OSPS Baseline,
-SLSA, TUF(색인 신선도), EU CRA. root는 금지 조건이 아니다: 쓸 수 있으면 공개 표준(Firecracker 공식 jailer)을 쓰고,
-없으면 권한 없이 할 수 있는 격리를 쓴다.
+SLSA, TUF(색인 신선도), EU CRA. 범위는 sbx 자신이다. sbx는 실행기와 규약으로 통신만 하는 중개자라서, VMM을 가두는
+법, VMM·커널·어댑터 묶음의 내용과 공급망, 호스트의 VMM 설정은 그것을 만드는 쪽의 일이고 여기서 다루지 않는다.
 
 | 단계 | 내용 | 상태 |
 |---|---|---|
 | P1 | 공급망: `deny.toml`(RustSec 권고, 허용형 라이선스, crates.io만), CI `supply-chain` 작업, 모든 Actions를 커밋 SHA로 고정, dependabot(Actions·cargo) | 완료 |
 | P2 | 릴리스 서명: 묶음마다 Sigstore keyless 번들, GitHub 출처 증명(SLSA build provenance), SBOM(SPDX) 증명. `install.sh`의 `SBX_VERIFY`(auto/require/off). `release.yml`을 손으로 돌리면 리허설(빌드·smoke·SBOM·서명만) | 완료 (리허설 42825468363: 묶음 셋의 Sigstore 번들이 cosign으로 확인되고, 바꾼 파일과 태그가 아닌 신원은 거부된다. `install.sh`는 cosign이 있을 때 그 리허설 번들을 태그 신원이 아니라며 거부했다. SBOM 패키지 418개. 태그 신원으로 통과하는 것과 출처 증명은 첫 태그 릴리스에서 확인) |
-| P3 | 공급망 2: `cargo auditable`로 바이너리에 의존성 목록, 실행기 묶음(어댑터·커널·VMM)에도 SBOM과 증명(`executors.yml`), publish를 승인이 필요한 environment로, SLSA Build L3(재사용 빌드 워크플로와 `--signer-workflow`) | 남음 |
+| P3 | 공급망 2 (sbx 바이너리만): `cargo auditable`로 바이너리에 의존성 목록, release publish를 승인이 필요한 environment로, SLSA Build L3(재사용 빌드 워크플로와 `--signer-workflow`). 실행기·어댑터·VMM 묶음의 SBOM·증명은 sbx의 일이 아니다(그 묶음을 만드는 쪽이 한다) | 남음 |
 | P4 | 커버리지 기반 퍼징(cargo-fuzz): 게스트·실행기 규약 디코더, 저장소 색인과 버전, 묶음 풀기(경로 탈출), OCI manifest·index, egress 규칙. CI에서 짧게, 손으로 길게. 그 뒤 ClusterFuzzLite나 OSS-Fuzz | 일부: 대상 10개와 `fuzz.yml`(31). 게스트 init의 요청 처리, MCP 인자, ClusterFuzzLite·OSS-Fuzz는 남음 |
 | P5 | 저장소 색인 서명(minisign): 저장소마다 공개키(여럿, 교체 중), 서명 범위 안의 `serial`(본 것보다 낮으면 거부)과 `expires`(롤백·동결 공격), 이름은 그것을 내는 첫 저장소의 것이고 설치한 이름은 받은 곳(`.sbx-origin`)에서만 다시 받는다(어댑터 포함). `repo add --key`/`--unsigned`, `install --repo`, `ls`·tui의 FROM, `xtask repo-keygen`·`repo-sign`, `smoke-local.sh`가 서명된 저장소로, `executors.yml`이 비밀 값이 있으면 서명, `executors-resign.yml` | 완료. 남음(나중에 정한다): 공식 키를 만들어 `OFFICIAL_KEYS`와 비밀 값 `EXECUTORS_SIGNING_KEY`에 두기, 다시 서명을 자동으로 할지 |
-| P6 | Linux 격리: root가 있으면 Firecracker 공식 jailer(chroot, namespace, cgroup, 인스턴스마다 uid), 없으면 Landlock·seccomp와 위임받은 cgroup v2로 CPU·메모리·IO 상한. scratch 디스크 속도 제한. macOS는 wick에 jailer 상당이 생길 때까지 다중 테넌트용이 아니라고 적는다. 어댑터가 맡는다 | 남음 |
+| P6 | ~~Linux 격리(jailer 등)~~: sbx의 일이 아니다. VMM을 어떻게 가두는지는 실행기·어댑터와 VMM이 정한다. sbx는 실행기 규약으로 통신만 하고, 어떤 VMM이나 그 묶음 내용에도 기대지 않는다 | 뺌 |
 | P7 | 자원 상한: MCP의 샌드박스 수·vCPU·메모리 합계, detached 샌드박스의 수명·유휴 시간, pull·prepare 디스크 사용량, egress 전송량, scratch 디스크 합계 (31의 MCP 부분) | 일부: `sbx mcp --max-sandboxes/--max-cpus/--max-memory` (기본 8개·4 vCPU·4 GiB, 시작 중인 것도 센다). 수명·유휴, 디스크, egress는 남음 |
 | P8 | 취약점 처리 절차(SECURITY.md): 첫 응답 48시간, 판단 7일, 고침이 준비되면 엠바고 최대 14일·신고 뒤 90일 안 공개, GHSA로 CVE, "위협 모델 표의 경계를 넘으면 CVE", 지원 버전(최신 minor 둘, 각 1년 이상), 어댑터·커널·wick·upstream의 신고처, 릴리스 노트의 Security 절, 받은 것을 확인하는 법 | 완료 |
 | P9 | 호환성 정책(`COMPATIBILITY.md`): semver, 지원 중단은 minor 하나 이상 경고한 뒤, 계약 목록(CLI 플래그·종료 코드, `--format json`은 더하기만, MCP 도구, 실행기 규약, 저장소 색인, data/cache 배치, `.sbx-executor`·라벨). 실행기 규약을 "같아야 한다"에서 범위 협상으로: sbx는 `MIN_VERSION..=VERSION`, 실행기는 `capabilities`의 `min_version`..`version`, 겹치는 가장 높은 버전으로 `Launch`. `capabilities`는 더하기만(모르는 필드 무시), 색인의 `min_protocol`. 남음: 디스크 배치 버전 파일(`layout-version`)과 옮기기/거부는 P16(이름 변경)에서 데이터 디렉터리를 옮길 때 | 일부 |
 | P10 | 거버넌스: CODE_OF_CONDUCT(Contributor Covenant 2.1), MAINTAINERS, GOVERNANCE, DCO(CI `dco` 작업이 PR 커밋을 본다), PR 양식. 남음: 브랜치·태그 rulesets(저장소 설정), 릴리스 권한을 가진 두 번째 메인테이너(지금은 한 명, 구한다고 적었다) | 일부 |
 | P11 | OpenSSF Scorecard 작업(`scorecard.yml`, main push와 손으로, 결과 공개와 코드 스캔)과 README 배지. 남음: Best Practices 배지(passing, bestpractices.dev에 사람이 등록), OSPS Baseline 자가 증명 | 일부 |
-| P12 | 커널·VMM 패치 정책(추적, 재빌드 주기), 색인의 `yanked`·`advisory`, `executor ls`와 tui가 설치된 취약 버전을 알린다 | 남음 |
+| P12 | 색인의 `yanked`·`advisory`(저장소 규약), `executor ls`와 tui가 설치된 것 중 그렇게 표시된 버전을 알린다. 커널·VMM 패치 정책은 그 묶음을 만드는 쪽의 일이다 | 남음 |
 | P13 | 운영: 감사 기록(누가 언제 무엇을 만들고 실행했나, 이미지 digest, 실행기 버전, allow 목록, exec argv·종료 코드, egress 허용·거부. JSONL, 보존 기간 설정, 선택적으로 OTel), `sbx stats`, `sbx system df`·`prune`, 고아 VM 정리 | 남음 |
-| P14 | 호스트 강화 점검 `sbx info --security`(SMT, KSM, swap, KVM 권한, 시리얼 출력) | 남음 |
+| P14 | ~~호스트 강화 점검(SMT, KSM, KVM 권한 등)~~: VMM을 돌리는 호스트 설정은 실행기·VMM 쪽의 일이다 | 뺌 |
 | P15 | SDK(Python, TypeScript): CLI JSON 계약을 감싸고 `cli-output.schema.json`으로 타입을 만든다(데몬 없음) | 남음 |
 | P16 | 이름을 `cowl`로 바꾼다: Docker Sandboxes도 `sbx` 바이너리를 brew·winget·apt로 배포해 PATH가 겹치고, USPTO에 DOCKER, INC.의 `SBX`(9류)가 있다. 후보(cowl, husk, glim, onggi 등)를 Homebrew·Debian·Ubuntu 바이너리, crates·npm·PyPI, USPTO로 조사해 골랐다(EU·한국 상표는 남음). 바이너리·크레이트·환경 변수·라벨·데이터 디렉터리(옛 디렉터리 옮기기)·문서 | 결정(cowl), 남음 |
 

@@ -339,8 +339,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      id-token: write
-      attestations: write
     # release.yml도 gh-pages에 push한다.
     concurrency:
       group: gh-pages
@@ -430,8 +428,6 @@ jobs:
             for f in "${wick_files[@]}"; do upload_once "$wick_rel" "$f"; done
           fi
 
-          # 올린 압축 파일의 출처 증명은 다음 단계에서 만든다.
-          mkdir -p attest && cp "${wick_files[@]}" "${adapter_files[@]}" attest/
           # 압축 파일은 Releases에 있다. Pages에는 색인과 서명만 둔다.
           rm -f "${wick_files[@]}" "${adapter_files[@]}"
           find "$repo" -type d -empty -delete
@@ -452,7 +448,3 @@ jobs:
           git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
             commit -qm "executors: wick@$WICK_VERSION, firecracker adapter $ADAPTER_VERSION"
           git push origin gh-pages
-      - if: ${{ hashFiles('attest/*') != '' }}
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-path: attest/*

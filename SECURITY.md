@@ -79,8 +79,9 @@ publishes (see below).
 
 These are known gaps, in rough order of importance. Some are on the [roadmap](docs/roadmap.md).
 
-- **No jailer.** The VMM runs as your user, without Firecracker's jailer (chroot, namespaces, cgroups). An escape
-  from the VM lands as your user on the host.
+- **Confining the VMM is the executor's job.** `sbx` talks to executors over the executor protocol and doesn't
+  confine the VMM process itself. The `firecracker` adapter runs it as your user, with Firecracker's seccomp filters
+  but without a jailer, so an escape from the VM lands as your user on the host.
 - **The official repository is not signed yet.** Signed repositories work (see above), but the official
   repository's key hasn't been created, so `official` is still an unsigned repository: TLS is all that protects its
   index, and whoever controls GitHub Pages for this project controls what `sbx executor install` gets from it.

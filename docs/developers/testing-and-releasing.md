@@ -184,8 +184,7 @@ The schema 1 `executors/index.json`, which `sbx` 0.1.x reads, stays as it is.
 unsigned. The matching public key goes in `OFFICIAL_KEYS` in
 [`executors.rs`](../../crates/app/cli/src/executors.rs); until both exist, `official` is an unsigned repository. A
 signed index has to be re-signed before it expires: [`executors-resign.yml`](../../.github/workflows/executors-resign.yml)
-(by hand) does only that and fails if the contents would change. The archives it uploads also get a GitHub build
-provenance attestation. To rotate the key, add the new public key next to the old one in `OFFICIAL_KEYS`, release, then
+(by hand) does only that and fails if the contents would change. To rotate the key, add the new public key next to the old one in `OFFICIAL_KEYS`, release, then
 switch the secret.
 
 ### Executor repositories and packages
