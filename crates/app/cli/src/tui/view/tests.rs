@@ -4,7 +4,7 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
-use crate::tui::model::tests::{event, loaded};
+use crate::tui::model::tests::{event, executors, loaded};
 use crate::tui::model::{Msg, Popup};
 
 /// 2026-11-10T12:02:00Z: 고정한 샌드박스 생성 시각의 2분 뒤.
@@ -134,4 +134,38 @@ fn events_keep_following_the_newest_across_filter_changes() {
     assert!(s.contains("id0099"), "{s}");
     // 이름이 먼저, 이미지 ID는 12자리로 줄인다.
     assert!(s.contains("name=web image=efefefefefef "), "{s}");
+}
+
+#[test]
+fn executors_tab_shows_current_marks_and_adapters() {
+    let mut m = loaded();
+    m.tab = Tab::Executors;
+    assert!(render(&mut m, 120, 20).contains("loading"));
+    m.apply(Msg::Executors(Ok(executors())));
+    let s = render(&mut m, 140, 20);
+    assert!(s.contains("4 Executors 3"), "{s}");
+    assert!(
+        s.contains("current: wick@1.18.0") && s.contains("adapter firecracker@0.2.0"),
+        "{s}"
+    );
+    // 지금 쓸 것은 >, 어댑터 줄에는 그것을 쓰는 VMM 묶음.
+    let wick = s.lines().find(|l| l.contains("/d/executors/wick")).unwrap();
+    assert!(wick.contains(">") && wick.contains("firecracker"), "{wick}");
+    let adapter = s
+        .lines()
+        .find(|l| l.contains("/d/adapters/firecracker"))
+        .unwrap();
+    assert!(adapter.contains("wick@1.18.0"), "{adapter}");
+    assert!(s.contains("u use  i install"), "{s}");
+    // 실행기가 없으면 까닭을 보인다.
+    let mut x = executors();
+    x.executors.clear();
+    x.adapters.clear();
+    x.current = Err("no executor is installed; install one with: sbx executor install wick".into());
+    m.apply(Msg::Executors(Ok(x)));
+    let s = render(&mut m, 140, 20);
+    assert!(
+        s.contains("sbx executor install wick") && s.contains("nothing here"),
+        "{s}"
+    );
 }

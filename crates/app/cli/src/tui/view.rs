@@ -1,7 +1,7 @@
 //! 그리기. [`Model`]을 화면에 옮길 뿐 상태를 정하지 않는다(표의 첫 줄만 보이는 범위에 맞춘다).
 //!
 //! ```text
-//!  sbx  Sandboxes 3 │ Images 2 │ Events 41                      filter: web
+//!  sbx  1 Sandboxes 3 │ 2 Images 2 │ 3 Events 41 │ 4 Executors 3  filter: web
 //! ┌──────────────────────────────────────────────────────────────────────┐
 //! │ NAME   ID            IMAGE         STATE      COMMAND    CREATED    │  표: 보이는 줄만 만든다
 //! │ web    3f2a9c0d1e2b  alpine:3.20   running    sleep 1d   2 minutes  │
@@ -23,7 +23,7 @@ use ratatui::widgets::{
 };
 
 use super::keys::KEYS;
-use super::model::{Cursor, Model, Popup, PromptKind, TABS, Tab, display, state_name};
+use super::model::{Cursor, ExecutorRow, Model, Popup, PromptKind, TABS, Tab, display, state_name};
 use crate::behavior::{MIN_ID_PREFIX, familiar, human_ago, human_size};
 use crate::output::{Event, Sandbox, SandboxState};
 
@@ -52,6 +52,7 @@ pub fn draw(frame: &mut Frame, model: &mut Model, now_ns: u64) {
         Tab::Sandboxes => sandboxes(frame, model, body, now_ns),
         Tab::Images => images(frame, model, body),
         Tab::Events => events(frame, model, body),
+        Tab::Executors => executors(frame, model, body),
     }
     footer(frame, model, bottom);
     if let Some(p) = &mut model.popup {
@@ -64,6 +65,7 @@ fn header(frame: &mut Frame, model: &Model, area: Rect) {
         model.visible_sandboxes().len(),
         model.visible_images().len(),
         model.visible_events().len(),
+        model.visible_executor_rows().len(),
     ];
     let mut spans = vec![Span::from(" sbx ").bold().reversed(), Span::from(" ")];
     for (i, tab) in TABS.iter().enumerate() {
@@ -227,6 +229,99 @@ fn images(frame: &mut Frame, model: &mut Model, area: Rect) {
     *model.cursor(Tab::Images) = cursor;
 }
 
+/// 실행기 탭. 위 한 줄은 새 샌드박스가 쓸 실행기와 그 까닭(`executor current`), 아래는 실행기와 어댑터 표.
+/// `*`는 기본, `>`는 지금 쓸 것이다.
+fn executors(frame: &mut Frame, model: &mut Model, area: Rect) {
+    let [top, list] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+    let current = model.executors.as_ref().map(|x| &x.current);
+    let line = match current {
+        None => Line::from(" current: …").dark_gray(),
+        Some(Ok(c)) => {
+            let what = match (&c.name, &c.version) {
+                (Some(n), Some(v)) => format!("{n}@{v}"),
+                _ => c.program.clone(),
+            };
+            let mut spans = vec![
+                Span::from(" current: ").dark_gray(),
+                Span::from(what).bold(),
+                Span::from(format!("  ({})", c.source)).dark_gray(),
+            ];
+            if let Some(a) = &c.adapter {
+                spans.push(Span::from(format!("  adapter {a}")).dark_gray());
+            }
+            Line::from(spans)
+        }
+        Some(Err(e)) => Line::from(format!(" current: {e}")).yellow(),
+    };
+    frame.render_widget(line, top);
+    let current = current
+        .and_then(|c| c.as_ref().ok())
+        .and_then(|c| Some(format!("{}@{}", c.name.as_ref()?, c.version.as_ref()?)));
+    let mut cursor = *model.cursor(Tab::Executors);
+    let rows = model.visible_executor_rows();
+    let spec = Spec {
+        title: "Executors and adapters",
+        len: rows.len(),
+        loaded: model.executors.is_some(),
+        header: &["", "KIND", "NAME", "VERSION", "ADAPTER / USED BY", "PATH"],
+        widths: &[
+            Constraint::Length(2),
+            Constraint::Length(8),
+            Constraint::Max(20),
+            Constraint::Max(20),
+            Constraint::Max(28),
+            Constraint::Fill(1),
+        ],
+    };
+    table(frame, list, &mut cursor, spec, |range| {
+        rows[range]
+            .iter()
+            .map(|r| {
+                let mark = match r {
+                    ExecutorRow::Executor(e) => {
+                        let now = current.as_deref() == Some(r.spec().as_str());
+                        match (e.default, now) {
+                            (_, true) => ">",
+                            (true, false) => "*",
+                            _ => "",
+                        }
+                    }
+                    ExecutorRow::Adapter(_) => "",
+                };
+                let (kind, name, version, link, path) = match r {
+                    ExecutorRow::Executor(e) => (
+                        "executor",
+                        &e.name,
+                        &e.version,
+                        e.adapter.clone().unwrap_or_else(|| "-".into()),
+                        &e.path,
+                    ),
+                    ExecutorRow::Adapter(a) => (
+                        "adapter",
+                        &a.name,
+                        &a.version,
+                        if a.used_by.is_empty() {
+                            "-".into()
+                        } else {
+                            a.used_by.join(", ")
+                        },
+                        &a.path,
+                    ),
+                };
+                Row::new(vec![
+                    Cell::from(mark),
+                    Cell::from(kind),
+                    Cell::from(name.clone()),
+                    Cell::from(version.clone()),
+                    Cell::from(link),
+                    Cell::from(path.clone()),
+                ])
+            })
+            .collect()
+    });
+    *model.cursor(Tab::Executors) = cursor;
+}
+
 const EVENT_HEADER: [&str; 5] = ["TIME (UTC)", "TYPE", "ACTION", "ID", "ATTRIBUTES"];
 const EVENT_WIDTHS: [Constraint; 5] = [
     Constraint::Length(10),
@@ -314,6 +409,7 @@ fn footer(frame: &mut Frame, model: &Model, area: Rect) {
         Tab::Sandboxes => "s start  x stop  e shell  l logs  D rm  ? help  q quit ",
         Tab::Images => "D rmi  : command  ? help  q quit ",
         Tab::Events => "/ filter  ? help  q quit ",
+        Tab::Executors => "u use  i install  S search  D rm  P prune  ? help  q quit ",
     })
     .dark_gray()
     .right_aligned();

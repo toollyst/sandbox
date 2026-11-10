@@ -3,7 +3,9 @@
 //! 코어를 직접 부르지 않는다. 보는 것도 하는 것도 모두 같은 `sbx` 실행 파일을 자식으로 부른 결과다.
 //! 그래서 TUI가 보여 주는 것은 CLI가 하는 것과 어긋날 수 없고, 상태 줄의 명령 줄을 셸에 붙여 넣으면 같은 일이 된다.
 //!
-//! - 보기: `ps -a`, `images`(`--format json`)를 읽고, `events --since 1h`를 따라 읽는다. 샌드박스 이벤트가 오면
+//! - 보기: `ps -a`, `images`(`--format json`)를 읽고, `events --since 1h`를 따라 읽는다. 실행기 탭은 `executor ls`,
+//!   `executor adapter ls`, `executor current`를 읽는다(이벤트가 없으므로 열 때, `executor` 명령이 끝날 때, 터미널을
+//!   돌려받을 때 다시 읽는다). 샌드박스 이벤트가 오면
 //!   `ps -a`를, 이미지 이벤트가 오면 `images`를 다시 읽는다(읽는 중에 또 오면 끝난 뒤 한 번 더).
 //!   `ps`보다 앞선 시각부터 이벤트를 받으므로 그 사이의 변화도 놓치지 않는다.
 //! - 하기([`model::Action`]):
@@ -54,6 +56,7 @@ pub fn run(cli: &Cli) -> AppResult<u8> {
     let mut lists = Lists::default();
     lists.refresh(List::Sandboxes, &sbx, &tx);
     lists.refresh(List::Images, &sbx, &tx);
+    lists.refresh(List::Executors, &sbx, &tx);
     // 넘긴 터미널에서 친 Ctrl+C로 TUI가 죽지 않게 처리기를 둔다(무시가 아니라서 자식은 exec 때 기본으로 돌아간다).
     // raw 모드인 동안 Ctrl+C는 키로 온다.
     let _sigint = interrupt_handler()?;
@@ -86,6 +89,7 @@ fn event_loop(
                     // 넘긴 동안의 변화는 이벤트로 오지만, `:` 명령이 다른 데이터 디렉터리를 썼을 수도 있어 다시 읽는다.
                     lists.refresh(List::Sandboxes, sbx, tx);
                     lists.refresh(List::Images, sbx, tx);
+                    lists.refresh(List::Executors, sbx, tx);
                 }
             }
         }
@@ -95,6 +99,11 @@ fn event_loop(
                 Msg::Event(e) if e.kind == "image" => lists.refresh(List::Images, sbx, tx),
                 Msg::Sandboxes(_) => lists.done(List::Sandboxes, sbx, tx),
                 Msg::Images(_) => lists.done(List::Images, sbx, tx),
+                Msg::Executors(_) => lists.done(List::Executors, sbx, tx),
+                // 실행기는 이벤트를 내지 않는다. `executor` 명령이 끝나면 다시 읽는다.
+                Msg::Done { args, .. } if args.first().is_some_and(|a| a == "executor") => {
+                    lists.refresh(List::Executors, sbx, tx)
+                }
                 _ => {}
             }
             model.apply(msg);
@@ -167,13 +176,14 @@ impl Sbx {
 enum List {
     Sandboxes,
     Images,
+    Executors,
 }
 
 /// 목록마다 읽는 중인지, 읽는 중에 또 읽으라고 했는지.
 #[derive(Debug, Default)]
 struct Lists {
-    busy: [bool; 2],
-    again: [bool; 2],
+    busy: [bool; 3],
+    again: [bool; 3],
 }
 
 impl Lists {
@@ -189,6 +199,7 @@ impl Lists {
             let msg = match list {
                 List::Sandboxes => Msg::Sandboxes(sbx.json::<Vec<Sandbox>>(&["ps", "-a"])),
                 List::Images => Msg::Images(sbx.json::<Vec<Image>>(&["images"])),
+                List::Executors => Msg::Executors(executors(&sbx)),
             };
             let _ = tx.send(msg);
         });
@@ -201,6 +212,15 @@ impl Lists {
             self.refresh(list, sbx, tx);
         }
     }
+}
+
+/// 실행기 탭의 내용. 실행기가 하나도 없으면 `current`가 그 까닭이다(오류가 아니다).
+fn executors(sbx: &Sbx) -> Result<model::Executors, String> {
+    Ok(model::Executors {
+        executors: sbx.json(&["executor", "ls"])?,
+        adapters: sbx.json(&["executor", "adapter", "ls"])?,
+        current: sbx.json(&["executor", "current"]),
+    })
 }
 
 /// `events --since`를 따라 읽는 자식. 버리면 죽인다.

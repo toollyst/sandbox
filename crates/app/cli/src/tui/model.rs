@@ -8,7 +8,9 @@ use std::ops::Range;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::output::{Event, Image, Sandbox, SandboxState};
+use crate::output::{
+    ChosenExecutor, Event, Image, InstalledAdapter, InstalledExecutor, Sandbox, SandboxState,
+};
 
 /// 이벤트 탭에 남기는 개수. 넘으면 오래된 것부터 버린다.
 pub const EVENTS_KEPT: usize = 10_000;
@@ -26,10 +28,15 @@ pub enum Tab {
     Images,
     /// 이벤트(`events --since`).
     Events,
+    /// 실행기와 어댑터(`executor ls`, `executor adapter ls`, `executor current`).
+    Executors,
 }
 
 /// 탭 순서.
-pub const TABS: [Tab; 3] = [Tab::Sandboxes, Tab::Images, Tab::Events];
+pub const TABS: [Tab; 4] = [Tab::Sandboxes, Tab::Images, Tab::Events, Tab::Executors];
+
+/// 셸 키(`i`)가 처음 채우는 설치 명령. 고른 줄이 있으면 그 이름이다.
+pub const INSTALL_DEFAULT: &str = "wick";
 
 impl Tab {
     /// 제목.
@@ -38,6 +45,7 @@ impl Tab {
             Tab::Sandboxes => "Sandboxes",
             Tab::Images => "Images",
             Tab::Events => "Events",
+            Tab::Executors => "Executors",
         }
     }
 
@@ -46,6 +54,7 @@ impl Tab {
             Tab::Sandboxes => 0,
             Tab::Images => 1,
             Tab::Events => 2,
+            Tab::Executors => 3,
         }
     }
 }
@@ -72,6 +81,8 @@ pub enum Msg {
     Event(Event),
     /// `events`가 끝났다(끝나면 안 된다).
     EventsEnded(String),
+    /// 실행기 탭의 내용(`executor ls`, `executor adapter ls`, `executor current`).
+    Executors(Result<Executors, String>),
     /// [`Action::Run`]이 끝났다.
     Done {
         /// 실행한 인자.
@@ -81,6 +92,44 @@ pub enum Msg {
         /// 실패했으면 stderr의 첫 줄.
         message: String,
     },
+}
+
+/// 실행기 탭에 보이는 것.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Executors {
+    /// 설치한 실행기.
+    pub executors: Vec<InstalledExecutor>,
+    /// 설치한 어댑터.
+    pub adapters: Vec<InstalledAdapter>,
+    /// 새 샌드박스가 쓸 실행기. 없으면 그 까닭.
+    pub current: Result<ChosenExecutor, String>,
+}
+
+/// 실행기 탭의 줄 하나.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ExecutorRow<'a> {
+    /// 실행기.
+    Executor(&'a InstalledExecutor),
+    /// 어댑터.
+    Adapter(&'a InstalledAdapter),
+}
+
+impl ExecutorRow<'_> {
+    /// `이름@버전`.
+    pub fn spec(&self) -> String {
+        match self {
+            Self::Executor(e) => format!("{}@{}", e.name, e.version),
+            Self::Adapter(a) => format!("{}@{}", a.name, a.version),
+        }
+    }
+
+    /// 이름.
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Executor(e) => &e.name,
+            Self::Adapter(a) => &a.name,
+        }
+    }
 }
 
 /// 표 하나의 선택과 첫 줄. 보이는 줄만 그리려고 둔다(가상 스크롤).
@@ -183,8 +232,10 @@ pub struct Model {
     pub events: VecDeque<Event>,
     /// 이벤트 탭에서 맨 아래가 아닌 줄을 골랐다. 아니면 새 것을 따라간다(거르는 글이 바뀌어도).
     pub scrolled_back: bool,
+    /// 실행기 탭. 아직 못 받았으면 `None`.
+    pub executors: Option<Executors>,
     /// 탭마다의 표 위치.
-    pub cursors: [Cursor; 3],
+    pub cursors: [Cursor; 4],
     /// 거르는 글(`/`). 비면 거르지 않는다.
     pub filter: String,
     /// 입력 중인 줄.
@@ -258,12 +309,32 @@ impl Model {
             .collect()
     }
 
+    /// 거른 실행기 탭 줄: 실행기, 그다음 어댑터.
+    pub fn visible_executor_rows(&self) -> Vec<ExecutorRow<'_>> {
+        let f = self.filter.to_lowercase();
+        let Some(x) = &self.executors else {
+            return Vec::new();
+        };
+        x.executors
+            .iter()
+            .map(ExecutorRow::Executor)
+            .chain(x.adapters.iter().map(ExecutorRow::Adapter))
+            .filter(|r| f.is_empty() || r.spec().to_lowercase().contains(&f))
+            .collect()
+    }
+
     fn len(&self, tab: Tab) -> usize {
         match tab {
             Tab::Sandboxes => self.visible_sandboxes().len(),
             Tab::Images => self.visible_images().len(),
             Tab::Events => self.visible_events().len(),
+            Tab::Executors => self.visible_executor_rows().len(),
         }
+    }
+
+    fn selected_executor_row(&self) -> Option<ExecutorRow<'_>> {
+        let i = self.cursors[Tab::Executors.index()].selected;
+        self.visible_executor_rows().get(i).copied()
     }
 
     fn selected_sandbox(&self) -> Option<&Sandbox> {
@@ -287,7 +358,14 @@ impl Model {
                 self.images = Some(v);
                 self.error = None;
             }
-            Msg::Sandboxes(Err(e)) | Msg::Images(Err(e)) | Msg::EventsEnded(e) => {
+            Msg::Executors(Ok(v)) => {
+                self.executors = Some(v);
+                self.error = None;
+            }
+            Msg::Sandboxes(Err(e))
+            | Msg::Images(Err(e))
+            | Msg::Executors(Err(e))
+            | Msg::EventsEnded(e) => {
                 self.error = Some(e);
             }
             Msg::Event(e) => {
@@ -336,7 +414,7 @@ impl Model {
             KeyCode::Char('q') => return Some(Action::Quit),
             KeyCode::Tab => self.tab = TABS[(tab.index() + 1) % TABS.len()],
             KeyCode::BackTab => self.tab = TABS[(tab.index() + TABS.len() - 1) % TABS.len()],
-            KeyCode::Char(c @ '1'..='3') => self.tab = TABS[c as usize - '1' as usize],
+            KeyCode::Char(c @ '1'..='4') => self.tab = TABS[c as usize - '1' as usize],
             KeyCode::Down | KeyCode::Char('j') => self.cursor(tab).move_by(1, len),
             KeyCode::Up | KeyCode::Char('k') => self.cursor(tab).move_by(-1, len),
             KeyCode::PageDown => self.cursor(tab).move_by(page, len),
@@ -417,6 +495,39 @@ impl Model {
                 }
             }
             Tab::Events => None,
+            Tab::Executors => self.executor_key(c),
+        }
+    }
+
+    /// 실행기 탭의 명령 키. `i`, `S`, `P`는 고른 줄이 없어도 된다.
+    fn executor_key(&mut self, c: char) -> Option<Action> {
+        let words = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        match c {
+            'i' => {
+                let name = self
+                    .selected_executor_row()
+                    .filter(|r| matches!(r, ExecutorRow::Executor(_)))
+                    .map_or(INSTALL_DEFAULT.to_owned(), |r| r.name().to_owned());
+                // 고쳐 칠 수 있게 명령 줄에 채운다. 받는 동안 진행을 보이도록 터미널을 넘긴다.
+                self.prompt = Some(Prompt {
+                    kind: PromptKind::Command,
+                    text: format!("executor install {name}"),
+                });
+                return None;
+            }
+            'S' => return Some(Action::Handover(words(&["executor", "search"]))),
+            'P' => return self.confirm(words(&["executor", "prune"])),
+            _ => {}
+        }
+        let row = self.selected_executor_row()?;
+        let spec = row.spec();
+        match (c, row) {
+            ('u', ExecutorRow::Executor(_)) => Some(self.run(words(&["executor", "use", &spec]))),
+            ('D', ExecutorRow::Executor(_)) => self.confirm(words(&["executor", "rm", &spec])),
+            ('D', ExecutorRow::Adapter(_)) => {
+                self.confirm(words(&["executor", "adapter", "rm", &spec]))
+            }
+            _ => None,
         }
     }
 
@@ -446,6 +557,14 @@ impl Model {
                 let i = self.selected_image()?;
                 let title = i.references.first().unwrap_or(&i.id).clone();
                 (title, serde_json::to_string_pretty(i).ok()?)
+            }
+            Tab::Executors => {
+                let r = self.selected_executor_row()?;
+                let body = match r {
+                    ExecutorRow::Executor(e) => serde_json::to_string_pretty(e).ok()?,
+                    ExecutorRow::Adapter(a) => serde_json::to_string_pretty(a).ok()?,
+                };
+                (r.spec(), body)
             }
             Tab::Events => {
                 let i = self.cursors[Tab::Events.index()].selected;

@@ -93,7 +93,7 @@ You can change what the installer does with `SBX_VERSION` or `SBX_INSTALL_DIR`. 
 ```sh
 sbx info                    # check it worked: host, virtualization, executor
 sbx completion zsh --help   # tab completion, sandbox names and images too (bash, zsh, fish, PowerShell)
-sbx tui                     # full-screen view of sandboxes, images and events; keys run sbx commands
+sbx tui                     # full-screen view of sandboxes, images, events and executors; keys run sbx commands
 ```
 
 <details>

@@ -20,7 +20,7 @@ const fn k(keys: &'static str, tabs: &'static str, does: &'static str) -> KeyHel
 
 /// 키 목록. 정본이다.
 pub const KEYS: &[KeyHelp] = &[
-    k("Tab, 1 2 3", "all", "switch tab"),
+    k("Tab, 1 2 3 4", "all", "switch tab"),
     k("Up Down j k, PgUp PgDn, g G", "all", "move"),
     k("Enter", "all", "details (as JSON)"),
     k("/", "all", "filter rows by text (Esc clears)"),
@@ -42,6 +42,27 @@ pub const KEYS: &[KeyHelp] = &[
         "sandboxes",
         "logs -f (hands over the terminal; Ctrl+C stops following)",
     ),
+    k(
+        "u",
+        "executors",
+        "executor use (the default for new sandboxes)",
+    ),
+    k(
+        "i",
+        "executors",
+        "executor install (fills in the command to edit; hands over the terminal)",
+    ),
+    k(
+        "S",
+        "executors",
+        "executor search (hands over the terminal)",
+    ),
+    k(
+        "D",
+        "executors",
+        "executor rm, or executor adapter rm (asks first)",
+    ),
+    k("P", "executors", "executor prune (asks first)"),
     k("?", "all", "this help"),
     k("q, Ctrl+C", "all", "quit"),
 ];

@@ -64,6 +64,37 @@ pub(crate) fn loaded() -> Model {
     m
 }
 
+/// 실행기 둘(wick 기본, fake)과 어댑터 하나, 지금 쓸 것은 wick.
+pub(crate) fn executors() -> Executors {
+    let ex =
+        |name: &str, version: &str, default: bool, adapter: Option<&str>| -> InstalledExecutor {
+            serde_json::from_value(serde_json::json!({
+                "name": name, "version": version, "default": default,
+                "path": format!("/d/executors/{name}/{version}"), "adapter": adapter,
+            }))
+            .unwrap()
+        };
+    Executors {
+        executors: vec![
+            ex("fake", "1.0", false, None),
+            ex("wick", "1.18.0", true, Some("firecracker")),
+        ],
+        adapters: vec![
+            serde_json::from_value(serde_json::json!({
+                "name": "firecracker", "version": "0.2.0",
+                "path": "/d/adapters/firecracker/0.2.0/sbx-executor", "used_by": ["wick@1.18.0"],
+            }))
+            .unwrap(),
+        ],
+        current: serde_json::from_value(serde_json::json!({
+            "name": "wick", "version": "1.18.0", "source": "default (sbx executor use)",
+            "program": "/d/adapters/firecracker/0.2.0/sbx-executor", "adapter": "firecracker@0.2.0",
+            "vmm_dir": "/d/executors/wick/1.18.0",
+        }))
+        .map_err(|e: serde_json::Error| e.to_string()),
+    }
+}
+
 fn press(m: &mut Model, code: KeyCode) -> Option<Action> {
     m.key(KeyEvent::from(code))
 }
@@ -144,6 +175,16 @@ fn every_listed_letter_key_does_something() {
         let acted = press(&mut m, KeyCode::Char(c)).is_some() || m.popup.is_some();
         assert!(acted, "{:?}", h.keys);
     }
+    for h in KEYS.iter().filter(|h| h.tabs == "executors") {
+        let mut m = loaded();
+        m.apply(Msg::Executors(Ok(executors())));
+        m.tab = Tab::Executors;
+        // 기본이 아닌 실행기(fake)를 고른다.
+        let c = h.keys.chars().next().unwrap();
+        let acted =
+            press(&mut m, KeyCode::Char(c)).is_some() || m.popup.is_some() || m.prompt.is_some();
+        assert!(acted, "{:?}", h.keys);
+    }
     // 고를 것이 없으면 아무것도 하지 않는다.
     let mut empty = Model::default();
     assert_eq!(press(&mut empty, KeyCode::Char('x')), None);
@@ -157,6 +198,8 @@ fn quit_keys_and_tabs() {
     assert_eq!(press(&mut m, KeyCode::Tab), None);
     assert_eq!(m.tab(), Tab::Images);
     press(&mut m, KeyCode::BackTab);
+    press(&mut m, KeyCode::BackTab);
+    assert_eq!(m.tab(), Tab::Executors);
     press(&mut m, KeyCode::BackTab);
     assert_eq!(m.tab(), Tab::Events);
     assert_eq!(press(&mut m, KeyCode::Char('q')), Some(Action::Quit));
@@ -325,4 +368,71 @@ fn help_text_lists_every_key() {
     for k in KEYS {
         assert!(h.contains(k.keys) && h.contains(k.does), "{k:?}");
     }
+}
+
+#[test]
+fn executors_tab_lists_executors_then_adapters_and_runs_executor_commands() {
+    let mut m = loaded();
+    assert_eq!(chars(&mut m, "4"), None);
+    assert_eq!(m.tab(), Tab::Executors);
+    // 아직 못 받았으면 고를 것이 없지만, 설치와 검색은 된다.
+    assert_eq!(press(&mut m, KeyCode::Char('u')), None);
+    assert_eq!(
+        press(&mut m, KeyCode::Char('S')),
+        Some(Action::Handover(strings(&["executor", "search"])))
+    );
+    m.apply(Msg::Executors(Ok(executors())));
+    let specs: Vec<String> = m.visible_executor_rows().iter().map(|r| r.spec()).collect();
+    assert_eq!(specs, ["fake@1.0", "wick@1.18.0", "firecracker@0.2.0"]);
+    assert_eq!(
+        press(&mut m, KeyCode::Char('u')),
+        Some(Action::Run(strings(&["executor", "use", "fake@1.0"])))
+    );
+    // i는 고른 이름으로 설치 명령을 채우고, 고쳐 친 뒤 Enter로 터미널을 넘긴다.
+    assert_eq!(press(&mut m, KeyCode::Char('i')), None);
+    assert_eq!(m.prompt.as_ref().unwrap().text, "executor install fake");
+    chars(&mut m, "@2.0");
+    assert_eq!(
+        press(&mut m, KeyCode::Enter),
+        Some(Action::Handover(strings(&[
+            "executor", "install", "fake@2.0"
+        ])))
+    );
+    // 어댑터 줄: D는 adapter rm을 묻는다. u는 하지 않는다.
+    press(&mut m, KeyCode::Char('G'));
+    assert_eq!(press(&mut m, KeyCode::Char('u')), None);
+    press(&mut m, KeyCode::Char('D'));
+    assert_eq!(
+        m.popup,
+        Some(Popup::Confirm {
+            args: strings(&["executor", "adapter", "rm", "firecracker@0.2.0"])
+        })
+    );
+    assert_eq!(
+        press(&mut m, KeyCode::Char('y')),
+        Some(Action::Run(strings(&[
+            "executor",
+            "adapter",
+            "rm",
+            "firecracker@0.2.0"
+        ])))
+    );
+    // 어댑터 줄에서 i는 기본 이름을 채운다.
+    press(&mut m, KeyCode::Char('i'));
+    assert_eq!(m.prompt.take().unwrap().text, "executor install wick");
+    press(&mut m, KeyCode::Char('P'));
+    assert_eq!(
+        m.popup,
+        Some(Popup::Confirm {
+            args: strings(&["executor", "prune"])
+        })
+    );
+    m.popup = None;
+    // 거르기와 자세히.
+    chars(&mut m, "/wick");
+    press(&mut m, KeyCode::Enter);
+    assert_eq!(m.visible_executor_rows().len(), 1);
+    press(&mut m, KeyCode::Char('g'));
+    press(&mut m, KeyCode::Enter);
+    assert!(matches!(&m.popup, Some(Popup::Detail { title, .. }) if title == "wick@1.18.0"));
 }
