@@ -80,8 +80,8 @@ You can change what it does with `SBX_VERSION`, `SBX_INSTALL_DIR` or `SBX_NO_EXE
 [short enough to read](install.sh).
 
 ```sh
-sbx info                      # host, hardware virtualization, executor, directories: check it worked
-sbx completion zsh --help     # tab completion for bash, zsh, fish and PowerShell
+sbx info                    # check it worked: host, virtualization, executor
+sbx completion zsh --help   # tab completion (bash, zsh, fish, PowerShell)
 ```
 
 <details>
@@ -112,7 +112,7 @@ sbx run --rm -it alpine sh                           # interactive shell with a 
 sbx run --rm --cpus 2 -m 1g python:3.12-alpine python -c 'print(42)'
 
 sbx run -d --name dev alpine sleep 600               # detached
-sbx exec -it dev sh                                  # names, IDs and unique ID prefixes all work
+sbx exec -it dev sh                                  # a name, an ID, or an ID prefix
 sbx cp dev:/etc/alpine-release .
 sbx logs -f dev
 sbx stop dev && sbx rm dev
@@ -123,7 +123,8 @@ sbx rm -f $(sbx ps -aq)                              # clean up everything
 **Files.** Copy a project in when the sandbox starts, and copy results out:
 
 ```sh
-sbx run --rm --mount type=copy,source=./proj,target=/work -w /work python:3.12-alpine python main.py
+sbx run --rm --mount type=copy,source=./proj,target=/work -w /work \
+    python:3.12-alpine python main.py
 sbx cp dev:/out/result.json ./result.json
 ```
 
@@ -232,7 +233,8 @@ sbx executor search
 sbx executor install firecracker@0.1.1
 sbx executor use firecracker@0.1.1
 
-cargo xtask repo-add --repo ./executors --bundle ./bundle --name myvmm --version 0.1.0   # publish your own
+# publish your own: add a bundle to a directory, then upload the directory as is
+cargo xtask repo-add --repo ./executors --bundle ./bundle --name myvmm --version 0.1.0
 ```
 
 ## Platforms
@@ -253,12 +255,12 @@ Bindings for other languages are planned.
 ## Development
 
 ```sh
-cargo test --workspace --all-features     # unit, protocol conformance and CLI end-to-end tests (fake executor, no VM)
-cargo xtask check-deps                    # dependency direction between and inside crates
-cargo xtask dist && cargo xtask smoke     # 17 checks on real VMs with the installed executor
-cargo xtask bench                         # real numbers on your machine
-cargo xtask demo                          # re-record assets/demo.svg (real commands, real timing)
-cargo xtask kernel --arch x86_64          # the default guest kernel (built in Docker, cross-compiled if needed)
+cargo test --workspace --all-features   # unit, conformance, CLI end to end (no VM)
+cargo xtask check-deps                  # dependency direction between and inside crates
+cargo xtask dist && cargo xtask smoke   # 17 checks on real VMs
+cargo xtask bench                       # real numbers on your machine
+cargo xtask demo                        # re-record assets/demo.svg for real
+cargo xtask kernel --arch x86_64        # the default guest kernel (built in Docker)
 ```
 
 The design notes and roadmap in [`docs/`](docs/) and the per-crate rules in each crate's docs are written in Korean.
