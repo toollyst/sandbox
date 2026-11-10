@@ -10,7 +10,14 @@
   <a href="https://github.com/toollyst/sandbox/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/toollyst/sandbox/actions/workflows/ci.yml/badge.svg"></a>
   <a href="#license"><img alt="License: Apache-2.0 OR MIT" src="https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue"></a>
   <img alt="Platforms: macOS (Apple Silicon) and Linux" src="https://img.shields.io/badge/runs%20on-macOS%20%C2%B7%20Linux-lightgrey">
+  <img alt="Status: alpha" src="https://img.shields.io/badge/status-alpha-orange">
 </p>
+
+> [!WARNING]
+> **`sbx` is alpha.** It works end to end on real VMs, but commands, flags, the on-disk layout and the executor
+> protocol may still change without notice, and it has not had an outside security audit. Read
+> [SECURITY.md](SECURITY.md) for what it does and doesn't defend against before you trust it with anything that
+> matters.
 
 ```sh
 curl -fsSL https://toollyst.github.io/sandbox/install.sh | sh

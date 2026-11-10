@@ -9,7 +9,7 @@ Use GitHub's private vulnerability reporting: **Security → Report a vulnerabil
 don't open a public issue. Include the output of `sbx info` (version, host, hypervisor and executor) and the smallest
 reproduction you have.
 
-`sbx` is pre-release. Fixes go to the latest release and `main` only.
+`sbx` is alpha. Fixes go to the latest release and `main` only.
 
 ## Threat model
 
