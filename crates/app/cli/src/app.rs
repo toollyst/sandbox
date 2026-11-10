@@ -174,6 +174,17 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
     }
 }
 
+/// `program`(경로 구분자 없는 이름)이 PATH에 있는지. Windows에서는 `.exe`도 본다.
+fn on_path(program: &std::path::Path) -> bool {
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&paths).any(|dir| {
+        let p = dir.join(program);
+        p.is_file() || (cfg!(windows) && p.with_extension("exe").is_file())
+    })
+}
+
 /// 명령들이 함께 쓰는 설정과 코어. `mcp`도 이것으로 코어를 부른다.
 pub(crate) struct Ctx {
     data_dir: PathBuf,
@@ -371,10 +382,24 @@ impl Ctx {
         if let Some(p) = &self.executor {
             return Ok(p.clone());
         }
-        Ok(match executors::installed(&self.data_dir).default()? {
-            Some(i) => i.executable,
-            None => PathBuf::from("sbx-executor"),
-        })
+        if let Some(i) = executors::installed(&self.data_dir).default()? {
+            return Ok(i.executable);
+        }
+        let fallback = PathBuf::from("sbx-executor");
+        if on_path(&fallback) {
+            return Ok(fallback);
+        }
+        // 무엇을 하면 되는지 알린다. 실행기가 없는 OS(지금은 Windows)에서는 설치할 것도 없다.
+        Err(msg(match std::env::consts::OS {
+            "linux" | "macos" => {
+                "no executor is installed; install one with: sbx executor install firecracker"
+                    .to_owned()
+            }
+            os => format!(
+                "sbx cannot run sandboxes on {os} yet: there is no executor for this platform \
+                 (pull, prepare and images work)"
+            ),
+        }))
     }
 
     /// `executor ...`.

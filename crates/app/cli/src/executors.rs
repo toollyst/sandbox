@@ -229,6 +229,20 @@ async fn search(cx: &Ctx<'_>, name: Option<&str>) -> Result<u8> {
         println!("{}", serde_json::to_string_pretty(&v)?);
         return Ok(0);
     }
+    if list.is_empty() {
+        let p = Platform::host();
+        eprintln!(
+            "sbx: no executor{} in the configured repositories runs on {}/{}{}",
+            name.map(|n| format!(" named {n:?}")).unwrap_or_default(),
+            p.os,
+            p.architecture,
+            if matches!(std::env::consts::OS, "linux" | "macos") {
+                ""
+            } else {
+                " (sbx cannot run sandboxes on this OS yet)"
+            }
+        );
+    }
     println!("{:<20} {:<14} {:<10} REPOSITORY", "NAME", "VERSION", "SIZE");
     for c in &list {
         println!(
