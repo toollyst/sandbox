@@ -21,6 +21,7 @@
 
 ```sh
 curl -fsSL https://toollyst.github.io/sandbox/install.sh | sh
+sbx executor install wick
 sbx run --rm -it python:3.12-alpine python
 ```
 
@@ -71,6 +72,7 @@ booting a VM. Try it on your machine with `cargo xtask bench` ([source](xtask/sr
 
 ```sh
 curl -fsSL https://toollyst.github.io/sandbox/install.sh | sh
+sbx executor install wick
 ```
 
 You need one of:
@@ -79,11 +81,13 @@ You need one of:
 - **Linux on x86_64 or aarch64 with `/dev/kvm`.** That means bare metal, or a VM with nested virtualization, and you
   need read and write access to `/dev/kvm` (usually through the `kvm` group). `sbx info` tells you if it's missing.
 
-The installer puts `sbx` and `sbx-shim` in `~/.local/bin` after checking their SHA-256. It then installs the
-`firecracker` executor (VMM, adapter and guest kernel) from the [official repository](https://toollyst.github.io/sandbox/executors/index.json).
-Nothing runs as root.
+The installer puts `sbx` and `sbx-shim` in `~/.local/bin` after checking their SHA-256, and nothing else: `sbx` on
+its own has no VMM. `sbx executor install wick` adds one from the
+[official repository](https://toollyst.github.io/sandbox/executors/): Firecracker for your host (upstream on Linux,
+[wick](https://github.com/toollyst/wick) on macOS), plus the `firecracker` adapter and guest kernel it runs with. See
+[Executors and versions](#executors-and-versions). Nothing runs as root.
 
-You can change what it does with `SBX_VERSION`, `SBX_INSTALL_DIR` or `SBX_NO_EXECUTOR=1`. The script is
+You can change what the installer does with `SBX_VERSION` or `SBX_INSTALL_DIR`. The script is
 [short enough to read](install.sh).
 
 ```sh
@@ -103,12 +107,17 @@ git clone https://github.com/toollyst/sandbox && cd sandbox
 rustup target add "$(uname -m | sed s/arm64/aarch64/)-unknown-linux-musl"
 cargo xtask dist                  # target/release/sbx and sbx-shim
 export PATH="$PWD/target/release:$PATH"
-sbx executor install firecracker  # prebuilt executor from the official repository
+sbx executor install wick         # prebuilt VMM and adapter from the official repository
 ```
 
-To build an executor bundle yourself instead, follow the `executor-*` jobs in [`release.yml`](.github/workflows/release.yml).
-A bundle is the adapter (`sbx-executor`), a VMM (`firecracker`) and a kernel (`cargo xtask kernel`). Install it with
-`sbx executor install --from ./bundle firecracker@local`, then check it on real VMs with `cargo xtask smoke`.
+To build them yourself instead, follow [`executors.yml`](.github/workflows/executors.yml). The adapter is a directory
+with `sbx-executor` (built from `crates/executor/firecracker`) and `kernel` (`cargo xtask kernel`); the VMM package is
+a directory with `firecracker`. Install both, then check them on real VMs with `cargo xtask smoke`:
+
+```sh
+sbx executor adapter install --from ./adapter firecracker@local
+sbx executor install --from ./vmm --adapter firecracker wick@local
+```
 
 </details>
 
@@ -208,7 +217,7 @@ VM off and `exec` kills the process. Output keeps the last 256 KiB of each strea
                                          │                                                  │
                          ┌───────────────┴────────────────────────────┐                     │
                          │ microVM                                    │                     │
-                         │  kernel (bundle default, or the image's)   │                     │
+                         │  kernel (adapter default, or the image's)  │                     │
                          │  guest init (PID 1, Rust, static)          │◄── vsock ───────────┘
                          │  /  = overlay( EROFS image, read-only      │
                          │              + per-sandbox ext2 disk )     │
@@ -219,33 +228,70 @@ VM off and `exec` kills the process. Output keeps the last 256 KiB of each strea
   happen in-process. There is no `mkfs`, no loop device and no `sudo`, and it works the same on macOS and Linux.
 - **The guest init** is embedded in `sbx` and boots as the initramfs. It mounts the image read-only, layers the
   sandbox's own disk on top, and serves exec, file copy and egress over vsock.
-- **Your images are never modified.** The kernel comes from the executor bundle and is shared by every image. An image
-  can bring its own kernel instead, with the label `io.github.toollyst.sandbox.kernel=/path/in/image`.
+- **Your images are never modified.** The kernel comes with the executor (for Firecracker, with its adapter) and is
+  shared by every image. An image can bring its own kernel instead, with the label `io.github.toollyst.sandbox.kernel=/path/in/image`.
 - **Dependencies point one way**, through layer folders: `model` → `spec` → `port` → `adapter` → `core` → `app`.
   `cargo xtask check-deps` enforces it. The cores never pick implementations; only the binaries do. The
   [developer docs](docs/developers/) map every crate.
 
+## Executors and versions
+
+`sbx` doesn't hard-code a VMM. It runs an **executor**, and executors install and switch the way Node or Go versions
+do with nvm or gvm. `sbx` alone has none; the first one you install becomes the default.
+
+```sh
+sbx executor search                 # what the repositories offer for this host (alias: ls-remote)
+sbx executor install wick           # latest; or wick@1.18.0, wick@latest
+sbx executor ls                     # installed (* marks the default)
+sbx executor use wick@1.18.0        # the global default
+echo wick@1.18.0 > .sbx-executor    # this folder and everything below it
+sbx executor current                # what a new sandbox would use here, and why
+sbx executor which wick             # the program that runs it (for a VMM package, its adapter)
+sbx run --executor wick@1.19.0 --rm alpine true   # just this once (or SBX_EXECUTOR)
+sbx executor rm wick@1.18.0         # refused while a sandbox is pinned to it, unless -f
+sbx executor prune -n               # what prune would remove: old versions nothing uses
+```
+
+A new sandbox uses the first of: `--executor` (an installed `NAME[@VERSION]` or a path to a program),
+`.sbx-executor` in the current folder or the nearest one above it, the default, and `sbx-executor` on `PATH`. A
+sandbox remembers the installed executor it was created with (label `io.github.toollyst.sandbox.executor`), so
+changing the default never changes what `start` or `restart` boots. The rules are in
+[`choose.rs`](crates/app/cli/src/choose.rs).
+
+`wick` versions follow upstream Firecracker: `wick@1.18.0` is Firecracker 1.18.0. It is a **VMM package**, just the
+`firecracker` binary for your host, run by the **`firecracker` adapter** (the program that speaks the executor
+protocol, with its default guest kernel). `install` fetches the adapter first if it is missing, and
+`sbx executor adapter ls|install|search|rm` manages adapters directly.
+
 ## Bring your own VMM
 
-`sbx` doesn't hard-code a VMM. It talks to an **executor**: any program that speaks the small, documented
-[executor protocol](crates/spec/executor-proto/src/lib.rs). `capabilities` prints one JSON line, and `run` reads a `Launch`
-request on stdin and reports `Started` and `Exited`. The bundled adapter drives Firecracker through its public
-interface (a config file and vsock), so it works with upstream Firecracker on Linux and with
-[wick](https://github.com/toollyst/wick) on macOS (Firecracker built from upstream's source for Hypervisor.framework).
+An executor is any program that speaks the small, documented [executor protocol](crates/spec/executor-proto/src/lib.rs):
+`capabilities` prints one JSON line, and `run` reads a `Launch` request on stdin and reports `Started` and `Exited`.
+The `firecracker` adapter drives Firecracker through its public interface (a config file and vsock), so it runs
+upstream Firecracker on Linux, [wick](https://github.com/toollyst/wick) on macOS, and your own Firecracker build too.
+Register a build of your own as a VMM package, or ship a self-contained executor with its own VMM next to it:
 
-Executors install and switch the way language versions do. They come from **static repositories**, following an
-[open spec](crates/spec/executor-repo/src/lib.rs): one `index.json` plus `.tar.gz` bundles, with OCI platform names,
-SHA-256 and size checks. You can host one on GitHub Pages, S3 or a plain directory:
+```sh
+sbx executor install --from ./my-firecracker --adapter firecracker myfc@1.19.0-dev   # a directory with firecracker
+sbx executor install --from ./my-executor myvmm@0.1.0                               # sbx-executor at the top
+```
+
+Executors and adapters come from **static repositories**, following an [open spec](crates/spec/executor-repo/src/lib.rs):
+an index plus `.tar.gz` packages, with OCI platform names, SHA-256 and size checks. You can host one on GitHub Pages,
+S3 or a plain directory:
 
 ```sh
 sbx executor repo add mine https://my.example.com/executors
-sbx executor search
-sbx executor install firecracker@0.1.1
-sbx executor use firecracker@0.1.1
+sbx executor repo ls                # in priority order; `official` comes first
 
-# publish your own: add a bundle to a directory, then upload the directory as is
-cargo xtask repo-add --repo ./executors --bundle ./bundle --name myvmm --version 0.1.0
+# publish your own: add packages to a directory, then upload the directory as is
+cargo xtask repo-add --repo ./executors --schema 2 --vmm-for firecracker --arch arm64 \
+    --bundle ./my-firecracker --name myfc --version 1.19.0
+cargo xtask repo-add --repo ./executors --schema 2 --bundle ./my-executor --name myvmm --version 0.1.0
 ```
+
+A VMM package names its adapter, and `install` takes that adapter from any configured repository, so a repository
+of VMM packages for `firecracker` doesn't need to carry the adapter itself.
 
 ## Platforms
 

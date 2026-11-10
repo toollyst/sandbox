@@ -74,13 +74,16 @@ docs/                        기획(plan/), 로드맵, 개발자 문서(develope
 
 **책임 분담**: VMM은 이 저장소 밖(Firecracker, macOS에서는 그 빌드인 wick)의 책임이다. 이 저장소는 생명주기, 코어, CLI, 게스트 init,
 실행기가 맞춰야 할 통신 규약(`sbx-executor-proto`), 실행기 저장소 규약(`sbx-executor-repo`), Firecracker adapter를 책임진다.
-규약에 맞는 실행기는 그대로 실행한다.
+규약에 맞는 실행기는 그대로 실행한다. 실행기는 VMM을 자기 옆에 담은 자체 완결 묶음이거나, VMM만 담은 **VMM 묶음**이다.
+VMM 묶음은 이름으로 가리킨 **어댑터**(규약을 말하는 프로그램, 예: `firecracker` 어댑터와 그 기본 커널)가 돌린다.
+그래서 공식 VMM 묶음 `wick@<upstream Firecracker 버전>`은 Firecracker 실행 파일뿐이고, 어댑터와 따로 올리고 고른다.
+누구나 자기 VMM 빌드를 어댑터에 붙여 등록할 수 있다(`sbx executor install --from DIR --adapter NAME NAME@VERSION`).
 
 **게스트 init 배포**: 게스트 init initramfs는 `sbx` 실행 파일 안에 들어 있다(`cargo xtask dist`, 빌드 대상 아키텍처의 것 하나).
 사용자의 이미지는 바꾸지 않는다. VM을 켤 때 이미지 rootfs와 별도로 initramfs를 붙이고, 처음 쓸 때 캐시의
 `guest/sha256-<내용 digest>/<arch>/initramfs`로 꺼낸다. `--guest-init`으로 다른 것을 줄 수 있다.
 
-**커널**: 보통 이미지(Docker Hub의 alpine 등)에는 커널이 없다. 그래서 실행기 묶음에 기본 리눅스 커널이 들어 있고
+**커널**: 보통 이미지(Docker Hub의 alpine 등)에는 커널이 없다. 그래서 실행기(Firecracker는 어댑터 묶음)에 기본 리눅스 커널이 들어 있고
 (아키텍처당 하나, 모든 이미지가 함께 쓴다) 보통은 그것으로 부팅한다. 이미지가 자기 커널을 담고 있으면
 라벨 `io.github.toollyst.sandbox.kernel=<이미지 안 경로>`로 알린다. 그러면 `prepare`가 그 커널을 캐시의
 `images/<hex>/kernel`로 꺼내고, 그 커널로 부팅한다(실행기가 `custom_kernel`을 알릴 때만. 아니면 띄우지 않는다).

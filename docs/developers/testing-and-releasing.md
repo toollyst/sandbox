@@ -26,7 +26,7 @@ unit test or the fake executor could have found it.
 
 ```sh
 cargo xtask dist                         # release sbx with the guest init embedded
-sbx executor install firecracker         # once: the released executor (or --from ./bundle)
+sbx executor install wick                # once: the published VMM and its adapter (or --from, below)
 cargo xtask smoke --sbx target/release/sbx
 ```
 
@@ -58,42 +58,89 @@ so on. The result is `target/kernel/<arch>/kernel`. CI caches it by the hash of 
 
 ## Releasing
 
-A release is a tag. Pushing `v<version>` runs [`release.yml`](../../.github/workflows/release.yml):
+`sbx` and its executors are released separately. A tag releases `sbx`; the executors (the `wick` VMM packages and
+the `firecracker` adapter) are published by hand with `executors.yml`, usually when upstream Firecracker releases.
+
+### `sbx`
+
+Pushing `v<version>` runs [`release.yml`](../../.github/workflows/release.yml):
 
 1. **`version`** fails unless the tag matches the workspace version in `Cargo.toml`.
 2. **`sbx`** builds `sbx-<os>-<arch>.tar.gz` (+ `.sha256`) for Linux x86_64 and aarch64 (static musl) and macOS
    arm64, each with the guest init embedded.
-3. **`kernel`** builds the default kernel for both architectures.
-4. **`executor-linux`** bundles the adapter, upstream Firecracker (checked by its sha256) and the kernel. It installs
-   the bundle into the freshly built `sbx` and runs `smoke` on KVM before anything is published. The arm64 bundle is
-   published without that run while GitHub's arm runners have no KVM.
-5. **`executor-darwin`** runs only when the repository variable `WICK_TAG` (for example `v1.18.0-wick.1`) is set.
-   It downloads `wick-<tag>-darwin-aarch64.tgz` from that [toollyst/wick](https://github.com/toollyst/wick/releases)
-   release, checks its sha256, signature and `--version` on macOS 15, and bundles it with the adapter and the arm64
-   kernel. Without the variable the release has no macOS executor bundle.
-6. **`publish`** creates the GitHub release with the `sbx` archives, adds every bundle to the official executor
-   repository on the `gh-pages` branch (`cargo xtask repo-add --url <release URL>`), uploads the bundles to the
-   release, and copies `install.sh` next to the index. GitHub Pages serves that branch at
-   <https://toollyst.github.io/sandbox/>.
+3. **`smoke`** does what a user does, on Linux x86_64 with KVM: the new `sbx` runs `sbx executor install wick` from
+   the official repository, then `cargo xtask smoke`. It fails if the repository has no `wick`, or no adapter for
+   this `sbx`'s protocol version, so run `executors.yml` first when the protocol changes.
+4. **`publish`** creates the GitHub release with the `sbx` archives and copies `install.sh` to the top of the
+   `gh-pages` branch. GitHub Pages serves that branch at <https://toollyst.github.io/sandbox/>.
 
 To cut a release:
 
 1. Bump `version` under `[workspace.package]` in `Cargo.toml` (this updates `Cargo.lock` on the next build) and
    merge it to `main` with CI green.
-2. On a Mac, run `cargo xtask dist && cargo xtask smoke` with the macOS executor you are about to ship.
+2. On a Mac, run `cargo xtask dist && cargo xtask smoke` with the macOS `wick` from the official repository.
 3. Tag and push: `git tag -a v0.2.0 -m "sbx 0.2.0" && git push origin v0.2.0`.
 4. Check the result the way a user would: `curl -fsSL https://toollyst.github.io/sandbox/install.sh | sh` into a
-   scratch `SBX_INSTALL_DIR`, then `sbx info` and `cargo xtask smoke --sbx <that sbx>`.
+   scratch `SBX_INSTALL_DIR`, then `sbx executor install wick`, `sbx info` and `cargo xtask smoke --sbx <that sbx>`.
 
 A tag whose workflow fails publishes nothing, because `publish` only runs when every build succeeded. Fix the cause,
 bump the version and tag again rather than moving a pushed tag.
 
-### Executor bundles and repositories
+### Executors (`executors.yml`)
 
-A bundle is a directory with `sbx-executor` at the top and whatever it needs next to it. For Firecracker that is
-`firecracker` and `kernel`. `cargo xtask repo-add --repo <dir> --bundle <dir> --name <n> --version <v>` packs it
-and adds it to `<dir>/index.json`. It runs the bundle's `sbx-executor capabilities` for the protocol version and
-architecture (pass `--capabilities <file>` with saved output for a bundle that can't run on this host). The OS is
-this host's, or `--os linux|darwin`. Upload the directory anywhere static, and users add it with
-`sbx executor repo add <name> <url>`. The format is specified in
-[`sbx-executor-repo`](../../crates/spec/executor-repo/src/lib.rs).
+[`executors.yml`](../../.github/workflows/executors.yml) runs only by hand. Give it an upstream Firecracker version:
+
+```sh
+gh workflow run executors.yml -f upstream=1.18.0
+```
+
+It publishes `wick@1.18.0` for every platform the official repository doesn't have yet, and never rebuilds or
+overwrites what is already there. For each platform, the VMM package is a directory with `firecracker`: upstream's
+release on Linux (checked by its sha256), and the newest `v1.18.0-wick.<N>` release of
+[toollyst/wick](https://github.com/toollyst/wick/releases) on macOS (skipped with a warning if there is none). The
+adapter is `sbx-executor-firecracker` plus the default kernel. An adapter version that is already published is reused
+as is; a new one is built from the commit you run it on. On Linux with KVM it installs both from a local repository
+and runs `cargo xtask smoke`. Then it adds them to `executors/v2/index.json` on `gh-pages` and uploads the archives to
+the GitHub releases `wick-<version>` and `firecracker-adapter-<version>`. The comment at the top of the workflow lists
+its inputs.
+
+The schema 1 `executors/index.json`, which `sbx` 0.1.x reads, stays as it is.
+
+### Executor repositories and packages
+
+A repository is a static directory: an index and `.tar.gz` packages. There are three kinds of package, all specified
+in [`sbx-executor-repo`](../../crates/spec/executor-repo/src/lib.rs):
+
+| Kind | Contents | Index entry |
+| --- | --- | --- |
+| Self-contained executor | `sbx-executor` at the top and whatever it needs next to it (for Firecracker: `firecracker` and `kernel`) | `executors`, with `protocol` |
+| Adapter | the same shape: `sbx-executor` and its files (the `firecracker` adapter has `kernel`), but no VMM | `adapters`, with `protocol` (schema 2) |
+| VMM package | no `sbx-executor`, only the VMM and its files; the named adapter runs it | `executors`, with `adapter` instead of `protocol` (schema 2) |
+
+Schema 2 lives at `v2/index.json`. `sbx` reads it first and falls back to `index.json` only when it doesn't exist, so
+one repository can serve old clients from `index.json` and new ones from `v2/index.json`. A schema 2 repository
+needs every package in `v2/index.json`; a new `sbx` doesn't see `index.json` once `v2/index.json` exists.
+
+[`cargo xtask repo-add`](../../xtask/src/repo.rs) packs a directory and adds it to the index:
+
+```sh
+# self-contained executor (schema 1 index.json unless --schema 2)
+cargo xtask repo-add --repo <dir> --bundle <dir> --name <n> --version <v>
+# adapter
+cargo xtask repo-add --repo <dir> --schema 2 --adapter-package --bundle <dir> --name <n> --version <v>
+# VMM package run by adapter <a>
+cargo xtask repo-add --repo <dir> --schema 2 --vmm-for <a> --arch amd64|arm64 --bundle <dir> --name <n> --version <v>
+```
+
+For executors and adapters it runs the package's `sbx-executor capabilities` for the protocol version and architecture
+(pass `--capabilities <file>` with saved output for a package that can't run on this host). A VMM package doesn't
+speak the protocol, so it takes `--arch` instead. The OS is this host's, or `--os linux|darwin`. `--url <prefix>`
+points the index at archives uploaded elsewhere, such as GitHub Releases. Upload the directory anywhere static, and
+users add it with `sbx executor repo add <name> <url>`.
+
+To try packages without a repository, install them directly:
+
+```sh
+sbx executor adapter install --from ./adapter firecracker@dev
+sbx executor install --from ./vmm --adapter firecracker wick@dev
+```

@@ -17,8 +17,10 @@ reproduction you have.
 guest kernel that has been taken over. The image itself (its layers and config, as pulled from a registry) is
 also untrusted input to the host.
 
-**Trusted:** the host, the user running `sbx`, the `sbx` binaries, and the executor you install (adapter, VMM and
-default kernel).
+**Trusted:** the host, the user running `sbx`, the `sbx` binaries, and the executors you install: an adapter (for
+example `firecracker`, with its default kernel), a VMM package it runs (for example `wick`), or a self-contained
+executor. They run as your user, outside any VM. So is every executor repository you configure, for every name it
+publishes (see below).
 
 ### Boundaries, and how each is held
 
@@ -29,7 +31,7 @@ default kernel).
 | Guest → host messages | Host code that reads guest messages (exec I/O, file copy, egress) treats them as hostile, and the repository has tests that play a lying guest. Frames are capped at 16 MiB. In `cp` from the guest, the host picks the name of what it writes from the path you asked for (never from the guest's answer), every path must be a safe relative path under it, and a symlink in the middle of a path is an error, so a guest can't write outside the destination you chose. Setuid, setgid and sticky bits are dropped. Output the host hasn't consumed yet is capped (4 MiB per process; the guest waits), and a detached sandbox's `main.log` stops at 256 MiB. |
 | Guest → host files | The image's root filesystem is a read-only EROFS disk shared by sandboxes of that image. Writes go to a per-sandbox disk. Host directories are visible to a sandbox only if you pass `-v`/`--mount`, and the Firecracker executor doesn't support live mounts at all (`type=copy` copies at start). |
 | Image → host (during pull and prepare) | Layers are verified against their SHA-256 digests, and a download stops as soon as it is larger than the manifest says. They are never unpacked onto the host filesystem by path: file contents are stored under generated names and merged into a single EROFS image file. Symlinks are resolved inside the image only (at most 40 hops). Only the registry host you named may be on a private or local address; token endpoints and redirects the registry hands out must be HTTPS and are resolved to internet addresses only, so a hostile registry can't make `sbx` fetch from your LAN or a metadata endpoint. Stalled reads time out after 60 s. |
-| Executor bundles → host | Bundles are checked against the size and SHA-256 in the repository index, and fetched over HTTPS (plain HTTP is accepted only from loopback; `file://` from local disk). |
+| Executor packages → host | Adapters, VMM packages and self-contained executors are checked against the size and SHA-256 in the repository index before they are unpacked. Indexes and packages are fetched over HTTPS (plain HTTP is accepted only from loopback; `file://` from local disk), and redirects follow the same rule. An archive may hold only regular files and directories: links, device files, absolute paths and `..` are refused. Before a self-contained executor or a VMM package is installed, it (for a VMM package, its adapter given that package) must report this `sbx`'s protocol version and the host's architecture; an adapter installed on its own is not checked. That check runs the downloaded program, so it is about compatibility, not security. |
 | AI agents (`sbx mcp`) | The MCP server adds no capabilities beyond the CLI. It never mounts host folders, keeps the network off unless a call passes `allow`, and builds arguments so tool input can't become other `sbx` options. Its tools only see sandboxes created through MCP, so an agent can't reach a sandbox you started with `-v` (`sbx mcp --all-sandboxes` widens this). `read_file` reads into memory and never follows a link on the host. Cancelled calls and a vanished client power off and remove what they started. |
 
 ### Not covered yet
@@ -38,8 +40,13 @@ These are known gaps, in rough order of importance. Some are on the [roadmap](do
 
 - **No jailer.** The VMM runs as your user, without Firecracker's jailer (chroot, namespaces, cgroups). An escape
   from the VM lands as your user on the host.
-- **Repository indexes are not signed.** SHA-256 checks protect integrity against the index, and HTTPS protects the
-  transfer, but whoever controls the repository host controls what you install.
+- **Repository indexes are not signed.** The SHA-256 in the index protects each package, and TLS is all that protects
+  the index, so whoever controls the repository host controls what you install. This holds for adapters and VMM
+  packages alike.
+- **Names are not tied to a repository.** `sbx executor install` takes the highest version of a name from any
+  configured repository (an equal version from the earlier one), and that includes the adapter a VMM package needs.
+  A VMM package then runs under the highest installed version of its adapter. Add only repositories you trust as
+  much as the official one.
 - **Data you allow out can leave.** The allow list decides *where* a sandbox may connect, not *what* it sends there.
 - **Resource limits are coarse.** vCPU count, memory and scratch disk size are fixed per sandbox. There are no CPU
   quotas, I/O limits or caps on how much disk an image pull and prepare may use, and `sbx mcp` does not cap how

@@ -38,7 +38,7 @@ docs/
   roadmap.md         what is done and what is next (Korean)
 assets/demo.svg      the README recording, made by cargo xtask demo
 install.sh           the installer served from GitHub Pages
-.github/workflows/   ci.yml (every push) and release.yml (tags v*)
+.github/workflows/   ci.yml (every push), release.yml (tags v*), executors.yml (by hand)
 ```
 
 Three programs come out of the workspace, plus one that runs inside the VM:
@@ -47,7 +47,7 @@ Three programs come out of the workspace, plus one that runs inside the VM:
 | --- | --- | --- | --- |
 | `sbx` | `sbx-cli` | on the host, started by the user or an MCP client | Docker-style CLI and MCP server |
 | `sbx-shim` | `sbx-shim` | on the host, one per detached sandbox | owns a detached sandbox's VM after `sbx` exits |
-| `sbx-executor-firecracker` | `sbx-executor-firecracker` | on the host, one per VM | speaks the executor protocol and drives Firecracker |
+| `sbx-executor-firecracker` | `sbx-executor-firecracker` | on the host, one per VM | the `firecracker` adapter: speaks the executor protocol and drives Firecracker |
 | `sbx-guest` | `sbx-guest` | inside the VM as PID 1 | mounts the image and runs commands for the host |
 
 `sbx-guest` is not shipped on its own. `cargo xtask dist` builds it for Linux (static musl), packs it into an
@@ -65,7 +65,7 @@ rustup target add "$(uname -m | sed s/arm64/aarch64/)-unknown-linux-musl"
 That is all you need for the unit tests, the end-to-end tests and the dependency checks. They use a fake executor
 and never start a VM, so they run on macOS, Linux and Windows.
 
-To run real VMs you also need an executor: install the released one with `sbx executor install firecracker`, on an
+To run real VMs you also need an executor: install the published one with `sbx executor install wick`, on an
 Apple Silicon Mac with macOS 15+ or on Linux with `/dev/kvm`. Building the default kernel (`cargo xtask kernel`) needs
 Docker.
 
@@ -92,7 +92,7 @@ cargo xtask bench                          # timings (add --docker to compare wi
 | `smoke [--sbx F]` | Real-VM checks: pull, exec, cp, logs, stop, egress… | [`smoke.rs`](../../xtask/src/smoke.rs) |
 | `bench [--docker]` | p50/p90 of `run`, `exec` and parallel runs | [`bench.rs`](../../xtask/src/bench.rs) |
 | `demo` | Re-records `assets/demo.svg` from real commands | [`demo.rs`](../../xtask/src/demo.rs) |
-| `repo-add` | Adds an executor bundle to a static executor repository | [`repo.rs`](../../xtask/src/repo.rs) |
+| `repo-add` | Adds an executor, adapter or VMM package to a static executor repository | [`repo.rs`](../../xtask/src/repo.rs) |
 
 A plain `cargo build` gives you an `sbx` without the guest init. It works for everything that doesn't boot a VM. For
 real VMs, use `cargo xtask dist`, or point a development build at an initramfs with `--guest-init`.
@@ -125,8 +125,9 @@ Two principles shape most review comments:
 | No module cycles inside a crate | [`xtask/src/modules.rs`](../../xtask/src/modules.rs) |
 | The executor protocol (what an external executor implements, what the guest can rely on) | [`sbx-executor-proto`](../../crates/spec/executor-proto/src/lib.rs) |
 | Host↔guest messages: connection order, encoding, trust boundary | [`sbx-guest-proto`](../../crates/spec/guest-proto/src/lib.rs) |
-| Executor repositories (`index.json`, bundles, choosing a version) | [`sbx-executor-repo`](../../crates/spec/executor-repo/src/lib.rs) |
-| Installed executors on disk | [`sbx-executor-install`](../../crates/spec/executor-install/src/lib.rs) |
+| Executor repositories (`index.json`, `v2/index.json`, adapters, VMM packages, choosing a version) | [`sbx-executor-repo`](../../crates/spec/executor-repo/src/lib.rs) |
+| Installed executors, VMM packages and adapters on disk | [`sbx-executor-install`](../../crates/spec/executor-install/src/lib.rs) |
+| Which executor a command uses (`--executor`, sandbox pin, `.sbx-executor`, default) | [`choose.rs`](../../crates/app/cli/src/choose.rs) |
 | Sandbox states and transitions | `State::can_transition_to` in [`sbx-model`](../../crates/model/src/lib.rs) |
 | How image config and caller values combine (Docker `run`) | [`crates/core/runtime/src/process.rs`](../../crates/core/runtime/src/process.rs) |
 | What an executor must support for a given request | [`crates/core/runtime/src/validate.rs`](../../crates/core/runtime/src/validate.rs) |

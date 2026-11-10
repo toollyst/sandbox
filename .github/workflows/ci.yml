@@ -36,7 +36,7 @@ jobs:
           RUSTDOCFLAGS: -D warnings
       - run: cargo xtask check-deps
       - if: runner.os == 'Linux'
-        run: shellcheck install.sh
+        run: shellcheck install.sh .github/scripts/*.sh
       # 게스트 init initramfs. 두 아키텍처 모두 어느 호스트에서나 rust-lld로 링크된다.
       # 호스트 아키텍처의 것을 내장한 sbx로 e2e를 다시 돌리고(내장한 init을 캐시로 꺼내는지), 배포 빌드를 만든다.
       - if: runner.os == 'Linux'
@@ -58,7 +58,10 @@ jobs:
               apt-get update -qq && apt-get install -y -qq e2fsprogs
               cargo test -p sbx-guest --lib privileged -- --nocapture'
 
-  # 실제 VM: upstream Firecracker(KVM) + sbx-executor-firecracker + `cargo xtask kernel`로 만든 커널.
+  # 실제 VM: 사용자가 받는 것과 같은 v2 경로. 이 커밋의 어댑터(sbx-executor-firecracker + `cargo xtask kernel`로 만든
+  # 커널)와 upstream Firecracker VMM 묶음으로 로컬 v2 저장소(file://)를 만들고, install.sh로 설치한 sbx로
+  # `sbx executor install wick@<FIRECRACKER>`을 한 뒤 smoke와 bench를 돌린다(.github/scripts/smoke-wick.sh,
+  # executors.yml이 올리기 전에 하는 것과 같다).
   # x86_64 러너에는 /dev/kvm이 있어야 한다. arm 러너에 없으면 건너뛰고 알린다.
   vm:
     name: vm (${{ matrix.arch }})
@@ -74,7 +77,8 @@ jobs:
             require_kvm: false
     runs-on: ${{ matrix.os }}
     env:
-      FIRECRACKER: v1.17.0
+      # upstream Firecracker 버전. 로컬 저장소에는 wick@<이 버전>으로 올린다.
+      FIRECRACKER: 1.17.0
       ARCH: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@v4
@@ -103,24 +107,15 @@ jobs:
           cargo build --release -p sbx-executor-firecracker
           [ -f "target/kernel/$ARCH/kernel" ] || cargo xtask kernel --arch "$ARCH"
       - if: steps.kvm.outputs.ok == 'true'
-        name: executor bundle (upstream Firecracker release, checked by its sha256)
+        name: adapter bundle and VMM package (upstream Firecracker release, checked by its sha256)
         run: |
-          mkdir -p fc bundle && cd fc
-          base="https://github.com/firecracker-microvm/firecracker/releases/download/$FIRECRACKER"
-          curl -fsSLO "$base/firecracker-$FIRECRACKER-$ARCH.tgz"
-          curl -fsSLO "$base/firecracker-$FIRECRACKER-$ARCH.tgz.sha256.txt"
-          sha256sum -c "firecracker-$FIRECRACKER-$ARCH.tgz.sha256.txt"
-          tar xzf "firecracker-$FIRECRACKER-$ARCH.tgz"
-          cd ..
-          cp "fc/release-$FIRECRACKER-$ARCH/firecracker-$FIRECRACKER-$ARCH" bundle/firecracker
-          cp target/release/sbx-executor-firecracker bundle/sbx-executor
-          cp "target/kernel/$ARCH/kernel" bundle/kernel
-      - if: steps.kvm.outputs.ok == 'true'
-        name: publish the bundle to a repository and install it from there
-        run: |
-          cargo xtask repo-add --repo executors --bundle bundle --name firecracker --version "${FIRECRACKER#v}-ci"
-          target/release/sbx executor repo add ci "file://$PWD/executors"
-          target/release/sbx executor install firecracker
+          set -euo pipefail
+          mkdir -p adapter
+          install -m 755 target/release/sbx-executor-firecracker adapter/sbx-executor
+          cp "target/kernel/$ARCH/kernel" adapter/kernel
+          .github/scripts/kernel-notice.sh adapter/KERNEL-SOURCE.txt
+          WORK=fc .github/scripts/upstream-vmm.sh "$FIRECRACKER" "$ARCH" vmm
+          vmm/firecracker --version
       - if: steps.kvm.outputs.ok == 'true'
         name: install.sh (from a local copy of the release files)
         run: |
@@ -131,12 +126,16 @@ jobs:
           (cd rel && sha256sum "$d.tar.gz" > "$d.tar.gz.sha256")
           SBX_DOWNLOAD_URL="file://$PWD/rel" SBX_INSTALL_DIR="$RUNNER_TEMP/bin" sh install.sh
       - if: steps.kvm.outputs.ok == 'true'
+        name: install wick from a local v2 repository, then smoke
+        run: |
+          av=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "sbx-executor-firecracker") | .version')
+          .github/scripts/smoke-wick.sh "$RUNNER_TEMP/bin/sbx" executors adapter "$av" vmm "$FIRECRACKER"
+      - if: steps.kvm.outputs.ok == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: executors-linux-${{ matrix.arch }}
           path: executors
       - if: steps.kvm.outputs.ok == 'true'
-        name: smoke and bench
+        name: bench
         run: |
-          cargo xtask smoke --sbx "$RUNNER_TEMP/bin/sbx"
-          { echo "### $ARCH, Firecracker $FIRECRACKER (KVM)"; cargo xtask bench --runs 20 --parallel 8; } >> "$GITHUB_STEP_SUMMARY"
+          { echo "### $ARCH, wick@$FIRECRACKER (upstream Firecracker, KVM)"; cargo xtask bench --runs 20 --parallel 8; } >> "$GITHUB_STEP_SUMMARY"

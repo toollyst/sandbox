@@ -1,17 +1,16 @@
 #!/bin/sh
-# Install sbx and the default executor.
+# Install sbx.
 #
 #   curl -fsSL https://toollyst.github.io/sandbox/install.sh | sh
 #
 # Environment:
 #   SBX_VERSION       release tag to install (default: the latest release), e.g. v0.1.0
 #   SBX_INSTALL_DIR   where sbx and sbx-shim go (default: ~/.local/bin)
-#   SBX_NO_EXECUTOR   set to 1 to skip `sbx executor install firecracker`
 #   SBX_DOWNLOAD_URL  where the release files are (default: GitHub Releases of toollyst/sandbox)
 #
-# What it does: downloads sbx-<os>-<arch>.tar.gz and its .sha256, checks the checksum, copies sbx and sbx-shim into
-# SBX_INSTALL_DIR, then installs the firecracker executor (VMM + adapter + guest kernel) from the official executor
-# repository. Nothing is written outside SBX_INSTALL_DIR and sbx's own data directory, and nothing runs as root.
+# What it does: downloads sbx-<os>-<arch>.tar.gz and its .sha256, checks the checksum, and copies sbx and sbx-shim into
+# SBX_INSTALL_DIR. It does not install an executor (the VMM that runs sandboxes); that is the next step it prints:
+# `sbx executor install wick`. Nothing is written outside SBX_INSTALL_DIR, and nothing runs as root.
 
 set -eu
 
@@ -83,10 +82,6 @@ for f in sbx sbx-shim; do
 done
 say "installed $("$dir/sbx" --version) to $dir"
 
-if [ "${SBX_NO_EXECUTOR:-}" != 1 ]; then
-    "$dir/sbx" executor install firecracker || die "installing the executor failed (retry with: $dir/sbx executor install firecracker)"
-fi
-
 if [ "$os" = linux ]; then
     if [ ! -e /dev/kvm ]; then
         say "note: /dev/kvm is missing. sbx needs KVM (bare metal, or a VM with nested virtualization)."
@@ -94,8 +89,14 @@ if [ "$os" = linux ]; then
         say "note: you cannot open /dev/kvm. Add yourself to its group: sudo usermod -aG $(stat -c %G /dev/kvm) \"\$USER\" (then log in again)"
     fi
 fi
+sbx=sbx
 case ":$PATH:" in
     *":$dir:"*) ;;
-    *) say "note: $dir is not on your PATH. Add it: export PATH=\"$dir:\$PATH\"" ;;
+    *)
+        say "note: $dir is not on your PATH. Add it: export PATH=\"$dir:\$PATH\""
+        sbx="$dir/sbx"
+        ;;
 esac
-say "done. Check with: sbx info   Then try: sbx run --rm alpine echo hello"
+say "done. Next, install an executor (the VMM that runs sandboxes):"
+say "    $sbx executor install wick"
+say "then check with: $sbx info   and try: $sbx run --rm alpine echo hello"

@@ -172,14 +172,34 @@ UDP, and programs that ignore the proxy settings, simply have no way out.
 
 ## Executors and their repositories
 
-`sbx` finds the executor to run from `--executor`, or from `data_dir/executors/default`
-([`sbx-executor-install`](../../crates/spec/executor-install)). `sbx executor install firecracker` reads each
-configured repository's `index.json`, picks the newest version for this host's platform and protocol version,
-downloads the `.tar.gz`, and checks its sha256 and size. It then unpacks it into a staging directory, runs
-`sbx-executor capabilities` to confirm the protocol and architecture, and renames it into place
-([`sbx-executor-repo`](../../crates/spec/executor-repo)). The official repository is
-<https://toollyst.github.io/sandbox/executors/index.json>, published by the release workflow.
+**Choosing.** [`choose.rs`](../../crates/app/cli/src/choose.rs) picks the executor for each command: `--executor`
+(`SBX_EXECUTOR`, a path or an installed `NAME[@VERSION]`), then the sandbox's pin (for `start` and `restart`), then
+the nearest `.sbx-executor` from the current directory up, then the default in `data_dir/executors/default`, then
+`sbx-executor` on `PATH`. A sandbox created with an installed executor records its `NAME@VERSION` in the label
+`io.github.toollyst.sandbox.executor`. A detached sandbox's shim is handed the chosen program (and VMM directory).
+`sbx executor current` prints the choice and where it came from.
 
-To support another VMM, write a program that implements [`sbx-executor-proto`](../../crates/spec/executor-proto),
-test it the way [`conformance.rs`](../../crates/executor/fake/tests/conformance.rs) tests the fake executor, run
+**Two shapes.** An installed executor ([`sbx-executor-install`](../../crates/spec/executor-install/src/lib.rs)) is
+either self-contained, with `sbx-executor` at the top, or a **VMM package**: the VMM's files plus `.sbx-adapter`,
+which names the adapter that runs it. Adapters live in `data_dir/adapters` with the same layout. For a VMM package,
+`sbx` runs the highest installed version of that adapter and passes the package directory in `SBX_EXECUTOR_VMM_DIR`
+(["adapters and VMM packages"](../../crates/spec/executor-proto/src/lib.rs) in the protocol). The `firecracker`
+adapter looks for `firecracker` there, and keeps the default kernel next to itself
+([`sbx-executor-firecracker`](../../crates/executor/firecracker/src/lib.rs) lists the lookup order). So `wick@1.18.0`
+is only Firecracker 1.18.0, and the adapter, the kernel and the VMM are versioned and upgraded separately.
+
+**Installing.** `sbx executor install wick` reads each configured repository's index (`v2/index.json`, or
+`index.json` if there is none) and picks the newest version for this host's platform
+([`sbx-executor-repo`](../../crates/spec/executor-repo/src/lib.rs)). If it is a VMM package and its adapter isn't
+installed, it installs the newest adapter for this host and protocol version first, from any configured repository.
+Each download is checked against the sha256 and size in the index and unpacked into a staging directory. Before the
+rename into place, `sbx-executor capabilities` (for a VMM package, the adapter given that directory) must report this
+`sbx`'s protocol version and the host's architecture ([`executors.rs`](../../crates/app/cli/src/executors.rs)).
+The official repository is <https://toollyst.github.io/sandbox/executors/>, published by `executors.yml`
+([Releasing](testing-and-releasing.md#executors-executorsyml)).
+
+To support another VMM, either write a program that implements
+[`sbx-executor-proto`](../../crates/spec/executor-proto) and ship it as a self-contained executor or an adapter, or,
+if the VMM has Firecracker's interface, register it as a VMM package for the `firecracker` adapter. Test a new program
+the way [`conformance.rs`](../../crates/executor/fake/tests/conformance.rs) tests the fake executor, run
 `cargo xtask smoke` with it installed, and publish it in any static repository. The cores don't change.
