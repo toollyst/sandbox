@@ -382,7 +382,7 @@ pub const DOCKER_DIFFERENCES: &[(&str, &str, &str)] = &[
     ),
     (
         "logs",
-        "붙지 않고(run -d, start) 시작했을 때만 남는다. 붙어서 실행한 출력은 sbx가 바로 보여주고 남기지 않는다",
+        "붙지 않고(run -d, start) 시작했을 때만 남는다. 붙어서 실행한 출력은 sbx가 바로 보여주고 남기지 않는다. 샌드박스마다 256 MiB까지 남기고 그 뒤는 버린다(한 줄로 알린다. Docker json-file은 한도가 없다)",
         "출력을 받아 적을 데몬이 없다. 적는 것은 shim이다",
     ),
     (

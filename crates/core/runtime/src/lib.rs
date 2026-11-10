@@ -393,10 +393,11 @@ fn to_proto_exec(p: &ProcessDefaults, io: IoMode, main: bool) -> sbx_guest_proto
     }
 }
 
+/// 게스트가 알린 끝을 종료 코드로. 시그널은 128 + 번호다. 값은 게스트가 정하므로 넘치지 않게 더한다.
 fn exit_code(s: ExitStatus) -> i32 {
     match s {
         ExitStatus::Code(c) => c,
-        ExitStatus::Signal(n) => 128 + n,
+        ExitStatus::Signal(n) => n.saturating_add(128),
     }
 }
 
@@ -408,6 +409,10 @@ fn guest_parent(path: &str) -> (String, String) {
         None => ("/".into(), t.into()),
     }
 }
+
+/// [`Process`] 하나가 읽지 않은 출력을 쌓아 두는 최대 바이트. 넘으면 게스트 연결을 더 읽지 않는다(게스트가
+/// 기다린다). 프레임 하나는 이보다 커도 들어간다(상한은 규약의 프레임 크기).
+pub const OUTPUT_BUFFER: usize = 4 << 20;
 
 /// [`Sandbox::read_file`]이 따라가는 심볼릭 링크 수 (Linux `MAXSYMLINKS`와 같다).
 pub const MAX_READ_LINKS: usize = 40;
@@ -973,7 +978,10 @@ impl fmt::Debug for Process {
 impl Process {
     /// `on_end`가 있으면 기본 프로세스다: VM이 먼저 끝나면 [`EXIT_VM_ENDED`]로 끝난 것으로 보고, 끝나면 `on_end`를 부른다.
     fn spawn(conn: Box<dyn GuestConn>, pid: u32, on_end: Option<OnEnd>) -> Self {
-        let (tx, events) = chan::channel();
+        let (tx, events) = chan::channel(OUTPUT_BUFFER, |e: &Event| match e {
+            Event::Out(Output::Stdout(b) | Output::Stderr(b)) => b.len(),
+            _ => 0,
+        });
         let (input, rx) = std::sync::mpsc::channel::<HostMsg>();
         match conn.try_clone_conn() {
             Ok(mut writer) => {
@@ -985,19 +993,26 @@ impl Process {
                     }
                 });
             }
-            Err(e) => tx.send(Event::Lost(e.to_string())),
+            Err(e) => {
+                tx.send(Event::Lost(e.to_string()));
+            }
         }
         let is_main = on_end.is_some();
         std::thread::spawn(move || {
             let mut conn = conn;
             let (code, error) = loop {
-                match GuestMsg::read_from(&mut *conn) {
+                // 받는 쪽(Process)이 사라지면 출력은 버린다. 기본 프로세스는 끝을 기록해야 하므로 계속 읽고,
+                // exec는 연결을 닫는다.
+                let delivered = match GuestMsg::read_from(&mut *conn) {
                     Ok(GuestMsg::Stdout(b)) => tx.send(Event::Out(Output::Stdout(b))),
                     Ok(GuestMsg::Stderr(b)) => tx.send(Event::Out(Output::Stderr(b))),
                     Ok(GuestMsg::Exited(s)) => break (Some(exit_code(s)), None),
                     Ok(GuestMsg::Error(e)) => break (None, Some(e.message)),
                     Ok(other) => break (None, Some(format!("unexpected {other:?}"))),
                     Err(e) => break (None, Some(e.to_string())),
+                };
+                if !delivered && !is_main {
+                    break (None, Some("the output is no longer read".into()));
                 }
             };
             let code = match (code, is_main) {
@@ -1020,7 +1035,7 @@ impl Process {
                 };
                 f(code.unwrap_or(EXIT_VM_ENDED), lost);
             }
-            tx.send(event);
+            let _ = tx.send(event);
         });
         Self {
             pid,

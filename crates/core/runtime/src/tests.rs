@@ -833,3 +833,11 @@ fn names_are_unique_resolve_and_free_on_delete() {
     let d = named("stale").unwrap();
     assert_eq!(r("stale").unwrap(), *d.id());
 }
+
+#[test]
+fn hostile_signal_numbers_do_not_overflow_the_exit_code() {
+    use sbx_guest_proto::ExitStatus;
+    assert_eq!(crate::exit_code(ExitStatus::Signal(15)), 143);
+    assert_eq!(crate::exit_code(ExitStatus::Signal(i32::MAX)), i32::MAX);
+    assert_eq!(crate::exit_code(ExitStatus::Code(-1)), -1);
+}

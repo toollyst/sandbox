@@ -3,6 +3,8 @@
 //! 형식: 기록이 이어진다. 기록 하나는 `[흐름 1바이트][길이 u32 빅 엔디언][바이트]`이다.
 //! 흐름은 1이 표준 출력, 2가 표준 오류다. 표준 출력과 표준 오류가 나온 순서를 지킨다.
 //! 샌드박스를 다시 시작하면 뒤에 이어 쓴다(Docker 로그와 같다).
+//! 파일이 [`MAX_LOG`]에 닿으면 그 뒤 출력은 버리고, 그 사실을 표준 오류 기록 하나로 남긴다(게스트가 끝없이
+//! 출력해 호스트 디스크를 채우지 못한다).
 //!
 //! 읽는 쪽은 쓰는 중인 파일을 읽을 수 있다. 끝에 반쯤 쓰인 기록은 아직 없는 것으로 본다.
 
@@ -45,30 +47,73 @@ impl Stream {
 /// 기록 하나의 최대 길이. 프로세스 출력 한 조각은 이보다 작다.
 const MAX_RECORD: u32 = 16 * 1024 * 1024;
 
+/// 로그 파일의 최대 바이트.
+pub const MAX_LOG: u64 = 256 << 20;
+
+/// 한도에 닿았을 때 남기는 기록.
+pub const LOG_FULL: &[u8] =
+    b"\n[sbx: the log reached its size limit; further output is not kept]\n";
+
 /// 쓰는 쪽. 기록마다 한 번에 쓴다.
 #[derive(Debug)]
-pub struct LogWriter(File);
+pub struct LogWriter {
+    file: File,
+    /// 지금 크기.
+    len: u64,
+    limit: u64,
+    /// 한도에 닿아 더 쓰지 않는다.
+    full: bool,
+}
 
 impl LogWriter {
-    /// 이어 쓰기로 연다. 디렉터리가 없으면 만든다.
+    /// 이어 쓰기로 연다. 디렉터리가 없으면 만든다. 한도는 [`MAX_LOG`].
     pub fn open(path: &Path) -> io::Result<Self> {
+        Self::open_with_limit(path, MAX_LOG)
+    }
+
+    /// 한도를 정해 연다.
+    pub fn open_with_limit(path: &Path, limit: u64) -> io::Result<Self> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        Ok(Self(
-            OpenOptions::new().create(true).append(true).open(path)?,
-        ))
+        let file = OpenOptions::new().create(true).append(true).open(path)?;
+        let len = file.metadata()?.len();
+        Ok(Self {
+            file,
+            len,
+            limit,
+            full: len >= limit,
+        })
     }
 
-    /// 기록 하나를 쓴다.
+    /// 기록 하나를 쓴다. 한도를 넘는 부분은 버린다.
     pub fn write(&mut self, stream: Stream, data: &[u8]) -> io::Result<()> {
         for chunk in data.chunks(MAX_RECORD as usize) {
-            let mut rec = Vec::with_capacity(5 + chunk.len());
-            rec.push(stream.byte());
-            rec.extend_from_slice(&(chunk.len() as u32).to_be_bytes());
-            rec.extend_from_slice(chunk);
-            self.0.write_all(&rec)?;
+            if self.full {
+                return Ok(());
+            }
+            let room = self
+                .limit
+                .saturating_sub(self.len + 5 + LOG_FULL.len() as u64 + 5);
+            let chunk = &chunk[..chunk.len().min(room as usize)];
+            if !chunk.is_empty() {
+                self.record(stream, chunk)?;
+            }
+            if self.len + 5 + LOG_FULL.len() as u64 + 5 >= self.limit {
+                self.record(Stream::Stderr, LOG_FULL)?;
+                self.full = true;
+            }
         }
+        Ok(())
+    }
+
+    fn record(&mut self, stream: Stream, chunk: &[u8]) -> io::Result<()> {
+        let mut rec = Vec::with_capacity(5 + chunk.len());
+        rec.push(stream.byte());
+        rec.extend_from_slice(&(chunk.len() as u32).to_be_bytes());
+        rec.extend_from_slice(chunk);
+        self.file.write_all(&rec)?;
+        self.len += rec.len() as u64;
         Ok(())
     }
 }
@@ -166,6 +211,30 @@ mod tests {
             r.next_record().unwrap(),
             Some((Stream::Stdout, b"again".to_vec()))
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn endless_output_stops_at_the_limit_with_one_note() {
+        let dir = std::env::temp_dir().join(format!("sbx-shim-full-{}", std::process::id()));
+        let path = dir.join("logs").join(MAIN_LOG);
+        let limit = 1000;
+        let mut w = LogWriter::open_with_limit(&path, limit).unwrap();
+        for _ in 0..100 {
+            w.write(Stream::Stdout, &[b'y'; 64]).unwrap();
+        }
+        let len = std::fs::metadata(&path).unwrap().len();
+        assert!(len <= limit, "{len}");
+        let mut r = LogReader::open(&path).unwrap();
+        let mut last = None;
+        while let Some(rec) = r.next_record().unwrap() {
+            last = Some(rec);
+        }
+        assert_eq!(last, Some((Stream::Stderr, LOG_FULL.to_vec())));
+        // 다시 열어도(재시작) 더 쓰지 않는다.
+        let mut w = LogWriter::open_with_limit(&path, limit).unwrap();
+        w.write(Stream::Stdout, b"more").unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), len);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
