@@ -716,12 +716,13 @@ fn the_seen_file_is_kept_per_name_and_url_and_survives_junk() {
         ),
         (Some(8), Some(3), Some(1))
     );
-    // 임시 파일을 남기지 않는다.
-    let names: Vec<_> = fs::read_dir(root.join("dir"))
+    // 임시 파일을 남기지 않는다(잠금 파일만 남는다).
+    let mut names: Vec<_> = fs::read_dir(root.join("dir"))
         .unwrap()
         .map(|e| e.unwrap().file_name().into_string().unwrap())
         .collect();
-    assert_eq!(names, ["seen"]);
+    names.sort();
+    assert_eq!(names, [".seen.lock", "seen"]);
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -1053,4 +1054,54 @@ fn a_large_index_parses_in_linear_time() {
         "{:?}",
         t.elapsed()
     );
+}
+
+#[test]
+fn concurrent_writers_never_lower_the_seen_serial() {
+    // 여러 프로세스(여기서는 스레드마다 따로 연 파일)가 동시에 적어도 가장 큰 값이 남는다.
+    let root = std::env::temp_dir().join(format!("sbx-exrepo-seen-race-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let path = root.join("seen");
+    let repos: Vec<Repository> = (0..4)
+        .map(|i| Repository::new(&format!("r{i}"), &format!("https://example.com/{i}")).unwrap())
+        .collect();
+    std::thread::scope(|s| {
+        for t in 0..8u64 {
+            let (path, repos) = (&path, &repos);
+            s.spawn(move || {
+                let seen = Seen::new(path);
+                for k in 0..25u64 {
+                    let serial = k * 8 + t;
+                    for r in repos {
+                        // 다른 스레드가 더 큰 값을 먼저 적었으면 거부되는 것이 맞다.
+                        let _ = seen.check_and_record(r, serial, "u");
+                    }
+                }
+            });
+        }
+    });
+    let seen = Seen::new(&path);
+    for r in &repos {
+        assert_eq!(seen.get(r).unwrap(), Some(24 * 8 + 7), "{}", r.name);
+    }
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn concurrent_repository_adds_are_all_kept() {
+    let root = std::env::temp_dir().join(format!("sbx-exrepo-list-race-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let path = root.join("repos");
+    std::thread::scope(|s| {
+        for t in 0..16 {
+            let path = &path;
+            s.spawn(move || {
+                Sources::new(path)
+                    .add(Repository::new(&format!("r{t}"), "https://example.com/").unwrap())
+                    .unwrap();
+            });
+        }
+    });
+    assert_eq!(Sources::new(&path).list().unwrap().len(), 16);
+    let _ = fs::remove_dir_all(&root);
 }

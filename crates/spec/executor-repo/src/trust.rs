@@ -85,6 +85,17 @@ impl Seen {
         serial: u64,
         url: &str,
     ) -> Result<(), RepoError> {
+        crate::file::locked(&self.path, || {
+            self.check_and_record_locked(repo, serial, url)
+        })
+    }
+
+    fn check_and_record_locked(
+        &self,
+        repo: &Repository,
+        serial: u64,
+        url: &str,
+    ) -> Result<(), RepoError> {
         let mut all = self.read()?;
         let i = all
             .iter()
@@ -106,22 +117,13 @@ impl Seen {
         } else {
             all.push((repo.name.clone(), serial, repo.url.to_string()));
         }
-        if let Some(dir) = self.path.parent() {
-            fs::create_dir_all(dir)?;
-        }
         let mut text = String::from(
             "# sbx: the highest index serial seen per repository: <name> <serial> <url>\n",
         );
         for (n, s, u) in &all {
             text.push_str(&format!("{n} {s} {u}\n"));
         }
-        let tmp = self
-            .path
-            .with_extension(format!("tmp-{}", std::process::id()));
-        fs::write(&tmp, text)?;
-        fs::rename(&tmp, &self.path).inspect_err(|_| {
-            let _ = fs::remove_file(&tmp);
-        })?;
+        crate::file::replace(&self.path, &text)?;
         Ok(())
     }
 }

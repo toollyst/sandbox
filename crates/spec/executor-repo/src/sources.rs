@@ -146,6 +146,10 @@ impl Sources {
 
     /// 끝에 더한다. 같은 이름이 있으면 거부한다.
     pub fn add(&self, repo: Repository) -> Result<(), RepoError> {
+        crate::file::locked(&self.path, || self.add_locked(repo))
+    }
+
+    fn add_locked(&self, repo: Repository) -> Result<(), RepoError> {
         let mut list = self.list()?;
         if list.iter().any(|r| r.name == repo.name) {
             return Err(RepoError::Config(format!(
@@ -159,6 +163,10 @@ impl Sources {
 
     /// 지운다. 지운 것을 돌려준다.
     pub fn remove(&self, name: &str) -> Result<Repository, RepoError> {
+        crate::file::locked(&self.path, || self.remove_locked(name))
+    }
+
+    fn remove_locked(&self, name: &str) -> Result<Repository, RepoError> {
         let mut list = self.list()?;
         let i = list
             .iter()
@@ -184,13 +192,7 @@ impl Sources {
             }
             text.push('\n');
         }
-        let tmp = self
-            .path
-            .with_extension(format!("tmp-{}", std::process::id()));
-        fs::write(&tmp, text)?;
-        fs::rename(&tmp, &self.path).inspect_err(|_| {
-            let _ = fs::remove_file(&tmp);
-        })?;
+        crate::file::replace(&self.path, &text)?;
         Ok(())
     }
 }
