@@ -665,7 +665,7 @@ fn list_never_fails_while_sandboxes_are_removed() {
 
 #[test]
 fn sandbox_names_reads_records_without_touching_locks() {
-    let e = Env::new("names");
+    let e = Env::new("namelist");
     let data = e.root.join("d");
     assert!(sandbox_names(&e.root.join("none")).unwrap().is_empty());
     let mut spec = e.spec(&["true"]);
@@ -942,4 +942,19 @@ fn a_failed_create_records_nothing() {
         .reader(sbx_events::Start::Beginning)
         .unwrap();
     assert!(r.next_event().unwrap().is_none());
+}
+
+/// 시험 환경 이름은 겹치면 안 된다: 같은 프로세스에서 나란히 돌며 서로의 디렉터리를 지운다.
+#[test]
+fn test_environment_names_are_unique() {
+    let src = include_str!("tests.rs");
+    let mut names: Vec<&str> = src
+        .split("Env::new(\"")
+        .skip(1)
+        .filter_map(|rest| rest.split('"').next())
+        .collect();
+    names.sort_unstable();
+    let before = names.len();
+    names.dedup();
+    assert_eq!(before, names.len(), "an Env::new name is used twice");
 }
