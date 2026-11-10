@@ -196,16 +196,7 @@ pub enum Command {
         id: String,
     },
     #[command(about = about("logs"))]
-    Logs {
-        /// Keep streaming new output until the sandbox stops.
-        #[arg(short, long)]
-        follow: bool,
-        /// Show only the last N lines of what is already there (`all` for everything).
-        #[arg(short = 'n', long, default_value = "all")]
-        tail: String,
-        /// Sandbox name, ID, or unique ID prefix.
-        id: String,
-    },
+    Logs(LogsArgs),
     #[command(about = about("events"))]
     Events {
         /// Replay events since this time first: RFC 3339 (2026-11-10T13:20:14Z), Unix seconds, or a duration ago (10m).
@@ -295,6 +286,28 @@ pub enum RepoCommand {
         /// Repository name.
         name: String,
     },
+}
+
+/// `logs`의 옵션.
+#[derive(Debug, Args)]
+pub struct LogsArgs {
+    /// Keep streaming new output until the sandbox stops (or until --until).
+    #[arg(short, long)]
+    pub follow: bool,
+    /// Show only the last N lines (`all` for everything). With --since/--until, the last N lines in that range.
+    #[arg(short = 'n', long, default_value = "all")]
+    pub tail: String,
+    /// Prefix each line with the time sbx received it (RFC 3339, nanoseconds).
+    #[arg(short, long)]
+    pub timestamps: bool,
+    /// Show only output since this time: RFC 3339 (2026-11-10T13:20:14Z), Unix seconds, or a duration ago (10m).
+    #[arg(long)]
+    pub since: Option<String>,
+    /// Show only output until this time (same forms as --since). With -f, stop following then.
+    #[arg(long)]
+    pub until: Option<String>,
+    /// Sandbox name, ID, or unique ID prefix.
+    pub id: String,
 }
 
 /// `stop`과 `restart`의 옵션.

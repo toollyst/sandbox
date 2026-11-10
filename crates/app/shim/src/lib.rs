@@ -24,5 +24,5 @@ pub mod serve;
 
 pub use config::ShimConfig;
 pub use launch::{SHIM_LOG, start_detached};
-pub use log::{LogReader, LogWriter, MAIN_LOG, Stream};
+pub use log::{LogReader, LogWriter, MAIN_LOG, Record, Stream};
 pub use serve::{READY, main};

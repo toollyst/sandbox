@@ -5,7 +5,7 @@
 With `--format json`, sbx prints only JSON on stdout. This is a public contract: scripts, agents and `sbx tui` rely on it. sbx is alpha, so it may still change, but only together with this file.
 
 - **value**: one JSON value (pretty-printed).
-- **lines**: one JSON object per line (JSON Lines), one per argument. If one argument fails, the others still run.
+- **lines**: one JSON object per line (JSON Lines), one per argument. If one argument fails, the others still run. Streams (`events`, `logs`) print one per item.
 - **empty**: nothing on success.
 - **not supported**: sbx refuses `--format json` and exits with an error.
 - `-q` (`ps`, `images`) wins over `--format`: one ID per line.
@@ -43,7 +43,7 @@ The JSON Schema (draft 2020-12) of every type is in [cli-output.schema.json](cli
 | `attach` | not supported: its output is the process's own bytes |
 | `ps` | value: `[Sandbox]` |
 | `inspect` | value: `Sandbox` |
-| `logs` | not supported: its output is the main process's own bytes |
+| `logs` | lines: `LogLine` |
 | `events` | lines: `Event` |
 | `mcp` | not supported: it speaks the Model Context Protocol (JSON-RPC) on stdio |
 | `completion` | not supported: its output is a shell script |

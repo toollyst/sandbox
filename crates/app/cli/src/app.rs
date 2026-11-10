@@ -37,7 +37,9 @@ use sbx_store::CacheLayout;
 
 use crate::attach::{self, attach};
 use crate::behavior::{self, ImageMatch, LookupError, RmiAction, RmiDecision, Step};
-use crate::cli::{AttachArgs, Cli, Command, ExecArgs, ExecutorCommand, Format, RunArgs, StopArgs};
+use crate::cli::{
+    AttachArgs, Cli, Command, ExecArgs, ExecutorCommand, Format, LogsArgs, RunArgs, StopArgs,
+};
 use crate::filter::{self, Filters};
 use crate::output;
 use crate::parse::{self, CpEndpoint};
@@ -166,7 +168,7 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
                 Ok(0)
             }
         }
-        Command::Logs { follow, tail, id } => ctx.logs(*follow, tail, id).await,
+        Command::Logs(a) => ctx.logs(a).await,
         Command::Exec(a) => ctx.exec(a).await,
         Command::Cp { src, dst } => ctx.cp(src, dst).await,
         Command::Stop(a) => ctx.stop(a).await,
@@ -191,6 +193,79 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
         Command::Mcp { .. } | Command::Completion { .. } => {
             Err(msg("internal: served by sbx_cli::run"))
         }
+    }
+}
+
+/// 지금 유닉스 시각(나노초).
+fn now_ns() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+}
+
+/// `logs`가 기록을 쓰는 곳. 명시적 동작:
+///
+/// - 텍스트: 흐름 그대로(표준 출력은 stdout, 표준 오류는 stderr). `-t`면 줄마다 앞에 `RFC 3339 나노초 + 공백`
+///   (Docker `logs -t`와 같은 모양)을 붙인다([`behavior::prefix_lines`]).
+/// - `--format json`: 두 흐름 모두 stdout에 [`output::LogLine`] 한 줄씩. 기록을 줄로 나눈 조각마다 하나이고, 끝나지 않은
+///   줄은 기다리지 않고 그때까지 온 만큼 낸다. 시각은 늘 들어 있으므로 `-t`는 바꾸는 것이 없다.
+/// - stdout이 닫히면(파이프를 읽는 쪽이 끝났다) 조용히 끝난다. stderr에 쓰지 못한 것은 버린다.
+struct LogSink {
+    json: bool,
+    prefix: bool,
+    /// 흐름마다(표준 출력, 표준 오류) 지금 줄 처음인지.
+    at_line_start: [bool; 2],
+    out: std::io::Stdout,
+    err: std::io::Stderr,
+}
+
+impl LogSink {
+    fn new(json: bool, prefix: bool) -> Self {
+        Self {
+            json,
+            prefix,
+            at_line_start: [true; 2],
+            out: std::io::stdout(),
+            err: std::io::stderr(),
+        }
+    }
+
+    /// 기록(또는 `--tail`의 줄) 하나를 쓴다. stdout이 닫혔으면 `false`.
+    fn write(&mut self, stream: Stream, time_ns: Option<u64>, data: &[u8]) -> AppResult<bool> {
+        if self.json {
+            for piece in data.split_inclusive(|&b| b == b'\n') {
+                let line = serde_json::to_string(&output::LogLine::new(stream, time_ns, piece))?;
+                if writeln!(self.out, "{line}")
+                    .and_then(|()| self.out.flush())
+                    .is_err()
+                {
+                    return Ok(false);
+                }
+            }
+            return Ok(true);
+        }
+        let i = usize::from(stream == Stream::Stderr);
+        let prefixed;
+        let data = match time_ns {
+            Some(t) if self.prefix => {
+                let prefix = format!("{} ", behavior::rfc3339_ns(t));
+                prefixed = behavior::prefix_lines(data, &prefix, &mut self.at_line_start[i]);
+                &prefixed[..]
+            }
+            _ => data,
+        };
+        Ok(match stream {
+            Stream::Stdout => self
+                .out
+                .write_all(data)
+                .and_then(|()| self.out.flush())
+                .is_ok(),
+            Stream::Stderr => {
+                let _ = self.err.write_all(data).and_then(|()| self.err.flush());
+                true
+            }
+        })
     }
 }
 
@@ -336,64 +411,71 @@ impl Ctx {
     }
 
     /// `logs`: shim이 남긴 기본 프로세스 출력을 순서대로 표준 출력과 표준 오류에 쓴다.
-    /// `-f`면 샌드박스가 실행 중인 동안 새 출력을 기다린다.
-    async fn logs(&self, follow: bool, tail: &str, id: &str) -> AppResult<u8> {
-        let tail = match tail {
+    /// `-f`면 샌드박스가 실행 중인 동안(`--until`이 있으면 그때까지) 새 출력을 기다린다.
+    /// 시각 조건(`-t`, `--since`, `--until`)은 [`behavior::LogTimes`], 쓰는 모양은 [`LogSink`]가 정한다.
+    async fn logs(&self, a: &LogsArgs) -> AppResult<u8> {
+        let tail = match a.tail.as_str() {
             "all" => None,
             n => Some(
                 n.parse::<usize>()
                     .map_err(|_| msg(format!("--tail: expected a number or `all`, got {n:?}")))?,
             ),
         };
+        let time = |flag: &str, v: &Option<String>| {
+            v.as_deref()
+                .map(|s| parse::time_ns(s, now_ns()).map_err(|e| msg(format!("{flag}: {e}"))))
+                .transpose()
+        };
+        let times = behavior::LogTimes {
+            since: time("--since", &a.since)?,
+            until: time("--until", &a.until)?,
+            prefix: a.timestamps && !self.json(),
+        };
         let rt = self.runtime()?;
-        let sandbox = rt.find(id).await?;
+        let sandbox = rt.find(&a.id).await?;
         let path = sandbox.log_dir().join(MAIN_LOG);
         let mut reader = match LogReader::open(&path) {
             Ok(r) => Some(r),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(e) => return Err(e.into()),
         };
-        let (mut out, mut err) = (std::io::stdout(), std::io::stderr());
+        let mut sink = LogSink::new(self.json(), times.prefix);
         // --tail: 이미 있는 것은 모아서 마지막 N줄만 보인다. 그 뒤(-f)는 그대로 흘린다.
         if let (Some(n), Some(r)) = (tail, &mut reader) {
             let mut records = Vec::new();
-            while let Some(record) = r.next_record()? {
-                records.push(record);
+            while let Some(rec) = r.next_record()? {
+                if times.wants(rec.time_ns).map_err(msg)? {
+                    records.push((rec.stream, rec.time_ns, rec.data));
+                }
             }
-            for (stream, line) in behavior::last_lines(records, n) {
-                let _ = match stream {
-                    Stream::Stdout => out.write_all(&line).and_then(|()| out.flush()),
-                    Stream::Stderr => err.write_all(&line).and_then(|()| err.flush()),
-                };
+            for (stream, time_ns, line) in behavior::last_lines(records, n) {
+                if !sink.write(stream, time_ns, &line)? {
+                    return Ok(0);
+                }
             }
         }
         loop {
-            if let Some(r) = &mut reader {
-                while let Some((stream, data)) = r.next_record()? {
-                    let _ = match stream {
-                        Stream::Stdout => out.write_all(&data).and_then(|()| out.flush()),
-                        Stream::Stderr => err.write_all(&data).and_then(|()| err.flush()),
-                    };
-                }
-            }
-            if !follow || rt.get(sandbox.id()).await?.state() != State::Running {
-                break;
-            }
-            tokio::time::sleep(FOLLOW_POLL).await;
+            // 끝낼 때인지 먼저 정하고 읽는다. 그때까지 쓰인 것은 이번에 모두 읽힌다.
+            let done = !a.follow
+                || times.until.is_some_and(|u| now_ns() > u)
+                || rt.get(sandbox.id()).await?.state() != State::Running;
             if reader.is_none() {
                 reader = LogReader::open(&path).ok();
             }
-        }
-        // 멈춘 뒤 남은 것까지 읽는다.
-        if follow && let Some(r) = &mut reader {
-            while let Some((stream, data)) = r.next_record()? {
-                let _ = match stream {
-                    Stream::Stdout => out.write_all(&data).and_then(|()| out.flush()),
-                    Stream::Stderr => err.write_all(&data).and_then(|()| err.flush()),
-                };
+            if let Some(r) = &mut reader {
+                while let Some(rec) = r.next_record()? {
+                    if times.wants(rec.time_ns).map_err(msg)?
+                        && !sink.write(rec.stream, rec.time_ns, &rec.data)?
+                    {
+                        return Ok(0);
+                    }
+                }
             }
+            if done {
+                return Ok(0);
+            }
+            tokio::time::sleep(FOLLOW_POLL).await;
         }
-        Ok(0)
     }
 
     /// VM을 띄우지 않는 일에 쓰는 실행 코어. 실행기 실행 파일을 실행하지 않는다.
@@ -1217,12 +1299,7 @@ impl Ctx {
                     filter::image(id, reference.as_deref(), v, normalized(v).as_deref())
                 })
         };
-        let now = || {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos() as u64)
-                .unwrap_or(0)
-        };
+        let now = now_ns;
         let since = since
             .map(|s| parse::time_ns(s, now()).map_err(|e| msg(format!("--since: {e}"))))
             .transpose()?;

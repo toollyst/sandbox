@@ -407,6 +407,13 @@ pub const DOCKER_DIFFERENCES: &[(&str, &str, &str)] = &[
         "출력을 받아 적을 데몬이 없다. 적는 것은 shim이다",
     ),
     (
+        "logs -t, --since, --until",
+        "시각은 줄마다가 아니라 shim이 출력 조각을 받을 때마다 하나다(한 조각 안의 줄들은 같은 시각). \
+         시각을 남기기 전의 sbx가 쓴 로그(그 샌드박스를 다시 시작해도 그대로)에는 이 옵션들이 오류다. \
+         --since/--until은 시간대 없는 날짜를 받지 않는다",
+        "로그는 shim이 받은 조각 그대로 적는다(sbx_shim::log). 시각 없는 줄을 범위에 넣을지 뺄지 알 수 없으므로 조용히 틀리지 않는다",
+    ),
+    (
         "attach",
         "붙지 않고(run -d, start) 시작한 샌드박스에만 붙는다. 다른 sbx가 붙어서 실행 중인 샌드박스에는 붙지 않는다. Windows에서는 아직 없다",
         "붙기는 기본 프로세스의 입출력을 쥔 shim이 받는다. 데몬이 없다",
@@ -513,21 +520,72 @@ fn civil(secs: i64) -> String {
 }
 
 /// 로그 기록(출력 조각)들의 마지막 `n`줄. 조각을 줄로 나누고, 같은 스트림에서 이어지는 조각은 한 줄로 붙인다.
-/// 끝에 줄바꿈이 없는 마지막 조각도 한 줄로 센다(Docker `logs --tail`과 같다).
-pub fn last_lines<S: Copy + PartialEq>(records: Vec<(S, Vec<u8>)>, n: usize) -> Vec<(S, Vec<u8>)> {
-    let mut lines: Vec<(S, Vec<u8>)> = Vec::new();
-    for (stream, data) in records {
+/// 끝에 줄바꿈이 없는 마지막 조각도 한 줄로 센다(Docker `logs --tail`과 같다). 붙인 줄의 시각(`T`)은 첫 조각의 것이다.
+pub fn last_lines<S: Copy + PartialEq, T: Copy>(
+    records: Vec<(S, T, Vec<u8>)>,
+    n: usize,
+) -> Vec<(S, T, Vec<u8>)> {
+    let mut lines: Vec<(S, T, Vec<u8>)> = Vec::new();
+    for (stream, time, data) in records {
         for piece in data.split_inclusive(|&b| b == b'\n') {
             match lines.last_mut() {
-                Some((s, line)) if *s == stream && line.last() != Some(&b'\n') => {
+                Some((s, _, line)) if *s == stream && line.last() != Some(&b'\n') => {
                     line.extend_from_slice(piece)
                 }
-                _ => lines.push((stream, piece.to_vec())),
+                _ => lines.push((stream, time, piece.to_vec())),
             }
         }
     }
     let skip = lines.len().saturating_sub(n);
     lines.split_off(skip)
+}
+
+/// `logs`의 시각 조건. 명시적 동작:
+///
+/// - `--since`, `--until`은 그 시각을 넣는다(Docker와 같다). 시각은 shim이 출력 조각을 받은 때다.
+/// - `--tail`은 이 조건에 맞는 기록에서 마지막 N줄을 센다.
+/// - 시각이 필요한데(`-t`의 텍스트 출력, `--since`, `--until`) 기록에 없으면(이 판 전의 sbx가 쓴 로그,
+///   [`sbx_shim::log`]의 판 1) 아무것도 고르지 않고 오류다. 범위 안인지 알 수 없는 줄을 넣거나 빼서 조용히 틀리지 않는다.
+///   그런 로그도 시각 없이는(`--format json`이면 `time: null`로) 다 보인다.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LogTimes {
+    /// 이 시각(나노초)부터.
+    pub since: Option<u64>,
+    /// 이 시각(나노초)까지.
+    pub until: Option<u64>,
+    /// 줄마다 시각을 붙인다(`-t`, 텍스트 출력).
+    pub prefix: bool,
+}
+
+/// 시각이 없는 로그에 시각이 필요한 옵션을 쓴 오류.
+pub const LOG_WITHOUT_TIMES: &str = "this sandbox's log was written by an older sbx that did not record times, \
+     so -t, --since and --until cannot be used (logs without them still shows it); recreate the sandbox to get times";
+
+impl LogTimes {
+    /// 시각이 `time_ns`인 기록을 보일지.
+    pub fn wants(&self, time_ns: Option<u64>) -> Result<bool, &'static str> {
+        match time_ns {
+            Some(t) => Ok(self.since.is_none_or(|s| t >= s) && self.until.is_none_or(|u| t <= u)),
+            None if self.prefix || self.since.is_some() || self.until.is_some() => {
+                Err(LOG_WITHOUT_TIMES)
+            }
+            None => Ok(true),
+        }
+    }
+}
+
+/// `logs -t`: 출력 조각 `data`의 줄마다 앞에 `prefix`를 붙인다. `at_line_start`는 그 흐름이 줄 처음인지이고,
+/// 조각 사이에 이어진다(흐름마다 하나). 줄이 조각 여럿에 걸치면 첫 조각의 것만 붙는다.
+pub fn prefix_lines(data: &[u8], prefix: &str, at_line_start: &mut bool) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len() + prefix.len());
+    for piece in data.split_inclusive(|&b| b == b'\n') {
+        if *at_line_start {
+            out.extend_from_slice(prefix.as_bytes());
+        }
+        out.extend_from_slice(piece);
+        *at_line_start = piece.ends_with(b"\n");
+    }
+    out
 }
 
 /// 사람이 읽는 크기. Docker처럼 1000 단위다.
@@ -548,36 +606,76 @@ pub fn human_size(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{familiar, human_ago, human_size, last_lines, rfc3339};
+    use super::{
+        LOG_WITHOUT_TIMES, LogTimes, familiar, human_ago, human_size, last_lines, prefix_lines,
+        rfc3339,
+    };
 
     #[test]
     fn tail_counts_lines_across_records() {
-        let r = |s: u8, d: &str| (s, d.as_bytes().to_vec());
+        let r = |s: u8, t: u32, d: &str| (s, t, d.as_bytes().to_vec());
         let records = vec![
-            r(1, "a\nb"),
-            r(1, "c\n"),
-            r(2, "e1\n"),
-            r(1, "d\n"),
-            r(1, "no-newline"),
+            r(1, 10, "a\nb"),
+            r(1, 20, "c\n"),
+            r(2, 30, "e1\n"),
+            r(1, 40, "d\n"),
+            r(1, 50, "no-newline"),
         ];
         let got = |n| {
             last_lines(records.clone(), n)
                 .into_iter()
-                .map(|(s, l)| (s, String::from_utf8(l).unwrap()))
+                .map(|(s, t, l)| (s, t, String::from_utf8(l).unwrap()))
                 .collect::<Vec<_>>()
         };
-        assert_eq!(got(2), [(1, "d\n".into()), (1, "no-newline".into())]);
+        assert_eq!(
+            got(2),
+            [(1, 40, "d\n".into()), (1, 50, "no-newline".into())]
+        );
+        // 조각 둘에 걸친 줄은 첫 조각의 시각이다.
         assert_eq!(
             got(4),
             [
-                (1, "bc\n".into()),
-                (2, "e1\n".into()),
-                (1, "d\n".into()),
-                (1, "no-newline".into())
+                (1, 10, "bc\n".into()),
+                (2, 30, "e1\n".into()),
+                (1, 40, "d\n".into()),
+                (1, 50, "no-newline".into())
             ]
         );
         assert_eq!(got(0), []);
         assert_eq!(got(99).len(), 5);
+    }
+
+    #[test]
+    fn log_times_select_a_closed_range_and_refuse_logs_without_times() {
+        let range = LogTimes {
+            since: Some(10),
+            until: Some(20),
+            prefix: false,
+        };
+        assert_eq!(range.wants(Some(9)), Ok(false));
+        assert_eq!(range.wants(Some(10)), Ok(true));
+        assert_eq!(range.wants(Some(20)), Ok(true));
+        assert_eq!(range.wants(Some(21)), Ok(false));
+        assert_eq!(range.wants(None), Err(LOG_WITHOUT_TIMES));
+        let prefix = LogTimes {
+            prefix: true,
+            ..LogTimes::default()
+        };
+        assert_eq!(prefix.wants(None), Err(LOG_WITHOUT_TIMES));
+        // 시각이 필요 없으면 시각 없는 기록도 보인다.
+        assert_eq!(LogTimes::default().wants(None), Ok(true));
+        assert_eq!(LogTimes::default().wants(Some(0)), Ok(true));
+    }
+
+    #[test]
+    fn prefix_goes_before_each_line_once() {
+        let mut start = true;
+        assert_eq!(prefix_lines(b"a\nb", "T ", &mut start), b"T a\nT b");
+        assert!(!start);
+        // 이어지는 조각은 줄 처음이 아니다.
+        assert_eq!(prefix_lines(b"c\n", "U ", &mut start), b"c\n");
+        assert!(start);
+        assert_eq!(prefix_lines(b"\n\n", "V ", &mut start), b"V \nV \n");
     }
     use std::time::{Duration, UNIX_EPOCH};
 

@@ -87,6 +87,10 @@ mod unix {
         ),
         ("detached_rm_and_logs_follow", detached_rm_and_logs_follow),
         (
+            "logs_timestamps_since_until_and_json",
+            logs_timestamps_since_until_and_json,
+        ),
+        (
             "stop_sends_the_stop_signal_then_powers_off",
             stop_sends_the_stop_signal_then_powers_off,
         ),
@@ -539,11 +543,7 @@ mod unix {
         assert!(err.error.message.contains("`start`"), "{err:?}");
         assert_eq!(err.error.exit_code, Some(1));
         assert_eq!(e.ps()[0]["state"], "created", "start -a must not have run");
-        for args in [
-            &["exec", "j1", "true"][..],
-            &["logs", "j1"],
-            &["run", IMAGE, "true"],
-        ] {
+        for args in [&["exec", "j1", "true"][..], &["run", IMAGE, "true"]] {
             let o = json(args);
             assert_eq!(o.status.code(), Some(1), "{args:?}");
             assert!(o.stdout.is_empty(), "{args:?}");
@@ -1244,6 +1244,128 @@ mod unix {
         );
         let failed = |s: &serde_json::Value| s["process"]["args"][0] == "no-such-command-xyz";
         assert!(!e.ps().iter().any(failed), "{:?}", e.ps());
+    }
+
+    /// `logs -t`, `--since`, `--until`, `--format json`: shim이 기록마다 남긴 시각으로 고르고 붙인다.
+    fn logs_timestamps_since_until_and_json() {
+        use sbx_cli::output::LogLine;
+        use std::io::BufRead;
+        let e = Env::new();
+        let script = r"echo one; sleep 1; echo two; sleep 0.2; echo err >&2; sleep 0.2; printf '\377\n'; printf partial";
+        let o = e.sbx(&["run", "-d", IMAGE, "sh", "-c", script]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let id = text(&o.stdout).trim().to_owned();
+        assert_eq!(e.sbx(&["logs", "-f", &id]).status.code(), Some(0));
+        wait_state(&e, &id, "stopped");
+
+        // -t: 줄마다 `RFC 3339 나노초 + 공백` (Docker와 같은 모양). 흐름은 그대로 나뉜다.
+        let o = e.sbx(&["logs", "--timestamps", &id]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let split = |l: &str| -> (String, String) {
+            let (t, rest) = l.split_once(' ').unwrap_or_else(|| panic!("{l:?}"));
+            assert_eq!(t.len(), "2026-11-10T13:20:14.123456789Z".len(), "{l:?}");
+            assert!(t.ends_with('Z') && t.as_bytes()[19] == b'.', "{l:?}");
+            (t.to_owned(), rest.to_owned())
+        };
+        let out: Vec<(String, String)> = text(&o.stdout).lines().map(split).collect();
+        let lines: Vec<&str> = out.iter().map(|(_, l)| l.as_str()).collect();
+        assert_eq!(lines, ["one", "two", "\u{fffd}", "partial"], "{out:?}");
+        let err: Vec<(String, String)> = text(&o.stderr).lines().map(split).collect();
+        assert_eq!(err[0].1, "err");
+        let (one, two) = (&out[0].0, &out[1].0);
+        assert!(one < two && two < &err[0].0, "{out:?} {err:?}");
+
+        // --since, --until: 그 시각을 넣는다. 받는 형식은 events와 같다.
+        let o = e.sbx(&["logs", "--since", two, &id]);
+        assert_eq!(text(&o.stdout), "two\n\u{fffd}\npartial");
+        assert_eq!(text(&o.stderr), "err\n");
+        let o = e.sbx(&["logs", "--until", one, &id]);
+        assert_eq!(
+            (text(&o.stdout), text(&o.stderr)),
+            ("one\n".into(), "".into())
+        );
+        let o = e.sbx(&["logs", "--since", "1h", "--until", one, "-t", &id]);
+        assert_eq!(text(&o.stdout), format!("{one} one\n"));
+        // --tail은 범위 안에서 센다.
+        let o = e.sbx(&["logs", "--until", two, "-n", "1", &id]);
+        assert_eq!(text(&o.stdout), "two\n");
+        let o = e.sbx(&["logs", "--since", "yesterday", &id]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(text(&o.stderr).contains("--since"), "{}", text(&o.stderr));
+
+        // --format json: 줄 조각마다 LogLine 하나. UTF-8이 아니면 base64, 끝나지 않은 줄은 줄바꿈 없이.
+        let o = e.sbx(&["--format", "json", "logs", &id]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(o.stderr.is_empty(), "{}", text(&o.stderr));
+        let got: Vec<LogLine> = text(&o.stdout)
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap_or_else(|err| panic!("{err}: {l:?}")))
+            .collect();
+        let short: Vec<(&str, &str, &str)> = got
+            .iter()
+            .map(|l| (l.stream.as_str(), l.data.as_str(), l.encoding.as_str()))
+            .collect();
+        assert_eq!(
+            short,
+            [
+                ("stdout", "one\n", "utf-8"),
+                ("stdout", "two\n", "utf-8"),
+                ("stderr", "err\n", "utf-8"),
+                ("stdout", "/wo=", "base64"),
+                ("stdout", "partial", "utf-8"),
+            ]
+        );
+        assert_eq!(got[0].time.as_deref(), Some(one.as_str()));
+        let o = e.sbx(&["--format", "json", "logs", "-n", "1", "--since", two, &id]);
+        let last: LogLine = serde_json::from_str(text(&o.stdout).trim()).unwrap();
+        assert_eq!(last.data, "partial");
+
+        // 이 판 전의 sbx가 쓴 로그(머리 없음, 시각 없음): 그대로 보이고, 시각이 필요한 옵션은 오류다.
+        let log = e.path("data/sandboxes").join(&id).join("logs/main.log");
+        std::fs::write(&log, [1, 0, 0, 0, 4, b'o', b'l', b'd', b'\n']).unwrap();
+        assert_eq!(text(&e.sbx(&["logs", &id]).stdout), "old\n");
+        for flag in [&["-t"][..], &["--since", "1h"], &["--until", "1h"]] {
+            let mut args = vec!["logs"];
+            args.extend_from_slice(flag);
+            args.push(&id);
+            let o = e.sbx(&args);
+            assert_eq!(o.status.code(), Some(1), "{flag:?}");
+            assert!(o.stdout.is_empty(), "{flag:?}");
+            assert!(text(&o.stderr).contains("older sbx"), "{}", text(&o.stderr));
+        }
+        let o = e.sbx(&["--format", "json", "logs", "-t", &id]);
+        let old: LogLine = serde_json::from_str(text(&o.stdout).trim()).unwrap();
+        assert_eq!((old.time, old.data.as_str()), (None, "old\n"));
+
+        // -f --until: 그 시각이 지나면 따라가기를 끝낸다. stdout이 닫혀도 조용히 끝난다.
+        let o = e.sbx(&[
+            "run",
+            "-d",
+            IMAGE,
+            "sh",
+            "-c",
+            "while :; do echo y; sleep 0.05; done",
+        ]);
+        let id = text(&o.stdout).trim().to_owned();
+        let soon = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 2;
+        let child = e.spawn(&["logs", "-f", "--until", &soon.to_string(), &id]);
+        let o = wait_with_timeout(child, Duration::from_secs(15));
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(text(&o.stdout).starts_with("y\n"), "{}", text(&o.stdout));
+        let mut child = e.spawn(&["--format", "json", "logs", "-f", &id]);
+        let mut first = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut first)
+            .unwrap();
+        let _: LogLine = serde_json::from_str(&first).unwrap();
+        let o = wait_with_timeout(child, Duration::from_secs(15));
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(o.stderr.is_empty(), "{}", text(&o.stderr));
+        assert_eq!(e.sbx(&["rm", "-f", &id]).status.code(), Some(0));
     }
 
     /// 시그널 `sig`를 받으면 `code`로 끝나고 TERM은 무시하는 기본 프로세스를 detached로 시작한다.

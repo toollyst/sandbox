@@ -3,7 +3,7 @@
 //! - 명령마다 어떤 모양을 내는지는 [`JSON_OUTPUT`]이 정본이다. 모든 명령이 들어 있다(테스트가 확인한다).
 //!   - [`Form::Value`]: stdout에 JSON 값 하나(보기 좋게 줄을 나눈다).
 //!   - [`Form::Lines`]: 대상마다 한 줄에 JSON 객체 하나(JSON Lines). 여러 대상을 받는 명령이 쓴다.
-//!     하나가 실패해도 나머지를 계속하므로(Docker와 같다) 한 줄씩 낸다.
+//!     하나가 실패해도 나머지를 계속하므로(Docker와 같다) 한 줄씩 낸다. 흐르는 명령(`events`, `logs`)은 항목마다 한 줄이다.
 //!   - [`Form::Empty`]: 성공하면 아무것도 내지 않는다.
 //!   - [`Form::Unsupported`]: 출력이 게스트 프로세스의 바이트 그대로이거나 다른 규약이다. `--format json`이면 아무것도
 //!     하지 않고 오류로 끝난다.
@@ -77,10 +77,7 @@ pub const JSON_OUTPUT: &[(&str, Form)] = &[
     ("attach", Form::Unsupported(PROCESS_BYTES)),
     ("ps", Form::Value("[Sandbox]")),
     ("inspect", Form::Value("Sandbox")),
-    (
-        "logs",
-        Form::Unsupported("its output is the main process's own bytes"),
-    ),
+    ("logs", Form::Lines("LogLine")),
     ("events", Form::Lines("Event")),
     (
         "mcp",
@@ -133,7 +130,6 @@ pub fn refusal(command: &Command) -> Option<String> {
         } => ("start", *attach || *interactive),
         Command::Exec(_) => ("exec", true),
         Command::Attach { .. } => ("attach", true),
-        Command::Logs { .. } => ("logs", false),
         Command::Mcp { .. } => ("mcp", false),
         Command::Completion { .. } => ("completion", false),
         _ => return None,
@@ -559,6 +555,47 @@ impl Event {
     }
 }
 
+/// A piece of the main process output (`logs`): one line, or the part of a line that had arrived. A line
+/// whose `data` does not end with a newline continues in the next `LogLine` of the same stream.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct LogLine {
+    /// When sbx received it (RFC 3339, nanoseconds). Lines that arrived together share a time. Null if the log was
+    /// written by an older sbx that did not record times.
+    pub time: Option<String>,
+    /// `stdout` or `stderr`.
+    pub stream: String,
+    /// The bytes, with the trailing newline if the line ended, encoded as `encoding` says.
+    pub data: String,
+    /// `utf-8` if the bytes are valid UTF-8 (`data` is that text), otherwise `base64` (standard alphabet, padded).
+    pub encoding: String,
+}
+
+impl LogLine {
+    /// 로그 기록 조각 하나에서. UTF-8이 아니면(조각 경계에서 잘린 문자 포함) base64.
+    pub fn new(stream: sbx_shim::Stream, time_ns: Option<u64>, data: &[u8]) -> Self {
+        use base64::Engine as _;
+        let (data, encoding) = match std::str::from_utf8(data) {
+            Ok(s) => (s.to_owned(), "utf-8"),
+            Err(_) => (
+                base64::engine::general_purpose::STANDARD.encode(data),
+                "base64",
+            ),
+        };
+        Self {
+            time: time_ns.map(behavior::rfc3339_ns),
+            stream: match stream {
+                sbx_shim::Stream::Stdout => "stdout",
+                sbx_shim::Stream::Stderr => "stderr",
+            }
+            .to_owned(),
+            data,
+            encoding: encoding.to_owned(),
+        }
+    }
+}
+
 /// A sandbox (`ps`, `inspect`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
@@ -867,6 +904,7 @@ mod tests {
         assert!(refuse("start", true).unwrap().contains("-a"));
         assert!(refuse("ps", false).is_none());
         assert!(refuse("cp", false).is_none());
+        assert!(refuse("logs", false).is_none());
     }
 
     /// 문서에 넣는 자료형과 그것들이 쓰는 자료형의 스키마(`$defs`). 생성기 하나로 모아 `$ref`가 한 문서 안에서 풀린다.
@@ -888,6 +926,7 @@ mod tests {
         g.subschema_for::<Exited>();
         g.subschema_for::<Sandbox>();
         g.subschema_for::<Event>();
+        g.subschema_for::<LogLine>();
         g.take_definitions(true)
     }
 
@@ -919,7 +958,7 @@ mod tests {
              but only together with this file.\n\n\
              - **value**: one JSON value (pretty-printed).\n\
              - **lines**: one JSON object per line (JSON Lines), one per argument. \
-             If one argument fails, the others still run.\n\
+             If one argument fails, the others still run. Streams (`events`, `logs`) print one per item.\n\
              - **empty**: nothing on success.\n\
              - **not supported**: sbx refuses `--format json` and exits with an error.\n\
              - `-q` (`ps`, `images`) wins over `--format`: one ID per line.\n\

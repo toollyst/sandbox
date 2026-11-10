@@ -445,6 +445,37 @@
       ],
       "type": "object"
     },
+    "LogLine": {
+      "additionalProperties": false,
+      "description": "A piece of the main process output (`logs`): one line, or the part of a line that had arrived. A line\nwhose `data` does not end with a newline continues in the next `LogLine` of the same stream.",
+      "properties": {
+        "data": {
+          "description": "The bytes, with the trailing newline if the line ended, encoded as `encoding` says.",
+          "type": "string"
+        },
+        "encoding": {
+          "description": "`utf-8` if the bytes are valid UTF-8 (`data` is that text), otherwise `base64` (standard alphabet, padded).",
+          "type": "string"
+        },
+        "stream": {
+          "description": "`stdout` or `stderr`.",
+          "type": "string"
+        },
+        "time": {
+          "description": "When sbx received it (RFC 3339, nanoseconds). Lines that arrived together share a time. Null if the log was\nwritten by an older sbx that did not record times.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "stream",
+        "data",
+        "encoding"
+      ],
+      "type": "object"
+    },
     "Mount": {
       "additionalProperties": false,
       "description": "A folder shared with the host.",
