@@ -129,7 +129,7 @@ SLSA, TUF(색인 신선도), EU CRA. root는 금지 조건이 아니다: 쓸 수
 | P8 | 취약점 처리 절차(SECURITY.md): 첫 응답 48시간, 판단 7일, 고침이 준비되면 엠바고 최대 14일·신고 뒤 90일 안 공개, GHSA로 CVE, "위협 모델 표의 경계를 넘으면 CVE", 지원 버전(최신 minor 둘, 각 1년 이상), 어댑터·커널·wick·upstream의 신고처, 릴리스 노트의 Security 절, 받은 것을 확인하는 법 | 완료 |
 | P9 | 호환성 정책(COMPATIBILITY.md): 계약 목록(CLI 플래그·종료 코드, `--format json` 스키마는 더하기만, MCP 도구, 실행기·게스트 규약, 저장소 색인, data/cache 배치, `.sbx-executor`), 디스크 배치 버전과 마이그레이션 또는 거부, 실행기 규약을 같은 버전 대신 범위 협상으로 | 남음 |
 | P10 | 거버넌스: CODE_OF_CONDUCT(Contributor Covenant 2.1), MAINTAINERS, GOVERNANCE, DCO(CI `dco` 작업이 PR 커밋을 본다), PR 양식. 남음: 브랜치·태그 rulesets(저장소 설정), 릴리스 권한을 가진 두 번째 메인테이너(지금은 한 명, 구한다고 적었다) | 일부 |
-| P11 | OpenSSF Scorecard 작업과 배지, Best Practices 배지(passing), OSPS Baseline 자가 증명 | 남음 |
+| P11 | OpenSSF Scorecard 작업(`scorecard.yml`, main push와 손으로, 결과 공개와 코드 스캔)과 README 배지. 남음: Best Practices 배지(passing, bestpractices.dev에 사람이 등록), OSPS Baseline 자가 증명 | 일부 |
 | P12 | 커널·VMM 패치 정책(추적, 재빌드 주기), 색인의 `yanked`·`advisory`, `executor ls`와 tui가 설치된 취약 버전을 알린다 | 남음 |
 | P13 | 운영: 감사 기록(누가 언제 무엇을 만들고 실행했나, 이미지 digest, 실행기 버전, allow 목록, exec argv·종료 코드, egress 허용·거부. JSONL, 보존 기간 설정, 선택적으로 OTel), `sbx stats`, `sbx system df`·`prune`, 고아 VM 정리 | 남음 |
 | P14 | 호스트 강화 점검 `sbx info --security`(SMT, KSM, swap, KVM 권한, 시리얼 출력) | 남음 |

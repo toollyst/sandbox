@@ -11,6 +11,7 @@
   <a href="#license"><img alt="License: Apache-2.0 OR MIT" src="https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue"></a>
   <img alt="Platforms: macOS (Apple Silicon) and Linux" src="https://img.shields.io/badge/runs%20on-macOS%20%C2%B7%20Linux-lightgrey">
   <img alt="Status: alpha" src="https://img.shields.io/badge/status-alpha-orange">
+  <a href="https://scorecard.dev/viewer/?uri=github.com/toollyst/sandbox"><img alt="OpenSSF Scorecard" src="https://api.scorecard.dev/projects/github.com/toollyst/sandbox/badge"></a>
 </p>
 
 > [!WARNING]
