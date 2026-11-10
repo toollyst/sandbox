@@ -1131,6 +1131,17 @@ mod tests {
     }
 
     #[test]
+    fn sbx_labels_live_where_images_cannot_reach() {
+        // 이미지가 준 이 이름공간의 라벨은 런타임이 버린다(sbx_runtime::process::labels).
+        for l in [OWNER_LABEL, crate::choose::PIN_LABEL] {
+            assert!(
+                l.starts_with(sbx_runtime::process::RESERVED_LABEL_PREFIX),
+                "{l}"
+            );
+        }
+    }
+
+    #[test]
     fn cpus_must_be_a_whole_number() {
         let cpus = |v: Value| parse(json!({ "image": "alpine", "cpus": v }), false).map(|r| r.cpus);
         assert_eq!(cpus(json!(2.0)).unwrap().as_deref(), Some("2"));

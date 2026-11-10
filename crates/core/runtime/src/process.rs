@@ -9,7 +9,7 @@
 //! | cwd | 호출자 값 > `WorkingDir` > `/` |
 //! | user | 호출자 값 > `User` > root |
 //! | 멈출 때 시그널 ([`stop_signal`]) | 호출자 값 > `StopSignal` > SIGTERM |
-//! | 라벨 ([`labels`]) | 이미지 `Labels`에 호출자 값을 덮어쓴다. 같은 키는 호출자 값이 이긴다 |
+//! | 라벨 ([`labels`]) | 이미지 `Labels`에 호출자 값을 덮어쓴다. 같은 키는 호출자 값이 이긴다. 이미지의 라벨 중 [`RESERVED_LABEL_PREFIX`]로 시작하는 것은 버린다(sbx가 쓰는 라벨이다. 이미지가 그것으로 샌드박스의 주인이나 실행기를 정하지 못하게) |
 //!
 //! argv가 비면 [`RuntimeError::NoCommand`]다.
 //!
@@ -76,12 +76,20 @@ pub fn for_exec(base: &ProcessDefaults, exec: &ExecSpec) -> Result<ProcessDefaul
     })
 }
 
+/// sbx가 스스로 붙이는 라벨의 이름공간. 이미지는 이 라벨을 줄 수 없다([`labels`]).
+pub const RESERVED_LABEL_PREFIX: &str = "io.github.toollyst.sandbox.";
+
 /// 샌드박스 라벨. 규칙은 모듈 문서의 표를 따른다.
 pub fn labels(
     image: &ImageConfig,
     given: &std::collections::BTreeMap<String, String>,
 ) -> std::collections::BTreeMap<String, String> {
-    let mut all = image.labels.clone();
+    let mut all: std::collections::BTreeMap<String, String> = image
+        .labels
+        .iter()
+        .filter(|(k, _)| !k.starts_with(RESERVED_LABEL_PREFIX))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
     all.extend(given.iter().map(|(k, v)| (k.clone(), v.clone())));
     all
 }
@@ -179,6 +187,32 @@ mod tests {
         let all = labels(&image(), &given);
         let v: Vec<(&str, &str)> = all.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         assert_eq!(v, [("a", "image"), ("b", "mine"), ("c", "mine")]);
+    }
+
+    #[test]
+    fn images_cannot_set_sbx_labels() {
+        let mut i = image();
+        for k in ["owner", "executor", "anything"] {
+            i.labels
+                .insert(format!("{RESERVED_LABEL_PREFIX}{k}"), "image".into());
+        }
+        // 비슷하지만 이름공간 밖인 것은 그대로다.
+        i.labels
+            .insert("io.github.toollyst.sandboxx".into(), "image".into());
+        let given = [(format!("{RESERVED_LABEL_PREFIX}owner"), "cli".to_owned())].into();
+        let all = labels(&i, &given);
+        let keys: Vec<&str> = all.keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            [
+                "a",
+                "b",
+                "io.github.toollyst.sandbox.owner",
+                "io.github.toollyst.sandboxx"
+            ]
+        );
+        // 호출자(sbx 자신)가 준 것만 남는다.
+        assert_eq!(all[&format!("{RESERVED_LABEL_PREFIX}owner")], "cli");
     }
 
     #[test]
