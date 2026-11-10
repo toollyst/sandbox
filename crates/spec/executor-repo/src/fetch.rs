@@ -69,6 +69,12 @@ impl Fetcher {
     pub fn new() -> Result<Self, RepoError> {
         let http = reqwest::Client::builder()
             .user_agent(concat!("sbx-executor-repo/", env!("CARGO_PKG_VERSION")))
+            .redirect(reqwest::redirect::Policy::custom(
+                |attempt| match location::check_redirect(attempt.previous(), attempt.url()) {
+                    Ok(()) => attempt.follow(),
+                    Err(e) => attempt.error(e),
+                },
+            ))
             .build()
             .map_err(|e| {
                 RepoError::Config(format!("cannot create an HTTP client: {}", chain(&e)))

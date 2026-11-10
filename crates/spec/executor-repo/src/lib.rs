@@ -48,7 +48,8 @@
 //! 모르는 필드는 무시한다(같은 schema 안에서 필드를 더할 수 있게). 규약에 맞지 않는 곳이 하나라도 있으면
 //! 색인 전체를 거부한다. 색인은 [`index::MAX_INDEX_BYTES`] 이하다.
 //!
-//! **URL**: `https`, `file`, 그리고 loopback 호스트의 `http`만 쓴다([`location::check`]). redirect된 곳도 같다.
+//! **URL**: `https`, `file`, 그리고 loopback 호스트의 `http`만 쓴다([`location::check`]). redirect는 단계마다 같은
+//! 규칙을 보고, `https`로 시작했으면 끝까지 `https`이며, 10번까지만 따라간다([`location::check_redirect`]).
 //! 압축 파일의 URL은 색인과 같은 scheme이거나 `https`여야 한다([`location::check_artifact`]): `https` 색인이
 //! `file:`이나 loopback `http:`를 가리킬 수 없다.
 //! 묶음의 무결성은 색인의 `sha256`이 지킨다. 색인은 서명된 저장소(아래 "서명")가 아니면 TLS에만 기댄다.

@@ -40,6 +40,24 @@ pub fn check_artifact(index: &Url, artifact: &Url) -> Result<(), String> {
     }
 }
 
+/// redirect할 때 한 번 더 따라가도 되는지. `chain`은 지금까지 거친 URL(처음 것부터)이다. 모든 단계가 [`check`]를
+/// 지나야 하고, 처음이 `https`였으면 끝까지 `https`여야 하며(중간에 평문으로 내려가거나 이 기계의 loopback으로
+/// 가지 않게), 10번까지만 따라간다.
+pub fn check_redirect(chain: &[Url], next: &Url) -> Result<(), String> {
+    // `chain`의 첫 URL은 처음 요청이다(redirect가 아니다).
+    if chain.len() > MAX_REDIRECTS {
+        return Err(format!("more than {MAX_REDIRECTS} redirects"));
+    }
+    check(next).map_err(|e| format!("redirected: {e}"))?;
+    if chain.first().is_some_and(|u| u.scheme() == "https") && next.scheme() != "https" {
+        return Err(format!("redirected from https to {next}"));
+    }
+    Ok(())
+}
+
+/// 따라가는 redirect 수의 상한.
+pub const MAX_REDIRECTS: usize = 10;
+
 fn is_loopback(url: &Url) -> bool {
     match url.host() {
         Some(url::Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),

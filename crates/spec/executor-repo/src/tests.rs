@@ -934,7 +934,19 @@ async fn serve(root: PathBuf) -> std::net::SocketAddr {
                 }
                 let line = String::from_utf8_lossy(&req);
                 let path = line.split_whitespace().nth(1).unwrap_or("/").to_owned();
-                let resp = match fs::read(root.join(path.trim_start_matches('/'))) {
+                let file = root.join(path.trim_start_matches('/'));
+                // `<파일>.redirect`가 있으면 그 내용(URL)으로 보낸다.
+                let mut redirect = file.clone().into_os_string();
+                redirect.push(".redirect");
+                if let Ok(to) = fs::read_to_string(&redirect) {
+                    let r = format!(
+                        "HTTP/1.1 302 Found\r\nLocation: {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        to.trim()
+                    );
+                    let _ = s.write_all(r.as_bytes()).await;
+                    return;
+                }
+                let resp = match fs::read(&file) {
                     Ok(body) => {
                         let mut r = format!(
                             "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -973,6 +985,46 @@ async fn download_over_http_from_localhost() {
         matches!(&e, RepoError::Missing { url } if url.ends_with("/missing/index.json")),
         "{e}"
     );
+}
+
+#[tokio::test]
+async fn redirects_are_checked_at_every_hop() {
+    let repo = Repo::new("redirect");
+    let addr = serve(repo.root.join("repo")).await;
+    let f = Fetcher::new().unwrap();
+    let at = |p: &str| Repository::new("t", &format!("http://{addr}/{p}")).unwrap();
+    // loopback 안에서 옮겨 가는 것은 따라간다.
+    fs::create_dir_all(repo.root.join("repo/moved")).unwrap();
+    fs::write(
+        repo.root.join("repo/moved/index.json.redirect"),
+        format!("http://{addr}/index.json"),
+    )
+    .unwrap();
+    assert!(
+        f.index(&at("moved/"))
+            .await
+            .unwrap()
+            .executor("fc")
+            .is_some()
+    );
+    // 평문 http로 밖에 나가는 redirect는 거부한다(마지막 URL만이 아니라 그 단계에서).
+    fs::create_dir_all(repo.root.join("repo/out")).unwrap();
+    fs::write(
+        repo.root.join("repo/out/index.json.redirect"),
+        "http://example.invalid/index.json",
+    )
+    .unwrap();
+    let e = f.index(&at("out/")).await.unwrap_err().to_string();
+    assert!(e.contains("plain http") || e.contains("redirect"), "{e}");
+    // 끝없는 redirect도 멈춘다.
+    fs::create_dir_all(repo.root.join("repo/loop")).unwrap();
+    fs::write(
+        repo.root.join("repo/loop/index.json.redirect"),
+        format!("http://{addr}/loop/index.json"),
+    )
+    .unwrap();
+    let e = f.index(&at("loop/")).await.unwrap_err().to_string();
+    assert!(e.contains("redirects"), "{e}");
 }
 
 #[tokio::test]
@@ -1104,4 +1156,44 @@ fn concurrent_repository_adds_are_all_kept() {
     });
     assert_eq!(Sources::new(&path).list().unwrap().len(), 16);
     let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn every_redirect_hop_stays_on_https() {
+    let u = |s: &str| Url::parse(s).unwrap();
+    let from_https = [u("https://example.com/index.json")];
+    assert!(location::check_redirect(&from_https, &u("https://cdn.example.net/x")).is_ok());
+    for bad in [
+        "http://example.com/x",
+        "http://127.0.0.1/x",
+        "file:///etc/passwd",
+        "ftp://x/",
+    ] {
+        assert!(
+            location::check_redirect(&from_https, &u(bad)).is_err(),
+            "{bad}"
+        );
+    }
+    // 중간에 한 번이라도 https였다가 내려가는 것도 안 된다(처음이 https면 끝까지).
+    let chain = [u("https://a.example/"), u("https://b.example/")];
+    assert!(location::check_redirect(&chain, &u("http://localhost/x")).is_err());
+    // loopback http 저장소는 loopback http 안에서만, 또는 https로.
+    let local = [u("http://127.0.0.1:9000/r")];
+    assert!(location::check_redirect(&local, &u("http://localhost:9001/r")).is_ok());
+    assert!(location::check_redirect(&local, &u("https://example.com/r")).is_ok());
+    assert!(location::check_redirect(&local, &u("http://example.com/r")).is_err());
+    // 10번까지만.
+    // 처음 요청 + redirect 10번까지.
+    let chain: Vec<Url> = (0..=location::MAX_REDIRECTS)
+        .map(|i| u(&format!("https://e.example/{i}")))
+        .collect();
+    assert!(
+        location::check_redirect(&chain[..location::MAX_REDIRECTS], &u("https://e.example/z"))
+            .is_ok()
+    );
+    assert!(
+        location::check_redirect(&chain, &u("https://e.example/z"))
+            .unwrap_err()
+            .contains("redirects")
+    );
 }
