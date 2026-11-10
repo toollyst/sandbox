@@ -91,7 +91,7 @@ M5와 따로 간다. CLI가 주인이고, 사람(`sbx tui`), 스크립트, 에�
 | C4 | `--jq EXPR` (jaq 내장, gh와 같다): `--format json`일 때만, 값이나 줄마다 식을 돌려 결과마다 한 줄(문자열은 따옴표 없이). 틀린 식은 실행 전에 오류. Go 템플릿 `--format '{{…}}'`은 하지 않는다(`DOCKER_DIFFERENCES`) | 완료 (e2e `jq_shapes_json_output`). 대가: macOS arm64 release `sbx`가 11.8 MB → 15.5 MB. jaq-std 기본 함수만 쓰면 14.5 MB지만 정규식·`@base64`·날짜 함수가 빠진 반쪽 jq라 전체를 둔다 |
 | C5 | 이름·ID·이미지 동적 자동완성 (`clap_complete` `unstable-dynamic`) | 완료 (`sbx completion <셸>`이 등록 스크립트를 찍고 탭마다 `COMPLETE=<셸> sbx`가 읽기만 해서 샌드박스 이름·ID, 이미지 참조, 설치한 실행기를 낸다. 규칙은 `crates/app/cli/src/complete.rs`, e2e `completion_offers_sandboxes_and_images`) |
 | C6 | 로그 시각 (`logs --timestamps`, `--since`, `--format json`): `main.log` 기록 형식에 시각을 넣고 버전을 둔다 | 완료 (판 2: 머리 `sbx-log\x02`, 기록마다 받은 시각(나노초). 머리 없는 옛 파일은 읽고, 다시 시작해도 그 판으로 이어 쓴다. 시각 없는 로그에 `-t`/`--since`/`--until`은 오류. `--format json`은 줄 조각마다 `LogLine`(UTF-8 아니면 base64). e2e `logs_timestamps_since_until_and_json`) |
-| T | `sbx tui`: 인라인(아래쪽만 다시 그림) 화면, `ps` 뒤 `events --since` 구독, 모든 동작은 `sbx …` 자식 프로세스에 터미널을 넘겨 실행하고 그 명령 줄을 보여준다. S0 스파이크에서 iocraft와 ratatui Inline 중 고른다 | 남음 (C2 뒤) |
+| T | `sbx tui`: 전체 화면(ratatui, 대체 화면). 탭 셋(샌드박스, 이미지, 이벤트)과 최근 이벤트 칸, 보이는 줄만 그리는 표와 스크롤 막대, 거르기(`/`), 상세(JSON)·도움말·확인 창. `ps -a`·`images` 뒤 `events --since 1h`를 따라 읽고 이벤트마다 목록을 다시 읽는다. 모든 동작은 같은 `sbx`를 자식으로 부르고 상태 줄에 그 명령 줄을 보인다. 터미널이 필요한 명령(`exec -it`, `attach`, `logs -f`, `:` 아무 명령)은 대체 화면을 닫고 터미널을 넘겼다가 Enter로 돌아온다 | 완료 (규칙은 `crates/app/cli/src/tui/`. 단위 테스트가 키→명령 줄, 가상 스크롤, 그리기(TestBackend)를 보고, pty 위에서 바깥 `run -d`가 바로 보이는지, stop·rm·logs·exec·`:`·창 크기·종료 뒤 자식이 남지 않는지 확인했다. 스파이크: iocraft는 ScrollView가 가상 스크롤이 아니고 창·다이얼로그를 직접 만들어야 해서, 전체 화면 앱에는 ratatui를 골랐다. 대가 +0.3 MB) |
 
 ## 그 뒤
 

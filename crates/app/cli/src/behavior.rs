@@ -375,6 +375,12 @@ pub const DOCKER_DIFFERENCES: &[(&str, &str, &str)] = &[
          아무것도 바꾸지 않는다",
     ),
     (
+        "sbx tui",
+        "Docker CLI에 없는 명령(Docker Desktop이나 lazydocker 같은 화면). 전체 화면에서 ps, images, events를 보고 \
+         키로 sbx 명령을 낸다. 코어를 직접 부르지 않고 같은 sbx를 자식으로 부른다(crate::tui)",
+        "CLI가 주인이고 화면은 그 위의 도구다. 화면이 하는 일은 모두 상태 줄에 보이는 sbx 명령 줄과 같다",
+    ),
+    (
         "sbx prepare",
         "Docker에 없는 명령",
         "이미지를 VM용 rootfs 디스크로 만드는 단계가 따로 있다",

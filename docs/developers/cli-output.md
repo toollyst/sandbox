@@ -45,5 +45,6 @@ The JSON Schema (draft 2020-12) of every type is in [cli-output.schema.json](cli
 | `inspect` | value: `Sandbox` |
 | `logs` | lines: `LogLine` |
 | `events` | lines: `Event` |
+| `tui` | not supported: it is an interactive screen |
 | `mcp` | not supported: it speaks the Model Context Protocol (JSON-RPC) on stdio |
 | `completion` | not supported: its output is a shell script |

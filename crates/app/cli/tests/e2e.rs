@@ -69,6 +69,7 @@ mod unix {
         ("events_replay_and_follow", events_replay_and_follow),
         ("filters", filters),
         ("jq_shapes_json_output", jq_shapes_json_output),
+        ("tui_needs_a_terminal", tui_needs_a_terminal),
         (
             "exec_cp_stop_on_a_running_sandbox",
             exec_cp_stop_on_a_running_sandbox,
@@ -905,6 +906,27 @@ mod unix {
         assert_eq!(o.status.code(), Some(1));
         assert!(
             text(&o.stderr).contains("cannot index"),
+            "{}",
+            text(&o.stderr)
+        );
+    }
+
+    /// `sbx tui`는 터미널이 아니면 화면을 열지 않고 오류다(파이프에 제어 문자를 쏟지 않는다). JSON도 받지 않는다.
+    /// 화면 자체는 단위 테스트(`tui::model`, `tui::view`)가 본다.
+    fn tui_needs_a_terminal() {
+        let e = Env::new();
+        let o = e.sbx(&["tui"]);
+        assert_eq!(o.status.code(), Some(1));
+        assert!(
+            text(&o.stderr).contains("needs a terminal"),
+            "{}",
+            text(&o.stderr)
+        );
+        assert!(o.stdout.is_empty(), "{:?}", text(&o.stdout));
+        let o = e.sbx(&["--format", "json", "tui"]);
+        assert_eq!(o.status.code(), Some(1));
+        assert!(
+            text(&o.stderr).contains("interactive screen"),
             "{}",
             text(&o.stderr)
         );

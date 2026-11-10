@@ -12,6 +12,8 @@ pub enum Group {
     Agent,
     /// 어느 코어도 부르지 않는다: 셸 연동.
     Shell,
+    /// 사람이 한 화면에서 위 명령들을 본다. 코어를 직접 부르지 않고 `sbx` 자식을 부른다.
+    Ui,
 }
 
 impl Group {
@@ -22,6 +24,7 @@ impl Group {
             Group::Run => "sandbox",
             Group::Agent => "agent",
             Group::Shell => "shell",
+            Group::Ui => "ui",
         }
     }
 }
@@ -127,6 +130,11 @@ pub const COMMANDS: &[Command] = &[
         "events",
         Group::Run,
         "Stream sandbox and image events (--since replays recent ones)",
+    ),
+    cmd(
+        "tui",
+        Group::Ui,
+        "Watch and manage sandboxes and images in a full-screen terminal UI",
     ),
     cmd(
         "mcp",

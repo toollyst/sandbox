@@ -79,6 +79,7 @@ pub const JSON_OUTPUT: &[(&str, Form)] = &[
     ("inspect", Form::Value("Sandbox")),
     ("logs", Form::Lines("LogLine")),
     ("events", Form::Lines("Event")),
+    ("tui", Form::Unsupported("it is an interactive screen")),
     (
         "mcp",
         Form::Unsupported("it speaks the Model Context Protocol (JSON-RPC) on stdio"),
@@ -130,6 +131,7 @@ pub fn refusal(command: &Command) -> Option<String> {
         } => ("start", *attach || *interactive),
         Command::Exec(_) => ("exec", true),
         Command::Attach { .. } => ("attach", true),
+        Command::Tui => ("tui", false),
         Command::Mcp { .. } => ("mcp", false),
         Command::Completion { .. } => ("completion", false),
         _ => return None,

@@ -190,7 +190,7 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
             filter,
         } => ctx.events(since.as_deref(), until.as_deref(), filter).await,
         // `mcp`는 이 위(`sbx_cli::run`)에서 [`crate::mcp`]로 간다.
-        Command::Mcp { .. } | Command::Completion { .. } => {
+        Command::Mcp { .. } | Command::Completion { .. } | Command::Tui => {
             Err(msg("internal: served by sbx_cli::run"))
         }
     }

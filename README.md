@@ -89,6 +89,7 @@ You can change what it does with `SBX_VERSION`, `SBX_INSTALL_DIR` or `SBX_NO_EXE
 ```sh
 sbx info                    # check it worked: host, virtualization, executor
 sbx completion zsh --help   # tab completion, sandbox names and images too (bash, zsh, fish, PowerShell)
+sbx tui                     # full-screen view of sandboxes, images and events; keys run sbx commands
 ```
 
 <details>
@@ -157,7 +158,7 @@ lookups fail at once instead of hanging.
 **Images.** `pull` (with a progress bar), `prepare` (build the disk image ahead of time), `images [-q]` and `rmi [-f]`.
 `run` pulls and prepares on first use (`--pull=missing|always|never`).
 
-**Scripting.** `--format json` on every command that reports sandboxes, images or executors (commands that stream a process's own output refuse it), with errors as one JSON line on stderr. Add `--jq EXPR` to pick fields with a built-in jq (`sbx --format json ps --jq '.[].name'`). `--filter KEY=VALUE` on `ps`, `images` and `events`, and `sbx events` streams what changes. The shapes and their JSON Schema are in [docs/developers/cli-output.md](docs/developers/cli-output.md). `-q` prints IDs only.
+**Scripting.** `--format json` on every command that reports sandboxes, images or executors (commands that stream a process's own output refuse it), with errors as one JSON line on stderr. Add `--jq EXPR` to pick fields with a built-in jq (`sbx --format json ps --jq '.[].name'`). `--filter KEY=VALUE` on `ps`, `images` and `events`, and `sbx events` streams what changes. `sbx tui` is built on exactly these: every key runs an `sbx` command and shows its command line. The shapes and their JSON Schema are in [docs/developers/cli-output.md](docs/developers/cli-output.md). `-q` prints IDs only.
 Exit codes follow Docker: 125 when `sbx` fails, 126 when the command can't run, 127 when it isn't found, and the
 command's own code otherwise.
 

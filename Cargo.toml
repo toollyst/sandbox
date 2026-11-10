@@ -58,8 +58,10 @@ clap = { version = "4", features = ["derive", "env"] }
 # `unstable-dynamic`은 semver 밖이라(패치 버전에서도 바뀔 수 있다) 정확한 버전으로 고정한다. 올릴 때는
 # crates/app/cli/src/complete.rs와 e2e의 completion 테스트를 다시 확인한다.
 clap_complete = { version = "=4.6.11", features = ["unstable-dynamic"] }
-# 터미널 raw 모드와 크기 (CLI의 -t). events 기능은 쓰지 않는다.
+# 터미널 raw 모드와 크기 (CLI의 -t). 키 읽기(events)는 `sbx tui`가 ratatui를 거쳐 켠다.
 crossterm = { version = "0.29", default-features = false, features = ["windows"] }
+# `sbx tui` 화면(전체 화면, crossterm 위). 달력 위젯(time 크레이트)과 매크로는 쓰지 않는다.
+ratatui = { version = "0.30", default-features = false, features = ["crossterm", "underline-color"] }
 
 # workspace
 sbx-model = { path = "crates/model" }

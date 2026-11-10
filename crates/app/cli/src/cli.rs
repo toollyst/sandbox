@@ -219,6 +219,8 @@ pub enum Command {
         #[arg(short = 'f', long = "filter", value_name = "KEY=VALUE")]
         filter: Vec<String>,
     },
+    #[command(about = about("tui"), after_help = crate::tui::keys::help_text())]
+    Tui,
     #[command(about = about("mcp"))]
     Mcp {
         /// Let tools use every sandbox in the data directory, not only the ones created through MCP.

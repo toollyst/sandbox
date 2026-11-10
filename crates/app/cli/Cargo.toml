@@ -23,6 +23,7 @@ sbx-guest-proto.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 crossterm.workspace = true
+ratatui.workspace = true
 tokio = { workspace = true, features = ["signal", "time", "net", "io-util", "io-std", "sync"] }
 serde_json.workspace = true
 serde.workspace = true
