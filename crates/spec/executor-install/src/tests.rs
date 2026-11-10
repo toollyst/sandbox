@@ -24,15 +24,17 @@ fn specs_and_versions() {
     for bad in ["", "@1", "a@", "a@b@c", "../x", ".hidden", "a/b", "a b"] {
         assert!(bad.parse::<Spec>().is_err(), "{bad}");
     }
-    assert!(version_matches("1.18.0", "1.18.0-wick.2"));
+    assert!(version_matches("1.18.0", "1.18.0+wick.2"));
     assert!(version_matches("1.18", "1.18.3"));
     assert!(version_matches("1.18.0", "1.18.0"));
     assert!(!version_matches("1.1", "1.18"));
-    assert!(!version_matches("1.18.0-wick.1", "1.18.0-wick.10"));
+    assert!(!version_matches("1.18.0+wick.1", "1.18.0+wick.10"));
+    assert_eq!(version_line("1.18.0+wick.2"), "1.18.0");
     assert_eq!(version_line("1.18.0-wick.2"), "1.18.0");
+    assert_eq!(version_line("1.19.0-rc1+wick.1"), "1.19.0");
     assert_eq!(version_line("2.0"), "2.0");
     assert_eq!(
-        version_cmp("1.18.0-wick.10", "1.18.0-wick.9"),
+        version_cmp("1.18.0+wick.10", "1.18.0+wick.9"),
         Ordering::Greater
     );
     assert_eq!(version_cmp("1.10.0", "1.9.3"), Ordering::Greater);
@@ -157,24 +159,24 @@ fn a_main_version_finds_its_newest_patch() {
     fs::write(src.join(executable_name()), b"#!/bin/sh\n").unwrap();
     let ex = Executors::new(r.join("executors"));
     for v in [
-        "1.18.0-wick.1",
-        "1.18.0-wick.10",
-        "1.18.0-wick.2",
-        "1.19.0-wick.1",
+        "1.18.0+wick.1",
+        "1.18.0+wick.10",
+        "1.18.0+wick.2",
+        "1.19.0+wick.1",
     ] {
         ex.install(&spec(&format!("wick@{v}")), &src, None, |_| Ok(()))
             .unwrap();
     }
     let found = |s: &str| ex.find(&spec(s)).unwrap().map(|i| i.version);
-    assert_eq!(found("wick@1.18.0").as_deref(), Some("1.18.0-wick.10"));
+    assert_eq!(found("wick@1.18.0").as_deref(), Some("1.18.0+wick.10"));
     assert_eq!(
-        found("wick@1.18.0-wick.2").as_deref(),
-        Some("1.18.0-wick.2")
+        found("wick@1.18.0+wick.2").as_deref(),
+        Some("1.18.0+wick.2")
     );
-    assert_eq!(found("wick@1").as_deref(), Some("1.19.0-wick.1"));
+    assert_eq!(found("wick@1").as_deref(), Some("1.19.0+wick.1"));
     assert_eq!(found("wick@1.17"), None);
     // 지우기는 정확한 버전만.
     assert!(ex.remove(&spec("wick@1.18.0")).is_err());
-    assert!(ex.remove(&spec("wick@1.18.0-wick.1")).is_ok());
+    assert!(ex.remove(&spec("wick@1.18.0+wick.1")).is_ok());
     fs::remove_dir_all(r).unwrap();
 }

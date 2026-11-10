@@ -21,10 +21,15 @@
 //!   기본 실행기가 없으면 설치한 것이 기본이 된다.
 //! - 버전을 빼고 이름만 주면 가장 높은 버전이다([`version_cmp`]: 숫자 조각은 숫자로 비교).
 //!   `<이름>@latest`도 같다([`LATEST`]). 그래서 `latest`라는 버전은 설치할 수 없다.
-//! - 버전은 **주 버전**과 **패치**로 읽는다: 첫 `-` 앞이 주 버전, 뒤가 패치다(`1.18.0-wick.2`는 주 버전 `1.18.0`의 패치
-//!   `wick.2`). 버전을 주면 그 버전이 정확히 있을 때 그것, 없으면 그 버전으로 시작하는 것(바로 뒤가 `.`, `-`, `+`) 중
-//!   가장 높은 것이다([`version_matches`]). 그래서 `wick@1.18.0`은 1.18.0의 가장 새 패치, `wick@1.18`은 1.18.x 전체에서
-//!   가장 높은 것이다(Python의 `pyenv install 3.12`와 같다). 지우기([`Executors::remove`])는 정확한 버전만 받는다.
+//! - 버전은 **주 버전**과 **패치**로 읽는다: 첫 `-`나 `+` 앞이 주 버전, 뒤가 패치다(`1.18.0+wick.2`도 `1.18.0-wick.2`도
+//!   주 버전 `1.18.0`의 패치 `wick.2`). 저장소에 올라온 이름을 그대로 쓰므로 구분자는 가리지 않는다. 버전을 주면 그 버전이 정확히 있을 때 그것, 없으면 그 버전으로 시작하는 것
+//!   (바로 뒤가 `.`, `-`, `+`) 중 가장 높은 것이다([`version_matches`]). 정확히 같은 버전이 있어도 그 패치가 더 높으면
+//!   패치다(`1.18.0`은 `1.18.0+wick.2`). 한 패치를 고정하려면 전체 버전을 쓴다. 기본과 샌드박스의 고정은 정확한 버전이다. 그래서 `wick@1.18.0`은 1.18.0의 가장 새 패치,
+//!   `wick@1.18`은 1.18.x 전체에서 가장 높은 것이다(Python의 `pyenv install 3.12`와 같다). 지우기([`Executors::remove`])는
+//!   정확한 버전만 받는다.
+//! - 순서([`version_cmp`])는 semver를 따른다: `-` 뒤는 prerelease라 그 버전보다 낮다(`1.19.0-rc1` < `1.19.0`). semver가
+//!   순서를 정하지 않는 `+` 뒤(패치)는 없는 것이 가장 낮고, 있으면 그것끼리 비교한다(`1.18.0` < `1.18.0+wick.1` <
+//!   `1.18.0+wick.10`).
 //! - 지우면([`Executors::remove`]) 그것이 기본이었을 때 기본도 지운다(다른 것을 고르지 않는다).
 //! - 어댑터도 같은 배치로 다른 `<root>`에 둔다(보통 `<data_dir>/adapters`). 어댑터는 자체 완결 묶음이다.
 //!
@@ -166,7 +171,7 @@ impl From<io::Error> for InstallError {
 }
 
 /// `want`가 `have`를 가리키는지: 같거나, `have`가 `want`로 시작하고 바로 뒤가 `.`, `-`, `+`이다.
-/// `1.18.0`은 `1.18.0-wick.2`를, `1.18`은 `1.18.3`을 가리킨다. `1.1`은 `1.18`을 가리키지 않는다.
+/// `1.18.0`은 `1.18.0+wick.2`를, `1.18`은 `1.18.3`을 가리킨다. `1.1`은 `1.18`을 가리키지 않는다.
 pub fn version_matches(want: &str, have: &str) -> bool {
     have == want
         || have
@@ -174,13 +179,46 @@ pub fn version_matches(want: &str, have: &str) -> bool {
             .is_some_and(|rest| rest.starts_with(['.', '-', '+']))
 }
 
-/// 주 버전: 첫 `-` 앞(`1.18.0-wick.2` → `1.18.0`). `-`가 없으면 버전 그대로.
+/// 주 버전: 첫 `-`나 `+` 앞(`1.18.0+wick.2`, `1.18.0-wick.2` → `1.18.0`). 둘 다 없으면 버전 그대로.
 pub fn version_line(v: &str) -> &str {
-    v.split_once('-').map_or(v, |(line, _)| line)
+    v.split_once(['-', '+']).map_or(v, |(line, _)| line)
 }
 
-/// 버전 비교. 숫자 조각은 숫자로, 나머지는 문자열로 비교한다(`1.10` > `1.9`).
+/// 버전 비교. `<release>[-<prerelease>][+<patch>]`로 나눠 semver처럼 비교한다: release, 그다음 prerelease가 없는
+/// 쪽이 높고, 그다음 패치(없는 쪽이 낮다). 조각마다 숫자는 숫자로, 나머지는 문자열로 비교한다(`1.10` > `1.9`).
 pub fn version_cmp(a: &str, b: &str) -> Ordering {
+    fn split(v: &str) -> (&str, Option<&str>, Option<&str>) {
+        let (core, patch) = match v.split_once('+') {
+            Some((c, p)) => (c, Some(p)),
+            None => (v, None),
+        };
+        match core.split_once('-') {
+            Some((r, pre)) => (r, Some(pre), patch),
+            None => (core, None, patch),
+        }
+    }
+    let (ra, pa, xa) = split(a);
+    let (rb, pb, xb) = split(b);
+    chunk_cmp(ra, rb)
+        .then_with(|| match (pa, pb) {
+            (None, None) => Ordering::Equal,
+            (None, Some(_)) => Ordering::Greater,
+            (Some(_), None) => Ordering::Less,
+            (Some(x), Some(y)) => chunk_cmp(x, y),
+        })
+        .then_with(|| match (xa, xb) {
+            (None, None) => Ordering::Equal,
+            (None, Some(_)) => Ordering::Less,
+            (Some(_), None) => Ordering::Greater,
+            (Some(x), Some(y)) => chunk_cmp(x, y),
+        })
+}
+
+/// 조각 비교. 숫자 조각은 숫자로, 나머지는 문자열로.
+fn chunk_cmp(a: &str, b: &str) -> Ordering {
+    if a.is_empty() || b.is_empty() {
+        return a.len().cmp(&b.len());
+    }
     fn chunks(s: &str) -> Vec<(bool, &str)> {
         let mut out = Vec::new();
         let mut start = 0;
@@ -262,25 +300,20 @@ impl Executors {
         Ok(out)
     }
 
-    /// 찾는다. 버전이 없으면 가장 높은 버전. 버전이 정확히 없으면 그 버전으로 시작하는 것 중 가장 높은 것
-    /// ([`version_matches`]).
+    /// 찾는다. 버전이 없으면 가장 높은 버전, 있으면 그것과 같거나 그것으로 시작하는 것([`version_matches`]) 중 가장
+    /// 높은 것. 그래서 `1.18.0`은 `1.18.0`과 `1.18.0+wick.2`가 있으면 `1.18.0+wick.2`다.
     pub fn find(&self, spec: &Spec) -> io::Result<Option<Installed>> {
-        let list: Vec<Installed> = self
-            .list()?
-            .into_iter()
-            .filter(|i| i.name == spec.name)
-            .collect();
-        Ok(match &spec.version {
-            None => list.into_iter().next_back(),
-            Some(v) => match list.iter().position(|i| i.version == *v) {
-                Some(n) => list.into_iter().nth(n),
-                None => list.into_iter().rfind(|i| version_matches(v, &i.version)),
-            },
-        })
+        Ok(self.list()?.into_iter().rfind(|i| {
+            i.name == spec.name
+                && spec
+                    .version
+                    .as_deref()
+                    .is_none_or(|v| version_matches(v, &i.version))
+        }))
     }
 
-    /// 정확히 그 버전.
-    fn exact(&self, spec: &Spec) -> io::Result<Option<Installed>> {
+    /// 정확히 그 버전(버전이 없으면 `None`). 고정한 것(기본, 샌드박스의 고정)을 찾을 때 쓴다.
+    pub fn exact(&self, spec: &Spec) -> io::Result<Option<Installed>> {
         Ok(self
             .list()?
             .into_iter()
@@ -297,10 +330,7 @@ impl Executors {
         let Ok(spec) = text.trim().parse::<Spec>() else {
             return Ok(None);
         };
-        match spec.version {
-            Some(_) => self.find(&spec),
-            None => Ok(None),
-        }
+        self.exact(&spec)
     }
 
     /// 기본 실행기를 정한다. 설치되어 있어야 한다.

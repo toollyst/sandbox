@@ -249,8 +249,8 @@ sbx executor use wick@1.18.0               # the global default (the newest inst
 echo wick@1.18.0 > .sbx-executor           # this folder and everything below it
 sbx executor current                       # what a new sandbox would use here, and why
 sbx executor which wick                    # the program that runs it (for a VMM package, its adapter)
-sbx run --executor wick@1.18.0-wick.2 --rm alpine true   # just this once (or SBX_EXECUTOR)
-sbx executor rm wick@1.18.0-wick.1         # refused while a sandbox is pinned to it, unless -f
+sbx run --executor wick@1.18.0+wick.2 --rm alpine true   # just this once (or SBX_EXECUTOR)
+sbx executor rm wick@1.18.0+wick.1         # refused while a sandbox is pinned to it, unless -f
 sbx executor prune -n                      # what prune would remove: old versions nothing uses
 ```
 
@@ -260,18 +260,20 @@ sandbox remembers the installed executor it was created with (label `io.github.t
 changing the default never changes what `start` or `restart` boots. The rules are in
 [`choose.rs`](crates/app/cli/src/choose.rs).
 
-A version has a **main version** and a **patch**, like Python's 3.12 and 3.12.4: in `1.18.0-wick.2` the main version
-is `1.18.0` (the Firecracker release) and the patch is `wick.2` (a fix to that build). Name the main version and you
-get its newest patch; name the full version to pin one patch exactly. Most people only ever pick a main version.
+A version has a **main version** and a **patch**, like Python's 3.12 and 3.12.4. wick's first build of Firecracker
+1.18.0 is `1.18.0`; if wick ever has to fix that build, the fix is `1.18.0+wick.1`, then `+wick.2`. Name the main
+version and you get its newest patch; name the full version to pin one exactly. Most people only ever pick a main
+version.
 
 | You write | You get |
 |---|---|
 | `wick`, `wick@latest` | the highest version |
-| `wick@1.18.0` | the newest `1.18.0-wick.N` |
-| `wick@1.18.0-wick.1` | exactly that patch |
+| `wick@1.18.0` | the newest of `1.18.0`, `1.18.0+wick.1`, `1.18.0+wick.2`, … |
+| `wick@1.18.0+wick.1` | exactly that patch |
 
-`wick` versions are [wick release](https://github.com/toollyst/wick/releases) versions: the release `v1.18.0-wick.1`
-is `wick@1.18.0-wick.1`, Firecracker 1.18.0 underneath. Each platform gets that release's build, or upstream
+`wick` versions are [wick release](https://github.com/toollyst/wick/releases) versions, registered as wick
+publishes them: release `v1.18.0` is `wick@1.18.0`, release `v1.18.0+wick.1` is `wick@1.18.0+wick.1`. Each
+platform gets that release's build, or upstream Firecracker 1.18.0 on Linux if the release has no Linux build. Each platform gets that release's build, or upstream
 Firecracker 1.18.0 on Linux if the release has no Linux build. It is a **VMM package**, just the `firecracker` binary
 for your host, run by the **`firecracker` adapter** (the program that speaks the executor protocol, with its default
 guest kernel). `install` fetches the adapter first if it is missing, and `sbx executor adapter ls|install|search|rm`

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 어댑터 묶음과 VMM 묶음으로 로컬 v2 저장소(file://)를 REPO에 만들고, 그 저장소 하나만 두고
-# `sbx executor install wick@<WICK_VERSION>`(예: 1.18.0-wick.1. 어댑터는 함께 설치된다)과 `executor use`를 한 뒤
+# `sbx executor install wick@<WICK_VERSION>`(예: 1.18.0+wick.1. 어댑터는 함께 설치된다)과 `executor use`를 한 뒤
 # `cargo xtask smoke`를 돌린다. 사용자가 공식 저장소에서 받는 것과 같은 경로다. executors.yml(올리기 전에)과 ci.yml(vm)이 쓴다.
 # 저장소 루트에서 돌린다. sbx의 데이터 디렉터리를 바꾼다(`official` 저장소를 빼고 `local`을 더한다).
 #

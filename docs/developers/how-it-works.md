@@ -185,8 +185,8 @@ which names the adapter that runs it. Adapters live in `data_dir/adapters` with 
 `sbx` runs the highest installed version of that adapter and passes the package directory in `SBX_EXECUTOR_VMM_DIR`
 (["adapters and VMM packages"](../../crates/spec/executor-proto/src/lib.rs) in the protocol). The `firecracker`
 adapter looks for `firecracker` there, and keeps the default kernel next to itself
-([`sbx-executor-firecracker`](../../crates/executor/firecracker/src/lib.rs) lists the lookup order). So `wick@1.18.0-wick.1`
-is only the Firecracker binary of wick release `v1.18.0-wick.1`, and the adapter, the kernel and the VMM are
+([`sbx-executor-firecracker`](../../crates/executor/firecracker/src/lib.rs) lists the lookup order). So `wick@1.18.0+wick.1`
+is only the Firecracker binary of wick release `v1.18.0+wick.1`, and the adapter, the kernel and the VMM are
 versioned and upgraded separately. Because the highest installed adapter wins, installing a newer adapter (from any
 repository) changes what every VMM package that names it runs under.
 

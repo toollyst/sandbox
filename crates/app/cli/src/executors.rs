@@ -758,7 +758,7 @@ mod tests {
             "sha256": "0".repeat(64), "size": 1}]);
         let mut v = serde_json::json!({"schema": 2, "executors": {}, "adapters": {}});
         if with_vmm {
-            v["executors"]["wick"]["versions"]["1.0-wick.1"] =
+            v["executors"]["wick"]["versions"]["1.0+wick.1"] =
                 serde_json::json!({"adapter": "firecracker", "artifacts": art});
         }
         if let Some(a) = adapter_version {
@@ -775,10 +775,10 @@ mod tests {
         let mut idx = index(None, true);
         let w = idx.executors[0].versions[0].clone();
         idx.executors[0].versions = [
-            "1.18.0-wick.1",
-            "1.18.0-wick.10",
-            "1.19.0-wick.1",
-            "1.18.0-wick.2",
+            "1.18.0+wick.1",
+            "1.18.0+wick.10",
+            "1.19.0+wick.1",
+            "1.18.0+wick.2",
         ]
         .iter()
         .map(|v| index::Version {
@@ -789,7 +789,7 @@ mod tests {
         let idx = vec![("r".to_owned(), idx)];
         let all = index::available(&idx, None, &Platform::host(), sbx_executor_proto::VERSION);
         let got: Vec<String> = newest_patches(all).into_iter().map(|c| c.version).collect();
-        assert_eq!(got, ["1.19.0-wick.1", "1.18.0-wick.10"]);
+        assert_eq!(got, ["1.19.0+wick.1", "1.18.0+wick.10"]);
     }
 
     #[test]

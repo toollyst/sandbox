@@ -390,15 +390,14 @@ fn pick_from(
     } else {
         available
     };
-    // 정확히 그 버전이 먼저, 없으면 그 주 버전(이나 접두사)의 가장 높은 것([`version_matches`]).
-    let all = list(indexes, Some(&spec.name), platform, protocol);
-    let found = match spec.version.as_deref() {
-        None => all.into_iter().next(),
-        Some(v) => match all.iter().position(|c| c.version == v) {
-            Some(n) => all.into_iter().nth(n),
-            None => all.into_iter().find(|c| version_matches(v, &c.version)),
-        },
-    };
+    // 그 버전과 같거나 그것으로 시작하는 것([`version_matches`]) 중 가장 높은 것. `1.18.0`은 그 주 버전의 가장 새 패치.
+    let found = list(indexes, Some(&spec.name), platform, protocol)
+        .into_iter()
+        .find(|c| {
+            spec.version
+                .as_deref()
+                .is_none_or(|v| version_matches(v, &c.version))
+        });
     if let Some(c) = found {
         return Ok(c);
     }

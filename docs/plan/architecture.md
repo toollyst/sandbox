@@ -76,7 +76,7 @@ docs/                        기획(plan/), 로드맵, 개발자 문서(develope
 실행기가 맞춰야 할 통신 규약(`sbx-executor-proto`), 실행기 저장소 규약(`sbx-executor-repo`), Firecracker adapter를 책임진다.
 규약에 맞는 실행기는 그대로 실행한다. 실행기는 VMM을 자기 옆에 담은 자체 완결 묶음이거나, VMM만 담은 **VMM 묶음**이다.
 VMM 묶음은 이름으로 가리킨 **어댑터**(규약을 말하는 프로그램, 예: `firecracker` 어댑터와 그 기본 커널)가 돌린다.
-그래서 공식 VMM 묶음 `wick@<wick 릴리스 버전>`(태그 `v1.18.0-wick.1`이면 `wick@1.18.0-wick.1`)은 Firecracker 실행 파일뿐이고,
+그래서 공식 VMM 묶음 `wick@<wick 릴리스 버전>`(태그 `v1.18.0+wick.1`이면 `wick@1.18.0+wick.1`)은 Firecracker 실행 파일뿐이고,
 어댑터와 따로 올리고 고른다.
 누구나 자기 VMM 빌드를 어댑터에 붙여 등록할 수 있다(`sbx executor install --from DIR --adapter NAME NAME@VERSION`).
 

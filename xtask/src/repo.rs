@@ -213,10 +213,12 @@ pub fn add(args: &[String]) -> Result<PathBuf, String> {
     } else {
         ("index.json", "")
     };
+    // URL 경로의 `+`는 %2B로 적는다(`1.18.0+wick.1` 같은 버전). 일부 서버와 프록시는 `+`를 공백으로 읽는다.
+    let enc = |s: &str| s.replace('+', "%2B");
     let url = match &o.url {
-        Some(prefix) => format!("{}/{file_name}", prefix.trim_end_matches('/')),
+        Some(prefix) => format!("{}/{}", prefix.trim_end_matches('/'), enc(&file_name)),
         // 상대 URL은 색인 기준이다. v2 색인은 한 단계 아래에 있다.
-        None => format!("{up}{rel}"),
+        None => format!("{up}{}", enc(&rel)),
     };
     let index_path = o.repo.join(index_file);
     let mut index: Value = match std::fs::read(&index_path) {
@@ -498,6 +500,37 @@ mod tests {
         )
         .unwrap();
         assert!(got.join("firecracker").is_file());
+        // `+`가 있는 버전: 색인의 URL은 %2B로 적고, 그 파일을 가리킨다.
+        add(&s(&[
+            "--repo",
+            r,
+            "--bundle",
+            vmm.to_str().unwrap(),
+            "--name",
+            "wick",
+            "--version",
+            "1.18.0+wick.1",
+            "--vmm-for",
+            "firecracker",
+            "--arch",
+            "arm64",
+            "--schema",
+            "2",
+            "--os",
+            "darwin",
+        ]))
+        .unwrap();
+        let bytes = std::fs::read(repo.join("v2/index.json")).unwrap();
+        let index = sbx_executor_repo::Index::parse(&bytes, &url).unwrap();
+        let w = index.executor("wick").unwrap();
+        let p = &w
+            .versions
+            .iter()
+            .find(|v| v.version == "1.18.0+wick.1")
+            .unwrap()
+            .artifacts[0];
+        assert!(p.url.as_str().contains("1.18.0%2Bwick.1"), "{}", p.url);
+        assert!(p.url.to_file_path().unwrap().is_file(), "{}", p.url);
         std::fs::remove_dir_all(root).unwrap();
     }
 }

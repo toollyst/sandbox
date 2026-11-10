@@ -138,7 +138,7 @@ pub fn choose(i: &Inputs<'_>) -> Result<Option<Chosen>> {
     }
     if let Some(pin) = i.pinned {
         let spec: Spec = pin.parse().map_err(|e| format!("label {PIN_LABEL}: {e}"))?;
-        let found = i.executors.find(&spec).map_err(|e| e.to_string())?;
+        let found = i.executors.exact(&spec).map_err(|e| e.to_string())?;
         let Some(found) = found else {
             return Err(format!(
                 "this sandbox was created with executor {spec}, which is no longer installed; \

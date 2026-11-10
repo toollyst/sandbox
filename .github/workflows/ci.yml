@@ -60,7 +60,7 @@ jobs:
 
   # 실제 VM: 사용자가 받는 것과 같은 v2 경로. 이 커밋의 어댑터(sbx-executor-firecracker + `cargo xtask kernel`로 만든
   # 커널)와 upstream Firecracker VMM 묶음으로 로컬 v2 저장소(file://)를 만들고, install.sh로 설치한 sbx로
-  # `sbx executor install wick@<FIRECRACKER>-ci`를 한 뒤 smoke와 bench를 돌린다(.github/scripts/smoke-wick.sh,
+  # `sbx executor install wick@<FIRECRACKER>+ci`를 한 뒤 smoke와 bench를 돌린다(.github/scripts/smoke-wick.sh,
   # executors.yml이 올리기 전에 하는 것과 같다).
   # x86_64 러너에는 /dev/kvm이 있어야 한다. arm 러너에 없으면 건너뛰고 알린다.
   vm:
@@ -129,7 +129,7 @@ jobs:
         name: install wick from a local v2 repository, then smoke
         run: |
           av=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "sbx-executor-firecracker") | .version')
-          .github/scripts/smoke-wick.sh "$RUNNER_TEMP/bin/sbx" executors adapter "$av" vmm "$FIRECRACKER-ci"
+          .github/scripts/smoke-wick.sh "$RUNNER_TEMP/bin/sbx" executors adapter "$av" vmm "$FIRECRACKER+ci"
       - if: steps.kvm.outputs.ok == 'true'
         uses: actions/upload-artifact@v4
         with:
@@ -138,4 +138,4 @@ jobs:
       - if: steps.kvm.outputs.ok == 'true'
         name: bench
         run: |
-          { echo "### $ARCH, wick@$FIRECRACKER-ci (upstream Firecracker v$FIRECRACKER, KVM)"; cargo xtask bench --runs 20 --parallel 8; } >> "$GITHUB_STEP_SUMMARY"
+          { echo "### $ARCH, wick@$FIRECRACKER+ci (upstream Firecracker v$FIRECRACKER, KVM)"; cargo xtask bench --runs 20 --parallel 8; } >> "$GITHUB_STEP_SUMMARY"

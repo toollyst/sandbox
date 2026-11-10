@@ -93,11 +93,13 @@ bump the version and tag again rather than moving a pushed tag.
 
 ```sh
 gh workflow run executors.yml                          # the latest wick release
-gh workflow run executors.yml -f wick=v1.18.0-wick.1   # that release, published as wick@1.18.0-wick.1
+gh workflow run executors.yml -f wick=v1.18.0+wick.1   # that release, published as wick@1.18.0+wick.1
 ```
 
-Versions follow wick's releases, not upstream's: tag `v1.18.0-wick.1` becomes `wick@1.18.0-wick.1`, and
-`sbx executor install wick` (or `wick@latest`) picks the highest. The workflow publishes it for every platform the
+Versions are wick's release tags without the `v`, registered as wick publishes them: `v1.18.0` becomes
+`wick@1.18.0`, and a fix release `v1.18.0+wick.1` becomes `wick@1.18.0+wick.1`. `sbx executor install wick` (or
+`wick@latest`) picks the highest, and `wick@1.18.0` the newest patch of 1.18.0. The empty input takes the release
+wick marks as latest. The workflow publishes it for every platform the
 official repository doesn't have yet, and never rebuilds or overwrites what is already there. For each platform, the
 VMM package is a directory with `firecracker`: that wick release's build for the platform, or, on Linux when the
 release has none, upstream Firecracker of the same upstream version (checked by its sha256). The

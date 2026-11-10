@@ -16,7 +16,7 @@
           "type": "string"
         },
         "line": {
-          "description": "Main version: `version` up to its first `-` (`1.18.0` for `1.18.0-wick.2`). Without `--all`, only the newest\npatch of each main version is listed.",
+          "description": "Main version: `version` up to its first `-` or `+` (`1.18.0` for `1.18.0+wick.2`). Without `--all`, only the newest\npatch of each main version is listed.",
           "type": "string"
         },
         "name": {

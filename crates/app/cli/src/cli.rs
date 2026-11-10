@@ -261,7 +261,7 @@ pub enum ExecutorCommand {
         /// With --from: install it as a VMM package run by this installed adapter (it has no sbx-executor).
         #[arg(long, requires = "from")]
         adapter: Option<String>,
-        /// `NAME[@VERSION]`. A main version (`wick@1.18.0`) installs its newest patch (`1.18.0-wick.2`);
+        /// `NAME[@VERSION]`. A main version (`wick@1.18.0`) installs its newest patch (`1.18.0+wick.2`);
         /// no version or `@latest` installs the highest version.
         #[arg(value_name = "EXECUTOR")]
         spec: String,
