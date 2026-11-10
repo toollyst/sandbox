@@ -301,3 +301,33 @@ fn an_unreadable_origin_record_counts_as_no_origin() {
     );
     let _ = fs::remove_dir_all(&r);
 }
+
+#[test]
+fn names_and_versions_are_lowercase_so_case_cannot_alias_a_directory() {
+    // 대소문자를 가리지 않는 파일 시스템(macOS, Windows)에서 `Fake`는 `fake` 디렉터리다.
+    for bad in ["Fake", "fake@1.0-RC1", "FAKE@1", "fake@V1"] {
+        assert!(bad.parse::<Spec>().is_err(), "{bad}");
+    }
+    assert!("fake@1.18.0+wick.1".parse::<Spec>().is_ok());
+    let r = root("case");
+    let src = r.join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("vmm"), b"").unwrap();
+    let ex = Executors::new(r.join("executors"));
+    // 어댑터 이름도 같다(VMM 묶음이 대소문자만 바꾼 어댑터를 가리키지 못한다).
+    assert!(matches!(
+        ex.install_from(
+            &spec("wick@1"),
+            &src.join("vmm"),
+            Some("Firecracker"),
+            Some("b"),
+            |_| Ok(())
+        ),
+        Err(InstallError::BadAdapter(_))
+    ));
+    // 손으로 만든 대문자 디렉터리는 설치된 것으로 보지 않는다.
+    fs::create_dir_all(r.join("executors/Fake/1.0")).unwrap();
+    fs::create_dir_all(r.join("executors/fake2/1.0-RC")).unwrap();
+    assert!(ex.list().unwrap().is_empty());
+    let _ = fs::remove_dir_all(&r);
+}

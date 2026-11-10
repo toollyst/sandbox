@@ -15,7 +15,8 @@
 //!
 //! **규칙**
 //!
-//! - 이름과 버전은 `[A-Za-z0-9._+-]`이고 `.`으로 시작하지 않는다. 표기는 `<이름>@<버전>`.
+//! - 이름과 버전은 `[a-z0-9._+-]`이고 `.`으로 시작하지 않는다(대문자가 없다: 대소문자를 가리지 않는 파일
+//!   시스템에서 `Fake`가 `fake` 디렉터리가 되어 출처 고정을 피하지 못하게). 표기는 `<이름>@<버전>`.
 //! - 설치([`Executors::install`])는 임시 디렉터리에 복사하고, 호출자의 확인(예: `capabilities`와 규약 버전)을
 //!   통과한 뒤 rename한다. 그래서 반쯤 설치된 실행기는 없다. 같은 이름과 버전이 이미 있으면 거부한다.
 //!   기본 실행기가 없으면 설치한 것이 기본이 된다.
@@ -67,6 +68,13 @@ fn valid_part(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'+' | b'-'))
 }
 
+/// 실행기·어댑터 이름과 버전: [`valid_part`]이고 대문자가 없다. 이름과 버전은 디렉터리 이름이 되는데, macOS와
+/// Windows의 파일 시스템은 대소문자를 가리지 않으므로 `Fake`와 `fake`가 같은 디렉터리가 된다. 대문자를 허락하면
+/// 다른 저장소가 대소문자만 바꾼 이름으로 출처 고정을 피해 남의 이름에 섞을 수 있다.
+fn valid_name(s: &str) -> bool {
+    valid_part(s) && !s.bytes().any(|b| b.is_ascii_uppercase())
+}
+
 impl FromStr for Spec {
     type Err = String;
 
@@ -75,9 +83,9 @@ impl FromStr for Spec {
             Some((n, v)) => (n, Some(v)),
             None => (s, None),
         };
-        if !valid_part(name) || version.is_some_and(|v| !valid_part(v)) {
+        if !valid_name(name) || version.is_some_and(|v| !valid_name(v)) {
             return Err(format!(
-                "invalid executor {s:?} (expected NAME[@VERSION] with letters, digits, . _ + -)"
+                "invalid executor {s:?} (expected NAME[@VERSION] with lowercase letters, digits, . _ + -)"
             ));
         }
         Ok(Self {
@@ -299,12 +307,12 @@ impl Executors {
         for n in names {
             let n = n?;
             let name = n.file_name().to_string_lossy().into_owned();
-            if !valid_part(&name) || !n.file_type()?.is_dir() {
+            if !valid_name(&name) || !n.file_type()?.is_dir() {
                 continue;
             }
             for v in fs::read_dir(n.path())? {
                 let version = v?.file_name().to_string_lossy().into_owned();
-                if valid_part(&version) {
+                if valid_name(&version) {
                     out.push(self.installed(&name, &version));
                 }
             }
@@ -411,7 +419,7 @@ impl Executors {
             }
         }
         if let Some(a) = adapter
-            && !valid_part(a)
+            && !valid_name(a)
         {
             return Err(InstallError::BadAdapter(a.to_owned()));
         }
@@ -524,7 +532,7 @@ fn read_origin(dir: &Path) -> Option<String> {
 fn read_adapter(dir: &Path) -> Option<String> {
     let text = fs::read_to_string(dir.join(ADAPTER_FILE)).ok()?;
     let name = text.trim();
-    valid_part(name).then(|| name.to_owned())
+    valid_name(name).then(|| name.to_owned())
 }
 
 fn copy_dir(src: &Path, dst: &Path) -> io::Result<()> {
