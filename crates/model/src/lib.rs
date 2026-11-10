@@ -536,13 +536,14 @@ pub enum NetworkPolicy {
 /// 허용 규칙 하나: `호스트:포트`.
 ///
 /// - 호스트: 이름(대소문자 무시), `*.접미사`(그 아래 이름만, 접미사 자체는 아님), IP 주소(IPv6은 `[...]`로 감싼다).
+///   IP 주소는 표기가 아니라 값으로 맞춘다(`[::aF:1]`은 `::af:1`, `0:0::af:1`과 같다). 저장은 표준 표기다.
 /// - 포트: 숫자, 또는 `*`(모든 포트). 생략할 수 없다.
 ///
 /// 이름이 루프백, 사설, 링크 로컬 주소로 풀리면 거부한다(규칙이 그 주소를 IP로 직접 적었거나 이름이 `localhost`면 허용).
 /// 이것은 실행 코어가 연결할 때 강제한다.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AllowRule {
-    /// 소문자 이름, `*.접미사`, 또는 IP 주소 문자열(IPv6은 괄호 없이).
+    /// 소문자 이름, `*.접미사`, 또는 IP 주소의 표준 표기(IPv6은 괄호 없이, 소문자로 줄인 꼴).
     pub host: String,
     /// 포트. `None`이면 모든 포트.
     pub port: Option<u16>,
@@ -560,6 +561,9 @@ impl AllowRule {
             return false;
         }
         let host = host.trim_end_matches('.').to_ascii_lowercase();
+        if let Ok(ip) = self.host.parse::<std::net::IpAddr>() {
+            return host.parse::<std::net::IpAddr>() == Ok(ip);
+        }
         match self.host.strip_prefix("*.") {
             Some(suffix) => host
                 .strip_suffix(suffix)
@@ -590,8 +594,8 @@ impl FromStr for AllowRule {
         let bad = || ParseError::new("allow rule (HOST:PORT or HOST:*)", s);
         let (host, port) = if let Some(rest) = s.strip_prefix('[') {
             let (h, p) = rest.split_once("]:").ok_or_else(bad)?;
-            h.parse::<std::net::Ipv6Addr>().map_err(|_| bad())?;
-            (h.to_owned(), p)
+            let ip = h.parse::<std::net::Ipv6Addr>().map_err(|_| bad())?;
+            (ip.to_string(), p)
         } else {
             let (h, p) = s.rsplit_once(':').ok_or_else(bad)?;
             if h.contains(':') {
@@ -1086,6 +1090,30 @@ mod tests {
         assert!(!wild.matches("github.com", 443));
         assert!(!wild.matches("evilgithub.com", 443));
         assert!(r("10.0.0.1:22").is_ip() && !exact.is_ip());
+    }
+
+    /// 퍼징(`egress_rules`)이 찾았다: `[::aF:1]:8080`을 받아 놓고 어떤 요청에도 맞지 않았다(대문자를 그대로
+    /// 저장하고 요청 호스트만 소문자로 바꿔 비교했다). IPv6은 표기가 여러 가지라 값으로 맞춘다.
+    #[test]
+    fn ipv6_rules_match_by_value_not_spelling() {
+        let rule = "[::aF:1]:8080".parse::<AllowRule>().unwrap();
+        assert_eq!(rule.host, "::af:1");
+        assert_eq!(rule.to_string(), "[::af:1]:8080");
+        for host in ["::af:1", "::AF:1", "0:0:0:0:0:0:af:1", "0::00af:1"] {
+            assert!(rule.matches(host, 8080), "{host}");
+        }
+        assert!(!rule.matches("::af:2", 8080));
+        assert!(!rule.matches("::af:1", 80));
+        let mapped = "[::FFFF:10.0.0.1]:*".parse::<AllowRule>().unwrap();
+        assert!(mapped.matches("::ffff:a00:1", 1));
+        // IPv4-mapped 주소와 그 IPv4는 다른 규칙이다(넓히지 않는다).
+        assert!(!mapped.matches("10.0.0.1", 1));
+        assert!(
+            "10.0.0.1:22"
+                .parse::<AllowRule>()
+                .unwrap()
+                .matches("10.0.0.1", 22)
+        );
     }
 
     #[test]
