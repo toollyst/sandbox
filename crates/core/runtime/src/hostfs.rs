@@ -6,7 +6,10 @@
 //!
 //! 받기 (게스트 → 호스트)
 //! - 게스트가 보낸 경로를 믿지 않는다. 안전한 상대 경로만 받고, 중간 구성 요소가 심볼릭 링크이면 오류다.
-//! - 소유자는 바꾸지 않는다(지금 사용자). 권한(Unix)과 수정 시각은 둔다. 디렉터리 권한은 끝에 둔다.
+//! - 맨 위 이름(`to`)은 호스트가 정한다. 한 단계 이름이 아니면 오류다. 게스트가 고른 이름으로 대상 디렉터리
+//!   아래 다른 곳(예: `.ssh/authorized_keys`)에 쓰지 못하게 한다.
+//! - 소유자는 바꾸지 않는다(지금 사용자). 권한(Unix)은 `0o777` 안만 둔다(setuid, setgid, sticky는 버린다).
+//!   수정 시각은 둔다. 디렉터리 권한은 끝에 둔다.
 //! - Windows에서는 심볼릭 링크를 만들지 않고 오류를 낸다.
 
 use std::fs::{self, File, OpenOptions};
@@ -187,10 +190,13 @@ fn clear(path: &Path) -> io::Result<bool> {
     }
 }
 
+/// 받은 항목에 둘 권한. 게스트가 고른 setuid, setgid, sticky 비트는 버린다.
+const RECEIVED_MODE_MASK: u32 = 0o777;
+
 #[cfg(unix)]
 fn set_mode(p: &Path, mode: u32) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(p, fs::Permissions::from_mode(mode))
+    fs::set_permissions(p, fs::Permissions::from_mode(mode & RECEIVED_MODE_MASK))
 }
 
 #[cfg(not(unix))]
@@ -206,6 +212,12 @@ pub fn receive(
     to: Option<&str>,
     next: &mut dyn FnMut() -> Result<GuestMsg, RuntimeError>,
 ) -> Result<(), RuntimeError> {
+    if let Some(t) = to {
+        if t.contains('/') || t.contains('\\') {
+            return Err(RuntimeError::Invalid(format!("{t:?} is not a single name")));
+        }
+        check_relative_path(t).map_err(proto_err)?;
+    }
     if !dest.is_dir() {
         return Err(RuntimeError::Invalid(format!(
             "destination directory {} does not exist",
@@ -303,5 +315,111 @@ mod tests {
         assert_eq!(rename_top("a/x", "a", None), Some("x".into()));
         assert_eq!(rename_top("ab/x", "a", None), None);
         assert_eq!(rename_top("other", "a", Some("b")), None);
+    }
+
+    // --- 적대적인 게스트: 게스트가 보내는 것은 무엇이든 거짓일 수 있다 ---
+
+    fn dest(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("sbx-hostfs-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn entry(path: &str, kind: FileKind, mode: u32) -> GuestMsg {
+        GuestMsg::Entry(Entry {
+            path: path.into(),
+            kind,
+            mode,
+            uid: 0,
+            gid: 0,
+            mtime: 0,
+        })
+    }
+
+    fn feed(msgs: Vec<GuestMsg>) -> impl FnMut() -> Result<GuestMsg, RuntimeError> {
+        let mut it = msgs.into_iter();
+        move || Ok(it.next().unwrap_or(GuestMsg::End))
+    }
+
+    #[test]
+    fn hostile_top_name_with_a_slash_is_refused() {
+        // 게스트가 Stat 답으로 `.ssh/authorized_keys`를 이름이라고 우겨도, 그것이 `to`로 오면 거부한다.
+        let d = dest("slash");
+        fs::create_dir(d.join(".ssh")).unwrap();
+        let mut next = feed(vec![entry("report.txt", FileKind::File { size: 4 }, 0o644)]);
+        let e = receive(&d, "report.txt", Some(".ssh/authorized_keys"), &mut next).unwrap_err();
+        assert!(e.to_string().contains("single name"), "{e}");
+        assert!(!d.join(".ssh/authorized_keys").exists());
+        for bad in ["..", ".", "", "a\\b"] {
+            let mut next = feed(vec![]);
+            assert!(receive(&d, "x", Some(bad), &mut next).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn hostile_entries_outside_the_requested_top_are_refused() {
+        // 호스트가 `report.txt`를 달라고 했는데 게스트가 다른 경로를 보낸다.
+        let d = dest("outside");
+        fs::create_dir(d.join(".ssh")).unwrap();
+        for path in [".ssh/authorized_keys", "report.txtx", "../x", "/etc/passwd"] {
+            let mut next = feed(vec![
+                entry(path, FileKind::File { size: 1 }, 0o644),
+                GuestMsg::Data(b"k".to_vec()),
+            ]);
+            assert!(
+                receive(&d, "report.txt", Some("report.txt"), &mut next).is_err(),
+                "{path}"
+            );
+        }
+        assert!(!d.join(".ssh/authorized_keys").exists());
+    }
+
+    #[test]
+    fn hostile_symlink_in_the_middle_is_not_followed() {
+        // 디렉터리 안에 링크를 먼저 보내고, 그 링크를 지나는 파일을 보낸다.
+        let d = dest("midlink");
+        let outside = dest("midlink-outside");
+        let mut next = feed(vec![
+            entry("t", FileKind::Dir, 0o755),
+            entry(
+                "t/l",
+                FileKind::Symlink {
+                    target: outside.to_string_lossy().into_owned(),
+                },
+                0o777,
+            ),
+            entry("t/l/pwned", FileKind::File { size: 1 }, 0o644),
+            GuestMsg::Data(b"x".to_vec()),
+        ]);
+        if cfg!(unix) {
+            assert!(receive(&d, "t", Some("t"), &mut next).is_err());
+            assert!(!outside.join("pwned").exists());
+        }
+    }
+
+    #[test]
+    fn hostile_size_and_data_mismatch_is_refused() {
+        let d = dest("size");
+        let mut next = feed(vec![
+            entry("f", FileKind::File { size: 1 }, 0o644),
+            GuestMsg::Data(b"too long".to_vec()),
+        ]);
+        assert!(receive(&d, "f", Some("f"), &mut next).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn setuid_setgid_and_sticky_bits_are_dropped() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = dest("mode");
+        let mut next = feed(vec![
+            entry("t", FileKind::Dir, 0o1777),
+            entry("t/suid", FileKind::File { size: 0 }, 0o6755),
+        ]);
+        receive(&d, "t", Some("t"), &mut next).unwrap();
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode(&d.join("t/suid")), 0o755);
+        assert_eq!(mode(&d.join("t")), 0o777);
     }
 }

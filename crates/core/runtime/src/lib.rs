@@ -409,6 +409,14 @@ fn guest_parent(path: &str) -> (String, String) {
     }
 }
 
+/// 게스트 경로의 마지막 이름. `/`처럼 이름이 없으면 `None`.
+fn guest_basename(path: &str) -> Option<&str> {
+    path.trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .filter(|n| !n.is_empty())
+}
+
 fn require_absolute(path: &str) -> Result<(), RuntimeError> {
     if path.starts_with('/') {
         Ok(())
@@ -724,7 +732,13 @@ impl Sandbox {
             let placement = cpplan::plan(src_is_dir, contents, target, slash)
                 .map_err(|m| RuntimeError::Invalid(format!("{m}: {}", host.display())))?;
             match placement {
-                cpplan::Placement::Inside => guest.copy_out(src, &host, Some(&src_entry.path)),
+                // 이름은 호스트가 요청한 경로에서 뽑는다. 게스트의 Stat 답(`src_entry.path`)은 믿지 않는다.
+                cpplan::Placement::Inside => {
+                    let name = guest_basename(src).ok_or_else(|| {
+                        RuntimeError::Invalid(format!("cannot copy {src:?} into a directory"))
+                    })?;
+                    guest.copy_out(src, &host, Some(name))
+                }
                 cpplan::Placement::ContentsInside => guest.copy_out(src, &host, None),
                 cpplan::Placement::AsTarget => {
                     let parent = host
