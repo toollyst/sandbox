@@ -9,7 +9,47 @@ Use GitHub's private vulnerability reporting: **Security → Report a vulnerabil
 don't open a public issue. Include the output of `sbx info` (version, host, hypervisor and executor) and the smallest
 reproduction you have.
 
-`sbx` is alpha. Fixes go to the latest release and `main` only.
+**What counts.** Anything that crosses one of the boundaries in the [threat model](#threat-model) below is a
+vulnerability and gets a CVE: code in a sandbox reaching the host, another sandbox, the network beyond its allow
+list, or files you didn't share; a hostile image, registry or executor repository making `sbx` do more than the
+table says; a package or index you didn't approve getting installed. A bug that only affects a sandbox's own
+contents is an ordinary bug.
+
+**Where to report.** `sbx`, `sbx-shim`, the guest init, the `firecracker` adapter and the guest kernel build we ship
+all live in this repository: report here. Report a flaw in the macOS VMM to [wick](https://github.com/toollyst/wick/security),
+and one in upstream Firecracker through [its process](https://github.com/firecracker-microvm/firecracker/security/policy);
+if you aren't sure, report here and we will route it.
+
+**What happens next.**
+
+| Step | When |
+| --- | --- |
+| We confirm we received it | within 48 hours |
+| We tell you whether we consider it a vulnerability, and how severe | within 7 days |
+| Fix released, advisory (GHSA) published with a CVE, reporter credited unless they ask otherwise | as soon as the fix is ready; at most 14 days of embargo after that, and no later than 90 days after the report |
+
+If a fix needs a change in wick, upstream Firecracker or the Linux kernel, we coordinate with that project and follow
+its embargo. Every release note has a **Security** section listing the advisories it fixes.
+
+**Supported versions.** The latest two minor releases get security fixes, each for at least one year after it
+came out. While `sbx` is below 1.0, a minor release (0.2, 0.3, …) may break compatibility, so the fix may require
+moving to the newest patch of a supported minor. `main` always has the fix.
+
+## Verifying what you install
+
+From v0.2.0, every release archive comes with a Sigstore signature (`.sigstore.json`), a GitHub build provenance
+attestation (SLSA) and an SBOM (SPDX, `sbx-<version>.spdx.json`). `install.sh` checks the signature when `cosign` is
+on `PATH` (`SBX_VERIFY=require` makes that mandatory). To check by hand:
+
+```sh
+gh attestation verify sbx-linux-x86_64.tar.gz -R toollyst/sandbox
+cosign verify-blob --bundle sbx-linux-x86_64.tar.gz.sigstore.json \
+  --certificate-identity-regexp '^https://github[.]com/toollyst/sandbox/[.]github/workflows/release[.]yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com sbx-linux-x86_64.tar.gz
+```
+
+Dependencies are checked on every push against the RustSec advisory database, an allow list of licenses and
+crates.io as the only source ([`deny.toml`](deny.toml)), and GitHub Actions are pinned to commit SHAs.
 
 ## Threat model
 
@@ -41,7 +81,8 @@ These are known gaps, in rough order of importance. Some are on the [roadmap](do
 
 - **No jailer.** The VMM runs as your user, without Firecracker's jailer (chroot, namespaces, cgroups). An escape
   from the VM lands as your user on the host.
-- **Repository indexes are not signed.** The SHA-256 in the index protects each package, and TLS is all that protects
+- **Repository indexes are not signed yet** (planned: minisign signatures with a serial and expiry, see the
+  [roadmap](docs/roadmap.md) M7). The SHA-256 in the index protects each package, and TLS is all that protects
   the index, so whoever controls the repository host controls what you install. This holds for adapters and VMM
   packages alike.
 - **Names are not tied to a repository.** `sbx executor install NAME` takes the highest version of that name from

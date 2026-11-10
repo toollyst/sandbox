@@ -22,6 +22,28 @@ jobs:
         with:
           command: check advisories bans licenses sources
 
+  # PR의 커밋마다 Signed-off-by(DCO)가 있어야 한다(CONTRIBUTING.md).
+  dco:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          bad=0
+          for c in $(git rev-list --no-merges "$BASE..$HEAD"); do
+            if ! git log -1 --format=%B "$c" | grep -qE '^Signed-off-by: .+ <.+>$'; then
+              echo "::error::commit $(git log -1 --format='%h %s' "$c") has no Signed-off-by line (git commit -s)"
+              bad=1
+            fi
+          done
+          exit $bad
+
   test:
     strategy:
       fail-fast: false

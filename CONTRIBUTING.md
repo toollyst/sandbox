@@ -51,4 +51,11 @@ user-facing text (CLI help, errors, README) is English.
 - Run the checks above. If you touched the run or exec path, include `cargo xtask bench` before and after.
 - Commits: one logical change each, with a message that says why.
 
-By contributing, you agree that your work is licensed under the project's terms (Apache-2.0 OR MIT).
+## Sign-off (DCO)
+
+Every commit needs a `Signed-off-by:` line (`git commit -s`). It certifies the
+[Developer Certificate of Origin](https://developercertificate.org/): that you wrote the change or have the right to
+submit it under the project's license. Your contribution is licensed under the project's terms (Apache-2.0 OR MIT).
+
+Participation follows the [code of conduct](CODE_OF_CONDUCT.md); how decisions are made is in
+[GOVERNANCE.md](GOVERNANCE.md).
