@@ -235,12 +235,14 @@ impl LogSink {
     fn write(&mut self, stream: Stream, time_ns: Option<u64>, data: &[u8]) -> AppResult<bool> {
         if self.json {
             for piece in data.split_inclusive(|&b| b == b'\n') {
-                let line = serde_json::to_string(&output::LogLine::new(stream, time_ns, piece))?;
-                if writeln!(self.out, "{line}")
-                    .and_then(|()| self.out.flush())
-                    .is_err()
-                {
-                    return Ok(false);
+                // `--jq`도 여기서 적용한다(`render_line`).
+                for line in output::render_line(&output::LogLine::new(stream, time_ns, piece))? {
+                    if writeln!(self.out, "{line}")
+                        .and_then(|()| self.out.flush())
+                        .is_err()
+                    {
+                        return Ok(false);
+                    }
                 }
             }
             return Ok(true);

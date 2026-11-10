@@ -872,6 +872,30 @@ mod unix {
             "0s",
         ]);
         assert_eq!(text(&o.stdout), "create\ncreate\nremove\nremove\n");
+        // logs(줄 조각마다 LogLine)에도 적용된다.
+        let id = text(
+            &jq(&[
+                "--jq",
+                ".id",
+                "run",
+                "-d",
+                IMAGE,
+                "sh",
+                "-c",
+                "echo from-log",
+            ])
+            .stdout,
+        )
+        .trim()
+        .to_owned();
+        assert_eq!(text(&jq(&["--jq", ".id", "wait", &id]).stdout).trim(), id);
+        let o = jq(&[
+            "--jq",
+            "select(.stream == \"stdout\") | .data | rtrimstr(\"\\n\")",
+            "logs",
+            &id,
+        ]);
+        assert_eq!(text(&o.stdout), "from-log\n", "{}", text(&o.stderr));
         // 식이 실행 중에 실패하면 명령의 오류다.
         let o = jq(&["--jq", ".foo", "ps", "-a"]);
         assert_eq!(o.status.code(), Some(1));
