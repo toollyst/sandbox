@@ -18,6 +18,7 @@ sbx-guest-proto.workspace = true
 sbx-executor.workspace = true
 # write feature를 켜지 않는다. 실행 쪽은 캐시를 읽기만 한다.
 sbx-store.workspace = true
+sbx-events.workspace = true
 
 [dev-dependencies]
 sbx-executor-fake.workspace = true

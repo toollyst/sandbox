@@ -869,3 +869,52 @@ fn a_planted_socket_directory_link_is_refused() {
     assert_eq!(mode, 0o700);
     std::fs::remove_dir_all(&root).unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn state_changes_are_recorded_as_events() {
+    let e = Env::new("events");
+    let mut r = events_log(&e.root.join("d"))
+        .reader(sbx_events::Start::Beginning)
+        .unwrap();
+    let mut spec = {
+        e.prepare_image();
+        e.spec(&["sh", "-c", "exit 3"])
+    };
+    spec.name = Some("ev1".into());
+    let s = block_on(e.rt.create(spec)).unwrap();
+    let main = block_on(s.start(IoMode::default())).unwrap();
+    assert_eq!(block_on(main.wait()).unwrap(), 3);
+    e.wait_state(&s, State::Stopped);
+    // 멈춤은 기록을 쓴 뒤 덧붙인다. 기록이 보인 뒤 잠깐 기다린다.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut got = Vec::new();
+    while got.len() < 3 && Instant::now() < deadline {
+        got.extend(std::iter::from_fn(|| r.next_event().unwrap()));
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    block_on(block_on(e.rt.get(s.id())).unwrap().delete()).unwrap();
+    got.extend(std::iter::from_fn(|| r.next_event().unwrap()));
+
+    let actions: Vec<&str> = got.iter().map(|e| e.action.as_str()).collect();
+    assert_eq!(actions, ["create", "start", "stop", "remove"]);
+    for ev in &got {
+        assert_eq!(ev.kind, EVENT_KIND);
+        assert_eq!(ev.id, s.id().as_str());
+        assert_eq!(ev.attributes["name"], "ev1");
+        assert_eq!(ev.attributes["image"], Env::image().to_string());
+    }
+    assert_eq!(got[2].attributes["exit_code"], "3");
+    assert!(!got[2].attributes.contains_key("error"));
+}
+
+#[test]
+fn a_failed_create_records_nothing() {
+    let e = Env::new("evfail");
+    // 이미지가 없어서 실패한다.
+    assert!(block_on(e.rt.create(e.spec(&["sh"]))).is_err());
+    let mut r = events_log(&e.root.join("d"))
+        .reader(sbx_events::Start::Beginning)
+        .unwrap();
+    assert!(r.next_event().unwrap().is_none());
+}

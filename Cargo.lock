@@ -1323,6 +1323,7 @@ dependencies = [
  "clap_complete",
  "crossterm",
  "flate2",
+ "sbx-events",
  "sbx-executor",
  "sbx-executor-fake",
  "sbx-executor-install",
@@ -1344,6 +1345,14 @@ dependencies = [
  "sha2",
  "tar",
  "tokio",
+]
+
+[[package]]
+name = "sbx-events"
+version = "0.1.1"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1436,6 +1445,7 @@ version = "0.1.1"
 dependencies = [
  "flate2",
  "ruzstd",
+ "sbx-events",
  "sbx-image",
  "sbx-model",
  "sbx-rootfs",
@@ -1476,6 +1486,7 @@ name = "sbx-runtime"
 version = "0.1.1"
 dependencies = [
  "rustix",
+ "sbx-events",
  "sbx-executor",
  "sbx-executor-fake",
  "sbx-guest-proto",

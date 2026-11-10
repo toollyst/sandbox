@@ -53,13 +53,27 @@ const RULES: &[(&str, Allowed)] = &[
     ("sbx-image", Allowed::Workspace(&["sbx-model"])),
     ("sbx-rootfs", Allowed::Workspace(&["sbx-model"])),
     ("sbx-store", Allowed::Workspace(&["sbx-model"])),
+    // 이벤트 기록 장치. 무엇을 기록할지 모른다. 실행과 관리가 각자 자기 디렉터리에 쓴다.
+    ("sbx-events", Allowed::Workspace(&[])),
     (
         "sbx-runtime",
-        Allowed::Workspace(&["sbx-model", "sbx-guest-proto", "sbx-executor", "sbx-store"]),
+        Allowed::Workspace(&[
+            "sbx-model",
+            "sbx-guest-proto",
+            "sbx-executor",
+            "sbx-store",
+            "sbx-events",
+        ]),
     ),
     (
         "sbx-manage",
-        Allowed::Workspace(&["sbx-model", "sbx-image", "sbx-rootfs", "sbx-store"]),
+        Allowed::Workspace(&[
+            "sbx-model",
+            "sbx-image",
+            "sbx-rootfs",
+            "sbx-store",
+            "sbx-events",
+        ]),
     ),
     ("sbx-oci", Allowed::Workspace(&["sbx-model", "sbx-image"])),
     (
@@ -99,6 +113,7 @@ const RULES: &[(&str, Allowed)] = &[
             "sbx-guest-proto",
             "sbx-executor",
             "sbx-store",
+            "sbx-events",
             "sbx-runtime",
             "sbx-executor-process",
             "sbx-executor-proto",

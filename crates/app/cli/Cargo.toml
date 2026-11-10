@@ -29,6 +29,7 @@ serde.workspace = true
 sbx-runtime.workspace = true
 sbx-shim.workspace = true
 sbx-manage.workspace = true
+sbx-events.workspace = true
 sbx-oci.workspace = true
 sbx-rootfs = { workspace = true, features = ["erofs"] }
 sbx-executor-process.workspace = true

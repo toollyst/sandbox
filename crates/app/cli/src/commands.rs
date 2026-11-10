@@ -124,6 +124,11 @@ pub const COMMANDS: &[Command] = &[
         "Show the main process output of a detached sandbox",
     ),
     cmd(
+        "events",
+        Group::Run,
+        "Stream sandbox and image events (--since replays recent ones)",
+    ),
+    cmd(
         "mcp",
         Group::Agent,
         "Serve sandboxes to AI agents over the Model Context Protocol (stdio)",

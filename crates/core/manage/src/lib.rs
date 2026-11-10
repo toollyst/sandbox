@@ -19,12 +19,16 @@
 //! - 정지된 샌드박스가 쓰는 이미지를 지울지는 이 크레이트가 판단하지 않는다. data_dir을 모르기 때문이다.
 //!   표현 계층이 실행 코어에서 샌드박스 목록을 보고 판단한다.
 //!
-//! - 의존: `sbx-model`, `sbx-image`(trait), `sbx-rootfs`(trait), `sbx-store`(`write`)
+//! - **이벤트**: 캐시를 바꾼 뒤 `<cache_dir>/events/images`([`events_log`])에 덧붙인다. 종류는 [`EVENT_KIND`],
+//!   동작은 `pull`(속성 `reference`), `prepare`(무언가 만들었을 때만, `rootfs_format`), `untag`(`reference`),
+//!   `delete`(이미지를 지웠을 때)이다. ID는 이미지 ID다. 기록하지 못해도 동작은 계속한다(알림이다).
+//!
+//! - 의존: `sbx-model`, `sbx-image`(trait), `sbx-rootfs`(trait), `sbx-store`(`write`), `sbx-events`
 
 use std::fmt;
 use std::fs::File;
 use std::io::{self, BufReader, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use flate2::read::GzDecoder;
@@ -127,6 +131,14 @@ impl Write for Counting<'_> {
     fn flush(&mut self) -> io::Result<()> {
         self.inner.flush()
     }
+}
+
+/// 이미지 이벤트의 종류.
+pub const EVENT_KIND: &str = "image";
+
+/// `cache_dir`의 이미지 이벤트 기록.
+pub fn events_log(cache_dir: &Path) -> sbx_events::Log {
+    sbx_events::Log::new(sbx_store::CacheLayout::new(cache_dir).image_events())
 }
 
 impl Manager {
@@ -239,7 +251,16 @@ impl Manager {
         };
         write::write_image_record(layout, &record)?;
         write::set_ref(layout, &resolved.reference, &resolved.id)?;
+        self.emit(
+            sbx_events::Event::new(EVENT_KIND, "pull", record.id.to_string())
+                .with("reference", resolved.reference.clone()),
+        );
         self.info(record)
+    }
+
+    /// 이미지 이벤트를 덧붙인다. 실패해도 동작은 계속한다(알림이다).
+    fn emit(&self, e: sbx_events::Event) {
+        let _ = sbx_events::Log::new(self.store.layout().image_events()).append(e);
     }
 
     /// 그 형식의 rootfs를 만든다. 이미지가 자기 커널을 담고 있으면(`ImageConfig::KERNEL_LABEL`) 그 커널도 꺼낸다.
@@ -323,6 +344,10 @@ impl Manager {
             }
             result?;
         }
+        self.emit(
+            sbx_events::Event::new(EVENT_KIND, "prepare", image.to_string())
+                .with("rootfs_format", format.to_string()),
+        );
         Ok(true)
     }
 
@@ -369,11 +394,17 @@ impl Manager {
     /// 참조 하나를 지운다. 이미지는 지우지 않는다(Docker `rmi`로 태그만 지울 때와 같다).
     pub fn untag(&self, reference: &str) -> Result<Removal, ManageError> {
         match write::remove_ref(self.store.layout(), reference)? {
-            Some(_) => Ok(Removal {
-                untagged: vec![reference.to_owned()],
-                deleted: None,
-                deleted_layers: Vec::new(),
-            }),
+            Some(id) => {
+                self.emit(
+                    sbx_events::Event::new(EVENT_KIND, "untag", id.to_string())
+                        .with("reference", reference),
+                );
+                Ok(Removal {
+                    untagged: vec![reference.to_owned()],
+                    deleted: None,
+                    deleted_layers: Vec::new(),
+                })
+            }
             None => Err(ManageError::RefNotFound(reference.to_owned())),
         }
     }
@@ -410,6 +441,17 @@ impl Manager {
             .ok_or_else(|| ManageError::InUse(image.clone()))?;
         let untagged = write::remove_refs_to(layout, image)?;
         write::remove_image(layout, image, lock)?;
+        for r in &untagged {
+            self.emit(
+                sbx_events::Event::new(EVENT_KIND, "untag", image.to_string())
+                    .with("reference", r.clone()),
+            );
+        }
+        self.emit(sbx_events::Event::new(
+            EVENT_KIND,
+            "delete",
+            image.to_string(),
+        ));
         let deleted_layers = write::collect_blobs(layout)?;
         Ok(Removal {
             untagged,

@@ -21,6 +21,7 @@
 //!   refs.json                   정규화된 참조 → 이미지 ID
 //!   tmp/                        prepare 작업 공간 (끝나면 지운다)
 //!   .lock                       refs.json 갱신용 잠금
+//!   events/images/              이미지 이벤트 기록 (`sbx-events`, 관리 코어가 쓴다)
 //! ```
 //!
 //! 파일 이름에는 digest의 hex만 쓴다. `:`는 Windows 파일 이름에 쓸 수 없다.
@@ -179,6 +180,11 @@ impl CacheLayout {
     /// 태그 기록.
     pub fn refs(&self) -> PathBuf {
         self.root.join("refs.json")
+    }
+
+    /// 이미지 이벤트 기록 디렉터리(`sbx-events`).
+    pub fn image_events(&self) -> PathBuf {
+        self.root.join("events").join("images")
     }
 
     /// 이미지 디렉터리들의 부모.

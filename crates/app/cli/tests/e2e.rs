@@ -62,6 +62,7 @@ mod unix {
         ("create_start_inspect_rm", create_start_inspect_rm),
         ("names_work_in_place_of_ids", names_work_in_place_of_ids),
         ("json_output_contract", json_output_contract),
+        ("events_replay_and_follow", events_replay_and_follow),
         (
             "exec_cp_stop_on_a_running_sandbox",
             exec_cp_stop_on_a_running_sandbox,
@@ -589,6 +590,99 @@ mod unix {
         let rm: Removed = serde_json::from_value(lines(&o.stdout).remove(0)).unwrap();
         assert_eq!(rm.target, IMAGE);
         assert_eq!(rm.deleted.first(), Some(&images[0].id));
+    }
+
+    /// `events`: 다른 프로세스들(CLI, shim)이 남긴 샌드박스·이미지 이벤트를 시각 순으로 다시 읽고, 새것을 따라간다.
+    fn events_replay_and_follow() {
+        use sbx_cli::output::Event;
+        use std::io::BufRead;
+        let e = Env::new();
+        let ok = |args: &[&str]| {
+            let o = e.sbx(args);
+            assert_eq!(o.status.code(), Some(0), "{args:?}: {}", text(&o.stderr));
+            text(&o.stdout).trim().to_owned()
+        };
+        // 따라가는 쪽을 먼저 띄운다(--since 없음: 새것만).
+        let mut follower = e.spawn(&["events", "--format", "json"]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let stdout = follower.stdout.take().unwrap();
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(stdout).lines() {
+                if tx.send(line.unwrap()).is_err() {
+                    break;
+                }
+            }
+        });
+        std::thread::sleep(Duration::from_millis(300));
+
+        let id = ok(&["create", "--name", "ev", IMAGE, "sh", "-c", "exit 2"]);
+        let o = e.sbx(&["start", "-a", "ev"]);
+        assert_eq!(o.status.code(), Some(2), "{}", text(&o.stderr));
+        let detached = ok(&["run", "-d", IMAGE, "sleep", "30"]);
+        ok(&["rm", "-f", &detached]);
+        ok(&["rm", "ev"]);
+        ok(&["rmi", IMAGE]);
+
+        let want_sandbox = ["create", "start", "stop", "remove"];
+        // 따라가는 쪽: 처음 것이 곧 온다.
+        let first: Event =
+            serde_json::from_str(&rx.recv_timeout(Duration::from_secs(10)).unwrap()).unwrap();
+        assert_eq!(
+            (
+                first.kind.as_str(),
+                first.action.as_str(),
+                first.id.as_str()
+            ),
+            ("sandbox", "create", &*id)
+        );
+        let _ = follower.kill();
+        let _ = follower.wait();
+
+        // 다시 읽기: 지난 1시간에서 지금까지. 끝나면 스스로 끝난다.
+        let o = e.sbx(&[
+            "events", "--since", "1h", "--until", "0s", "--format", "json",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let all: Vec<Event> = text(&o.stdout)
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap_or_else(|err| panic!("{err}: {l}")))
+            .collect();
+        assert!(all.windows(2).all(|w| w[0].time <= w[1].time), "{all:?}");
+        let of = |sid: &str| -> Vec<&str> {
+            all.iter()
+                .filter(|e| e.id == sid)
+                .map(|e| e.action.as_str())
+                .collect()
+        };
+        assert_eq!(of(&id), want_sandbox);
+        // shim이 소유한 샌드박스도 같은 기록에 남는다.
+        assert_eq!(of(&detached), want_sandbox);
+        let stop = all
+            .iter()
+            .find(|e| e.id == id && e.action == "stop")
+            .unwrap();
+        assert_eq!(stop.attributes["exit_code"], "2");
+        assert_eq!(stop.attributes["name"], "ev");
+        let image: Vec<&str> = all
+            .iter()
+            .filter(|e| e.kind == "image")
+            .map(|e| e.action.as_str())
+            .collect();
+        assert_eq!(image, ["untag", "delete"]);
+
+        // 사람이 읽는 줄(Docker와 같은 모양).
+        let o = e.sbx(&["events", "--since", "1h", "--until", "0s"]);
+        let first = text(&o.stdout).lines().next().unwrap().to_owned();
+        assert!(
+            first.contains(&format!(" sandbox create {id} (image=")) && first.contains("name=ev)"),
+            "{first}"
+        );
+        // 지나간 --until만 주면 아무것도 기다리지 않고 끝난다. 잘못된 시각은 오류다.
+        let o = e.sbx(&["events", "--until", "0s"]);
+        assert_eq!((o.status.code(), text(&o.stdout)), (Some(0), String::new()));
+        let o = e.sbx(&["events", "--since", "yesterday"]);
+        assert_eq!(o.status.code(), Some(1));
+        assert!(text(&o.stderr).contains("--since"), "{}", text(&o.stderr));
     }
 
     fn names_work_in_place_of_ids() {

@@ -195,6 +195,16 @@ pub enum Command {
         /// Sandbox name, ID, or unique ID prefix.
         id: String,
     },
+    #[command(about = about("events"))]
+    Events {
+        /// Replay events since this time first: RFC 3339 (2026-11-10T13:20:14Z), Unix seconds, or a duration ago (10m).
+        /// Without it, only new events are shown.
+        #[arg(long)]
+        since: Option<String>,
+        /// Stop at this time (same forms as --since). Without it, keep streaming.
+        #[arg(long)]
+        until: Option<String>,
+    },
     #[command(about = about("mcp"))]
     Mcp {
         /// Let tools use every sandbox in the data directory, not only the ones created through MCP.

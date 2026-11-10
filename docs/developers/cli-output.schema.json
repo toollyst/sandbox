@@ -159,6 +159,43 @@
       ],
       "type": "object"
     },
+    "Event": {
+      "additionalProperties": false,
+      "description": "Something that changed (`events`).",
+      "properties": {
+        "action": {
+          "description": "Sandbox: `create`, `start`, `stop`, `remove`. Image: `pull`, `prepare`, `untag`, `delete`.",
+          "type": "string"
+        },
+        "attributes": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Details. Sandbox: `image`, `name`; on `stop` also `exit_code` and `error`. Image: `reference` (`pull`,\n`untag`), `rootfs_format` (`prepare`).",
+          "type": "object"
+        },
+        "id": {
+          "description": "Sandbox ID or image ID.",
+          "type": "string"
+        },
+        "time": {
+          "description": "When it happened (RFC 3339, nanoseconds).",
+          "type": "string"
+        },
+        "type": {
+          "description": "`sandbox` or `image`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "time",
+        "type",
+        "action",
+        "id",
+        "attributes"
+      ],
+      "type": "object"
+    },
     "ExecutorInfo": {
       "additionalProperties": false,
       "description": "The executor sbx would use.",

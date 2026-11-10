@@ -18,3 +18,4 @@ tar.workspace = true
 sbx-image.workspace = true
 sbx-rootfs.workspace = true
 sbx-store = { workspace = true, features = ["write"] }
+sbx-events.workspace = true

@@ -346,6 +346,14 @@ pub const DOCKER_DIFFERENCES: &[(&str, &str, &str)] = &[
         "짧은 문자열이 우연히 맞아 엉뚱한 이미지를 지우는 일을 막는다",
     ),
     (
+        "sbx events",
+        "종류는 sandbox와 image, 동작은 create, start, stop, remove와 pull, prepare, untag, delete다 \
+         (Docker는 container의 die, destroy 등). 시각은 RFC 3339 나노초. --since/--until은 시간대 없는 날짜를 받지 않는다. \
+         --filter는 아직 없다. 기록은 1 MiB 두 세대까지 남는다(Docker는 최근 256개)",
+        "데몬이 없어서 상태를 바꾸는 프로세스가 data_dir과 cache_dir에 직접 남긴다(sbx-events). 그래서 소유 프로세스가 \
+         갑자기 죽어 아무도 stopped를 기록하지 못하면 stop 이벤트도 없다",
+    ),
+    (
         "sbx prepare",
         "Docker에 없는 명령",
         "이미지를 VM용 rootfs 디스크로 만드는 단계가 따로 있다",
@@ -461,6 +469,17 @@ pub fn rfc3339(t: std::time::SystemTime) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
+    format!("{}Z", civil(secs))
+}
+
+/// [`rfc3339`]과 같고 나노초 9자리까지 쓴다(이벤트 시각). 입력은 유닉스 시각 나노초.
+pub fn rfc3339_ns(ns: u64) -> String {
+    let secs = (ns / 1_000_000_000) as i64;
+    format!("{}.{:09}Z", civil(secs), ns % 1_000_000_000)
+}
+
+/// 유닉스 시각(초)을 `YYYY-MM-DDTHH:MM:SS`(UTC)로.
+fn civil(secs: i64) -> String {
     let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
     // 일 수를 그레고리력 날짜로 (Howard Hinnant의 civil_from_days).
     let z = days + 719_468;
@@ -473,7 +492,7 @@ pub fn rfc3339(t: std::time::SystemTime) -> String {
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = yoe + era * 400 + i64::from(month <= 2);
     format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}",
         rem / 3600,
         rem / 60 % 60,
         rem % 60
@@ -567,6 +586,10 @@ mod tests {
         assert_eq!(at(0), "1970-01-01T00:00:00Z");
         assert_eq!(at(951_782_400), "2000-02-29T00:00:00Z");
         assert_eq!(at(1_793_574_245), "2026-11-01T23:04:05Z");
+        assert_eq!(
+            rfc3339_ns(1_794_316_814_000_000_007),
+            "2026-11-10T13:20:14.000000007Z"
+        );
     }
 
     #[test]

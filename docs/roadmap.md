@@ -86,12 +86,12 @@ M5와 따로 간다. CLI가 주인이고, 사람(`sbx tui`), 스크립트, 에�
 | 단계 | 내용 | 상태 |
 |---|---|---|
 | C1 | 출력 계약: 공개 출력 자료형을 저장 형식과 분리(`crates/app/cli/src/output.rs`), 명령마다 모양(값 하나, 대상마다 JSON Lines, 받지 않음), JSON 모드 오류는 stderr에 JSON 한 줄, JSON Schema와 문서 생성(`docs/developers/cli-output.md`) | 완료 (e2e가 모든 `ps` 출력과 계약 테스트의 출력을 자료형으로 엄격히 읽는다) |
-| C2 | `sbx events` (`--since`, `--until`, `--watch`): 상태를 쓰는 자리에서 data_dir에 이벤트 로그를 덧붙이고(이미지 이벤트는 관리 코어가 cache_dir에), 크기 상한 | 남음 |
+| C2 | `sbx events` (`--since`, `--until`, Docker와 같다): 기록 장치 `sbx-events`(JSON Lines, 잠금, 1 MiB 세대 둘). 실행 코어가 상태를 쓰는 자리에서 `data_dir/events/sandboxes`에(create, start, stop, remove), 관리 코어가 `cache_dir/events/images`에(pull, prepare, untag, delete) 덧붙이고 CLI가 시각 순으로 합친다. `--watch`는 두지 않는다: TUI는 시각 T를 적고 `ps` 뒤 `events --since T` | 완료 (shim이 소유한 샌드박스 포함 e2e. 소유 프로세스가 갑자기 죽으면 stop이 없다는 한계는 `DOCKER_DIFFERENCES`에) |
 | C3 | `--filter KEY=VALUE`(Docker 규칙: 다른 키는 AND, 같은 키는 OR)와 시각 파서 (`ps`, `images`, `events`) | 남음 |
 | C4 | `--jq` (jaq 내장). Go 템플릿 `--format '{{…}}'`은 하지 않는다(Rust로 같게 만들 수 없다, `DOCKER_DIFFERENCES`에 적는다) | 남음 |
 | C5 | 이름·ID·이미지 동적 자동완성 (`clap_complete` `unstable-dynamic`) | 남음 |
 | C6 | 로그 시각 (`logs --timestamps`, `--since`, `--format json`): `main.log` 기록 형식에 시각을 넣고 버전을 둔다 | 남음 |
-| T | `sbx tui`: 인라인(아래쪽만 다시 그림) 화면, `events --watch` 구독, 모든 동작은 `sbx …` 자식 프로세스에 터미널을 넘겨 실행하고 그 명령 줄을 보여준다. S0 스파이크에서 iocraft와 ratatui Inline 중 고른다 | 남음 (C2 뒤) |
+| T | `sbx tui`: 인라인(아래쪽만 다시 그림) 화면, `ps` 뒤 `events --since` 구독, 모든 동작은 `sbx …` 자식 프로세스에 터미널을 넘겨 실행하고 그 명령 줄을 보여준다. S0 스파이크에서 iocraft와 ratatui Inline 중 고른다 | 남음 (C2 뒤) |
 
 ## 그 뒤
 

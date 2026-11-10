@@ -531,3 +531,49 @@ fn install_guest_init_is_content_addressed_and_repairs_damage() {
     assert_eq!(std::fs::read(&a).unwrap(), b"guest one");
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn cache_changes_are_recorded_as_events() {
+    let root = temp_root("events");
+    let m = manager(&root, FakeSource::new(vec![layer(&[T::File("a", b"1")])]));
+    let mut r = events_log(&root)
+        .reader(sbx_events::Start::Beginning)
+        .unwrap();
+    let id = ready(m.pull("test", Platform { arch: Arch::X86_64 }))
+        .unwrap()
+        .record
+        .id;
+    assert!(ready(m.prepare(&id, RootfsFormat::Erofs)).unwrap());
+    // 이미 있으면 아무것도 만들지 않고 기록도 없다.
+    assert!(!ready(m.prepare(&id, RootfsFormat::Erofs)).unwrap());
+    m.remove(&id).unwrap();
+    // 실패한 동작은 기록하지 않는다.
+    assert!(m.untag("docker.io/library/nope:latest").is_err());
+
+    let got: Vec<_> = std::iter::from_fn(|| r.next_event().unwrap()).collect();
+    let seen: Vec<(&str, Option<&str>)> = got
+        .iter()
+        .map(|e| {
+            let attr = e
+                .attributes
+                .get("reference")
+                .or(e.attributes.get("rootfs_format"));
+            (e.action.as_str(), attr.map(String::as_str))
+        })
+        .collect();
+    let reference = "docker.io/library/test:latest";
+    assert_eq!(
+        seen,
+        [
+            ("pull", Some(reference)),
+            ("prepare", Some("erofs")),
+            ("untag", Some(reference)),
+            ("delete", None),
+        ]
+    );
+    assert!(
+        got.iter()
+            .all(|e| e.kind == EVENT_KIND && e.id == id.to_string())
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}

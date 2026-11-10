@@ -10,6 +10,7 @@ members = [
     "crates/port/image",
     "crates/port/rootfs",
     "crates/port/store",
+    "crates/port/events",
     "crates/adapter/oci",
     "crates/adapter/executor-process",
     "crates/core/runtime",
@@ -62,6 +63,7 @@ sbx-executor = { path = "crates/port/executor" }
 sbx-image = { path = "crates/port/image" }
 sbx-rootfs = { path = "crates/port/rootfs" }
 sbx-store = { path = "crates/port/store" }
+sbx-events = { path = "crates/port/events" }
 sbx-runtime = { path = "crates/core/runtime" }
 sbx-manage = { path = "crates/core/manage" }
 sbx-oci = { path = "crates/adapter/oci" }

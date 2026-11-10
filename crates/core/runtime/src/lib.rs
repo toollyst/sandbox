@@ -34,9 +34,14 @@
 //!
 //! 모든 블로킹 입출력은 별도 스레드에서 한다([`sbx_model::blocking`]). 특정 비동기 런타임에 의존하지 않는다.
 //!
+//! **이벤트**: 상태를 바꾸는 자리에서 `<data_dir>/events/sandboxes`([`events_log`])에 덧붙인다. 종류는 [`EVENT_KIND`],
+//! 동작은 `create`(만듦), `start`(`running` 기록), `stop`(`stopped` 기록, `exit_code`·`error`), `remove`(지움)이고,
+//! 속성은 `image`(ID)와 `name`(있으면)이다. 기록하지 못해도 동작은 계속한다(알림이다).
+//! 소유 프로세스가 갑자기 죽으면 아무도 `stopped`를 기록하지 않으므로(읽는 쪽이 `stopped`로 본다) `stop` 이벤트도 없다.
+//!
 //! **층**: `lib` → `egress` → `client` → `hostfs`, `records` → `process`, `validate`, `cpplan`, `chan` → `error`.
 //!
-//! - 의존: `sbx-model`, `sbx-guest-proto`, `sbx-executor`, `sbx-store`(읽기)
+//! - 의존: `sbx-model`, `sbx-guest-proto`, `sbx-executor`, `sbx-store`(읽기), `sbx-events`
 
 use std::collections::HashMap;
 use std::fmt;
@@ -143,6 +148,14 @@ pub struct SandboxInfo {
     pub created: Option<std::time::SystemTime>,
 }
 
+/// 샌드박스 이벤트의 종류.
+pub const EVENT_KIND: &str = "sandbox";
+
+/// `data_dir`의 샌드박스 이벤트 기록.
+pub fn events_log(data_dir: &Path) -> sbx_events::Log {
+    sbx_events::Log::new(data_dir.join("events").join("sandboxes"))
+}
+
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -226,7 +239,29 @@ impl Runtime {
             let _ = records::remove(&self.paths(&id));
             return Err(e);
         }
+        self.emit("create", &id, Some(&spec), &[]);
         self.get(&id).await
+    }
+
+    /// 샌드박스 이벤트를 덧붙인다. 실패해도 동작은 계속한다(알림이다).
+    fn emit(
+        &self,
+        action: &str,
+        id: &SandboxId,
+        spec: Option<&SandboxSpec>,
+        extra: &[(&str, String)],
+    ) {
+        let mut e = sbx_events::Event::new(EVENT_KIND, action, id.as_str());
+        if let Some(spec) = spec {
+            e = e.with("image", spec.image.to_string());
+            if let Some(name) = &spec.name {
+                e = e.with("name", name.clone());
+            }
+        }
+        for (k, v) in extra {
+            e = e.with(k, v.clone());
+        }
+        let _ = events_log(&self.inner.config.data_dir).append(e);
     }
 
     /// ID로 샌드박스를 찾는다.
@@ -349,7 +384,20 @@ impl Runtime {
             control: None,
             egress_port: None,
         };
-        let _ = records::write_state(&self.paths(id), &state);
+        if records::write_state(&self.paths(id), &state).is_ok() {
+            let spec = records::read(&self.paths(id))
+                .ok()
+                .flatten()
+                .map(|(s, _)| s);
+            let mut extra = Vec::new();
+            if let Some(c) = exit_code {
+                extra.push(("exit_code", c.to_string()));
+            }
+            if let Some(e) = &state.error {
+                extra.push(("error", e.clone()));
+            }
+            self.emit("stop", id, spec.as_ref(), &extra);
+        }
         // 상태를 쓴 뒤에 잠금을 놓는다. 그래야 다른 프로세스가 "소유자 사라짐"으로 잘못 보지 않는다.
         drop(owned);
     }
@@ -649,6 +697,7 @@ impl Sandbox {
             egress_port,
         };
         records::write_state(&paths, &state)?;
+        rt.emit("start", &id, Some(&spec), &[]);
         lock(&rt.inner.owned).insert(
             id.clone(),
             Owned {
@@ -898,7 +947,9 @@ impl Sandbox {
         if let Some(name) = &info.spec.name {
             records::release_name(&self.rt.inner.config.data_dir, name, &info.id)?;
         }
-        records::remove(&self.rt.paths(&info.id))
+        records::remove(&self.rt.paths(&info.id))?;
+        self.rt.emit("remove", &info.id, Some(&info.spec), &[]);
+        Ok(())
     }
 }
 

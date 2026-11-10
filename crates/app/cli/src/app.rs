@@ -43,6 +43,9 @@ use crate::parse::{self, CpEndpoint};
 use crate::progress::Status;
 use crate::{dirs, executors, guest, host};
 
+/// `logs -f`, `events`가 새 기록을 보러 가는 간격.
+const FOLLOW_POLL: Duration = Duration::from_millis(100);
+
 /// 명령 결과. 성공하면 종료 코드.
 pub type AppResult<T> = Result<T, Box<dyn Error>>;
 
@@ -178,6 +181,7 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
         } => ctx.attach_cmd(*no_stdin, *sig_proxy, detach_keys, id).await,
         Command::Ps { all, quiet } => ctx.ps(*all, *quiet).await,
         Command::Inspect { id } => ctx.inspect(id).await,
+        Command::Events { since, until } => ctx.events(since.as_deref(), until.as_deref()).await,
         // `mcp`는 이 위(`sbx_cli::run`)에서 [`crate::mcp`]로 간다.
         Command::Mcp { .. } | Command::Completion { .. } => {
             Err(msg("internal: served by sbx_cli::run"))
@@ -370,7 +374,7 @@ impl Ctx {
             if !follow || rt.get(sandbox.id()).await?.state() != State::Running {
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(FOLLOW_POLL).await;
             if reader.is_none() {
                 reader = LogReader::open(&path).ok();
             }
@@ -1131,6 +1135,82 @@ impl Ctx {
         let info = self.runtime()?.find(id).await?.info().clone();
         output::print_value(&self.sandbox_json(&info))?;
         Ok(0)
+    }
+
+    /// `events`: data_dir의 샌드박스 이벤트와 cache_dir의 이미지 이벤트를 시각 순으로 합쳐 흘린다(Docker `events`).
+    ///
+    /// - `--since`가 없으면 지금부터 생기는 것만, 있으면 남아 있는 것 중 그 시각 뒤의 것부터.
+    /// - `--until`이 없으면 끝나지 않는다. 있으면 그 시각이 지나면 남은 것을 마저 읽고 끝난다.
+    /// - [`FOLLOW_POLL`]마다 두 기록을 읽어 모은 것을 시각 순으로 낸다. 그래서 두 기록 사이의 순서는 그 간격 안에서만 맞춘다.
+    /// - stdout이 닫히면(예: `| head`) 조용히 끝난다.
+    async fn events(&self, since: Option<&str>, until: Option<&str>) -> AppResult<u8> {
+        use std::io::Write as _;
+        let now = || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0)
+        };
+        let since = since
+            .map(|s| parse::time_ns(s, now()).map_err(|e| msg(format!("--since: {e}"))))
+            .transpose()?;
+        let until = until
+            .map(|s| parse::time_ns(s, now()).map_err(|e| msg(format!("--until: {e}"))))
+            .transpose()?;
+        let start = if since.is_some() {
+            sbx_events::Start::Beginning
+        } else {
+            sbx_events::Start::End
+        };
+        let mut readers = [
+            sbx_runtime::events_log(&self.data_dir).reader(start)?,
+            sbx_manage::events_log(&self.cache_dir).reader(start)?,
+        ];
+        let mut out = std::io::stdout().lock();
+        loop {
+            // 끝낼 때인지 먼저 정하고 읽는다. 그 시각까지 덧붙은 것은 이번에 모두 읽힌다.
+            let done = until.is_some_and(|u| now() > u);
+            let mut batch = Vec::new();
+            for r in &mut readers {
+                while let Some(e) = r.next_event()? {
+                    batch.push(e);
+                }
+            }
+            batch.sort_by_key(|e| e.time_ns);
+            for e in batch {
+                if since.is_some_and(|s| e.time_ns < s) || until.is_some_and(|u| e.time_ns > u) {
+                    continue;
+                }
+                let line = if self.json() {
+                    serde_json::to_string(&output::Event::new(&e))?
+                } else {
+                    let attrs: Vec<String> = e
+                        .attributes
+                        .iter()
+                        .map(|(k, v)| format!("{k}={v}"))
+                        .collect();
+                    let attrs = if attrs.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" ({})", attrs.join(", "))
+                    };
+                    format!(
+                        "{} {} {} {}{attrs}",
+                        behavior::rfc3339_ns(e.time_ns),
+                        e.kind,
+                        e.action,
+                        e.id
+                    )
+                };
+                if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
+                    return Ok(0);
+                }
+            }
+            if done {
+                return Ok(0);
+            }
+            tokio::time::sleep(FOLLOW_POLL).await;
+        }
     }
 
     /// [`output::Sandbox`]. 이미지 참조는 캐시에서 찾는다(지워졌으면 `null`).

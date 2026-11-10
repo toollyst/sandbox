@@ -88,6 +88,152 @@ pub fn cpus(value: &str) -> ParseResult<u8> {
     }
 }
 
+/// `--since`, `--until`의 시각. 유닉스 시각(나노초)을 돌려준다. 받는 것:
+///
+/// - RFC 3339: `2026-11-10T13:20:14Z`, 소수 초(`.5`), 시간대 차(`+09:00`).
+/// - 유닉스 시각(초): `1794316814`, 소수 가능(`1794316814.5`).
+/// - 지금에서 거슬러 간 시간(Go 표기, Docker와 같다): `90s`, `10m`, `1h30m`, `500ms`. 단위는 `ns`, `us`, `ms`, `s`, `m`, `h`.
+///
+/// Docker가 받는 그 밖의 형식(시간대 없는 날짜 등)은 받지 않는다. 어느 시간대로 읽을지 모호하기 때문이다.
+pub fn time_ns(value: &str, now_ns: u64) -> ParseResult<u64> {
+    let v = value.trim();
+    if let Some(ago) = duration_ns(v) {
+        return Ok(now_ns.saturating_sub(ago));
+    }
+    unix_ns(v).or_else(|| rfc3339_ns(v)).ok_or_else(|| {
+        format!(
+            "invalid time {value:?}: use RFC 3339 (2026-11-10T13:20:14Z), Unix seconds, \
+             or a duration ago (10m, 1h30m)"
+        )
+    })
+}
+
+/// `정수[.소수]`를 `unit` 배로. 소수는 9자리까지 본다.
+fn decimal_times(num: &str, unit: u128) -> Option<u128> {
+    let (int, frac) = num.split_once('.').unwrap_or((num, ""));
+    if int.is_empty() && frac.is_empty() {
+        return None;
+    }
+    let all_digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
+    if !all_digits(int) || !all_digits(frac) {
+        return None;
+    }
+    let int: u128 = if int.is_empty() { 0 } else { int.parse().ok()? };
+    let mut total = int.checked_mul(unit)?;
+    let frac = &frac[..frac.len().min(9)];
+    if !frac.is_empty() {
+        let scale = 10u128.pow(frac.len() as u32);
+        total = total.checked_add(frac.parse::<u128>().ok()? * unit / scale)?;
+    }
+    Some(total)
+}
+
+fn duration_ns(v: &str) -> Option<u64> {
+    const UNITS: &[(&str, u128)] = &[
+        ("ns", 1),
+        ("us", 1_000),
+        ("ms", 1_000_000),
+        ("s", 1_000_000_000),
+        ("m", 60_000_000_000),
+        ("h", 3_600_000_000_000),
+    ];
+    if v.is_empty() {
+        return None;
+    }
+    let mut rest = v;
+    let mut total: u128 = 0;
+    while !rest.is_empty() {
+        let end = rest.find(|c: char| !(c.is_ascii_digit() || c == '.'))?;
+        let (num, after) = rest.split_at(end);
+        // 두 글자 단위(ms 등)를 먼저 본다.
+        let (unit, len) = UNITS
+            .iter()
+            .filter(|(u, _)| after.starts_with(u))
+            .map(|(u, n)| (*n, u.len()))
+            .max_by_key(|(_, len)| *len)?;
+        total = total.checked_add(decimal_times(num, unit)?)?;
+        rest = &after[len..];
+    }
+    u64::try_from(total).ok()
+}
+
+fn unix_ns(v: &str) -> Option<u64> {
+    if v.starts_with('.') || v.ends_with('.') {
+        return None;
+    }
+    u64::try_from(decimal_times(v, 1_000_000_000)?).ok()
+}
+
+fn rfc3339_ns(v: &str) -> Option<u64> {
+    let b = v.as_bytes();
+    let num = |r: std::ops::Range<usize>| -> Option<i64> {
+        let s = v.get(r)?;
+        s.bytes()
+            .all(|c| c.is_ascii_digit())
+            .then(|| s.parse().ok())?
+    };
+    if b.len() < 20
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || !matches!(b[10], b'T' | b't')
+        || b[13] != b':'
+        || b[16] != b':'
+    {
+        return None;
+    }
+    let (year, month, day) = (num(0..4)?, num(5..7)?, num(8..10)?);
+    let (hour, min, sec) = (num(11..13)?, num(14..16)?, num(17..19)?);
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return None,
+    };
+    if !(1..=days_in_month).contains(&day) || hour > 23 || min > 59 || sec > 59 {
+        return None;
+    }
+    let mut rest = &v[19..];
+    let mut frac_ns = 0u128;
+    if let Some(r) = rest.strip_prefix('.') {
+        let end = r.find(|c: char| !c.is_ascii_digit()).unwrap_or(r.len());
+        if end == 0 {
+            return None;
+        }
+        frac_ns = decimal_times(&format!("0.{}", &r[..end]), 1_000_000_000)?;
+        rest = &r[end..];
+    }
+    let offset_secs: i64 = match rest.as_bytes() {
+        [b'Z' | b'z'] => 0,
+        [sign @ (b'+' | b'-'), h1, h2, b':', m1, m2] => {
+            let digits = [*h1, *h2, *m1, *m2];
+            if !digits.iter().all(u8::is_ascii_digit) {
+                return None;
+            }
+            let d = |i: usize| i64::from(digits[i] - b'0');
+            let (oh, om) = (d(0) * 10 + d(1), d(2) * 10 + d(3));
+            if oh > 23 || om > 59 {
+                return None;
+            }
+            let s = oh * 3600 + om * 60;
+            if *sign == b'+' { s } else { -s }
+        }
+        _ => return None,
+    };
+    // 그레고리력 날짜를 일 수로 (Howard Hinnant의 days_from_civil).
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    let secs = days * 86_400 + hour * 3600 + min * 60 + sec - offset_secs;
+    let secs = u64::try_from(secs).ok()?;
+    u64::try_from(u128::from(secs) * 1_000_000_000 + frac_ns).ok()
+}
+
 /// `--platform linux/amd64` 또는 `linux/arm64`(`linux/arm64/v8`도 받는다).
 pub fn platform(value: &str) -> ParseResult<Arch> {
     match value {
@@ -210,6 +356,48 @@ pub fn cp_endpoint(value: &str) -> CpEndpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn times_take_rfc3339_unix_seconds_and_durations_ago() {
+        let now = 1_794_316_814_000_000_000;
+        assert_eq!(time_ns("2026-11-10T13:20:14Z", 0), Ok(now));
+        assert_eq!(time_ns("2026-11-10t13:20:14z", 0), Ok(now));
+        assert_eq!(
+            time_ns("2026-11-10T13:20:14.5+09:00", 0),
+            Ok(1_794_284_414_500_000_000)
+        );
+        assert_eq!(
+            time_ns("2000-02-29T00:00:00Z", 0),
+            Ok(951_782_400_000_000_000)
+        );
+        assert_eq!(time_ns("1794316814", 0), Ok(now));
+        assert_eq!(time_ns("1794316814.25", 0), Ok(now + 250_000_000));
+        // 단위 없는 수는 기간이 아니라 유닉스 시각이다.
+        assert_eq!(time_ns("10", now), Ok(10_000_000_000));
+        assert_eq!(time_ns("10m", now), Ok(now - 600_000_000_000));
+        assert_eq!(time_ns("1h30m", now), Ok(now - 5_400_000_000_000));
+        assert_eq!(time_ns("1.5s", now), Ok(now - 1_500_000_000));
+        assert_eq!(time_ns("500ms", now), Ok(now - 500_000_000));
+        // 지금보다 먼 과거는 0에서 멈춘다.
+        assert_eq!(time_ns("1h", 5), Ok(0));
+        for bad in [
+            "",
+            "yesterday",
+            "10x",
+            "m",
+            "1.",
+            ".5",
+            "2026-11-10",
+            "2026-11-10T13:20:14",
+            "2026-02-30T00:00:00Z",
+            "2026-11-10T24:00:00Z",
+            "2026-11-10T13:20:14.Z",
+            "2026-11-10T13:20:14+0900",
+            "1969-12-31T23:59:59Z",
+        ] {
+            assert!(time_ns(bad, now).is_err(), "{bad:?}");
+        }
+    }
 
     #[test]
     fn env_files_follow_docker() {

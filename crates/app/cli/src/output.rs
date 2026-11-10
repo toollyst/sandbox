@@ -77,6 +77,7 @@ pub const JSON_OUTPUT: &[(&str, Form)] = &[
         "logs",
         Form::Unsupported("its output is the main process's own bytes"),
     ),
+    ("events", Form::Lines("Event")),
     (
         "mcp",
         Form::Unsupported("it speaks the Model Context Protocol (JSON-RPC) on stdio"),
@@ -413,6 +414,38 @@ pub struct Exited {
     pub exit_code: i32,
 }
 
+/// Something that changed (`events`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct Event {
+    /// When it happened (RFC 3339, nanoseconds).
+    pub time: String,
+    /// `sandbox` or `image`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// Sandbox: `create`, `start`, `stop`, `remove`. Image: `pull`, `prepare`, `untag`, `delete`.
+    pub action: String,
+    /// Sandbox ID or image ID.
+    pub id: String,
+    /// Details. Sandbox: `image`, `name`; on `stop` also `exit_code` and `error`. Image: `reference` (`pull`,
+    /// `untag`), `rootfs_format` (`prepare`).
+    pub attributes: BTreeMap<String, String>,
+}
+
+impl Event {
+    /// 기록 형식에서.
+    pub fn new(e: &sbx_events::Event) -> Self {
+        Self {
+            time: behavior::rfc3339_ns(e.time_ns),
+            kind: e.kind.clone(),
+            action: e.action.clone(),
+            id: e.id.clone(),
+            attributes: e.attributes.clone(),
+        }
+    }
+}
+
 /// A sandbox (`ps`, `inspect`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
@@ -711,6 +744,7 @@ mod tests {
         g.subschema_for::<Done>();
         g.subschema_for::<Exited>();
         g.subschema_for::<Sandbox>();
+        g.subschema_for::<Event>();
         g.take_definitions(true)
     }
 
