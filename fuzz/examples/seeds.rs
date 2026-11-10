@@ -112,6 +112,8 @@ fn egress(out: &Path) {
             "ipv6",
             "[::1]:8080\n[2001:db8::1]:*\n[2606:4700::1111]:443\n[::1] 8080",
         ),
+        // 고친 것: 대문자나 다른 표기의 IPv6 규칙이 맞지 않았다.
+        ("ipv6-spelling", "[::aF:1]:8080\n[0:0::AF:1] 8080"),
         (
             "mapped",
             "[::ffff:10.0.0.1]:80\n[64:ff9b::a00:1]:80\n[::ffff:10.0.0.1] 80",
@@ -175,6 +177,12 @@ fn oci(out: &Path) {
             "values",
             0,
             "SIGTERM\nRTMIN+3\nRTMAX-1\n15\napp:staff\n1000:1000\nroot",
+        ),
+        // 고친 것: 실시간 시그널 오프셋이 넘쳤다.
+        (
+            "values-overflow",
+            0,
+            "RTMIN+2147483647\nRTMAX--2147483648\n4294967296:0",
         ),
     ] {
         let mut b = vec![ct];
@@ -300,6 +308,17 @@ fn executor_repo(out: &Path) {
         }
     });
     put(out, "executor_index", "v1.json", v1.to_string().as_bytes());
+    // 고친 것: 버전 `latest`를 받아들였다(지금은 색인 전체를 거부한다).
+    let mut latest = v1.clone();
+    latest["executors"]["fc"]["versions"]["latest"] = serde_json::json!(
+        {"protocol": 1, "artifacts": [artifact("darwin", "arm64", "fc/l.tar.gz")]}
+    );
+    put(
+        out,
+        "executor_index",
+        "latest.json",
+        latest.to_string().as_bytes(),
+    );
     put(
         out,
         "executor_index",
