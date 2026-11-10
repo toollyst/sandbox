@@ -134,7 +134,7 @@ SLSA, TUF(색인 신선도), EU CRA. root는 금지 조건이 아니다: 쓸 수
 | P13 | 운영: 감사 기록(누가 언제 무엇을 만들고 실행했나, 이미지 digest, 실행기 버전, allow 목록, exec argv·종료 코드, egress 허용·거부. JSONL, 보존 기간 설정, 선택적으로 OTel), `sbx stats`, `sbx system df`·`prune`, 고아 VM 정리 | 남음 |
 | P14 | 호스트 강화 점검 `sbx info --security`(SMT, KSM, swap, KVM 권한, 시리얼 출력) | 남음 |
 | P15 | SDK(Python, TypeScript): CLI JSON 계약을 감싸고 `cli-output.schema.json`으로 타입을 만든다(데몬 없음) | 남음 |
-| P16 | 이름: Docker Sandboxes도 `sbx` 바이너리를 brew·winget·apt로 배포해 PATH가 겹친다. 1.0 전에 정한다 | 결정 필요 |
+| P16 | 이름을 `cowl`로 바꾼다: Docker Sandboxes도 `sbx` 바이너리를 brew·winget·apt로 배포해 PATH가 겹치고, USPTO에 DOCKER, INC.의 `SBX`(9류)가 있다. 후보(cowl, husk, glim, onggi 등)를 Homebrew·Debian·Ubuntu 바이너리, crates·npm·PyPI, USPTO로 조사해 골랐다(EU·한국 상표는 남음). 바이너리·크레이트·환경 변수·라벨·데이터 디렉터리(옛 디렉터리 옮기기)·문서 | 결정(cowl), 남음 |
 
 ## 그 뒤
 
