@@ -120,7 +120,7 @@ SLSA, TUF(색인 신선도), EU CRA. root는 금지 조건이 아니다: 쓸 수
 | 단계 | 내용 | 상태 |
 |---|---|---|
 | P1 | 공급망: `deny.toml`(RustSec 권고, 허용형 라이선스, crates.io만), CI `supply-chain` 작업, 모든 Actions를 커밋 SHA로 고정, dependabot(Actions·cargo) | 완료 |
-| P2 | 릴리스 서명: 묶음마다 Sigstore keyless 번들, GitHub 출처 증명(SLSA build provenance), SBOM(SPDX) 증명. `install.sh`의 `SBX_VERIFY`(auto/require/off). `release.yml`을 손으로 돌리면 리허설(빌드·smoke·SBOM·서명만) | 작성, 리허설로 확인 중 |
+| P2 | 릴리스 서명: 묶음마다 Sigstore keyless 번들, GitHub 출처 증명(SLSA build provenance), SBOM(SPDX) 증명. `install.sh`의 `SBX_VERIFY`(auto/require/off). `release.yml`을 손으로 돌리면 리허설(빌드·smoke·SBOM·서명만) | 완료 (리허설 42825468363: 묶음 셋의 Sigstore 번들이 cosign으로 확인되고, 바꾼 파일과 태그가 아닌 신원은 거부된다. `install.sh`는 cosign이 있을 때 그 리허설 번들을 태그 신원이 아니라며 거부했다. SBOM 패키지 418개. 태그 신원으로 통과하는 것과 출처 증명은 첫 태그 릴리스에서 확인) |
 | P3 | 공급망 2: `cargo auditable`로 바이너리에 의존성 목록, 실행기 묶음(어댑터·커널·VMM)에도 SBOM과 증명(`executors.yml`), publish를 승인이 필요한 environment로, SLSA Build L3(재사용 빌드 워크플로와 `--signer-workflow`) | 남음 |
 | P4 | 커버리지 기반 퍼징(cargo-fuzz): 게스트·실행기 규약 디코더, 저장소 색인과 버전, 묶음 풀기(경로 탈출), OCI manifest·index, egress 규칙. CI에서 짧게, 손으로 길게. 그 뒤 ClusterFuzzLite나 OSS-Fuzz | 진행 중 |
 | P5 | 저장소 색인 서명(minisign): 저장소마다 공개키(여럿 고정, 교체·폐기), 서명 범위 안의 `serial`(본 것보다 낮으면 거부)과 `expires`(롤백·동결 공격), 실행기 이름을 저장소에 고정(다른 저장소가 같은 이름을 가로채지 못하게). CLI와 tui, `xtask repo-add`, `executors.yml` | 남음 |
