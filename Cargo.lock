@@ -386,7 +386,7 @@ dependencies = [
 
 [[package]]
 name = "executor-fake"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "executor-process",
  "executor-proto",
@@ -400,7 +400,7 @@ dependencies = [
 
 [[package]]
 name = "executor-firecracker"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "executor-proto",
  "serde_json",
@@ -408,11 +408,11 @@ dependencies = [
 
 [[package]]
 name = "executor-install"
-version = "0.0.0"
+version = "0.1.0"
 
 [[package]]
 name = "executor-process"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "executor-proto",
  "sandbox-executor",
@@ -421,7 +421,7 @@ dependencies = [
 
 [[package]]
 name = "executor-proto"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -429,7 +429,7 @@ dependencies = [
 
 [[package]]
 name = "executor-repo"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "executor-install",
  "flate2",
@@ -1348,7 +1348,7 @@ dependencies = [
 
 [[package]]
 name = "sandbox-cli"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "base64",
  "clap",
@@ -1378,14 +1378,14 @@ dependencies = [
 
 [[package]]
 name = "sandbox-executor"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "sandbox-model",
 ]
 
 [[package]]
 name = "sandbox-guest"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "libc",
  "sandbox-proto",
@@ -1393,14 +1393,14 @@ dependencies = [
 
 [[package]]
 name = "sandbox-image"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "sandbox-model",
 ]
 
 [[package]]
 name = "sandbox-manage"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "flate2",
  "ruzstd",
@@ -1413,7 +1413,7 @@ dependencies = [
 
 [[package]]
 name = "sandbox-model"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1421,7 +1421,7 @@ dependencies = [
 
 [[package]]
 name = "sandbox-oci"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "reqwest",
  "sandbox-image",
@@ -1434,18 +1434,18 @@ dependencies = [
 
 [[package]]
 name = "sandbox-proto"
-version = "0.0.0"
+version = "0.1.0"
 
 [[package]]
 name = "sandbox-rootfs"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "sandbox-model",
 ]
 
 [[package]]
 name = "sandbox-runtime"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "executor-fake",
  "rustix",
@@ -1459,7 +1459,7 @@ dependencies = [
 
 [[package]]
 name = "sandbox-shim"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "executor-process",
  "sandbox-executor",
@@ -1470,7 +1470,7 @@ dependencies = [
 
 [[package]]
 name = "sandbox-store"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "sandbox-model",
  "serde",
@@ -2217,7 +2217,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "executor-repo",
  "flate2",
