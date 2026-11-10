@@ -134,6 +134,10 @@ mod unix {
             image_kernel_is_given_to_the_executor,
         ),
         (
+            "mcp_limits_what_an_agent_can_ask_for",
+            mcp_limits_what_an_agent_can_ask_for,
+        ),
+        (
             "mcp_serves_sandboxes_to_agents",
             mcp_serves_sandboxes_to_agents,
         ),
@@ -2355,6 +2359,73 @@ mod unix {
             }
             Ok(r["structuredContent"].clone())
         }
+    }
+
+    fn mcp_limits_what_an_agent_can_ask_for() {
+        let e = Env::new();
+        let child = e
+            .cmd(&[
+                "mcp",
+                "--max-sandboxes",
+                "1",
+                "--max-cpus",
+                "2",
+                "--max-memory",
+                "1g",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut child = child;
+        let out = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut m = Mcp {
+            child,
+            out,
+            next: 0,
+        };
+        m.request("initialize", serde_json::json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "e2e", "version": "0"}}));
+        // 호출 하나의 vCPU·메모리 상한.
+        let e1 = m
+            .call(
+                "run",
+                serde_json::json!({"image": IMAGE, "command": ["true"], "cpus": 3}),
+            )
+            .unwrap_err();
+        assert!(e1.contains("--max-cpus"), "{e1}");
+        let e2 = m
+            .call(
+                "run",
+                serde_json::json!({"image": IMAGE, "command": ["true"], "memory": "2g"}),
+            )
+            .unwrap_err();
+        assert!(e2.contains("--max-memory"), "{e2}");
+        // 샌드박스 수 상한: 하나가 있으면 둘째는 거부하고, 지우면 다시 된다.
+        let id = m
+            .call(
+                "create",
+                serde_json::json!({"image": IMAGE, "cpus": 2, "memory": "1g"}),
+            )
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let e3 = m
+            .call(
+                "run",
+                serde_json::json!({"image": IMAGE, "command": ["true"]}),
+            )
+            .unwrap_err();
+        assert!(e3.contains("--max-sandboxes 1"), "{e3}");
+        m.call("remove", serde_json::json!({"id": id})).unwrap();
+        let r = m
+            .call(
+                "run",
+                serde_json::json!({"image": IMAGE, "command": ["echo", "ok"]}),
+            )
+            .unwrap();
+        assert_eq!(r["stdout"], "ok\n", "{r}");
     }
 
     fn mcp_serves_sandboxes_to_agents() {

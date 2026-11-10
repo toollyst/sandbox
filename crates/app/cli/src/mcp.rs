@@ -67,6 +67,27 @@ struct Server {
     ctx: Ctx,
     /// `--all-sandboxes`: 같은 data_dir의 다른 샌드박스(CLI로 만든 것)도 다룬다.
     all_sandboxes: bool,
+    /// 에이전트가 쓸 수 있는 자원의 상한.
+    limits: Limits,
+    /// 만드는 중인(아직 목록에 없는) 샌드박스 수. 동시에 들어온 호출이 상한을 함께 넘지 않게.
+    reserved: std::cell::Cell<u32>,
+}
+
+/// `sbx mcp --max-sandboxes`, `--max-cpus`, `--max-memory`.
+#[derive(Debug, Clone, Copy)]
+struct Limits {
+    sandboxes: u32,
+    cpus: u8,
+    memory_mib: u32,
+}
+
+/// 만드는 동안 쥐는 자리. 놓으면 [`Server::reserved`]에서 뺀다.
+struct Seat<'a>(&'a std::cell::Cell<u32>);
+
+impl Drop for Seat<'_> {
+    fn drop(&mut self) {
+        self.0.set(self.0.get().saturating_sub(1));
+    }
 }
 
 impl std::ops::Deref for Server {
@@ -80,6 +101,52 @@ impl Server {
     fn mine(&self, info: &sbx_runtime::SandboxInfo) -> bool {
         self.all_sandboxes
             || info.spec.labels.get(OWNER_LABEL).map(String::as_str) == Some(OWNER_MCP)
+    }
+
+    /// 만들 샌드박스가 상한 안인지 보고 자리를 잡는다. vCPU와 메모리는 호출 하나의 상한, 개수는 MCP로 만든
+    /// 샌드박스(지우기 전까지, 만드는 중인 것 포함)의 상한이다.
+    async fn admit(&self, spec: &RunArgs) -> AppResult<Seat<'_>> {
+        let l = self.limits;
+        let cpus: u8 = spec
+            .cpus
+            .as_deref()
+            .map_or(Ok(1), str::parse)
+            .map_err(|_| "invalid `cpus`")?;
+        if cpus > l.cpus {
+            return Err(format!(
+                "`cpus` {cpus} is above this server's limit of {} (sbx mcp --max-cpus)",
+                l.cpus
+            )
+            .into());
+        }
+        let memory = match spec.memory.as_deref() {
+            Some(m) => crate::parse::memory_mib(m)?,
+            None => crate::behavior::DEFAULT_MEMORY_MIB,
+        };
+        if memory > l.memory_mib {
+            return Err(format!(
+                "`memory` {memory} MiB is above this server's limit of {} MiB (sbx mcp --max-memory)",
+                l.memory_mib
+            )
+            .into());
+        }
+        let rt = self.runtime()?;
+        let existing = rt
+            .list()
+            .await?
+            .iter()
+            .filter(|s| s.spec.labels.get(OWNER_LABEL).map(String::as_str) == Some(OWNER_MCP))
+            .count() as u32;
+        let taken = existing + self.reserved.get();
+        if taken >= l.sandboxes {
+            return Err(format!(
+                "this server already has {taken} sandboxes, its limit (sbx mcp --max-sandboxes {}); remove one first",
+                l.sandboxes
+            )
+            .into());
+        }
+        self.reserved.set(self.reserved.get() + 1);
+        Ok(Seat(&self.reserved))
     }
 
     /// `query`(이름, ID, ID 앞부분)로 찾는다. 이 서버가 다룰 수 없는 샌드박스는 없는 것과 같다.
@@ -105,15 +172,24 @@ impl Server {
 /// 도구 호출은 한 스레드([`tokio::task::LocalSet`])에서 동시에 돈다. CLI의 코어 호출은 `Send`가 아닌 오류를
 /// 쓰므로 여러 스레드로 옮길 수 없다. 오래 걸리는 일(VM 실행, 기다리기)은 어차피 기다림이다.
 pub async fn serve(cli: &Cli) -> AppResult<u8> {
-    let all_sandboxes = matches!(
-        cli.command,
-        Command::Mcp {
-            all_sandboxes: true
-        }
-    );
+    let Command::Mcp {
+        all_sandboxes,
+        max_sandboxes,
+        max_cpus,
+        max_memory,
+    } = cli.command
+    else {
+        return Err("internal: not the mcp command".into());
+    };
     let ctx = Rc::new(Server {
         ctx: Ctx::new(cli)?,
         all_sandboxes,
+        limits: Limits {
+            sandboxes: max_sandboxes,
+            cpus: max_cpus,
+            memory_mib: max_memory,
+        },
+        reserved: Default::default(),
     });
     tokio::task::LocalSet::new().run_until(serve_on(ctx)).await
 }
@@ -709,11 +785,13 @@ async fn run(ctx: &Server, a: &Args<'_>, progress: &Progress, cancel: &Cancel) -
     let stdin = a.str("stdin")?;
     let timeout = a.timeout()?;
     let spec = run_args(a, stdin.is_some(), &[])?;
+    let seat = ctx.admit(&spec).await?;
     let report = |p| progress.pull(spec.image(), p);
     let id = tokio::select! {
         id = ctx.create_with(&spec, &report) => id?,
         () = cancel.cancelled() => return Err("cancelled".into()),
     };
+    drop(seat);
     let rt = ctx.launcher_for(&id).await?;
     let r: AppResult<Value> = async {
         // `?`가 만드는 값(Send가 아닌 오류를 담는다)이 다음 await까지 남지 않게 문장을 나눈다.
@@ -749,9 +827,11 @@ async fn run(ctx: &Server, a: &Args<'_>, progress: &Progress, cancel: &Cancel) -
 
 async fn create(ctx: &Server, a: &Args<'_>, progress: &Progress) -> AppResult<Value> {
     let spec = run_args(a, false, KEEP_ALIVE)?;
+    let seat = ctx.admit(&spec).await?;
     let id = ctx
         .create_with(&spec, &|p| progress.pull(spec.image(), p))
         .await?;
+    drop(seat);
     // 오류(`Box<dyn Error>`)는 Send가 아니라 정리를 기다리는 동안 쥐고 있을 수 없다. 글로 바꿔 둔다.
     let failed = ctx
         .start_detached(&id, false)

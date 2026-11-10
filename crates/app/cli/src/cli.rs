@@ -228,6 +228,15 @@ pub enum Command {
         /// Let tools use every sandbox in the data directory, not only the ones created through MCP.
         #[arg(long)]
         all_sandboxes: bool,
+        /// At most this many sandboxes created through MCP may exist at once (running or stopped, until removed).
+        #[arg(long, default_value_t = 8, value_parser = clap::value_parser!(u32).range(1..))]
+        max_sandboxes: u32,
+        /// The most vCPUs one tool call may ask for.
+        #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u8).range(1..))]
+        max_cpus: u8,
+        /// The most memory one tool call may ask for (e.g. 2g).
+        #[arg(long, default_value = "4g", value_parser = crate::parse::memory_mib)]
+        max_memory: u32,
     },
     #[command(
         about = about("completion"),

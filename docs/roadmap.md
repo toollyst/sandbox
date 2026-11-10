@@ -75,7 +75,7 @@ Linux KVM(upstream Firecracker)과 CI 자동 실행은 남았다.
 | 28 | MCP: 취소, 클라이언트가 사라지면 정리, 출력 끝 보존, 규약 오류 코드 | 완료 (e2e) |
 | 29 | Firecracker adapter의 설정 파일을 공용 `/tmp`에 예측 가능한 이름으로 쓴다 (Linux 다중 사용자) | 완료: 제어 소켓 옆(sbx가 이 사용자만 쓰게 만든 socket 디렉터리)에 `<소켓>.firecracker.json`으로, 있던 것은 지우고 새 파일로만(`create_new`, 링크를 따라가지 않는다), 모드 0600. 테스트 `config_sits_beside_the_socket_and_never_follows_links` |
 | 30 | 게스트 프로토콜 디코더에 무작위·변형 입력 20만 개 (패닉 없음, 받아들인 것은 다시 인코딩해도 같음), 프레임은 받은 만큼만 버퍼를 늘린다 | 완료 |
-| 31 | MCP 자원 상한(샌드박스 수, vCPU, 메모리), 커버리지 기반 퍼징 | 남음 |
+| 31 | MCP 자원 상한(샌드박스 수, vCPU, 메모리), 커버리지 기반 퍼징 | 일부 (MCP 상한 완료, 퍼징은 P4) |
 
 **실행기와 어댑터 분리, 버전 관리.** 실행기 묶음 하나에 어댑터, VMM, 커널을 함께 담으면 Firecracker 버전과 어댑터
 버전이 한 번호에 묶이고, 다른 사람이 자기 VMM을 붙일 수 없다. 그래서 VMM 묶음(VMM만)과 그것을 돌리는 어댑터를 나누고,
@@ -125,7 +125,7 @@ SLSA, TUF(색인 신선도), EU CRA. root는 금지 조건이 아니다: 쓸 수
 | P4 | 커버리지 기반 퍼징(cargo-fuzz): 게스트·실행기 규약 디코더, 저장소 색인과 버전, 묶음 풀기(경로 탈출), OCI manifest·index, egress 규칙. CI에서 짧게, 손으로 길게. 그 뒤 ClusterFuzzLite나 OSS-Fuzz | 진행 중 |
 | P5 | 저장소 색인 서명(minisign): 저장소마다 공개키(여럿, 교체 중), 서명 범위 안의 `serial`(본 것보다 낮으면 거부)과 `expires`(롤백·동결 공격), 이름은 그것을 내는 첫 저장소의 것이고 설치한 이름은 받은 곳(`.sbx-origin`)에서만 다시 받는다(어댑터 포함). `repo add --key`/`--unsigned`, `install --repo`, `ls`·tui의 FROM, `xtask repo-keygen`·`repo-sign`, `smoke-local.sh`가 서명된 저장소로, `executors.yml`이 비밀 값이 있으면 서명, `executors-resign.yml` | 완료. 남음(나중에 정한다): 공식 키를 만들어 `OFFICIAL_KEYS`와 비밀 값 `EXECUTORS_SIGNING_KEY`에 두기, 다시 서명을 자동으로 할지 |
 | P6 | Linux 격리: root가 있으면 Firecracker 공식 jailer(chroot, namespace, cgroup, 인스턴스마다 uid), 없으면 Landlock·seccomp와 위임받은 cgroup v2로 CPU·메모리·IO 상한. scratch 디스크 속도 제한. macOS는 wick에 jailer 상당이 생길 때까지 다중 테넌트용이 아니라고 적는다. 어댑터가 맡는다 | 남음 |
-| P7 | 자원 상한: MCP의 샌드박스 수·vCPU·메모리 합계, detached 샌드박스의 수명·유휴 시간, pull·prepare 디스크 사용량, egress 전송량, scratch 디스크 합계 (31의 MCP 부분) | 남음 |
+| P7 | 자원 상한: MCP의 샌드박스 수·vCPU·메모리 합계, detached 샌드박스의 수명·유휴 시간, pull·prepare 디스크 사용량, egress 전송량, scratch 디스크 합계 (31의 MCP 부분) | 일부: `sbx mcp --max-sandboxes/--max-cpus/--max-memory` (기본 8개·4 vCPU·4 GiB, 시작 중인 것도 센다). 수명·유휴, 디스크, egress는 남음 |
 | P8 | 취약점 처리 절차(SECURITY.md): 첫 응답 48시간, 판단 7일, 고침이 준비되면 엠바고 최대 14일·신고 뒤 90일 안 공개, GHSA로 CVE, "위협 모델 표의 경계를 넘으면 CVE", 지원 버전(최신 minor 둘, 각 1년 이상), 어댑터·커널·wick·upstream의 신고처, 릴리스 노트의 Security 절, 받은 것을 확인하는 법 | 완료 |
 | P9 | 호환성 정책(`COMPATIBILITY.md`): semver, 지원 중단은 minor 하나 이상 경고한 뒤, 계약 목록(CLI 플래그·종료 코드, `--format json`은 더하기만, MCP 도구, 실행기 규약, 저장소 색인, data/cache 배치, `.sbx-executor`·라벨). 실행기 규약을 "같아야 한다"에서 범위 협상으로: sbx는 `MIN_VERSION..=VERSION`, 실행기는 `capabilities`의 `min_version`..`version`, 겹치는 가장 높은 버전으로 `Launch`. `capabilities`는 더하기만(모르는 필드 무시), 색인의 `min_protocol`. 남음: 디스크 배치 버전 파일(`layout-version`)과 옮기기/거부는 P16(이름 변경)에서 데이터 디렉터리를 옮길 때 | 일부 |
 | P10 | 거버넌스: CODE_OF_CONDUCT(Contributor Covenant 2.1), MAINTAINERS, GOVERNANCE, DCO(CI `dco` 작업이 PR 커밋을 본다), PR 양식. 남음: 브랜치·태그 rulesets(저장소 설정), 릴리스 권한을 가진 두 번째 메인테이너(지금은 한 명, 구한다고 적었다) | 일부 |
