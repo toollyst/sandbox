@@ -120,6 +120,16 @@ its inputs.
 
 The schema 1 `executors/index.json`, which `sbx` 0.1.x reads, stays as it is.
 
+**Signing.** When the repository secret `EXECUTORS_SIGNING_KEY` (a minisign secret key from
+`cargo xtask repo-keygen`) is set, the workflow runs `cargo xtask repo-sign` before pushing: it raises the index's
+`serial`, sets `expires` 90 days ahead and writes `v2/index.json.minisig`. Without the secret it warns and publishes
+unsigned. The matching public key goes in `OFFICIAL_KEYS` in
+[`executors.rs`](../../crates/app/cli/src/executors.rs); until both exist, `official` is an unsigned repository. A
+signed index has to be re-signed before it expires: [`executors-resign.yml`](../../.github/workflows/executors-resign.yml)
+(by hand) does only that and fails if the contents would change. The archives it uploads also get a GitHub build
+provenance attestation. To rotate the key, add the new public key next to the old one in `OFFICIAL_KEYS`, release, then
+switch the secret.
+
 ### Executor repositories and packages
 
 A repository is a static directory: an index and `.tar.gz` packages. There are three kinds of package, all specified

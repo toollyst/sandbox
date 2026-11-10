@@ -212,14 +212,21 @@ which names the adapter that runs it. Adapters live in `data_dir/adapters` with 
 adapter looks for `firecracker` there, and keeps the default kernel next to itself
 ([`sbx-executor-firecracker`](../../crates/executor/firecracker/src/lib.rs) lists the lookup order). So `wick@1.18.0+wick.1`
 is only the Firecracker binary of wick release `v1.18.0+wick.1`, and the adapter, the kernel and the VMM are
-versioned and upgraded separately. Because the highest installed adapter wins, installing a newer adapter (from any
-repository) changes what every VMM package that names it runs under.
+versioned and upgraded separately. Because the highest installed adapter wins, installing a newer adapter changes what
+every VMM package that names it runs under; that adapter can only come from the repository the installed versions came
+from (see Installing).
 
 **Installing.** `sbx executor install NAME` (say, `wick`) reads each configured repository's index (`v2/index.json`, or
-`index.json` if there is none) and picks the newest version for this host's platform
-([`sbx-executor-repo`](../../crates/spec/executor-repo/src/lib.rs)). If it is a VMM package and its adapter isn't
-installed, it first installs the newest adapter for this host and protocol version from the repository the VMM
-package came from, or, if that one has none, from the first repository in the list that has one.
+`index.json` if there is none) ([`sbx-executor-repo`](../../crates/spec/executor-repo/src/lib.rs)). For a repository
+with keys (`repo add --key`), it also needs `v2/index.json.minisig` signed by one of them, and checks the index's
+`serial` against the highest one seen (`<data_dir>/executor-repositories.seen`) and its `expires` against the clock
+([`trust.rs`](../../crates/spec/executor-repo/src/trust.rs)); a repository that fails is skipped with a warning. The
+name belongs to the first repository that publishes it (`--repo` picks another), and within it the newest version
+for this host's platform wins. If it is a VMM package and its adapter isn't installed, it first installs the newest
+adapter for this host and protocol version from the repository the VMM package came from, or, if that one has none,
+from the first repository in the list that has one. Every install records its origin (`.sbx-origin`, the repository
+name or `local`), and a name already installed from one origin is never installed from another
+([`sbx-executor-install`](../../crates/spec/executor-install/src/lib.rs)).
 Each download is checked against the sha256 and size in the index and unpacked into a staging directory. Before the
 rename into place, `sbx-executor capabilities` (for a VMM package, the adapter given that directory) must report this
 `sbx`'s protocol version and the host's architecture ([`executors.rs`](../../crates/app/cli/src/executors.rs)).

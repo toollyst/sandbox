@@ -322,15 +322,26 @@ an index plus `.tar.gz` packages, with OCI platform names, SHA-256 and size chec
 S3 or a plain directory:
 
 ```sh
-sbx executor repo add mine https://my.example.com/executors
-sbx executor repo ls                # in priority order; `official` comes first
+sbx executor repo add mine https://my.example.com/executors --key RWQ...   # its minisign public key
+sbx executor repo ls                # in priority order, with SIGNED; `official` comes first
+sbx executor install --repo mine myfc        # from that repository only
 
-# publish your own: add packages to a directory, then upload the directory as is
+# publish your own: add packages to a directory, sign the index, then upload the directory as is
+cargo xtask repo-keygen --out ./mine         # mine.pub to hand out, mine.key to keep secret
 cargo xtask repo-add --repo ./executors --schema 2 --vmm-for firecracker --arch arm64 \
     --bundle ./my-firecracker --name myfc --version 1.19.0
 cargo xtask repo-add --repo ./executors --schema 2 --bundle ./my-executor --name myvmm --version 0.1.0
+cargo xtask repo-sign --repo ./executors --key ./mine.key     # again after every change, and before it expires
 ```
 
+A signed repository's index carries a `serial` and an `expires` inside the signature. `sbx` refuses an index whose
+signature doesn't match, that has expired (a frozen mirror), or whose serial is lower than one it has already seen
+from that repository (a rollback). A repository added with `--unsigned` relies on TLS alone, and `sbx` says so each
+time it reads one.
+
+**A name belongs to one repository.** `install NAME` takes NAME from the first repository in `repo ls` order that
+publishes it, even if a later one has a higher version, and once installed, a name only comes from where it came
+from (`sbx executor ls` shows it under FROM). So adding a repository can't take over an executor you already use.
 A VMM package names its adapter. If the adapter isn't installed yet, `install` takes it from the repository the
 VMM package came from, or else from the first repository in `repo ls` order that has it. So a repository of VMM
 packages for `firecracker` doesn't need to carry the adapter itself.
