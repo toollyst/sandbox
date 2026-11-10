@@ -433,10 +433,14 @@ jobs:
           find "$repo" -type d -empty -delete
           touch pages/.nojekyll
           # 공식 키를 정하기 전(비밀 값이 없을 때)에는 서명하지 않고 올린다. sbx의 OFFICIAL_KEYS도 그때까지 비어 있다.
+          # OFFICIAL_KEYS에 키가 들어간 뒤에는 서명 없이 올리지 않는다(sbx가 공식 저장소를 거부하게 된다).
           if [ -n "$EXECUTORS_SIGNING_KEY" ]; then
             cargo xtask repo-sign --repo "$repo" --key-env EXECUTORS_SIGNING_KEY
-          else
+          elif grep -qE '^pub const OFFICIAL_KEYS: &\[&str\] = &\[\];' crates/app/cli/src/executors.rs; then
             echo "::warning::EXECUTORS_SIGNING_KEY is not set; publishing the index unsigned"
+          else
+            echo "::error::OFFICIAL_KEYS has a key, but EXECUTORS_SIGNING_KEY is not set; refusing to publish an unsigned index"
+            exit 1
           fi
           {
             echo "### published"
