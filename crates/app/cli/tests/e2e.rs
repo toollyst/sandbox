@@ -122,6 +122,10 @@ mod unix {
             executor_is_installed_from_a_repository,
         ),
         (
+            "a_repository_that_vanishes_or_turns_hostile_breaks_nothing_installed",
+            a_repository_that_vanishes_or_turns_hostile_breaks_nothing_installed,
+        ),
+        (
             "vmm_packages_pins_and_version_files",
             vmm_packages_pins_and_version_files,
         ),
@@ -2107,6 +2111,103 @@ mod unix {
         std::fs::write(dir.join("v2/index.json.minisig"), sig.into_string()).unwrap();
         let o = sbx(&["executor", "search"]);
         assert!(text(&o.stderr).contains("expired"), "{}", text(&o.stderr));
+    }
+
+    fn a_repository_that_vanishes_or_turns_hostile_breaks_nothing_installed() {
+        let e = Env::new();
+        let sbx = |args: &[&str]| {
+            let mut c = e.cmd(args);
+            c.env_remove("SBX_EXECUTOR");
+            c.output().unwrap()
+        };
+        let ok = |o: &Output| assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let not_a_crash = |o: &Output| {
+            let err = text(&o.stderr);
+            assert!(
+                !err.contains("panicked") && o.status.code() != Some(101),
+                "{err}"
+            );
+        };
+        ok(&sbx(&["executor", "repo", "rm", "official"]));
+        let (bytes, sha) = bundle_of_me();
+        let host = sbx_executor_repo::Platform::host();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let kp = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let dir = e.path("r");
+        std::fs::create_dir_all(dir.join("v2")).unwrap();
+        std::fs::write(dir.join("v2/fake.tar.gz"), &bytes).unwrap();
+        let publish = |body: &str| {
+            std::fs::write(dir.join("v2/index.json"), body).unwrap();
+            let sig = minisign::sign(None, &kp.sk, body.as_bytes(), None, None).unwrap();
+            std::fs::write(dir.join("v2/index.json.minisig"), sig.into_string()).unwrap();
+        };
+        let art = serde_json::json!([{"os": host.os, "architecture": host.architecture, "url": "fake.tar.gz", "sha256": sha, "size": bytes.len()}]);
+        let index = |serial: u64| {
+            serde_json::json!({"schema": 2, "serial": serial, "expires": now + 3600, "executors": {"fake": {"versions": {
+                "1.0": {"protocol": sbx_executor_proto::VERSION, "artifacts": art},
+                "2.0": {"protocol": sbx_executor_proto::VERSION, "artifacts": art}}}}})
+            .to_string()
+        };
+        publish(&index(5));
+        let url = format!("file://{}", dir.display());
+        ok(&sbx(&[
+            "executor",
+            "repo",
+            "add",
+            "r",
+            &url,
+            "--key",
+            &kp.pk.to_base64(),
+        ]));
+        ok(&sbx(&["executor", "install", "fake@1.0"]));
+        ok(&sbx(&["executor", "install", "fake@2.0"]));
+
+        // 저장소가 바뀌어도 설치한 것으로 하는 일은 그대로다: 목록, 고르기, 실행, 지우기.
+        let still_works = |what: &str| {
+            let o = sbx(&["executor", "ls"]);
+            ok(&o);
+            assert!(
+                text(&o.stdout).contains("1.0") && text(&o.stdout).contains("2.0"),
+                "{what}: {}",
+                text(&o.stdout)
+            );
+            ok(&sbx(&["executor", "use", "fake@1.0"]));
+            let o = sbx(&["run", "--rm", IMAGE, "echo", "still here"]);
+            ok(&o);
+            assert_eq!(text(&o.stdout), "still here\n", "{what}");
+            ok(&sbx(&["executor", "use", "fake@2.0"]));
+            ok(&sbx(&["ps", "-a"]));
+            // 저장소에 닿는 명령은 실패를 알리되 죽지 않는다.
+            let o = sbx(&["executor", "search"]);
+            not_a_crash(&o);
+            assert!(text(&o.stderr).contains("r"), "{what}: {}", text(&o.stderr));
+            not_a_crash(&sbx(&["executor", "install", "fake@3.0"]));
+        };
+        // 1. 서명이 다른 내용(누군가 색인을 고쳤다).
+        let mut tampered = index(6);
+        tampered.push(' ');
+        std::fs::write(dir.join("v2/index.json"), &tampered).unwrap();
+        still_works("tampered");
+        // 2. 서명된 옛 색인(롤백).
+        publish(&index(1));
+        still_works("rollback");
+        // 3. JSON이 아닌 것, 아주 큰 것.
+        publish("<html>not found</html>");
+        still_works("garbage");
+        std::fs::write(dir.join("v2/index.json"), vec![b' '; 17 << 20]).unwrap();
+        still_works("huge");
+        // 4. 저장소가 통째로 사라졌다.
+        std::fs::remove_dir_all(&dir).unwrap();
+        still_works("gone");
+        // 지우기도 저장소 없이 된다.
+        ok(&sbx(&["executor", "rm", "fake@1.0"]));
+        ok(&sbx(&["executor", "repo", "rm", "r"]));
+        let o = sbx(&["run", "--rm", IMAGE, "echo", "after"]);
+        ok(&o);
+        assert_eq!(text(&o.stdout), "after\n");
     }
 
     fn executor_is_installed_from_a_repository() {
