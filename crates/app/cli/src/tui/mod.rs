@@ -17,7 +17,7 @@
 //!   - 이벤트 자식은 TUI가 끝날 때(패닉 포함) 죽인다. `Run` 자식은 사용자가 시킨 일이라 끝까지 둔다.
 //! - 전역 옵션(`--data-dir` 등)은 받은 그대로 자식에 넘긴다. 상태 줄에는 적지 않는다.
 //!
-//! 키 목록은 [`keys`], 화면과 키 처리는 [`model`](입출력 없음)과 [`view`](그리기만)에 있다. 이 모듈은 둘을 프로세스와 터미널에 잇는다.
+//! 키 목록은 [`keys`], 화면과 키 처리는 [`model`] (입출력이 없다)과 [`view`] (그리기만 한다)에 있다. 이 모듈은 둘을 프로세스와 터미널에 잇는다.
 
 pub mod keys;
 pub mod model;
@@ -327,9 +327,13 @@ fn interrupt_handler() -> io::Result<tokio::signal::unix::Signal> {
     tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
 }
 
+/// 처리기를 둘 시그널이 없는 곳(Windows: raw 모드에서 Ctrl+C는 키로 온다).
 #[cfg(not(unix))]
-fn interrupt_handler() -> io::Result<()> {
-    Ok(())
+struct NoInterruptHandler;
+
+#[cfg(not(unix))]
+fn interrupt_handler() -> io::Result<NoInterruptHandler> {
+    Ok(NoInterruptHandler)
 }
 
 fn now_ns() -> u64 {
