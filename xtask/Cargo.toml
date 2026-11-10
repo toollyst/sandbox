@@ -13,8 +13,11 @@ serde_json.workspace = true
 sha2.workspace = true
 flate2.workspace = true
 tar.workspace = true
+# repo-keygen, repo-sign: 저장소 색인에 서명한다.
+minisign.workspace = true
 
 [dev-dependencies]
 # repo-add가 만든 저장소를 클라이언트로 읽어 본다.
 sbx-executor-repo.workspace = true
 url = "2"
+tokio = { workspace = true, features = ["macros", "rt"] }

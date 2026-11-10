@@ -1,0 +1,40 @@
+# 공식 저장소 색인 다시 서명: gh-pages의 `executors/v2/index.json`의 serial을 키우고 expires를 새로 정해(90일)
+# 다시 서명한다. 내용은 바꾸지 않는다. 서명된 색인은 기한이 지나면 sbx가 받지 않으므로(동결된 미러 방지),
+# 기한 전에 손으로 돌린다. 비밀 값 `EXECUTORS_SIGNING_KEY`가 있어야 한다.
+name: executors-resign
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  resign:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # release.yml, executors.yml도 gh-pages에 push한다.
+    concurrency:
+      group: gh-pages
+      cancel-in-progress: false
+    env:
+      EXECUTORS_SIGNING_KEY: ${{ secrets.EXECUTORS_SIGNING_KEY }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - run: |
+          set -euo pipefail
+          [ -n "$EXECUTORS_SIGNING_KEY" ] || { echo "::error::the repository secret EXECUTORS_SIGNING_KEY is not set"; exit 1; }
+          git fetch origin gh-pages:gh-pages
+          git worktree add pages gh-pages
+          [ -f pages/executors/v2/index.json ] || { echo "::error::gh-pages has no executors/v2/index.json yet"; exit 1; }
+          before=$(jq -c 'del(.serial, .expires)' pages/executors/v2/index.json)
+          cargo xtask repo-sign --repo pages/executors --key-env EXECUTORS_SIGNING_KEY
+          after=$(jq -c 'del(.serial, .expires)' pages/executors/v2/index.json)
+          [ "$before" = "$after" ] || { echo "::error::re-signing changed the index contents"; exit 1; }
+          jq '{serial, expires: (.expires | todate)}' pages/executors/v2/index.json | tee -a "$GITHUB_STEP_SUMMARY"
+          cd pages
+          git add -A
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -qm "executors: re-sign the index"
+          git push origin gh-pages

@@ -12,6 +12,8 @@
 //! - `smoke [--sbx <파일>] [--no-internet]`: 설치한 실행기로 실제 VM의 기본 동작을 확인한다. [`smoke`]에 있다.
 //! - `repo-add --repo <디렉터리> --bundle <디렉터리> --name <이름> --version <버전>`: 실행기 묶음을 정적 저장소에
 //!   더한다. [`repo`]에 있다.
+//! - `repo-keygen --out <접두사>`, `repo-sign --repo <디렉터리> --key <파일>`: 저장소 색인 서명 키를 만들고, 색인에
+//!   서명한다(minisign, `serial`·`expires`). [`sign`]에 있다.
 //! - `demo [--sbx <파일>] [--out <SVG>]`: README의 데모를 실제로 돌려 만든다. [`demo`]에 있다.
 //! - `bench [--sbx <파일>] [--image <참조>] [--runs <N>] [--parallel <K>]`: `sbx`로 시간을 잰다. [`bench`](mod@bench)에 있다.
 
@@ -28,6 +30,7 @@ mod layout;
 mod modules;
 mod paths;
 mod repo;
+mod sign;
 mod smoke;
 
 /// 크레이트가 의존해도 되는 것.
@@ -232,6 +235,26 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Some("repo-keygen") => match sign::keygen(&args[1..]) {
+            Ok(pk) => {
+                println!("{pk}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("repo-keygen: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        Some("repo-sign") => match sign::sign(&args[1..]) {
+            Ok(file) => {
+                println!("{}", file.display());
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("repo-sign: {e}");
+                ExitCode::FAILURE
+            }
+        },
         Some("demo") => {
             let root = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .parent()
@@ -266,7 +289,7 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "usage: cargo xtask check-deps\n       cargo xtask guest-initramfs --arch <x86_64|aarch64> [--binary <file>] [--out <file>]\n       cargo xtask dist [--target <triple>]\n       cargo xtask kernel --arch <x86_64|aarch64> [--out <file>]\n       cargo xtask smoke [--sbx <file>] [--no-internet]\n       cargo xtask repo-add --repo <dir> --bundle <dir> --name <name> --version <version> [--os <os>] [--capabilities <file>] [--url <prefix>] [--description <text>] [--schema 1|2] [--adapter-package | --vmm-for <adapter> --arch <amd64|arm64>]\n       cargo xtask demo [--sbx <file>] [--out <svg>]\n       cargo xtask bench [--sbx <file>] [--image <ref>] [--runs <n>] [--parallel <k>] [--docker]"
+                "usage: cargo xtask check-deps\n       cargo xtask guest-initramfs --arch <x86_64|aarch64> [--binary <file>] [--out <file>]\n       cargo xtask dist [--target <triple>]\n       cargo xtask kernel --arch <x86_64|aarch64> [--out <file>]\n       cargo xtask smoke [--sbx <file>] [--no-internet]\n       cargo xtask repo-add --repo <dir> --bundle <dir> --name <name> --version <version> [--os <os>] [--capabilities <file>] [--url <prefix>] [--description <text>] [--schema 1|2] [--adapter-package | --vmm-for <adapter> --arch <amd64|arm64>]\n       cargo xtask repo-keygen --out <prefix>\n       cargo xtask repo-sign --repo <dir> (--key <file> | --key-env <var>) [--serial <n>] [--expires-days <d>]\n       cargo xtask demo [--sbx <file>] [--out <svg>]\n       cargo xtask bench [--sbx <file>] [--image <ref>] [--runs <n>] [--parallel <k>] [--docker]"
             );
             ExitCode::from(2)
         }

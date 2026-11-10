@@ -20,8 +20,13 @@ cargo xtask repo-add --repo "$repo" --schema 2 --adapter-package --bundle "$adap
 cargo xtask repo-add --repo "$repo" --schema 2 --vmm-for firecracker --arch "$arch" --bundle "$vmm" \
     --name "$name" --version "$ver"
 rm -f "$caps"
+# 사용자와 같게 서명된 저장소로: 이번만 쓸 키로 색인에 서명하고 그 공개키로 더한다.
+keydir=$(mktemp -d)
+pk=$(cargo xtask repo-keygen --out "$keydir/k")
+cargo xtask repo-sign --repo "$repo" --key "$keydir/k.key" >/dev/null
+rm -rf "$keydir"
 "$sbx" executor repo rm official
-"$sbx" executor repo add local "file://$repo"
+"$sbx" executor repo add local "file://$repo" --key "$pk"
 "$sbx" executor install "$name@$ver"
 "$sbx" executor use "$name@$ver"
 "$sbx" executor ls
