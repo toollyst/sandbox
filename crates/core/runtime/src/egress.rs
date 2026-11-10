@@ -54,11 +54,16 @@ struct Opened(Arc<AtomicUsize>);
 
 impl Opened {
     fn take(open: &Arc<AtomicUsize>, max: usize) -> Option<Self> {
-        open.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-            (n < max).then_some(n + 1)
-        })
-        .ok()
-        .map(|_| Self(open.clone()))
+        let mut n = open.load(Ordering::SeqCst);
+        loop {
+            if n >= max {
+                return None;
+            }
+            match open.compare_exchange(n, n + 1, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => return Some(Self(open.clone())),
+                Err(now) => n = now,
+            }
+        }
     }
 }
 

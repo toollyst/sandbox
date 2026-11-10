@@ -191,6 +191,7 @@ fn clear(path: &Path) -> io::Result<bool> {
 }
 
 /// 받은 항목에 둘 권한. 게스트가 고른 setuid, setgid, sticky 비트는 버린다.
+#[cfg(unix)]
 const RECEIVED_MODE_MASK: u32 = 0o777;
 
 #[cfg(unix)]
