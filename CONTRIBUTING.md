@@ -31,14 +31,15 @@ CI runs all of this on Linux (x86_64 and arm64), macOS and Windows, and boots re
 
 ## How the code is laid out
 
-- **One-way dependencies.** The model is at the bottom, then the protocols, then the cores (`sandbox-manage` for
-  images, `sandbox-runtime` for sandboxes), then the CLI. Lower crates never depend on upper ones, and the same
-  goes for modules inside a crate. `cargo xtask check-deps` enforces both.
+- **Layer folders, one-way dependencies.** `crates/` is split by layer: `model`, `spec`, `port`, `adapter`,
+  `core`, `app` and `executor`. A crate only depends on lower layers, and the same goes for modules inside a
+  crate. `cargo xtask check-deps` enforces both. [docs/developers/](docs/developers/) explains each crate and has
+  the dependency map (regenerate it with `cargo xtask deps-doc`; CI fails if it is stale).
 - **Cores are mechanism, not policy.** They never pick implementations or make decisions for the caller; binaries
   do. If a change makes a core decide something on the caller's behalf, it probably belongs in the CLI.
 - **Docker is the reference for CLI behavior.** Where `sbx` differs, the difference is deliberate and listed in
-  [`behavior.rs`](crates/sandbox-cli/src/behavior.rs). Add to that list if you introduce one.
-- **Executors speak a public protocol** ([`executor-proto`](crates/executor-proto/src/lib.rs)). A new VMM is a new
+  [`behavior.rs`](crates/app/cli/src/behavior.rs). Add to that list if you introduce one.
+- **Executors speak a public protocol** ([`sbx-executor-proto`](crates/spec/executor-proto/src/lib.rs)). A new VMM is a new
   executor, not a change to the cores.
 
 Code comments and design notes in `docs/` are written in Korean. Write yours in English or Korean, either is fine;

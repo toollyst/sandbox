@@ -1,0 +1,1543 @@
+//! `sbx` 실행 파일 끝-끝 테스트. 가짜 실행기로 VM 없이 CLI → 실행 코어 → 실행기 규약 → 게스트 처리를 모두 지난다.
+//!
+//! 이 테스트 실행 파일이 곧 가짜 실행기이자 shim이다: `sbx --executor <이 파일>`이 `<이 파일> capabilities|run`으로
+//! 부르면 `sbx_executor_fake::process::main`을, `sbx --shim <이 파일>`이 `<이 파일> start ...`로 부르면
+//! `sbx_shim::main`을 돈다. 그래서 다른 패키지의 실행 파일을 빌드할 필요가 없다(`harness = false`).
+//!
+//! 가짜 실행기의 게스트 처리는 호스트에서 지금 사용자로 돈다. 그래서 이미지의 사용자는 지금 사용자이고,
+//! 게스트 경로는 호스트 경로다. 실제 VM 검증은 실행기(fc-fork) 쪽 E2E가 맡는다.
+
+use std::process::ExitCode;
+
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().collect();
+    if matches!(
+        args.get(1).map(String::as_str),
+        Some("capabilities" | "run")
+    ) {
+        #[cfg(unix)]
+        return sbx_executor_fake::process::main();
+    }
+    if args.get(1).map(String::as_str) == Some(sbx_shim::config::START) {
+        return sbx_shim::main();
+    }
+    #[cfg(unix)]
+    {
+        unix::run_all(&args[1..])
+    }
+    #[cfg(not(unix))]
+    {
+        println!("e2e: skipped (the fake executor needs Unix sockets)");
+        ExitCode::SUCCESS
+    }
+}
+
+#[cfg(unix)]
+mod unix {
+    use std::io::Write;
+    use std::path::{Path, PathBuf};
+    use std::process::{Child, Command, ExitCode, Output, Stdio};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
+    use sbx_model::{Arch, Digest, ImageConfig, ImageId, RootfsFormat};
+    use sbx_store::{CacheLayout, ImageRecord, write};
+
+    type Test = (&'static str, fn());
+
+    const TESTS: &[Test] = &[
+        (
+            "run_streams_output_and_returns_the_exit_code",
+            run_streams_output_and_returns_the_exit_code,
+        ),
+        (
+            "run_command_not_found_is_127_and_not_executable_is_126",
+            run_command_not_found_is_127_and_not_executable_is_126,
+        ),
+        ("run_i_forwards_stdin", run_i_forwards_stdin),
+        (
+            "run_t_gives_the_main_process_a_terminal",
+            run_t_gives_the_main_process_a_terminal,
+        ),
+        ("create_start_inspect_rm", create_start_inspect_rm),
+        ("names_work_in_place_of_ids", names_work_in_place_of_ids),
+        (
+            "exec_cp_stop_on_a_running_sandbox",
+            exec_cp_stop_on_a_running_sandbox,
+        ),
+        (
+            "signals_are_forwarded_to_the_main_process",
+            signals_are_forwarded_to_the_main_process,
+        ),
+        (
+            "commands_that_do_not_launch_need_no_executor",
+            commands_that_do_not_launch_need_no_executor,
+        ),
+        (
+            "run_failures_before_the_command_are_125",
+            run_failures_before_the_command_are_125,
+        ),
+        (
+            "detached_run_outlives_sbx_and_keeps_logs",
+            detached_run_outlives_sbx_and_keeps_logs,
+        ),
+        ("detached_rm_and_logs_follow", detached_rm_and_logs_follow),
+        (
+            "stop_sends_the_stop_signal_then_powers_off",
+            stop_sends_the_stop_signal_then_powers_off,
+        ),
+        ("kill_wait_and_restart", kill_wait_and_restart),
+        ("attach_to_a_detached_sandbox", attach_to_a_detached_sandbox),
+        (
+            "installed_executor_is_used_by_default",
+            installed_executor_is_used_by_default,
+        ),
+        (
+            "executor_is_installed_from_a_repository",
+            executor_is_installed_from_a_repository,
+        ),
+        (
+            "image_kernel_is_given_to_the_executor",
+            image_kernel_is_given_to_the_executor,
+        ),
+        (
+            "mcp_serves_sandboxes_to_agents",
+            mcp_serves_sandboxes_to_agents,
+        ),
+        ("attach_tty_and_signal_proxy", attach_tty_and_signal_proxy),
+        ("volume_is_shared_live", volume_is_shared_live),
+        ("network_allow_list", network_allow_list),
+        (
+            "embedded_guest_init_is_unpacked_into_the_cache",
+            embedded_guest_init_is_unpacked_into_the_cache,
+        ),
+    ];
+
+    /// 인자: 이름 일부(걸러 내기). `--`로 시작하는 인자(cargo test가 넘기는 것)는 무시한다.
+    pub fn run_all(args: &[String]) -> ExitCode {
+        let filters: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
+        if args.iter().any(|a| a == "--list") {
+            for (name, _) in TESTS {
+                println!("{name}: test");
+            }
+            return ExitCode::SUCCESS;
+        }
+        let selected: Vec<&Test> = TESTS
+            .iter()
+            .filter(|(n, _)| filters.is_empty() || filters.iter().any(|f| n.contains(f.as_str())))
+            .collect();
+        println!("\nrunning {} tests", selected.len());
+        let mut failed = Vec::new();
+        for (name, f) in &selected {
+            let ok = std::panic::catch_unwind(f).is_ok();
+            println!("test {name} ... {}", if ok { "ok" } else { "FAILED" });
+            if !ok {
+                failed.push(*name);
+            }
+        }
+        let passed = selected.len() - failed.len();
+        if failed.is_empty() {
+            println!("\ntest result: ok. {passed} passed; 0 failed\n");
+            ExitCode::SUCCESS
+        } else {
+            println!(
+                "\ntest result: FAILED. {passed} passed; {} failed: {}\n",
+                failed.len(),
+                failed.join(", ")
+            );
+            ExitCode::FAILURE
+        }
+    }
+
+    const IMAGE: &str = "e2e-fake";
+
+    fn id_output(flag: &str) -> String {
+        let o = Command::new("id").arg(flag).output().unwrap();
+        String::from_utf8(o.stdout).unwrap().trim().to_owned()
+    }
+
+    /// 테스트 하나의 환경: 짧은 임시 디렉터리(Unix 소켓 길이 제한) 안에 data, cache, socket, 게스트 init.
+    struct Env {
+        root: PathBuf,
+    }
+
+    impl Env {
+        fn new() -> Self {
+            static N: AtomicUsize = AtomicUsize::new(0);
+            let root = PathBuf::from(format!(
+                "/tmp/sbx-e2e-{}-{}",
+                std::process::id(),
+                N.fetch_add(1, Ordering::Relaxed)
+            ));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(root.join("initramfs"), b"guest").unwrap();
+            let env = Self { root };
+            env.plant_image();
+            env
+        }
+
+        /// 관리 쪽이 해 두었을 일: 이미지 기록, 참조, rootfs. 사용자는 지금 사용자다.
+        fn plant_image(&self) {
+            let layout = CacheLayout::new(self.root.join("cache"));
+            let id = ImageId::new(Digest::parse(&format!("sha256:{}", "e2".repeat(32))).unwrap());
+            let record = ImageRecord {
+                id: id.clone(),
+                reference: format!("docker.io/library/{IMAGE}:latest"),
+                source: "test".into(),
+                arch: Arch::host().unwrap(),
+                config: ImageConfig {
+                    cmd: vec!["sh".into()],
+                    user: Some(format!("{}:{}", id_output("-u"), id_output("-g"))),
+                    ..ImageConfig::default()
+                },
+                layers: vec![],
+                ignored_fields: vec![],
+            };
+            write::write_image_record(&layout, &record).unwrap();
+            write::set_ref(&layout, &record.reference, &id).unwrap();
+            std::fs::write(layout.rootfs(&id, RootfsFormat::Erofs), b"fs").unwrap();
+        }
+
+        fn path(&self, name: &str) -> PathBuf {
+            self.root.join(name)
+        }
+
+        fn cmd(&self, args: &[&str]) -> Command {
+            let mut c = Command::new(env!("CARGO_BIN_EXE_sbx"));
+            c.args(args)
+                .env("SBX_DATA_DIR", self.root.join("data"))
+                .env("SBX_CACHE_DIR", self.root.join("cache"))
+                .env("SBX_SOCKET_DIR", self.root.join("s"))
+                .env("SBX_GUEST_INIT", self.root.join("initramfs"))
+                .env("SBX_EXECUTOR", std::env::current_exe().unwrap())
+                .env("SBX_SHIM", std::env::current_exe().unwrap())
+                .stdin(Stdio::null());
+            c
+        }
+
+        fn sbx(&self, args: &[&str]) -> Output {
+            self.cmd(args).output().unwrap()
+        }
+
+        fn sbx_with_stdin(&self, args: &[&str], input: &[u8]) -> Output {
+            let mut child = self
+                .cmd(args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child.stdin.take().unwrap().write_all(input).unwrap();
+            child.wait_with_output().unwrap()
+        }
+
+        fn spawn(&self, args: &[&str]) -> Child {
+            self.cmd(args)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap()
+        }
+
+        /// `ps -a --format json`.
+        fn ps(&self) -> Vec<serde_json::Value> {
+            let o = self.sbx(&["ps", "-a", "--format", "json"]);
+            assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+            serde_json::from_slice(&o.stdout).unwrap()
+        }
+
+        /// 실행 중인 샌드박스가 하나 생길 때까지 기다려 그 ID를 돌려준다.
+        fn wait_running(&self) -> String {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            loop {
+                if let Some(s) = self.ps().into_iter().find(|s| s["state"] == "running") {
+                    return s["id"].as_str().unwrap().to_owned();
+                }
+                assert!(Instant::now() < deadline, "no running sandbox");
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+
+    impl Drop for Env {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn text(b: &[u8]) -> String {
+        String::from_utf8_lossy(b).into_owned()
+    }
+
+    fn wait_with_timeout(mut child: Child, timeout: Duration) -> Output {
+        let deadline = Instant::now() + timeout;
+        while child.try_wait().unwrap().is_none() {
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                panic!("sbx did not finish in {timeout:?}");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        child.wait_with_output().unwrap()
+    }
+
+    fn run_streams_output_and_returns_the_exit_code() {
+        let e = Env::new();
+        let o = e.sbx(&[
+            "run",
+            "--rm",
+            IMAGE,
+            "sh",
+            "-c",
+            "echo out; echo err >&2; exit 7",
+        ]);
+        assert_eq!(o.status.code(), Some(7), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "out\n");
+        assert!(text(&o.stderr).contains("err\n"), "{}", text(&o.stderr));
+        // --rm: 남지 않는다.
+        assert!(e.ps().is_empty());
+    }
+
+    fn run_command_not_found_is_127_and_not_executable_is_126() {
+        let e = Env::new();
+        let o = e.sbx(&["run", "--rm", IMAGE, "no-such-command-xyz"]);
+        assert_eq!(o.status.code(), Some(127), "{}", text(&o.stderr));
+        let plain = e.path("plain");
+        std::fs::write(&plain, b"not a program").unwrap();
+        let o = e.sbx(&["run", "--rm", IMAGE, plain.to_str().unwrap()]);
+        assert_eq!(o.status.code(), Some(126), "{}", text(&o.stderr));
+        // 시작에 실패해도 --rm이면 지운다.
+        assert!(e.ps().is_empty());
+    }
+
+    fn run_t_gives_the_main_process_a_terminal() {
+        let e = Env::new();
+        let o = e.sbx(&[
+            "run",
+            "--rm",
+            "-t",
+            IMAGE,
+            "sh",
+            "-c",
+            "test -t 0 && test -t 1 && echo tty; exit 6",
+        ]);
+        assert_eq!(o.status.code(), Some(6), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "tty\r\n");
+    }
+
+    /// 게스트 init을 내장해 빌드했을 때만 돈다(`SBX_EMBED_GUEST`, CI의 Linux 작업).
+    fn embedded_guest_init_is_unpacked_into_the_cache() {
+        let Some(bytes) = sbx_cli::guest::embedded(Arch::host().unwrap()) else {
+            println!("  (skipped: this build has no embedded guest init)");
+            return;
+        };
+        let e = Env::new();
+        let o = e
+            .cmd(&["run", "--rm", IMAGE, "true"])
+            .env_remove("SBX_GUEST_INIT")
+            .output()
+            .unwrap();
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let guest = e.path("cache").join("guest");
+        let found: Vec<PathBuf> = std::fs::read_dir(&guest)
+            .unwrap()
+            .flatten()
+            .map(|d| {
+                d.path()
+                    .join(Arch::host().unwrap().oci_name())
+                    .join("initramfs")
+            })
+            .filter(|p| p.is_file())
+            .collect();
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(std::fs::read(&found[0]).unwrap(), bytes);
+        assert!(found[0].to_string_lossy().contains("sha256-"));
+    }
+
+    fn network_allow_list() {
+        use std::io::{BufRead, BufReader};
+        // 목적지: 아무 요청에나 "hi"로 답하는 HTTP 서버.
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = server.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for c in server.incoming().flatten() {
+                let mut r = BufReader::new(c.try_clone().unwrap());
+                let mut line = String::new();
+                while r.read_line(&mut line).is_ok_and(|n| n > 2) {
+                    line.clear();
+                }
+                let mut c = c;
+                let _ = c.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi",
+                );
+            }
+        });
+        let e = Env::new();
+        let allow = format!("127.0.0.1:{port}");
+        // fake 게스트는 호스트에서 돌므로 직접 연결도 된다. 프록시를 거치게 -x와 --noproxy ''로 강제한다.
+        let script = format!(
+            "curl -s -x \"$HTTP_PROXY\" --noproxy '' http://127.0.0.1:{port}/; echo; \
+             curl -s -p -x \"$HTTP_PROXY\" --noproxy '' http://127.0.0.1:{port}/; echo; \
+             curl -s -o /dev/null -w '%{{http_code}}' -x \"$HTTP_PROXY\" --noproxy '' http://127.0.0.1:{}/",
+            port.wrapping_add(1)
+        );
+        let o = e.sbx(&[
+            "run",
+            "--rm",
+            "--network",
+            "allow",
+            "--allow",
+            &allow,
+            IMAGE,
+            "sh",
+            "-c",
+            &script,
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "hi\nhi\n403");
+
+        assert_eq!(
+            e.sbx(&["run", "--rm", "--allow", &allow, IMAGE, "true"])
+                .status
+                .code(),
+            Some(125)
+        );
+        assert_eq!(
+            e.sbx(&["run", "--rm", "--network", "allow", IMAGE, "true"])
+                .status
+                .code(),
+            Some(125)
+        );
+        // 차단(기본)이면 프록시 환경 변수가 없다.
+        let o = e.sbx(&[
+            "run",
+            "--rm",
+            IMAGE,
+            "sh",
+            "-c",
+            "printf %s \"$HTTP_PROXY\"",
+        ]);
+        assert_eq!(text(&o.stdout), "");
+    }
+
+    fn volume_is_shared_live() {
+        let e = Env::new();
+        let host = e.path("host");
+        std::fs::create_dir(&host).unwrap();
+        std::fs::write(host.join("in.txt"), b"hello").unwrap();
+        // 가짜 실행기의 게스트 경로는 호스트 경로다.
+        let guest = e.path("guest-data");
+        let o = e.sbx(&[
+            "run",
+            "--rm",
+            "-v",
+            &format!("{}:{}", host.display(), guest.display()),
+            IMAGE,
+            "sh",
+            "-c",
+            &format!(
+                "cat {g}/in.txt; echo back > {g}/out.txt",
+                g = guest.display()
+            ),
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "hello");
+        assert_eq!(std::fs::read(host.join("out.txt")).unwrap(), b"back\n");
+    }
+
+    fn run_i_forwards_stdin() {
+        let e = Env::new();
+        let o = e.sbx_with_stdin(&["run", "--rm", "-i", IMAGE, "cat"], b"hello\nworld\n");
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "hello\nworld\n");
+        // -i가 없으면 표준 입력은 처음부터 닫혀 있다.
+        let o = e.sbx_with_stdin(&["run", "--rm", IMAGE, "cat"], b"ignored");
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "");
+    }
+
+    fn create_start_inspect_rm() {
+        let e = Env::new();
+        let o = e.sbx(&["create", IMAGE, "sh", "-c", "echo started; exit 3"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let id = text(&o.stdout).trim().to_owned();
+        assert_eq!(e.ps()[0]["state"], "created");
+
+        // start는 붙어서 기본 프로세스가 끝날 때까지 기다린다.
+        let o = e.sbx(&["start", "-a", &id]);
+        assert_eq!(o.status.code(), Some(3), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "started\n");
+
+        let o = e.sbx(&["inspect", &id]);
+        let info: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(info["state"], "stopped");
+        assert_eq!(info["exit_code"], 3);
+        let o = e.sbx(&["ps", "-a"]);
+        assert!(
+            text(&o.stdout).contains("stopped (3)"),
+            "{}",
+            text(&o.stdout)
+        );
+
+        // 다시 시작할 수 있다(Docker와 같다).
+        assert_eq!(e.sbx(&["start", "-a", &id]).status.code(), Some(3));
+
+        let o = e.sbx(&["rm", &id]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout).trim(), id);
+        assert!(e.ps().is_empty());
+
+        // create --rm은 받지 않는다.
+        assert_eq!(e.sbx(&["create", "--rm", IMAGE]).status.code(), Some(1));
+    }
+
+    fn names_work_in_place_of_ids() {
+        let e = Env::new();
+        let o = e.sbx(&["create", "--name", "web", IMAGE, "sh", "-c", "echo hi"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let id = text(&o.stdout).trim().to_owned();
+        assert_eq!(e.ps()[0]["name"], "web");
+        assert!(
+            e.ps()[0]["created"].as_str().unwrap().ends_with('Z'),
+            "{:?}",
+            e.ps()
+        );
+        let o = e.sbx(&["ps", "-a"]);
+        let header = text(&o.stdout).lines().next().unwrap().to_owned();
+        assert!(header.trim_end().ends_with("NAMES"), "{header}");
+        assert!(text(&o.stdout).contains(" ago "), "{}", text(&o.stdout));
+        assert!(
+            text(&o.stdout)
+                .lines()
+                .nth(1)
+                .unwrap()
+                .trim_end()
+                .ends_with(" web")
+        );
+        // -q는 ID만(Docker처럼 앞 12자). 실행 중인 것이 없으면 -a 없이는 비어 있다.
+        assert_eq!(
+            text(&e.sbx(&["ps", "-aq"]).stdout),
+            format!("{}\n", &id[..12])
+        );
+        assert_eq!(text(&e.sbx(&["ps", "-q"]).stdout), "");
+        let o = e.sbx(&["images", "-q"]);
+        assert_eq!(
+            text(&o.stdout),
+            format!("{}\n", "e2".repeat(6)),
+            "{}",
+            text(&o.stderr)
+        );
+
+        // 같은 이름은 거절된다. run이면 125다.
+        let o = e.sbx(&["create", "--name", "web", IMAGE]);
+        assert_eq!(o.status.code(), Some(1), "{}", text(&o.stderr));
+        let o = e.sbx(&["run", "--name", "web", IMAGE]);
+        assert_eq!(o.status.code(), Some(125), "{}", text(&o.stderr));
+        assert!(
+            text(&o.stderr).contains("already in use"),
+            "{}",
+            text(&o.stderr)
+        );
+        assert_eq!(e.ps().len(), 1);
+        assert_ne!(
+            e.sbx(&["create", "--name", "a b", IMAGE]).status.code(),
+            Some(0)
+        );
+
+        // 이름은 ID 대신 쓸 수 있다.
+        let o = e.sbx(&["start", "-a", "web"]);
+        assert_eq!(text(&o.stdout), "hi\n", "{}", text(&o.stderr));
+        let o = e.sbx(&["inspect", "web"]);
+        let info: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(info["id"], id.as_str());
+        let o = e.sbx(&["rm", "web"]);
+        assert_eq!(text(&o.stdout).trim(), "web", "{}", text(&o.stderr));
+
+        // --env-file: 파일 다음에 -e가 덮는다. 파일을 읽을 수 없으면 run 실패(125).
+        let f = e.path("env");
+        std::fs::write(&f, "# c\nA=from-file\nB=b c\n").unwrap();
+        let f = f.to_str().unwrap();
+        let o = e.sbx(&[
+            "run",
+            "--rm",
+            "--env-file",
+            f,
+            "-e",
+            "A=flag",
+            IMAGE,
+            "sh",
+            "-c",
+            "echo \"$A/$B\"",
+        ]);
+        assert_eq!(text(&o.stdout), "flag/b c\n", "{}", text(&o.stderr));
+        let o = e.sbx(&["run", "--rm", "--env-file", "/no/such", IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(125));
+        assert!(
+            text(&o.stderr).contains("--env-file /no/such"),
+            "{}",
+            text(&o.stderr)
+        );
+
+        // 지우면 이름을 다시 쓸 수 있다.
+        assert_eq!(
+            e.sbx(&["create", "--name", "web", IMAGE]).status.code(),
+            Some(0)
+        );
+    }
+
+    fn exec_cp_stop_on_a_running_sandbox() {
+        let e = Env::new();
+        let main = e.spawn(&[
+            "run",
+            "--name",
+            "Box.1",
+            IMAGE,
+            "sh",
+            "-c",
+            "echo up; sleep 60",
+        ]);
+        let id = e.wait_running();
+
+        let o = e.sbx(&["exec", &id, "sh", "-c", "echo in; echo e >&2; exit 4"]);
+        assert_eq!(o.status.code(), Some(4), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "in\n");
+        assert_eq!(text(&o.stderr), "e\n");
+        let o = e.sbx_with_stdin(&["exec", "-i", &id, "cat"], b"piped");
+        assert_eq!(text(&o.stdout), "piped");
+        assert_eq!(
+            e.sbx(&["exec", &id, "no-such-command-xyz"]).status.code(),
+            Some(127)
+        );
+        // 표준 출력이 터미널이 아니면 게스트 기본 크기다. 터미널이 줄 끝을 \r\n으로 바꾼다.
+        let o = e.sbx(&["exec", "-t", &id, "sh", "-c", "stty size; echo e >&2"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "24 80\r\ne\r\n");
+        assert_eq!(e.sbx(&["exec", "-it", &id, "sh"]).status.code(), Some(1));
+
+        // 가짜 실행기의 게스트 경로는 호스트 경로다.
+        let src = e.path("src.txt");
+        std::fs::write(&src, b"copied").unwrap();
+        let guest_dir = e.path("guest");
+        std::fs::create_dir(&guest_dir).unwrap();
+        let o = e.sbx(&[
+            "cp",
+            src.to_str().unwrap(),
+            &format!("{id}:{}/", guest_dir.display()),
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(std::fs::read(guest_dir.join("src.txt")).unwrap(), b"copied");
+        // 꺼낼 때는 이름으로(ID 규칙에 맞지 않는 이름도 된다).
+        let back = e.path("back.txt");
+        let o = e.sbx(&[
+            "cp",
+            &format!("Box.1:{}/src.txt", guest_dir.display()),
+            back.to_str().unwrap(),
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(std::fs::read(&back).unwrap(), b"copied");
+
+        // 실행 중이면 -f 없이 지우지 않는다.
+        assert_eq!(e.sbx(&["rm", &id]).status.code(), Some(1));
+
+        let o = e.sbx(&["stop", "-t", "10", &id]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let out = wait_with_timeout(main, Duration::from_secs(20));
+        // stop은 기본 프로세스에 SIGTERM을 보낸다. 그것으로 끝나면 143.
+        assert_eq!(out.status.code(), Some(143), "{}", text(&out.stderr));
+        assert_eq!(text(&out.stdout), "up\n");
+        assert_eq!(e.ps()[0]["exit_code"], 143);
+        assert_eq!(e.sbx(&["rm", &id]).status.code(), Some(0));
+    }
+
+    fn signals_are_forwarded_to_the_main_process() {
+        let e = Env::new();
+        let main = e.spawn(&[
+            "run",
+            "--rm",
+            IMAGE,
+            "sh",
+            "-c",
+            "trap 'echo got; exit 42' TERM; echo ready; sleep 60 & wait",
+        ]);
+        e.wait_running();
+        // 기본 프로세스가 trap을 걸 때까지 잠깐 둔다.
+        std::thread::sleep(Duration::from_millis(300));
+        let pid = main.id().to_string();
+        assert!(
+            Command::new("kill")
+                .args(["-TERM", &pid])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let out = wait_with_timeout(main, Duration::from_secs(20));
+        assert_eq!(out.status.code(), Some(42), "{}", text(&out.stderr));
+        assert_eq!(text(&out.stdout), "ready\ngot\n");
+    }
+
+    fn commands_that_do_not_launch_need_no_executor() {
+        let e = Env::new();
+        let missing = Path::new("/nonexistent/sbx-executor");
+        let ok = |args: &[&str]| {
+            let o = e.cmd(args).env("SBX_EXECUTOR", missing).output().unwrap();
+            assert_eq!(o.status.code(), Some(0), "{args:?}: {}", text(&o.stderr));
+        };
+        ok(&["ps", "-a"]);
+        ok(&["images"]);
+        ok(&["completion", "bash"]);
+        // info는 실행기를 부를 수 없어도 나머지를 보여준다.
+        let o = e
+            .cmd(&["info", "--format", "json"])
+            .env("SBX_EXECUTOR", missing)
+            .output()
+            .unwrap();
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(v["images"], 1);
+        assert!(v["executor"]["capabilities"]["error"].is_string(), "{v}");
+        let o = e.sbx(&["info"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(
+            text(&o.stdout).contains("Supports:    fake"),
+            "{}",
+            text(&o.stdout)
+        );
+        let o = e.sbx(&["completion", "zsh"]);
+        assert!(
+            text(&o.stdout).starts_with("#compdef sbx"),
+            "{}",
+            text(&o.stderr)
+        );
+        let o = e.sbx(&["create", IMAGE]);
+        let id = text(&o.stdout).trim().to_owned();
+        ok(&["inspect", &id]);
+        ok(&["rm", &id]);
+    }
+
+    fn run_failures_before_the_command_are_125() {
+        let e = Env::new();
+        let o = e
+            .cmd(&["run", "--rm", IMAGE, "true"])
+            .env("SBX_EXECUTOR", "/nonexistent/sbx-executor")
+            .output()
+            .unwrap();
+        assert_eq!(o.status.code(), Some(125), "{}", text(&o.stderr));
+        // -it인데 표준 입력이 터미널이 아니다.
+        let o = e.sbx(&["run", "--rm", "-it", IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(125));
+        assert!(text(&o.stderr).contains("not a TTY"), "{}", text(&o.stderr));
+        // -dit는 터미널이 없어도 된다(붙는 쪽이 없으므로, Docker와 같다).
+        let o = e.sbx(&["run", "-d", "-it", IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let id = text(&o.stdout).trim().to_owned();
+        wait_state(&e, &id, "stopped");
+        assert_eq!(e.sbx(&["rm", &id]).status.code(), Some(0));
+        assert_eq!(
+            e.sbx(&["run", "--pull", "never", "no-such-image", "true"])
+                .status
+                .code(),
+            Some(125)
+        );
+        let o = e
+            .cmd(&["run", "--rm", IMAGE, "true"])
+            .env("SBX_FAKE_FAIL_LAUNCH", "boom")
+            .output()
+            .unwrap();
+        assert_eq!(o.status.code(), Some(125));
+        assert!(text(&o.stderr).contains("boom"), "{}", text(&o.stderr));
+        assert!(e.ps().is_empty());
+    }
+
+    /// `logs` 출력이 기대한 것이 될 때까지 기다린다(shim은 시작을 알린 뒤 출력을 적는다).
+    fn wait_logs(e: &Env, id: &str, stdout: &str, stderr: &str) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let o = e.sbx(&["logs", id]);
+            assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+            if text(&o.stdout) == stdout && text(&o.stderr) == stderr {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "logs: {:?} / {:?}",
+                text(&o.stdout),
+                text(&o.stderr)
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    fn state_of(e: &Env, id: &str) -> Option<serde_json::Value> {
+        e.ps().into_iter().find(|s| s["id"] == id)
+    }
+
+    fn wait_state(e: &Env, id: &str, state: &str) -> serde_json::Value {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Some(s) = state_of(e, id).filter(|s| s["state"] == state) {
+                return s;
+            }
+            assert!(Instant::now() < deadline, "{id} is not {state}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    fn detached_run_outlives_sbx_and_keeps_logs() {
+        let e = Env::new();
+        let o = e.sbx(&[
+            "run",
+            "-d",
+            IMAGE,
+            "sh",
+            "-c",
+            "echo started; echo e >&2; sleep 60",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let id = text(&o.stdout).trim().to_owned();
+        // sbx는 끝났지만 샌드박스는 실행 중이다(shim이 소유한다).
+        assert_eq!(state_of(&e, &id).unwrap()["state"], "running");
+        wait_logs(&e, &id, "started\n", "e\n");
+        let o = e.sbx(&["exec", &id, "echo", "inside"]);
+        assert_eq!(text(&o.stdout), "inside\n");
+
+        let o = e.sbx(&["stop", &id]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(state_of(&e, &id).unwrap()["exit_code"], 143);
+        // 멈춘 뒤에도 로그는 남는다.
+        wait_logs(&e, &id, "started\n", "e\n");
+
+        // start는 Docker처럼 붙지 않고 시작한다. 로그는 이어 쓴다.
+        let o = e.sbx(&["start", &id]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout).trim(), id);
+        assert_eq!(state_of(&e, &id).unwrap()["state"], "running");
+        wait_logs(&e, &id, "started\nstarted\n", "e\ne\n");
+        assert_eq!(e.sbx(&["rm", "-f", &id]).status.code(), Some(0));
+        assert!(state_of(&e, &id).is_none());
+    }
+
+    fn detached_rm_and_logs_follow() {
+        let e = Env::new();
+        // -f는 샌드박스가 멈출 때까지 따라간다.
+        let o = e.sbx(&["run", "-d", IMAGE, "sh", "-c", "echo a; sleep 1; echo b"]);
+        let id = text(&o.stdout).trim().to_owned();
+        let o = e.sbx(&["logs", "-f", &id]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "a\nb\n");
+        assert_eq!(wait_state(&e, &id, "stopped")["exit_code"], 0);
+        // --tail N: 마지막 N줄만.
+        let o = e.sbx(&["logs", "--tail", "1", &id]);
+        assert_eq!(text(&o.stdout), "b\n", "{}", text(&o.stderr));
+        assert_eq!(text(&e.sbx(&["logs", "-n", "0", &id]).stdout), "");
+        assert_ne!(e.sbx(&["logs", "--tail", "x", &id]).status.code(), Some(0));
+
+        // --rm: 끝나면 shim이 지운다.
+        let o = e.sbx(&["run", "-d", "--rm", IMAGE, "sh", "-c", "exit 0"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let id = text(&o.stdout).trim().to_owned();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while state_of(&e, &id).is_some() {
+            assert!(Instant::now() < deadline, "{id} was not removed");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        // 시작에 실패하면 그 이유로 125, --rm이면 남지 않는다.
+        let o = e.sbx(&["run", "-d", "--rm", IMAGE, "no-such-command-xyz"]);
+        assert_eq!(o.status.code(), Some(125), "{}", text(&o.stderr));
+        assert!(
+            text(&o.stderr).contains("executable file not found"),
+            "{}",
+            text(&o.stderr)
+        );
+        let failed =
+            |s: &serde_json::Value| s["spec"]["process"]["args"][0] == "no-such-command-xyz";
+        assert!(!e.ps().iter().any(failed), "{:?}", e.ps());
+    }
+
+    /// 시그널 `sig`를 받으면 `code`로 끝나고 TERM은 무시하는 기본 프로세스를 detached로 시작한다.
+    /// 트랩을 건 뒤("ready"가 로그에 나온 뒤) ID를 돌려준다.
+    fn run_trapping(e: &Env, extra: &[&str], sig: &str, code: i32) -> String {
+        let script = format!(
+            "trap '' TERM; trap 'exit {code}' {sig}; echo ready; while :; do sleep 0.02; done"
+        );
+        let mut args = vec!["run", "-d"];
+        args.extend_from_slice(extra);
+        args.extend_from_slice(&[IMAGE, "sh", "-c", &script]);
+        let o = e.sbx(&args);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let id = text(&o.stdout).trim().to_owned();
+        wait_logs(e, &id, "ready\n", "");
+        id
+    }
+
+    fn stop_sends_the_stop_signal_then_powers_off() {
+        let e = Env::new();
+        // --stop-signal로 정한 시그널을 보낸다.
+        let id = run_trapping(&e, &["--stop-signal", "SIGINT"], "INT", 3);
+        assert_eq!(e.sbx(&["inspect", &id]).status.code(), Some(0));
+        let o = e.sbx(&["stop", &id]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(state_of(&e, &id).unwrap()["exit_code"], 3);
+
+        // -s가 이긴다. 받지 않으면(TERM은 무시) -t 뒤에 게스트를 끈다: 137.
+        let id = run_trapping(&e, &["--stop-timeout", "30"], "USR2", 4);
+        let t = Instant::now();
+        let o = e.sbx(&["stop", "-s", "TERM", "-t", "1", &id]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let took = t.elapsed();
+        assert!(
+            took >= Duration::from_secs(1) && took < Duration::from_secs(15),
+            "{took:?}"
+        );
+        assert_eq!(state_of(&e, &id).unwrap()["exit_code"], 137);
+
+        // 잘못된 시그널은 아무것도 하지 않고 오류.
+        let o = e.sbx(&["stop", "-s", "NOPE", &id]);
+        assert_ne!(o.status.code(), Some(0));
+        let o = e.sbx(&["run", "-d", "--stop-signal", "NOPE", IMAGE, "true"]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(text(&o.stderr).contains("signal"), "{}", text(&o.stderr));
+    }
+
+    fn kill_wait_and_restart() {
+        let e = Env::new();
+        let id = run_trapping(&e, &[], "USR1", 42);
+        let waiter = e.spawn(&["wait", &id]);
+        // TERM은 무시하므로 멈추지 않는다.
+        // ID 앞부분으로도 된다(ps가 보여주는 12자). 받은 그대로 출력한다.
+        let short = &id[..12];
+        let o = e.sbx(&["kill", "-s", "TERM", short]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout).trim(), short);
+        let ps = text(&e.sbx(&["ps"]).stdout);
+        assert!(
+            ps.lines().any(|l| l.starts_with(&format!("{short} "))),
+            "{ps}"
+        );
+        assert!(!ps.contains(&id), "{ps}");
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(state_of(&e, &id).unwrap()["state"], "running");
+        assert_eq!(e.sbx(&["kill", "-s", "usr1", &id]).status.code(), Some(0));
+        let out = wait_with_timeout(waiter, Duration::from_secs(20));
+        assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+        assert_eq!(text(&out.stdout), "42\n");
+        // 멈춘 샌드박스: wait은 곧바로, kill은 오류.
+        assert_eq!(text(&e.sbx(&["wait", &id]).stdout), "42\n");
+        assert_ne!(e.sbx(&["kill", &id]).status.code(), Some(0));
+
+        // restart는 멈춘 것도 다시 시작한다(붙지 않고).
+        let o = e.sbx(&["restart", &id]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout).trim(), id);
+        assert_eq!(state_of(&e, &id).unwrap()["state"], "running");
+        // 실행 중이면 멈추고 다시 시작한다. 기본 kill은 KILL: 137.
+        wait_logs(&e, &id, "ready\nready\n", "");
+        let o = e.sbx(&["restart", "-t", "0", &id]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(state_of(&e, &id).unwrap()["state"], "running");
+        wait_logs(&e, &id, "ready\nready\nready\n", "");
+        assert_eq!(e.sbx(&["kill", &id]).status.code(), Some(0));
+        assert_eq!(text(&e.sbx(&["wait", &id]).stdout), "137\n");
+        assert_eq!(e.sbx(&["rm", &id]).status.code(), Some(0));
+    }
+
+    /// 자식의 표준 출력을 따로 읽어 모은다.
+    struct Reader(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl Reader {
+        fn start(child: &mut Child) -> Self {
+            use std::io::Read;
+            let mut out = child.stdout.take().unwrap();
+            let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let b = buf.clone();
+            std::thread::spawn(move || {
+                let mut chunk = [0u8; 4096];
+                while let Ok(n) = out.read(&mut chunk) {
+                    if n == 0 {
+                        break;
+                    }
+                    b.lock().unwrap().extend_from_slice(&chunk[..n]);
+                }
+            });
+            Self(buf)
+        }
+
+        fn text(&self) -> String {
+            text(&self.0.lock().unwrap())
+        }
+
+        fn wait_for(&self, needle: &str) {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while !self.text().contains(needle) {
+                assert!(
+                    Instant::now() < deadline,
+                    "no {needle:?} in {:?}",
+                    self.text()
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+
+    fn attach_to_a_detached_sandbox() {
+        let e = Env::new();
+        let o = e.sbx(&[
+            "run",
+            "-d",
+            "-i",
+            IMAGE,
+            "sh",
+            "-c",
+            "read a; echo got $a; read b; echo got $b >&2; exit 5",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let id = text(&o.stdout).trim().to_owned();
+        assert_eq!(e.sbx(&["inspect", &id]).status.code(), Some(0));
+        // 붙은 쪽의 입력이 기본 프로세스로 간다. 붙은 쪽의 입력이 끝나도 표준 입력은 닫히지 않는다.
+        let mut first = e
+            .cmd(&["attach", &id])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        first.stdin.take().unwrap().write_all(b"x\n").unwrap();
+        let reader = Reader::start(&mut first);
+        reader.wait_for("got x\n");
+        // 둘째로 붙은 쪽의 입력도 간다. 둘 다 종료 코드를 받는다.
+        let second = e.sbx_with_stdin(&["attach", &id], b"y\n");
+        assert_eq!(second.status.code(), Some(5), "{}", text(&second.stderr));
+        assert_eq!(text(&second.stderr), "got y\n");
+        let first = wait_with_timeout(first, Duration::from_secs(20));
+        assert_eq!(first.status.code(), Some(5), "{}", text(&first.stderr));
+        assert_eq!(reader.text(), "got x\n");
+        assert_eq!(text(&first.stderr), "got y\n");
+        assert_eq!(wait_state(&e, &id, "stopped")["exit_code"], 5);
+        wait_logs(&e, &id, "got x\n", "got y\n");
+
+        // 멈춘 샌드박스에는 붙지 않는다.
+        let o = e.sbx(&["attach", &id]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("not running"),
+            "{}",
+            text(&o.stderr)
+        );
+        // 다른 sbx가 붙어서 실행 중인 샌드박스(shim 없음)에도 붙지 않는다.
+        let mut owner = e.spawn(&["run", IMAGE, "sleep", "30"]);
+        let running = e.wait_running();
+        let o = e.sbx(&["attach", &running]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(text(&o.stderr).contains("detached"), "{}", text(&o.stderr));
+        assert_eq!(e.sbx(&["stop", &running]).status.code(), Some(0));
+        let _ = owner.wait();
+    }
+
+    fn attach_tty_and_signal_proxy() {
+        let e = Env::new();
+        // -t: 터미널을 붙여 시작하고, 붙은 쪽은 터미널 출력을 받는다(\n은 \r\n이 된다).
+        // 붙은 쪽이 끊겨도 샌드박스는 계속 돈다.
+        let o = e.sbx(&[
+            "run",
+            "-d",
+            "-t",
+            IMAGE,
+            "sh",
+            "-c",
+            "while :; do test -t 1 && echo tty; sleep 0.05; done",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let id = text(&o.stdout).trim().to_owned();
+        let mut client = e.spawn(&["attach", &id]);
+        let reader = Reader::start(&mut client);
+        reader.wait_for("tty\r\n");
+        client.kill().unwrap();
+        let _ = client.wait();
+        assert_eq!(state_of(&e, &id).unwrap()["state"], "running");
+        assert_eq!(e.sbx(&["kill", &id]).status.code(), Some(0));
+        assert_eq!(text(&e.sbx(&["wait", &id]).stdout), "137\n");
+
+        // 터미널이 아니면 받은 시그널을 기본 프로세스에 전한다(--sig-proxy).
+        let o = e.sbx(&[
+            "run",
+            "-d",
+            IMAGE,
+            "sh",
+            "-c",
+            "trap 'echo term; exit 7' TERM; while :; do echo tick; sleep 0.05; done",
+        ]);
+        let id = text(&o.stdout).trim().to_owned();
+        let mut client = e.spawn(&["attach", &id]);
+        let reader = Reader::start(&mut client);
+        reader.wait_for("tick\n");
+        let pid = client.id().to_string();
+        assert!(
+            Command::new("kill")
+                .args(["-TERM", &pid])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let out = wait_with_timeout(client, Duration::from_secs(20));
+        assert_eq!(out.status.code(), Some(7), "{}", text(&out.stderr));
+        assert!(reader.text().ends_with("term\n"), "{:?}", reader.text());
+    }
+
+    fn installed_executor_is_used_by_default() {
+        let e = Env::new();
+        let me = std::env::current_exe().unwrap();
+        let without = |args: &[&str]| {
+            let mut c = e.cmd(args);
+            c.env_remove("SBX_EXECUTOR");
+            c.output().unwrap()
+        };
+        // 설치한 것이 없으면 PATH의 sbx-executor (여기에는 없다).
+        let o = without(&["run", "--rm", IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(125), "{}", text(&o.stderr));
+        // 설치: 규약을 확인하고, 처음 설치한 것이 기본이 된다.
+        let o = without(&[
+            "executor",
+            "install",
+            "--from",
+            me.to_str().unwrap(),
+            "fake@1.0",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "fake@1.0\n");
+        let o = without(&["executor", "ls"]);
+        assert!(text(&o.stdout).contains("* fake"), "{}", text(&o.stdout));
+        let o = without(&["run", "--rm", IMAGE, "echo", "via", "installed"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "via installed\n");
+        // 규약을 말하지 않는 것은 설치하지 않는다.
+        let bad = e.path("not-an-executor");
+        std::fs::write(&bad, "#!/bin/sh\nexit 3\n").unwrap();
+        let o = without(&[
+            "executor",
+            "install",
+            "--from",
+            bad.to_str().unwrap(),
+            "bad@1",
+        ]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(!text(&without(&["executor", "ls"]).stdout).contains("bad"));
+        // 지우면 기본도 없어진다.
+        assert_eq!(
+            without(&["executor", "rm", "fake@1.0"]).status.code(),
+            Some(0)
+        );
+        let o = without(&["run", "--rm", IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(125));
+    }
+
+    /// 이 실행 파일(가짜 실행기)을 `sbx-executor`로 담은 묶음 압축 파일. (내용, SHA-256)
+    fn bundle_of_me() -> (Vec<u8>, String) {
+        use sha2::Digest as _;
+        let me = std::fs::read(std::env::current_exe().unwrap()).unwrap();
+        let mut b = tar::Builder::new(Vec::new());
+        let mut h = tar::Header::new_gnu();
+        h.set_size(me.len() as u64);
+        h.set_mode(0o755);
+        b.append_data(&mut h, "fake/sbx-executor", me.as_slice())
+            .unwrap();
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::none());
+        gz.write_all(&b.into_inner().unwrap()).unwrap();
+        let bytes = gz.finish().unwrap();
+        let sha = sha2::Sha256::digest(&bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        (bytes, sha)
+    }
+
+    fn executor_is_installed_from_a_repository() {
+        let e = Env::new();
+        let without = |args: &[&str]| {
+            let mut c = e.cmd(args);
+            c.env_remove("SBX_EXECUTOR");
+            c.output().unwrap()
+        };
+        // 처음에는 공식 저장소가 있다. 빼면 그대로 남고, 저장소가 없으면 어떻게 더하는지 알려 준다.
+        let o = without(&["executor", "repo", "ls"]);
+        assert!(
+            text(&o.stdout).contains("official  ") && text(&o.stdout).contains("https://"),
+            "{}",
+            text(&o.stdout)
+        );
+        let o = without(&["executor", "repo", "rm", "official"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = without(&["executor", "repo", "ls"]);
+        assert!(!text(&o.stdout).contains("official"), "{}", text(&o.stdout));
+        let o = without(&["executor", "install", "fake"]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("executor repo add"),
+            "{}",
+            text(&o.stderr)
+        );
+
+        // file:// 저장소: fake 1.0(설치할 것), 0.5(내용이 색인과 다르다), 2.0(다른 규약 버전), 3.0(다른 플랫폼).
+        let repo = e.path("repo");
+        std::fs::create_dir_all(repo.join("fake")).unwrap();
+        let (bytes, sha) = bundle_of_me();
+        std::fs::write(repo.join("fake/1.0.tar.gz"), &bytes).unwrap();
+        let host = sbx_executor_repo::Platform::host();
+        let art = |url: &str, sha: &str, os: &str| serde_json::json!([{"os": os, "architecture": host.architecture, "url": url, "sha256": sha, "size": bytes.len()}]);
+        let index = serde_json::json!({"schema": 1, "executors": {"fake": {"versions": {
+            "1.0": {"protocol": sbx_executor_proto::VERSION, "artifacts": art("fake/1.0.tar.gz", &sha, &host.os)},
+            "0.5": {"protocol": sbx_executor_proto::VERSION, "artifacts": art("fake/1.0.tar.gz", &"0".repeat(64), &host.os)},
+            "2.0": {"protocol": sbx_executor_proto::VERSION + 1, "artifacts": art("fake/1.0.tar.gz", &sha, &host.os)},
+            "3.0": {"protocol": sbx_executor_proto::VERSION, "artifacts": art("fake/1.0.tar.gz", &sha, "plan9")},
+        }}}});
+        std::fs::write(repo.join("index.json"), index.to_string()).unwrap();
+        let url = format!("file://{}", repo.display());
+        // 앞 저장소는 읽을 수 없다: 경고하고 건너뛴다.
+        let missing = format!("file://{}", e.path("missing").display());
+        for (name, u) in [("broken", missing.as_str()), ("local", url.as_str())] {
+            let o = without(&["executor", "repo", "add", name, u]);
+            assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        }
+        let o = without(&["executor", "repo", "ls"]);
+        assert!(text(&o.stdout).contains("local"), "{}", text(&o.stdout));
+
+        let o = without(&["executor", "search"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(
+            text(&o.stderr).contains("warning: cannot fetch"),
+            "{}",
+            text(&o.stderr)
+        );
+        let rows: Vec<String> = text(&o.stdout)
+            .lines()
+            .skip(1)
+            .map(|l| l.split_whitespace().take(2).collect::<Vec<_>>().join("@"))
+            .collect();
+        assert_eq!(rows, ["fake@1.0", "fake@0.5"]);
+
+        // 이름만: 이 호스트와 규약 버전으로 되는 가장 높은 버전. 처음 설치한 것이 기본이 된다.
+        let o = without(&["executor", "install", "fake"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "fake@1.0\n");
+        assert!(
+            text(&o.stderr).contains("downloading fake@1.0"),
+            "{}",
+            text(&o.stderr)
+        );
+        let o = without(&["run", "--rm", IMAGE, "echo", "from", "repo"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "from repo\n");
+        // 다시 하면 아무것도 하지 않는다.
+        let o = without(&["executor", "install", "fake"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(text(&o.stderr).contains("already installed"));
+        // 색인과 다른 내용은 설치하지 않는다. 받던 것도 남지 않는다.
+        let o = without(&["executor", "install", "fake@0.5"]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(text(&o.stderr).contains("sha256"), "{}", text(&o.stderr));
+        // 이유를 알려 준다.
+        let o = without(&["executor", "install", "fake@2.0"]);
+        assert!(
+            text(&o.stderr).contains("executor protocol"),
+            "{}",
+            text(&o.stderr)
+        );
+        let o = without(&["executor", "install", "fake@3.0"]);
+        assert!(
+            text(&o.stderr).contains("no build for"),
+            "{}",
+            text(&o.stderr)
+        );
+        let downloads = e.path("cache/executor-downloads");
+        let left = std::fs::read_dir(&downloads)
+            .map(|d| d.count())
+            .unwrap_or(0);
+        assert_eq!(left, 0);
+
+        // 묶음 압축 파일을 직접 설치.
+        let o = without(&[
+            "executor",
+            "install",
+            "--from",
+            repo.join("fake/1.0.tar.gz").to_str().unwrap(),
+            "fake@local",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = without(&["executor", "ls"]);
+        let ls = text(&o.stdout);
+        assert!(ls.contains("local") && !ls.contains("0.5"), "{ls}");
+
+        assert_eq!(
+            without(&["executor", "repo", "rm", "broken"]).status.code(),
+            Some(0)
+        );
+        assert_ne!(
+            without(&["executor", "repo", "rm", "broken"]).status.code(),
+            Some(0)
+        );
+    }
+
+    fn image_kernel_is_given_to_the_executor() {
+        let e = Env::new();
+        // 커널을 담은 이미지 (관리 쪽이 prepare로 꺼내 두었을 상태).
+        let layout = CacheLayout::new(e.path("cache"));
+        let id = ImageId::new(Digest::parse(&format!("sha256:{}", "4b".repeat(32))).unwrap());
+        let mut config = ImageConfig {
+            cmd: vec!["sh".into()],
+            user: Some(format!("{}:{}", id_output("-u"), id_output("-g"))),
+            ..ImageConfig::default()
+        };
+        config
+            .labels
+            .insert(ImageConfig::KERNEL_LABEL.into(), "/boot/vmlinux".into());
+        let record = ImageRecord {
+            id: id.clone(),
+            reference: "docker.io/library/e2e-kernel:latest".into(),
+            source: "test".into(),
+            arch: Arch::host().unwrap(),
+            config,
+            layers: vec![],
+            ignored_fields: vec![],
+        };
+        write::write_image_record(&layout, &record).unwrap();
+        write::set_ref(&layout, &record.reference, &id).unwrap();
+        std::fs::write(layout.rootfs(&id, RootfsFormat::Erofs), b"fs").unwrap();
+        std::fs::write(layout.kernel(&id), b"kernel").unwrap();
+
+        let run = |image: &str| {
+            let rec = e.path("launch.json");
+            let _ = std::fs::remove_file(&rec);
+            let o = e
+                .cmd(&["run", "--rm", image, "true"])
+                .env("SBX_FAKE_RECORD", &rec)
+                .output()
+                .unwrap();
+            let vm: serde_json::Value = std::fs::read(&rec)
+                .ok()
+                .and_then(|b| serde_json::from_slice(&b).ok())
+                .unwrap_or_default();
+            (o, vm)
+        };
+        let (o, vm) = run("e2e-kernel");
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(
+            vm["kernel"].as_str(),
+            Some(layout.kernel(&id).to_str().unwrap()),
+            "{vm}"
+        );
+        // 보통 이미지에는 커널을 보내지 않는다 (실행기의 기본 커널).
+        let (o, vm) = run(IMAGE);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(
+            vm.get("kernel").is_none() && vm.get("guest_init").is_some(),
+            "{vm}"
+        );
+        // 커널을 꺼내 두지 않았으면 prepare가 다시 꺼내려 하고, 이미지에 없으면 띄우지 않는다.
+        std::fs::remove_file(layout.kernel(&id)).unwrap();
+        let (o, _) = run("e2e-kernel");
+        assert_eq!(o.status.code(), Some(125));
+        assert!(
+            text(&o.stderr).contains("image kernel /boot/vmlinux"),
+            "{}",
+            text(&o.stderr)
+        );
+    }
+
+    /// `sbx mcp`의 한 연결. 요청을 보내고 그 답 한 줄을 읽는다.
+    struct Mcp {
+        child: Child,
+        out: std::io::BufReader<std::process::ChildStdout>,
+        next: u64,
+    }
+
+    impl Mcp {
+        fn request(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
+            use std::io::BufRead;
+            self.next += 1;
+            let msg = serde_json::json!({"jsonrpc": "2.0", "id": self.next, "method": method, "params": params});
+            let stdin = self.child.stdin.as_mut().unwrap();
+            writeln!(stdin, "{msg}").unwrap();
+            stdin.flush().unwrap();
+            let mut line = String::new();
+            self.out.read_line(&mut line).unwrap();
+            let v: serde_json::Value =
+                serde_json::from_str(&line).unwrap_or_else(|e| panic!("{e}: {line:?}"));
+            assert_eq!(v["id"], self.next, "{v}");
+            v
+        }
+
+        /// 도구를 부르고 `structuredContent`(실패면 글)를 돌려준다.
+        fn call(
+            &mut self,
+            name: &str,
+            args: serde_json::Value,
+        ) -> Result<serde_json::Value, String> {
+            let r = self.request(
+                "tools/call",
+                serde_json::json!({"name": name, "arguments": args}),
+            );
+            let r = &r["result"];
+            if r["isError"] == true {
+                return Err(r["content"][0]["text"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned());
+            }
+            Ok(r["structuredContent"].clone())
+        }
+    }
+
+    fn mcp_serves_sandboxes_to_agents() {
+        let e = Env::new();
+        let mut child = e
+            .cmd(&["mcp"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let out = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut m = Mcp {
+            child,
+            out,
+            next: 0,
+        };
+
+        let init = m.request("initialize", serde_json::json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "e2e", "version": "0"}}));
+        assert_eq!(init["result"]["serverInfo"]["name"], "sbx", "{init}");
+        assert_eq!(init["result"]["protocolVersion"], "2025-06-18");
+        // 알림에는 답하지 않는다(다음 답이 다음 요청의 것이다).
+        writeln!(
+            m.child.stdin.as_mut().unwrap(),
+            r#"{{"jsonrpc":"2.0","method":"notifications/initialized"}}"#
+        )
+        .unwrap();
+        let tools = m.request("tools/list", serde_json::json!({}));
+        assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 7);
+        let unknown = m.request("resources/list", serde_json::json!({}));
+        assert_eq!(unknown["error"]["code"], -32601);
+
+        // run: 종료 코드와 두 출력. 끝나면 지운다.
+        let r = m.call("run", serde_json::json!({"image": IMAGE, "command": ["sh", "-c", "echo out; echo err >&2; exit 3"]})).unwrap();
+        assert_eq!(
+            (
+                r["exit_code"].as_i64(),
+                r["stdout"].as_str(),
+                r["stderr"].as_str()
+            ),
+            (Some(3), Some("out\n"), Some("err\n")),
+            "{r}"
+        );
+        assert_eq!(r["timed_out"], false);
+        let r = m
+            .call(
+                "run",
+                serde_json::json!({"image": IMAGE, "command": ["cat"], "stdin": "piped in"}),
+            )
+            .unwrap();
+        assert_eq!(r["stdout"], "piped in");
+        // 시간이 넘으면 끄고 지운다.
+        let started = Instant::now();
+        let r = m.call("run", serde_json::json!({"image": IMAGE, "command": ["sh", "-c", "echo before; sleep 30"], "timeout_secs": 1})).unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(15),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            (
+                r["timed_out"].as_bool(),
+                r["exit_code"].is_null(),
+                r["stdout"].as_str()
+            ),
+            (Some(true), true, Some("before\n")),
+            "{r}"
+        );
+        assert!(e.ps().is_empty(), "{:?}", e.ps());
+        // 틀린 인자는 도구 오류다.
+        let err = m
+            .call("run", serde_json::json!({"image": "-v"}))
+            .unwrap_err();
+        assert!(err.contains("invalid image"), "{err}");
+
+        // create, exec, write_file, read_file, list, remove.
+        let id = m
+            .call(
+                "create",
+                serde_json::json!({"image": IMAGE, "command": ["sleep", "600"]}),
+            )
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let r = m.call("exec", serde_json::json!({"id": id, "command": ["sh", "-c", "echo $X; exit 5"], "env": {"X": "y"}})).unwrap();
+        assert_eq!(
+            (r["exit_code"].as_i64(), r["stdout"].as_str()),
+            (Some(5), Some("y\n")),
+            "{r}"
+        );
+        let r = m
+            .call(
+                "exec",
+                serde_json::json!({"id": &id[..6], "command": ["sleep", "30"], "timeout_secs": 1}),
+            )
+            .unwrap();
+        assert_eq!(r["timed_out"], true, "{r}");
+        // 가짜 실행기의 게스트 경로는 호스트 경로다.
+        let dir = e.path("g");
+        std::fs::create_dir(&dir).unwrap();
+        let text_path = dir.join("a.txt").to_string_lossy().into_owned();
+        m.call(
+            "write_file",
+            serde_json::json!({"id": id, "path": text_path, "content": "hello"}),
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&text_path).unwrap(), b"hello");
+        let r = m
+            .call(
+                "read_file",
+                serde_json::json!({"id": id, "path": text_path}),
+            )
+            .unwrap();
+        assert_eq!(
+            (r["encoding"].as_str(), r["content"].as_str()),
+            (Some("utf-8"), Some("hello"))
+        );
+        // 없는 부모 디렉터리는 만든다.
+        let nested = dir.join("x/y/z.txt").to_string_lossy().into_owned();
+        m.call(
+            "write_file",
+            serde_json::json!({"id": id, "path": nested, "content": "deep"}),
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&nested).unwrap(), b"deep");
+        let bin_path = dir.join("b.bin").to_string_lossy().into_owned();
+        m.call("write_file", serde_json::json!({"id": id, "path": bin_path, "content": "AP8=", "encoding": "base64"})).unwrap();
+        assert_eq!(std::fs::read(&bin_path).unwrap(), [0u8, 255]);
+        let r = m
+            .call("read_file", serde_json::json!({"id": id, "path": bin_path}))
+            .unwrap();
+        assert_eq!(
+            (r["encoding"].as_str(), r["content"].as_str()),
+            (Some("base64"), Some("AP8="))
+        );
+        let r = m.call("list", serde_json::json!({})).unwrap();
+        let all = r["sandboxes"].as_array().unwrap();
+        assert_eq!(
+            (all.len(), all[0]["id"].as_str(), all[0]["state"].as_str()),
+            (1, Some(id.as_str()), Some("running")),
+            "{r}"
+        );
+        m.call("remove", serde_json::json!({"id": id})).unwrap();
+        assert!(e.ps().is_empty());
+        assert!(
+            m.call("exec", serde_json::json!({"id": id, "command": ["true"]}))
+                .is_err()
+        );
+
+        // 표준 입력을 닫으면 끝난다.
+        drop(m.child.stdin.take());
+        let out = wait_with_timeout(m.child, Duration::from_secs(10));
+        assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    }
+}

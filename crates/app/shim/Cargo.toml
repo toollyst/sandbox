@@ -1,0 +1,22 @@
+[package]
+name = "sbx-shim"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+sbx-model.workspace = true
+sbx-executor.workspace = true
+sbx-runtime.workspace = true
+sbx-executor-process.workspace = true
+tokio = { workspace = true, features = ["signal", "net", "io-util", "sync", "time"] }
+
+[[bin]]
+name = "sbx-shim"
+path = "src/bin/sbx-shim.rs"

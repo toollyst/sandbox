@@ -1,0 +1,19 @@
+[package]
+name = "sbx-guest"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# workspace는 unsafe를 forbid한다. 게스트는 시스템 호출 선언을 감싼 `sys` 모듈에서만 허용하므로 deny로 둔다.
+[lints.rust]
+missing_docs = "warn"
+unsafe_code = "deny"
+
+[dependencies]
+sbx-guest-proto.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true

@@ -1,4 +1,4 @@
-//! `repo-add`: 실행기 묶음 디렉터리를 실행기 저장소(정적 디렉터리)에 더한다. 형식은 `executor-repo` 크레이트 문서다.
+//! `repo-add`: 실행기 묶음 디렉터리를 실행기 저장소(정적 디렉터리)에 더한다. 형식은 `sbx-executor-repo` 크레이트 문서다.
 //!
 //! ```text
 //! cargo xtask repo-add --repo <디렉터리> --bundle <디렉터리> --name <이름> --version <버전>
@@ -268,7 +268,7 @@ mod tests {
             .unwrap()
             .join("index.json")
             .unwrap();
-        let index = executor_repo::Index::parse(&bytes, &url).unwrap();
+        let index = sbx_executor_repo::Index::parse(&bytes, &url).unwrap();
         let v = &index.executor("fc").unwrap().versions[0];
         assert_eq!((v.version.as_str(), v.protocol), ("1.0", 2));
         assert_eq!(v.artifacts.len(), 2);
@@ -281,7 +281,7 @@ mod tests {
         // 묶음은 저장소 클라이언트로 풀 수 있고, 맨 위 디렉터리 안에 실행 파일이 있다.
         let a = &v.artifacts[0];
         let file = a.url.to_file_path().unwrap();
-        let got = executor_repo::unpack::unpack(&file, &root.join("out")).unwrap();
+        let got = sbx_executor_repo::unpack::unpack(&file, &root.join("out")).unwrap();
         assert!(got.ends_with("fc-1.0") && got.join("kernel").is_file());
         std::fs::remove_dir_all(root).unwrap();
     }

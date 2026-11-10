@@ -1,0 +1,27 @@
+[package]
+name = "sbx-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+sbx-model.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sbx-guest-proto.workspace = true
+sbx-executor.workspace = true
+# write feature를 켜지 않는다. 실행 쪽은 캐시를 읽기만 한다.
+sbx-store.workspace = true
+
+[dev-dependencies]
+sbx-executor-fake.workspace = true
+
+# macOS의 fsync(2) (records::sync). std의 sync_all은 F_FULLFSYNC다.
+[target.'cfg(target_vendor = "apple")'.dependencies]
+rustix = { version = "1", default-features = false, features = ["fs", "std"] }

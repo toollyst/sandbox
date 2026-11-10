@@ -6,16 +6,16 @@
 //! |---|---|
 //! | `dev` | 디렉터리 0755 |
 //! | `dev/console` | 문자 장치 5:1, 0600. 커널이 init을 실행하기 전에 연다(없으면 init에 표준 입출력이 없다) |
-//! | `init` | 정적 `sandbox-guest`, 0755 |
+//! | `init` | 정적 `sbx-guest`, 0755 |
 //!
 //! `/proc`, `/sys`, `/run`은 init이 만든다.
 //!
-//! 게스트 바이너리는 `--binary`로 주거나, 주지 않으면 `cargo build --release -p sandbox-guest --target <arch>-unknown-linux-musl`로 만든다.
+//! 게스트 바이너리는 `--binary`로 주거나, 주지 않으면 `cargo build --release -p sbx-guest --target <arch>-unknown-linux-musl`로 만든다.
 //! 링커는 `rust-lld`다(musl 대상은 C 런타임을 Rust가 가지고 있어 다른 아키텍처도 별도 도구 없이 링크된다).
 //! `CARGO_TARGET_<TRIPLE>_LINKER`를 정해 두었으면 그것을 쓴다. 대상은 먼저 `rustup target add`로 설치해야 한다.
 //! 어느 쪽이든 그 아키텍처의 정적 ELF(인터프리터 없음)인지 확인한다.
 //!
-//! [`VmConfig::guest_init`]: ../../sandbox_executor/struct.VmConfig.html#structfield.guest_init
+//! [`VmConfig::guest_init`]: ../../sbx_executor/struct.VmConfig.html#structfield.guest_init
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -110,25 +110,18 @@ fn build_guest(root: &Path, arch: Arch) -> Result<PathBuf, String> {
     }
     let status = cmd
         .current_dir(root)
-        .args([
-            "build",
-            "--release",
-            "-p",
-            "sandbox-guest",
-            "--target",
-            &triple,
-        ])
+        .args(["build", "--release", "-p", "sbx-guest", "--target", &triple])
         .status()
         .map_err(|e| format!("cannot run cargo: {e}"))?;
     if !status.success() {
         return Err(format!(
-            "building sandbox-guest for {triple} failed (is the target installed? `rustup target add {triple}`)"
+            "building sbx-guest for {triple} failed (is the target installed? `rustup target add {triple}`)"
         ));
     }
     Ok(crate::paths::target_dir(root)
         .join(triple)
         .join("release")
-        .join("sandbox-guest"))
+        .join("sbx-guest"))
 }
 
 /// 그 아키텍처의 64비트 리틀 엔디언 실행 ELF이고, 동적 로더(`PT_INTERP`)가 없는지.

@@ -385,64 +385,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "executor-fake"
-version = "0.1.1"
-dependencies = [
- "executor-process",
- "executor-proto",
- "sandbox-executor",
- "sandbox-guest",
- "sandbox-model",
- "sandbox-proto",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "executor-firecracker"
-version = "0.1.1"
-dependencies = [
- "executor-proto",
- "serde_json",
-]
-
-[[package]]
-name = "executor-install"
-version = "0.1.1"
-
-[[package]]
-name = "executor-process"
-version = "0.1.1"
-dependencies = [
- "executor-proto",
- "sandbox-executor",
- "sandbox-model",
-]
-
-[[package]]
-name = "executor-proto"
-version = "0.1.1"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "executor-repo"
-version = "0.1.1"
-dependencies = [
- "executor-install",
- "flate2",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "tar",
- "tokio",
- "url",
-]
-
-[[package]]
 name = "filetime"
 version = "0.2.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1347,29 +1289,29 @@ dependencies = [
 ]
 
 [[package]]
-name = "sandbox-cli"
+name = "sbx-cli"
 version = "0.1.1"
 dependencies = [
  "base64",
  "clap",
  "clap_complete",
  "crossterm",
- "executor-fake",
- "executor-install",
- "executor-process",
- "executor-proto",
- "executor-repo",
  "flate2",
- "sandbox-executor",
- "sandbox-image",
- "sandbox-manage",
- "sandbox-model",
- "sandbox-oci",
- "sandbox-proto",
- "sandbox-rootfs",
- "sandbox-runtime",
- "sandbox-shim",
- "sandbox-store",
+ "sbx-executor",
+ "sbx-executor-fake",
+ "sbx-executor-install",
+ "sbx-executor-process",
+ "sbx-executor-proto",
+ "sbx-executor-repo",
+ "sbx-guest-proto",
+ "sbx-image",
+ "sbx-manage",
+ "sbx-model",
+ "sbx-oci",
+ "sbx-rootfs",
+ "sbx-runtime",
+ "sbx-shim",
+ "sbx-store",
  "serde_json",
  "sha2",
  "tar",
@@ -1377,42 +1319,104 @@ dependencies = [
 ]
 
 [[package]]
-name = "sandbox-executor"
+name = "sbx-executor"
 version = "0.1.1"
 dependencies = [
- "sandbox-model",
+ "sbx-model",
 ]
 
 [[package]]
-name = "sandbox-guest"
+name = "sbx-executor-fake"
+version = "0.1.1"
+dependencies = [
+ "sbx-executor",
+ "sbx-executor-process",
+ "sbx-executor-proto",
+ "sbx-guest",
+ "sbx-guest-proto",
+ "sbx-model",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "sbx-executor-firecracker"
+version = "0.1.1"
+dependencies = [
+ "sbx-executor-proto",
+ "serde_json",
+]
+
+[[package]]
+name = "sbx-executor-install"
+version = "0.1.1"
+
+[[package]]
+name = "sbx-executor-process"
+version = "0.1.1"
+dependencies = [
+ "sbx-executor",
+ "sbx-executor-proto",
+ "sbx-model",
+]
+
+[[package]]
+name = "sbx-executor-proto"
+version = "0.1.1"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "sbx-executor-repo"
+version = "0.1.1"
+dependencies = [
+ "flate2",
+ "reqwest",
+ "sbx-executor-install",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "sbx-guest"
 version = "0.1.1"
 dependencies = [
  "libc",
- "sandbox-proto",
+ "sbx-guest-proto",
 ]
 
 [[package]]
-name = "sandbox-image"
+name = "sbx-guest-proto"
+version = "0.1.1"
+
+[[package]]
+name = "sbx-image"
 version = "0.1.1"
 dependencies = [
- "sandbox-model",
+ "sbx-model",
 ]
 
 [[package]]
-name = "sandbox-manage"
+name = "sbx-manage"
 version = "0.1.1"
 dependencies = [
  "flate2",
  "ruzstd",
- "sandbox-image",
- "sandbox-model",
- "sandbox-rootfs",
- "sandbox-store",
+ "sbx-image",
+ "sbx-model",
+ "sbx-rootfs",
+ "sbx-store",
  "tar",
 ]
 
 [[package]]
-name = "sandbox-model"
+name = "sbx-model"
 version = "0.1.1"
 dependencies = [
  "serde",
@@ -1420,12 +1424,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "sandbox-oci"
+name = "sbx-oci"
 version = "0.1.1"
 dependencies = [
  "reqwest",
- "sandbox-image",
- "sandbox-model",
+ "sbx-image",
+ "sbx-model",
  "serde",
  "serde_json",
  "sha2",
@@ -1433,46 +1437,42 @@ dependencies = [
 ]
 
 [[package]]
-name = "sandbox-proto"
-version = "0.1.1"
-
-[[package]]
-name = "sandbox-rootfs"
+name = "sbx-rootfs"
 version = "0.1.1"
 dependencies = [
- "sandbox-model",
+ "sbx-model",
 ]
 
 [[package]]
-name = "sandbox-runtime"
+name = "sbx-runtime"
 version = "0.1.1"
 dependencies = [
- "executor-fake",
  "rustix",
- "sandbox-executor",
- "sandbox-model",
- "sandbox-proto",
- "sandbox-store",
+ "sbx-executor",
+ "sbx-executor-fake",
+ "sbx-guest-proto",
+ "sbx-model",
+ "sbx-store",
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "sandbox-shim"
+name = "sbx-shim"
 version = "0.1.1"
 dependencies = [
- "executor-process",
- "sandbox-executor",
- "sandbox-model",
- "sandbox-runtime",
+ "sbx-executor",
+ "sbx-executor-process",
+ "sbx-model",
+ "sbx-runtime",
  "tokio",
 ]
 
 [[package]]
-name = "sandbox-store"
+name = "sbx-store"
 version = "0.1.1"
 dependencies = [
- "sandbox-model",
+ "sbx-model",
  "serde",
  "serde_json",
  "sha2",
@@ -2219,8 +2219,8 @@ dependencies = [
 name = "xtask"
 version = "0.1.1"
 dependencies = [
- "executor-repo",
  "flate2",
+ "sbx-executor-repo",
  "serde_json",
  "sha2",
  "tar",

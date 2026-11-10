@@ -1,0 +1,52 @@
+[package]
+name = "sbx-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "sbx"
+path = "src/main.rs"
+
+[dependencies]
+sbx-model.workspace = true
+sbx-executor.workspace = true
+sbx-image.workspace = true
+sbx-store.workspace = true
+sbx-guest-proto.workspace = true
+clap.workspace = true
+clap_complete.workspace = true
+crossterm.workspace = true
+tokio = { workspace = true, features = ["signal", "time", "net", "io-util", "io-std", "sync"] }
+serde_json.workspace = true
+sbx-runtime.workspace = true
+sbx-shim.workspace = true
+sbx-manage.workspace = true
+sbx-oci.workspace = true
+sbx-rootfs = { workspace = true, features = ["erofs"] }
+sbx-executor-process.workspace = true
+sbx-executor-install.workspace = true
+sbx-executor-repo.workspace = true
+sbx-executor-proto.workspace = true
+# mcp: read_file/write_file의 바이너리 내용.
+base64 = "0.23"
+
+[dev-dependencies]
+# 테스트 실행 파일이 곧 가짜 실행기다(tests/e2e.rs).
+sbx-executor-fake.workspace = true
+sbx-store = { workspace = true, features = ["write"] }
+# 실행기 저장소 테스트에서 묶음 압축 파일과 색인을 만든다.
+tar.workspace = true
+flate2.workspace = true
+sha2.workspace = true
+serde_json.workspace = true
+
+[[test]]
+name = "e2e"
+harness = false

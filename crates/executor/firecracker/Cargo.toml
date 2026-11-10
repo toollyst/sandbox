@@ -1,0 +1,22 @@
+[package]
+name = "sbx-executor-firecracker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+sbx-executor-proto.workspace = true
+serde_json.workspace = true
+
+[[bin]]
+name = "sbx-executor-firecracker"
+path = "src/bin/sbx-executor-firecracker.rs"
+
+[dev-dependencies]
+serde_json.workspace = true

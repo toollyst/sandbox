@@ -16,5 +16,5 @@ tar.workspace = true
 
 [dev-dependencies]
 # repo-add가 만든 저장소를 클라이언트로 읽어 본다.
-executor-repo.workspace = true
+sbx-executor-repo.workspace = true
 url = "2"

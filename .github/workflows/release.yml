@@ -33,7 +33,7 @@ jobs:
       - uses: actions/checkout@v4
       - id: v
         run: |
-          want=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "sandbox-cli") | .version')
+          want=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "sbx-cli") | .version')
           [ "${GITHUB_REF_NAME}" = "v$want" ] || { echo "::error::tag ${GITHUB_REF_NAME} does not match the workspace version $want"; exit 1; }
           echo "version=$want" >> "$GITHUB_OUTPUT"
 
@@ -115,7 +115,7 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
           rustup target add "$ARCH-unknown-linux-musl"
-          cargo build --release -p executor-firecracker --target "$ARCH-unknown-linux-musl"
+          cargo build --release -p sbx-executor-firecracker --target "$ARCH-unknown-linux-musl"
           mkdir -p fc bundle && cd fc
           base="https://github.com/firecracker-microvm/firecracker/releases/download/$FIRECRACKER"
           curl -fsSLO "$base/firecracker-$FIRECRACKER-$ARCH.tgz"
@@ -170,7 +170,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cargo build --release -p executor-firecracker
+          cargo build --release -p sbx-executor-firecracker
           mkdir -p fc bundle && cd fc
           name="firecracker-$FC-darwin-aarch64"
           gh release download "$FC" --repo toollyst/firecracker --pattern "$name.tgz" --pattern "$name.tgz.sha256.txt"

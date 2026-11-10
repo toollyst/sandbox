@@ -1,7 +1,7 @@
 //! `dist`: 배포 빌드. 이 호스트 아키텍처의 게스트 init을 만들고, 그것을 내장한 `sbx`와 `sbx-shim`을 release로 빌드한다.
 //!
 //! 1. `guest-initramfs --arch <호스트 아키텍처>` (`target/guest/<arch>/initramfs`)
-//! 2. `SBX_EMBED_GUEST`에 그 절대 경로를 주고 `cargo build --release -p sandbox-cli -p sandbox-shim`
+//! 2. `SBX_EMBED_GUEST`에 그 절대 경로를 주고 `cargo build --release -p sbx-cli -p sbx-shim`
 //!
 //! 결과는 `target/release/sbx`와 `target/release/sbx-shim`이다. 둘을 같은 디렉터리에 두면 sbx가 shim을 찾는다.
 //!
@@ -32,14 +32,9 @@ pub fn run(root: &Path, args: &[String]) -> Result<Vec<PathBuf>, String> {
     let guest = initramfs::run(root, &["--arch".into(), arch.into()])?;
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let mut build = Command::new(cargo);
-    build.current_dir(root).args([
-        "build",
-        "--release",
-        "-p",
-        "sandbox-cli",
-        "-p",
-        "sandbox-shim",
-    ]);
+    build
+        .current_dir(root)
+        .args(["build", "--release", "-p", "sbx-cli", "-p", "sbx-shim"]);
     if let Some(t) = &target {
         build.args(["--target", t]);
     }

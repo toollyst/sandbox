@@ -2,7 +2,9 @@
 //!
 //! - `check-deps`: 의존 방향을 검사한다.
 //!   - 크레이트 사이: [`RULES`]와 [`FORBIDDEN_FEATURES`]가 정본이다.
+//!   - 계층 폴더(`crates/<계층>/<이름>`)와 계층 사이 방향, `docs/developers/crates.md`의 의존 표: [`layout`].
 //!   - 크레이트 안 모듈 사이: 순환 금지. 규칙은 [`modules`]에 있다.
+//! - `deps-doc`: `docs/developers/crates.md`의 의존 표와 그림을 지금 크레이트로 다시 쓴다. [`layout`]에 있다.
 //! - `guest-initramfs --arch <x86_64|aarch64> [--binary <파일>] [--out <파일>]`: 게스트 init initramfs를 만든다.
 //!   내용과 규칙은 [`initramfs`]에 있다.
 //! - `dist`: 게스트 init을 내장한 배포용 `sbx`, `sbx-shim`을 만든다. 규칙은 [`dist`]에 있다.
@@ -22,6 +24,7 @@ mod demo;
 mod dist;
 mod initramfs;
 mod kernel;
+mod layout;
 mod modules;
 mod paths;
 mod repo;
@@ -39,87 +42,77 @@ enum Allowed {
 
 /// 의존 규칙. 직접 의존과 간접 의존 모두에 적용한다.
 ///
-/// - 실행(`sandbox-runtime`)과 관리(`sandbox-manage`)는 서로 의존하지 않는다.
-/// - 코어는 trait 크레이트에만 의존한다. 구현체(`sandbox-oci`, `executor-*`)를 고르는 것은 바이너리뿐이다.
-/// - `sandbox-proto`는 외부 크레이트를 쓰지 않는다. `sandbox-guest`는 시스템 호출 선언(`libc`)만 쓴다.
+/// - 실행(`sbx-runtime`)과 관리(`sbx-manage`)는 서로 의존하지 않는다.
+/// - 코어는 trait 크레이트에만 의존한다. 구현체(`sbx-oci`, `sbx-executor-*`)를 고르는 것은 바이너리뿐이다.
+/// - `sbx-guest-proto`는 외부 크레이트를 쓰지 않는다. `sbx-guest`는 시스템 호출 선언(`libc`)만 쓴다.
 /// - 대상 OS별 의존도 모두 센다(`cargo tree --target all`).
 const RULES: &[(&str, Allowed)] = &[
-    ("sandbox-model", Allowed::Workspace(&[])),
-    ("sandbox-proto", Allowed::Strict(&[])),
-    ("sandbox-executor", Allowed::Workspace(&["sandbox-model"])),
-    ("sandbox-image", Allowed::Workspace(&["sandbox-model"])),
-    ("sandbox-rootfs", Allowed::Workspace(&["sandbox-model"])),
-    ("sandbox-store", Allowed::Workspace(&["sandbox-model"])),
+    ("sbx-model", Allowed::Workspace(&[])),
+    ("sbx-guest-proto", Allowed::Strict(&[])),
+    ("sbx-executor", Allowed::Workspace(&["sbx-model"])),
+    ("sbx-image", Allowed::Workspace(&["sbx-model"])),
+    ("sbx-rootfs", Allowed::Workspace(&["sbx-model"])),
+    ("sbx-store", Allowed::Workspace(&["sbx-model"])),
     (
-        "sandbox-runtime",
-        Allowed::Workspace(&[
-            "sandbox-model",
-            "sandbox-proto",
-            "sandbox-executor",
-            "sandbox-store",
-        ]),
+        "sbx-runtime",
+        Allowed::Workspace(&["sbx-model", "sbx-guest-proto", "sbx-executor", "sbx-store"]),
     ),
     (
-        "sandbox-manage",
-        Allowed::Workspace(&[
-            "sandbox-model",
-            "sandbox-image",
-            "sandbox-rootfs",
-            "sandbox-store",
-        ]),
+        "sbx-manage",
+        Allowed::Workspace(&["sbx-model", "sbx-image", "sbx-rootfs", "sbx-store"]),
     ),
+    ("sbx-oci", Allowed::Workspace(&["sbx-model", "sbx-image"])),
     (
-        "sandbox-oci",
-        Allowed::Workspace(&["sandbox-model", "sandbox-image"]),
-    ),
-    (
-        "executor-fake",
+        "sbx-executor-fake",
         // 게스트 쪽 연결 처리를 호스트에서 그대로 돌리고, 실행기 규약을 말한다.
         Allowed::Workspace(&[
-            "sandbox-model",
-            "sandbox-executor",
-            "executor-proto",
-            "sandbox-proto",
-            "sandbox-guest",
+            "sbx-model",
+            "sbx-executor",
+            "sbx-executor-proto",
+            "sbx-guest-proto",
+            "sbx-guest",
         ]),
     ),
     // 실행기 통신 규약. 외부 실행기 저장소가 가져다 쓰므로 workspace 크레이트에 의존하지 않는다.
-    ("executor-proto", Allowed::Workspace(&[])),
+    ("sbx-executor-proto", Allowed::Workspace(&[])),
     (
-        "executor-process",
-        Allowed::Workspace(&["sandbox-model", "sandbox-executor", "executor-proto"]),
+        "sbx-executor-process",
+        Allowed::Workspace(&["sbx-model", "sbx-executor", "sbx-executor-proto"]),
     ),
-    ("sandbox-guest", Allowed::Strict(&["sandbox-proto", "libc"])),
+    ("sbx-guest", Allowed::Strict(&["sbx-guest-proto", "libc"])),
     // Firecracker adapter: 실행기 규약과 Firecracker 공개 인터페이스만 안다. sbx 코어를 모른다.
     (
-        "executor-firecracker",
-        Allowed::Workspace(&["executor-proto"]),
+        "sbx-executor-firecracker",
+        Allowed::Workspace(&["sbx-executor-proto"]),
     ),
     // 설치된 실행기 관리. std만 쓴다.
-    ("executor-install", Allowed::Strict(&[])),
-    // 실행기 저장소 규약과 클라이언트. 실행기 이름 규칙은 executor-install을 따른다. sbx 코어를 모른다.
-    ("executor-repo", Allowed::Workspace(&["executor-install"])),
+    ("sbx-executor-install", Allowed::Strict(&[])),
+    // 실행기 저장소 규약과 클라이언트. 실행기 이름 규칙은 sbx-executor-install을 따른다. sbx 코어를 모른다.
     (
-        "sandbox-shim",
+        "sbx-executor-repo",
+        Allowed::Workspace(&["sbx-executor-install"]),
+    ),
+    (
+        "sbx-shim",
         Allowed::Workspace(&[
-            "sandbox-model",
-            "sandbox-proto",
-            "sandbox-executor",
-            "sandbox-store",
-            "sandbox-runtime",
-            "executor-process",
-            "executor-proto",
+            "sbx-model",
+            "sbx-guest-proto",
+            "sbx-executor",
+            "sbx-store",
+            "sbx-runtime",
+            "sbx-executor-process",
+            "sbx-executor-proto",
         ]),
     ),
-    ("sandbox-cli", Allowed::Any),
+    ("sbx-cli", Allowed::Any),
 ];
 
 /// 켜면 안 되는 feature: (크레이트, 의존 크레이트, feature).
 ///
 /// 실행 쪽이 캐시 쓰기 API를 켜면 "실행은 캐시를 읽기만 한다"가 깨진다.
 const FORBIDDEN_FEATURES: &[(&str, &str, &str)] = &[
-    ("sandbox-runtime", "sandbox-store", "write"),
-    ("sandbox-shim", "sandbox-store", "write"),
+    ("sbx-runtime", "sbx-store", "write"),
+    ("sbx-shim", "sbx-store", "write"),
 ];
 
 fn main() -> ExitCode {
@@ -137,6 +130,21 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Some("deps-doc") => {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("xtask lives inside the workspace");
+            match layout::write_doc(root) {
+                Ok(path) => {
+                    println!("{}", path.display());
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("deps-doc: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Some("guest-initramfs") => {
             let root = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .parent()
@@ -257,22 +265,24 @@ fn check_deps() -> Result<(), Vec<String>> {
         .expect("xtask lives inside the workspace");
 
     let rule_names: BTreeSet<&str> = RULES.iter().map(|(n, _)| *n).collect();
-    let crate_dirs: BTreeSet<String> = std::fs::read_dir(root.join("crates"))
-        .map_err(|e| vec![format!("cannot read crates/: {e}")])?
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().join("Cargo.toml").is_file())
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .collect();
-    for dir in &crate_dirs {
-        if !rule_names.contains(dir.as_str()) {
-            problems.push(format!("crates/{dir} has no rule in xtask RULES"));
+    let crates = layout::crates(root).map_err(|e| vec![e])?;
+    for c in &crates {
+        if !rule_names.contains(c.name.as_str()) {
+            problems.push(format!(
+                "{} (crates/{}) has no rule in xtask RULES",
+                c.name, c.folder
+            ));
         }
     }
     for name in &rule_names {
-        if !crate_dirs.contains(*name) {
-            problems.push(format!("rule for {name} but crates/{name} does not exist"));
+        if !crates.iter().any(|c| c.name == *name) {
+            problems.push(format!(
+                "rule for {name} but there is no such crate under crates/"
+            ));
         }
     }
+    problems.extend(layout::check(&crates));
+    problems.extend(layout::check_doc(root, &crates));
 
     for (name, allowed) in RULES {
         let deps = match tree(root, name, &["-e", "normal"]) {
@@ -300,16 +310,11 @@ fn check_deps() -> Result<(), Vec<String>> {
         }
     }
 
-    for dir in crate_dirs
+    for (name, dir) in crates
         .iter()
-        .map(|d| root.join("crates").join(d))
-        .chain([root.join("xtask")])
+        .map(|c| (c.name.clone(), c.dir.clone()))
+        .chain([("xtask".to_owned(), root.join("xtask"))])
     {
-        let name = dir
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
         problems.extend(modules::check(&name, &dir.join("src")));
     }
 

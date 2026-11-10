@@ -154,7 +154,7 @@ lookups fail at once instead of hanging.
 Exit codes follow Docker: 125 when `sbx` fails, 126 when the command can't run, 127 when it isn't found, and the
 command's own code otherwise.
 
-Where `sbx` differs from Docker, it's on purpose, and every difference is [listed in one place](crates/sandbox-cli/src/behavior.rs).
+Where `sbx` differs from Docker, it's on purpose, and every difference is [listed in one place](crates/app/cli/src/behavior.rs).
 
 ## Give your AI agent a computer
 
@@ -212,19 +212,20 @@ process. The first pull of a large image reports progress (`notifications/progre
   sandbox's own disk on top, and serves exec, file copy and egress over vsock.
 - **Your images are never modified.** The kernel comes from the executor bundle and is shared by every image. An image
   can bring its own kernel instead, with the label `io.github.toollyst.sandbox.kernel=/path/in/image`.
-- **Dependencies point one way:** model → protocols → cores → CLI. `cargo xtask check-deps` enforces it. The cores never
-  pick implementations; only the binaries do.
+- **Dependencies point one way**, through layer folders: `model` → `spec` → `port` → `adapter` → `core` → `app`.
+  `cargo xtask check-deps` enforces it. The cores never pick implementations; only the binaries do. The
+  [developer docs](docs/developers/) map every crate.
 
 ## Bring your own VMM
 
 `sbx` doesn't hard-code a VMM. It talks to an **executor**: any program that speaks the small, documented
-[executor protocol](crates/executor-proto/src/lib.rs). `capabilities` prints one JSON line, and `run` reads a `Launch`
+[executor protocol](crates/spec/executor-proto/src/lib.rs). `capabilities` prints one JSON line, and `run` reads a `Launch`
 request on stdin and reports `Started` and `Exited`. The bundled adapter drives Firecracker through its public
 interface (a config file and vsock), so it works with upstream Firecracker on Linux and with
 [our Hypervisor.framework port](https://github.com/toollyst/firecracker) on macOS.
 
 Executors install and switch the way language versions do. They come from **static repositories**, following an
-[open spec](crates/executor-repo/src/lib.rs): one `index.json` plus `.tar.gz` bundles, with OCI platform names,
+[open spec](crates/spec/executor-repo/src/lib.rs): one `index.json` plus `.tar.gz` bundles, with OCI platform names,
 SHA-256 and size checks. You can host one on GitHub Pages, S3 or a plain directory:
 
 ```sh
@@ -248,8 +249,8 @@ cargo xtask repo-add --repo ./executors --bundle ./bundle --name myvmm --version
 
 ## Use it as a library
 
-The CLI and the MCP server are thin layers over two plain Rust crates: `sandbox-manage` (images and cache) and
-`sandbox-runtime` (sandbox lifecycle). Neither assumes a CLI, and they can share state directories or keep their own.
+The CLI and the MCP server are thin layers over two plain Rust crates: `sbx-manage` (images and cache) and
+`sbx-runtime` (sandbox lifecycle). Neither assumes a CLI, and they can share state directories or keep their own.
 Bindings for other languages are planned.
 
 ## Development
@@ -263,8 +264,9 @@ cargo xtask demo                        # re-record assets/demo.svg for real
 cargo xtask kernel --arch x86_64        # the default guest kernel (built in Docker)
 ```
 
-The design notes and roadmap in [`docs/`](docs/) and the per-crate rules in each crate's docs are written in Korean.
-The [roadmap](docs/roadmap.md) shows what's done and what's next.
+Start with the [developer docs](docs/developers/): how the code is laid out, how a `sbx run` travels from the CLI to
+the guest and back, and how to test and release. The design notes and [roadmap](docs/roadmap.md) in `docs/` and the
+per-crate rules in each crate's docs are written in Korean.
 
 ## Not Docker Sandboxes
 

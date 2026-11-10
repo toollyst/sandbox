@@ -44,7 +44,7 @@ jobs:
           rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
           cargo xtask guest-initramfs --arch x86_64
           cargo xtask guest-initramfs --arch aarch64
-          SBX_EMBED_GUEST="$PWD/target/guest/$(uname -m)/initramfs" cargo test -p sandbox-cli --test e2e
+          SBX_EMBED_GUEST="$PWD/target/guest/$(uname -m)/initramfs" cargo test -p sbx-cli --test e2e
           cargo xtask dist
 
   # root와 loop 장치가 필요한 테스트 (커널이 scratch를 마운트하고 overlay upper로 쓰는지).
@@ -56,9 +56,9 @@ jobs:
           docker run --rm --privileged -v "$PWD":/src -w /src \
             -e SANDBOX_PRIVILEGED_TESTS=1 -e SANDBOX_REQUIRE_E2FSCK=1 rust:1 bash -ec '
               apt-get update -qq && apt-get install -y -qq e2fsprogs
-              cargo test -p sandbox-guest --lib privileged -- --nocapture'
+              cargo test -p sbx-guest --lib privileged -- --nocapture'
 
-  # 실제 VM: upstream Firecracker(KVM) + executor-firecracker + `cargo xtask kernel`로 만든 커널.
+  # 실제 VM: upstream Firecracker(KVM) + sbx-executor-firecracker + `cargo xtask kernel`로 만든 커널.
   # x86_64 러너에는 /dev/kvm이 있어야 한다. arm 러너에 없으면 건너뛰고 알린다.
   vm:
     name: vm (${{ matrix.arch }})
@@ -100,7 +100,7 @@ jobs:
         run: |
           rustup target add "$ARCH-unknown-linux-musl"
           cargo xtask dist
-          cargo build --release -p executor-firecracker
+          cargo build --release -p sbx-executor-firecracker
           [ -f "target/kernel/$ARCH/kernel" ] || cargo xtask kernel --arch "$ARCH"
       - if: steps.kvm.outputs.ok == 'true'
         name: executor bundle (upstream Firecracker release, checked by its sha256)

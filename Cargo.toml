@@ -1,6 +1,26 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "xtask"]
+members = [
+    "crates/model",
+    "crates/spec/guest-proto",
+    "crates/spec/executor-proto",
+    "crates/spec/executor-repo",
+    "crates/spec/executor-install",
+    "crates/port/executor",
+    "crates/port/image",
+    "crates/port/rootfs",
+    "crates/port/store",
+    "crates/adapter/oci",
+    "crates/adapter/executor-process",
+    "crates/core/runtime",
+    "crates/core/manage",
+    "crates/app/cli",
+    "crates/app/shim",
+    "crates/app/guest",
+    "crates/executor/fake",
+    "crates/executor/firecracker",
+    "xtask",
+]
 
 [workspace.package]
 version = "0.1.1"
@@ -33,19 +53,19 @@ clap_complete = "4"
 crossterm = { version = "0.29", default-features = false, features = ["windows"] }
 
 # workspace
-sandbox-model = { path = "crates/sandbox-model" }
-sandbox-proto = { path = "crates/sandbox-proto" }
-sandbox-guest = { path = "crates/sandbox-guest" }
-sandbox-executor = { path = "crates/sandbox-executor" }
-sandbox-image = { path = "crates/sandbox-image" }
-sandbox-rootfs = { path = "crates/sandbox-rootfs" }
-sandbox-store = { path = "crates/sandbox-store" }
-sandbox-runtime = { path = "crates/sandbox-runtime" }
-sandbox-manage = { path = "crates/sandbox-manage" }
-sandbox-oci = { path = "crates/sandbox-oci" }
-executor-fake = { path = "crates/executor-fake" }
-executor-proto = { path = "crates/executor-proto" }
-executor-process = { path = "crates/executor-process" }
-executor-install = { path = "crates/executor-install" }
-executor-repo = { path = "crates/executor-repo" }
-sandbox-shim = { path = "crates/sandbox-shim" }
+sbx-model = { path = "crates/model" }
+sbx-guest-proto = { path = "crates/spec/guest-proto" }
+sbx-guest = { path = "crates/app/guest" }
+sbx-executor = { path = "crates/port/executor" }
+sbx-image = { path = "crates/port/image" }
+sbx-rootfs = { path = "crates/port/rootfs" }
+sbx-store = { path = "crates/port/store" }
+sbx-runtime = { path = "crates/core/runtime" }
+sbx-manage = { path = "crates/core/manage" }
+sbx-oci = { path = "crates/adapter/oci" }
+sbx-executor-fake = { path = "crates/executor/fake" }
+sbx-executor-proto = { path = "crates/spec/executor-proto" }
+sbx-executor-process = { path = "crates/adapter/executor-process" }
+sbx-executor-install = { path = "crates/spec/executor-install" }
+sbx-executor-repo = { path = "crates/spec/executor-repo" }
+sbx-shim = { path = "crates/app/shim" }
