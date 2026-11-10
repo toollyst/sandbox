@@ -47,4 +47,4 @@ These are known gaps, in rough order of importance. Some are on the [roadmap](do
 - **The macOS VMM is a port.** See the first boundary above: no seccomp on macOS, and the Hypervisor.framework
   port is young.
 - **Side channels** between VMs on the same host (CPU caches, timing) are out of scope.
-- **The guest init and its protocol have not been fuzzed** or audited by a third party.
+- **The guest init and its protocol have not been audited by a third party.** The decoders are tested with 200,000 random and mutated messages on every run, but there is no coverage-guided fuzzing yet.

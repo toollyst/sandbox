@@ -18,7 +18,7 @@ pub fn write_frame<W: Write + ?Sized>(w: &mut W, payload: &[u8]) -> io::Result<(
     w.write_all(payload)
 }
 
-/// 프레임 하나를 읽는다. 길이가 상한을 넘으면 본문을 읽지 않고 오류를 낸다.
+/// 프레임 하나를 읽는다. 길이가 상한을 넘으면 본문을 읽지 않고 오류를 낸다. 본문이 짧으면 `UnexpectedEof`.
 pub fn read_frame<R: Read + ?Sized>(r: &mut R) -> io::Result<Vec<u8>> {
     let mut len = [0u8; 4];
     r.read_exact(&mut len)?;
@@ -29,8 +29,15 @@ pub fn read_frame<R: Read + ?Sized>(r: &mut R) -> io::Result<Vec<u8>> {
             "frame exceeds MAX_FRAME_LEN",
         ));
     }
-    let mut buf = vec![0; len];
-    r.read_exact(&mut buf)?;
+    // 머리의 길이만큼 미리 잡지 않는다. 받은 만큼만 늘린다(길이만 보내고 멈추는 쪽이 메모리를 잡지 못한다).
+    let mut buf = Vec::new();
+    r.take(len as u64).read_to_end(&mut buf)?;
+    if buf.len() != len {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "frame ended before its length",
+        ));
+    }
     Ok(buf)
 }
 
@@ -65,5 +72,13 @@ mod tests {
         wire.extend_from_slice(b"abc");
         let err = read_frame(&mut wire.as_slice()).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn a_frame_shorter_than_its_header_is_an_eof_error() {
+        let mut b = (MAX_FRAME_LEN as u32).to_be_bytes().to_vec();
+        b.extend_from_slice(b"short");
+        let e = read_frame(&mut &b[..]).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
     }
 }

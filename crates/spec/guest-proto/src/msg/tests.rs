@@ -173,3 +173,70 @@ fn relative_paths() {
         assert!(check_relative_path(bad).is_err(), "{bad:?}");
     }
 }
+
+/// 작은 결정적 난수 (xorshift64*). 테스트가 같은 입력을 되풀이하게 한다.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+}
+
+/// 적대적 게스트: 아무 바이트나, 맞는 메시지를 흐트러뜨린 바이트를 보내도 해석은 패닉 없이 끝나고,
+/// 성공하면 다시 인코딩한 값이 같다(받아들인 것은 규약 안의 것이다).
+#[test]
+fn hostile_bytes_never_panic_the_decoder() {
+    let mut rng = Rng(0x5eed_5bc0_ffee);
+    let seeds: Vec<Vec<u8>> = guest_samples()
+        .iter()
+        .map(GuestMsg::encode)
+        .chain(host_samples().iter().map(HostMsg::encode))
+        .collect();
+    for i in 0..200_000 {
+        let body: Vec<u8> = if i % 2 == 0 {
+            let len = rng.below(64);
+            (0..len).map(|_| rng.next() as u8).collect()
+        } else {
+            let mut b = seeds[rng.below(seeds.len())].clone();
+            for _ in 0..=rng.below(4) {
+                match rng.below(3) {
+                    0 if !b.is_empty() => {
+                        let at = rng.below(b.len());
+                        b[at] = rng.next() as u8;
+                    }
+                    1 => {
+                        let at = rng.below(b.len() + 1);
+                        b.insert(at, rng.next() as u8);
+                    }
+                    _ if !b.is_empty() => {
+                        let at = rng.below(b.len());
+                        b.remove(at);
+                    }
+                    _ => {}
+                }
+            }
+            b
+        };
+        if let Ok(m) = GuestMsg::decode(&body) {
+            assert_eq!(GuestMsg::decode(&m.encode()).as_ref(), Ok(&m), "{body:?}");
+        }
+        if let Ok(m) = HostMsg::decode(&body) {
+            assert_eq!(HostMsg::decode(&m.encode()).as_ref(), Ok(&m), "{body:?}");
+        }
+        // 프레임 읽기도: 길이 머리에 어떤 값이 와도 미리 크게 잡지 않는다.
+        let mut framed = (body.len() as u32).to_be_bytes().to_vec();
+        if i % 7 == 0 {
+            framed[..4].copy_from_slice(&(rng.next() as u32).to_be_bytes());
+        }
+        framed.extend_from_slice(&body);
+        let _ = GuestMsg::read_from(&mut &framed[..]);
+    }
+}
