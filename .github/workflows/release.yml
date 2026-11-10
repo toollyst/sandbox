@@ -1,9 +1,10 @@
 # 릴리스: 태그 `v<버전>`(작업 공간 버전과 같아야 한다)을 push하면
 #
 # 1. sbx: Linux x86_64/aarch64(musl 정적)와 macOS arm64의 `sbx-<os>-<arch>.tar.gz`(+ `.sha256`)
-# 2. smoke: KVM이 있는 Linux x86_64 러너에서 이 sbx로 공식 저장소의 `sbx executor install wick`을 하고
-#    `cargo xtask smoke`를 통과해야 올린다(사용자가 하는 그대로). wick이 아직 공식 저장소에 없거나 이 sbx의
-#    규약 버전에 맞는 어댑터가 없으면 실패한다. 먼저 executors.yml을 돌린다.
+# 2. smoke: KVM이 있는 Linux x86_64 러너에서, 이 커밋으로 만든 어댑터와 upstream Firecracker VMM 묶음을 로컬 v2
+#    저장소(file://)에 두고 1의 sbx로 `sbx executor install firecracker@<FIRECRACKER>`를 한 뒤 `cargo xtask smoke`를
+#    통과해야 올린다(ci.yml의 vm과 같다). sbx 릴리스는 wick 릴리스에도 공식 저장소의 내용에도 기대지 않는다.
+#    sbx는 VMM 런타임에 묶이지 않고, 실행기는 따로 executors.yml로 올린다.
 # 3. GitHub Release에 1의 파일을 올리고, `install.sh`를 gh-pages 맨 위에 둔다.
 #    (저장소 설정의 Pages 소스를 gh-pages 브랜치로 해 두어야 https://toollyst.github.io/sandbox/ 로 보인다.)
 #
@@ -76,6 +77,10 @@ jobs:
   smoke:
     needs: [version, sbx]
     runs-on: ubuntu-latest
+    env:
+      # upstream Firecracker 버전(ci.yml의 vm과 같게 둔다).
+      FIRECRACKER: 1.17.0
+      ARCH: x86_64
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -86,14 +91,25 @@ jobs:
           [ -e /dev/kvm ] || { echo "::error::/dev/kvm is missing"; exit 1; }
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
           sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
-      - name: smoke (the released sbx with wick from the official repository)
+      - uses: actions/cache@v4
+        with:
+          path: target/kernel/x86_64/kernel
+          key: kernel-x86_64-${{ hashFiles('xtask/kernel/*', 'xtask/src/kernel.rs') }}
+      - name: adapter (this commit) and VMM package (upstream Firecracker, checked by its sha256)
+        run: |
+          set -euo pipefail
+          cargo build --release -p sbx-executor-firecracker
+          [ -f "target/kernel/$ARCH/kernel" ] || cargo xtask kernel --arch "$ARCH"
+          mkdir -p adapter
+          install -m 755 target/release/sbx-executor-firecracker adapter/sbx-executor
+          cp "target/kernel/$ARCH/kernel" adapter/kernel
+          .github/scripts/kernel-notice.sh adapter/KERNEL-SOURCE.txt
+          WORK=fc .github/scripts/upstream-vmm.sh "$FIRECRACKER" "$ARCH" vmm
+      - name: smoke (the released sbx, installing from a local v2 repository)
         run: |
           tar xzf dist/sbx-linux-x86_64.tar.gz -C dist
-          sbx="$PWD/dist/sbx-linux-x86_64/sbx"
-          "$sbx" executor install wick \
-            || { echo "::error::sbx executor install wick failed; publish wick (executors.yml) for this sbx first"; exit 1; }
-          "$sbx" executor ls
-          cargo xtask smoke --sbx "$sbx"
+          av=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "sbx-executor-firecracker") | .version')
+          .github/scripts/smoke-local.sh "$PWD/dist/sbx-linux-x86_64/sbx" executors adapter "$av" vmm firecracker "$FIRECRACKER"
 
   publish:
     needs: [version, sbx, smoke]

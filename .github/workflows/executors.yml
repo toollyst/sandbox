@@ -21,7 +21,7 @@
 #    - 어댑터 묶음: `sbx-executor`(sbx-executor-firecracker) + `cargo xtask kernel`로 만든 기본 커널 `kernel`
 #      + 커널(GPL-2.0)의 소스와 설정을 알리는 `KERNEL-SOURCE.txt`(.github/scripts/kernel-notice.sh).
 #    - KVM이 있는 Linux 러너에서는 이 커밋의 sbx로 로컬 v2 저장소(file://)에서 `sbx executor install wick@<버전>`을
-#      하고 `cargo xtask smoke`를 통과해야 한다(.github/scripts/smoke-wick.sh, ci.yml의 vm과 같다).
+#      하고 `cargo xtask smoke`를 통과해야 한다(.github/scripts/smoke-local.sh, ci.yml의 vm과 같다).
 #      x86_64에는 /dev/kvm이 꼭 있어야 한다. macOS 러너는 HVF 게스트를 돌리지 못해 smoke가 없다.
 # 3. publish: `cargo xtask repo-add --schema 2`로 gh-pages의 `executors/v2/index.json`에 더하고, 압축 파일은
 #    GitHub Release `wick-<wick 버전>`, `firecracker-adapter-<버전>`에 올린 뒤(`--latest=false`: install.sh가 받는
@@ -319,7 +319,7 @@ jobs:
           set -euo pipefail
           rustup target add "$ARCH-unknown-linux-musl"
           cargo xtask dist
-          .github/scripts/smoke-wick.sh target/release/sbx local adapter "$ADAPTER_VERSION" vmm "$WICK_VERSION"
+          .github/scripts/smoke-local.sh target/release/sbx local adapter "$ADAPTER_VERSION" vmm wick "$WICK_VERSION"
 
       # 업로드한 artifact는 실행 권한을 잃으므로 tar로 묶는다.
       - name: pack
