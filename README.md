@@ -1,142 +1,134 @@
-# sbx
+<h1 align="center">sbx</h1>
 
-**Docker-style sandboxes, each in its own microVM.**
+<p align="center">
+  <b>Run any Docker image in its own microVM.</b><br>
+  The commands you already know. A real kernel boundary. About 120 ms from <code>run</code> to done.
+</p>
 
-`sbx` runs any OCI image (Docker Hub, GHCR, your own registry) inside a hardware-isolated
-[Firecracker](https://firecracker-microvm.github.io/) microVM with its own Linux kernel. You use it the way you already
-use `docker`, and a full boot → run → shutdown → cleanup cycle takes about **120 ms**.
+<p align="center">
+  <a href="https://github.com/toollyst/sandbox/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/toollyst/sandbox?color=2ea44f"></a>
+  <a href="https://github.com/toollyst/sandbox/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/toollyst/sandbox/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="#license"><img alt="License: Apache-2.0 OR MIT" src="https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue"></a>
+  <img alt="Platforms: macOS (Apple Silicon) and Linux" src="https://img.shields.io/badge/runs%20on-macOS%20%C2%B7%20Linux-lightgrey">
+</p>
+
+```sh
+curl -fsSL https://toollyst.github.io/sandbox/install.sh | sh
+sbx run --rm -it python:3.12-alpine python
+```
 
 <p align="center">
   <img src="assets/demo.svg" width="876" alt="Terminal recording: sbx run prints Linux 6.1.155; time shows how long one run takes; the sandbox has no network device; with --network allow only example.com is reachable and github.com gets 403; a detached sandbox is exec'd into, listed with ps and removed; a Python image runs.">
 </p>
 
-<sub>A real recording (`cargo xtask demo`, macOS on Apple Silicon): every command ran for real, and the output appears
-when it actually arrived. Only the typing is simulated.</sub>
+<p align="center"><sub>A real recording on an Apple Silicon Mac (<code>cargo xtask demo</code>). Every command ran for real and the
+output appears when it actually arrived. Only the typing is simulated.</sub></p>
 
-Built for running code you don't trust: AI agents (there is a built-in [MCP server](#use-it-from-ai-agents-mcp)),
-user-submitted code, CI jobs, plugins.
+`sbx` takes an OCI image from Docker Hub, GHCR or your own registry and boots it in a
+[Firecracker](https://firecracker-microvm.github.io/) microVM with its own Linux kernel, behind hardware virtualization.
+It is made for running code you don't trust: **AI agents** (with a built-in [MCP server](#give-your-ai-agent-a-computer)),
+user-submitted code, CI jobs and plugins.
 
-> **Status: pre-release.** It works end to end on Apple Silicon Macs and on Linux x86_64 with KVM (real VMs boot in CI
-> on every push). Prebuilt binaries and executor bundles come with the first release. See [Status](#status).
+- **No daemon, no root, no account.** One binary and no background service. On macOS it needs no privileges at all.
+- **Offline by default.** The VM has no network device. You allow `host:port` pairs one by one, and the host enforces them.
+- **Docker muscle memory.** `run -it`, `-d`, `exec`, `cp`, `logs -f`, `ps -aq`, `--name`, `--env-file` and exit codes
+  125/126/127 behave the way you expect.
 
-## Why
+## sbx next to a container
 
-- **A kernel boundary, not just namespaces.** Containers share the host kernel. Each `sbx` sandbox gets its own
-  kernel behind hardware virtualization (KVM on Linux, Hypervisor.framework on macOS).
-- **Docker muscle memory.** `run`, `exec`, `cp`, `logs`, `ps`, `stop`, `kill`, `wait`, `attach` and `rm`, with the flags
-  you reach for (`-it`, `-d`, `-e`, `--env-file`, `-w`, `-u`, `--rm`, `--name`, `-q`, `--tail`), names and ID prefixes,
-  and exit codes 125/126/127, work the way you expect. Where `sbx` differs, the difference is deliberate and
-  [written down](crates/sandbox-cli/src/behavior.rs).
-- **Locked down by default.** There is no network device at all. Outbound access is opt-in, per `host:port`, enforced on
-  the host, with names that resolve to private addresses refused. The image's root filesystem is read-only, and every
-  sandbox writes to its own disk. The [threat model](SECURITY.md) spells out what is and isn't covered.
-- **Fast.** Images are converted once into an EROFS disk image. After that, starting a sandbox is just booting a VM.
-- **No daemon, no root.** `sbx` is a single binary. A detached sandbox is owned by a small per-sandbox `sbx-shim`
-  process. On macOS no privileges are needed; on Linux you need access to `/dev/kvm`.
-- **Pure Rust image pipeline.** Pulling, layer merging (gzip and zstd, whiteouts, hard links), and EROFS writing are all
-  done in Rust. There are no `mkfs`, loop devices, or `sudo`, and it works the same on macOS and Linux.
-- **Pluggable VMMs.** `sbx` talks to VMMs through a small, documented [executor protocol](crates/executor-proto/src/lib.rs).
-  Executors install and switch like a language version manager does (`sbx executor install/use`), from any static
-  repository (an [open spec](crates/executor-repo/src/lib.rs) that works with GitHub Pages, S3, or a plain directory).
+|  | `docker run` | `sbx run` |
+| --- | --- | --- |
+| Isolation | Namespaces and cgroups on the **host kernel** | A **separate kernel** behind KVM or Hypervisor.framework |
+| Network | A bridge network, on by default | **No network device.** Opt in per `host:port`, checked on the host |
+| Root filesystem | Writable layer over the image | Read-only EROFS image under a **per-sandbox disk** |
+| Runs as | A long-running daemon, usually root | Your user. Per sandbox: the VMM, plus a small `sbx-shim` when detached |
+| Images | OCI | The same OCI images, unmodified |
+| Commands | `docker …` | `sbx …`, with the same names and flags |
+
+Containers are great at packaging. Sharing a kernel with code you didn't write is the part `sbx` replaces.
 
 ## Numbers
 
-Measured with `cargo xtask bench` on an Apple Silicon Mac (macOS, Hypervisor.framework), 1 vCPU / 512 MiB per sandbox:
+`cargo xtask bench` on an Apple Silicon Mac (Hypervisor.framework), 1 vCPU and 512 MiB per sandbox:
 
 | What | p50 | p90 |
 | --- | --- | --- |
-| `sbx run --rm alpine:3.20 true` (boot, run, shut down, delete) | **121 ms** | 139 ms |
-| `sbx exec <id> true` (in a running sandbox) | **8 ms** | 10 ms |
+| `sbx run --rm alpine:3.20 true`: boot a VM, run, shut down, delete | **121 ms** | 139 ms |
+| `sbx exec <id> true` in a running sandbox | **8 ms** | 10 ms |
 | 10 × `sbx run --rm alpine:3.20 true` at once, until all are done | **0.50 s** | |
 
-Run the benchmark on your own machine: `cargo xtask bench` (see [`xtask/src/bench.rs`](xtask/src/bench.rs)).
+Images are converted once into an EROFS disk image and cached, so after the first run, starting a sandbox is just
+booting a VM. Try it on your machine with `cargo xtask bench` ([source](xtask/src/bench.rs)).
 
-## Quick start
-
-### Install
+## Install
 
 ```sh
 curl -fsSL https://toollyst.github.io/sandbox/install.sh | sh
 ```
 
-This puts `sbx` and `sbx-shim` in `~/.local/bin` (checked against their SHA-256) and installs the `firecracker`
-executor (VMM, adapter, and guest kernel) from the official executor repository. It needs Linux x86_64/aarch64 with
-`/dev/kvm`, or an Apple Silicon Mac with macOS 15 or later. Nothing runs as root. Set `SBX_VERSION`, `SBX_INSTALL_DIR`, or
-`SBX_NO_EXECUTOR=1` to change what it does; the script is [short](install.sh).
+You need one of:
 
-`sbx info` checks the result: it shows the host, whether hardware virtualization is usable, the executor and what it
-supports. Tab completion: `sbx completion bash|zsh|fish|powershell` prints a script for your shell
-(`sbx completion --help` shows where to put it).
+- **macOS 15 or later on Apple Silicon.** No setup needed.
+- **Linux on x86_64 or aarch64 with `/dev/kvm`.** That means bare metal, or a VM with nested virtualization, and you
+  need read and write access to `/dev/kvm` (usually through the `kvm` group). `sbx info` tells you if it's missing.
 
-> The installer works from the first release on. Until then, build from source.
+The installer puts `sbx` and `sbx-shim` in `~/.local/bin` after checking their SHA-256. It then installs the
+`firecracker` executor (VMM, adapter and guest kernel) from the [official repository](https://toollyst.github.io/sandbox/executors/index.json).
+Nothing runs as root.
 
-Then skip to [Run things](#run-things).
+You can change what it does with `SBX_VERSION`, `SBX_INSTALL_DIR` or `SBX_NO_EXECUTOR=1`. The script is
+[short enough to read](install.sh).
 
-### Or build from source
+```sh
+sbx info                      # host, hardware virtualization, executor, directories: check it worked
+sbx completion zsh --help     # tab completion for bash, zsh, fish and PowerShell
+```
 
-You need Rust (stable) and, for the guest init, the `*-unknown-linux-musl` target of your machine's architecture.
+<details>
+<summary><b>Build from source</b></summary>
+
+You need Rust (stable) and the `*-unknown-linux-musl` target for your machine's architecture. The guest init is built
+for it and embedded in `sbx`.
 
 ```sh
 git clone https://github.com/toollyst/sandbox && cd sandbox
 rustup target add "$(uname -m | sed s/arm64/aarch64/)-unknown-linux-musl"
-cargo xtask dist        # builds target/release/sbx and target/release/sbx-shim (guest init embedded)
+cargo xtask dist                  # target/release/sbx and sbx-shim
 export PATH="$PWD/target/release:$PATH"
+sbx executor install firecracker  # prebuilt executor from the official repository
 ```
 
-An executor bundle holds three things: the adapter (`sbx-executor`), the VMM (`firecracker`), and a guest kernel.
+To build an executor bundle yourself instead, follow the `executor-*` jobs in [`release.yml`](.github/workflows/release.yml).
+A bundle is the adapter (`sbx-executor`), a VMM (`firecracker`) and a kernel (`cargo xtask kernel`). Install it with
+`sbx executor install --from ./bundle firecracker@local`, then check it on real VMs with `cargo xtask smoke`.
 
-```sh
-# from the official repository (built in), or any other static one (see "Executors")
-sbx executor install firecracker
+</details>
 
-# or from a local bundle directory or .tar.gz
-sbx executor install --from ./firecracker-bundle firecracker@0.1.0
-sbx executor ls
-```
-
-Until prebuilt bundles are published, build one yourself (this is exactly what CI does on Linux):
-
-```sh
-arch=$(uname -m | sed s/arm64/aarch64/)
-cargo build --release -p executor-firecracker
-cargo xtask kernel --arch "$arch"          # Linux 6.1 + Firecracker's CI config + sbx's needs, built in Docker
-mkdir bundle
-cp target/release/sbx-executor-firecracker bundle/sbx-executor
-cp "target/kernel/$arch/kernel" bundle/kernel
-cp /path/to/firecracker bundle/firecracker   # an upstream Firecracker release on Linux/KVM
-sbx executor install --from bundle firecracker@local
-cargo xtask smoke                          # 17 checks on a real VM
-```
-
-### Run things
+## Use it like Docker
 
 ```sh
 sbx run --rm alpine echo hello                       # attached, removed afterwards
 sbx run --rm -it alpine sh                           # interactive shell with a TTY
 sbx run --rm --cpus 2 -m 1g python:3.12-alpine python -c 'print(42)'
 
-id=$(sbx run -d alpine sleep 600)                    # detached
-sbx ps
-sbx exec "${id:0:6}" cat /etc/alpine-release           # any unique ID prefix works
-sbx logs -f "$id"
-sbx stop "$id" && sbx rm "$id"
+sbx run -d --name dev alpine sleep 600               # detached
+sbx exec -it dev sh                                  # names, IDs and unique ID prefixes all work
+sbx cp dev:/etc/alpine-release .
+sbx logs -f dev
+sbx stop dev && sbx rm dev
 
-sbx run -d --name dev alpine sleep 600
-sbx exec dev uname -r                                # names work wherever IDs do
-sbx rm -f dev
+sbx rm -f $(sbx ps -aq)                              # clean up everything
 ```
 
-## A tour
-
-**Files.** Copy a project in at start, and copy results out:
+**Files.** Copy a project in when the sandbox starts, and copy results out:
 
 ```sh
-sbx run --rm --mount type=copy,source=./proj,target=/work -w /work alpine sh -c 'ls; cat main.py'
-sbx cp "$id":/out/result.json ./result.json
+sbx run --rm --mount type=copy,source=./proj,target=/work -w /work python:3.12-alpine python main.py
+sbx cp dev:/out/result.json ./result.json
 ```
 
-Live sharing (`-v ./dir:/work[:ro]`) works with executors that support virtio-fs. The Firecracker executor doesn't yet,
-and `sbx` says so instead of silently copying.
+Live sharing (`-v ./dir:/work[:ro]`) needs an executor with virtio-fs. The Firecracker executor doesn't have it yet, and
+`sbx` says so instead of silently copying.
 
 **Network.** The VM never gets a network interface. With `--network allow`, an HTTP proxy inside the guest hands each
 connection to the host over vsock, and the host checks it against your list:
@@ -147,23 +139,26 @@ sbx run --rm --network allow \
     python:3.12-alpine pip install requests
 ```
 
-Rules can be `host:port`, `*.example.com:443`, `10.0.0.5:*` or `[::1]:80`. Names that resolve to loopback or private
-addresses are refused unless the rule names that IP (or `localhost`) explicitly.
+A rule can be `host:port`, `*.example.com:443`, `10.0.0.5:*` or `[::1]:80`. A name that resolves to a loopback or
+private address is refused unless the rule names that IP, or `localhost`, explicitly. Without `--network allow`, name
+lookups fail at once instead of hanging.
 
-**Lifecycle.** `create`, `start [-a] [-i]`, `stop [-s SIG] [-t SECS]` (the image's `StopSignal`, then power off),
-`restart`, `kill [-s SIG]`, `wait`, `attach` (detach with Ctrl-P Ctrl-Q), and `rm [-f]`. A stopped sandbox keeps its
-writable disk, so `start` picks up where it left off.
+**Lifecycle.** `create`, `start [-a] [-i]`, `stop [-s SIG] [-t SECS]`, `restart`, `kill [-s SIG]`, `wait`, `attach`
+(detach with Ctrl-P Ctrl-Q) and `rm [-f]`. A stopped sandbox keeps its disk, so `start` picks up where it left off.
 
-**Images.** `pull`, `prepare` (build the root filesystem disk image ahead of time), `images`, `rmi [-f]`. `run` pulls
-and prepares on first use (`--pull=missing|always|never`).
+**Images.** `pull` (with a progress bar), `prepare` (build the disk image ahead of time), `images [-q]` and `rmi [-f]`.
+`run` pulls and prepares on first use (`--pull=missing|always|never`).
 
-**Scripting.** `--format json` on `ps`, `inspect`, `images`, `executor ls`, and `executor search` gives machine-readable
-output. `ps -q` and `images -q` print only IDs, so `sbx rm -f $(sbx ps -aq)` cleans up everything.
+**Scripting.** `--format json` on `ps`, `inspect`, `images`, `executor ls` and `executor search`. `-q` prints IDs only.
+Exit codes follow Docker: 125 when `sbx` fails, 126 when the command can't run, 127 when it isn't found, and the
+command's own code otherwise.
 
-## Use it from AI agents (MCP)
+Where `sbx` differs from Docker, it's on purpose, and every difference is [listed in one place](crates/sandbox-cli/src/behavior.rs).
 
-`sbx mcp` serves sandboxes over the [Model Context Protocol](https://modelcontextprotocol.io) on stdio, so any MCP
-client can run code in a microVM instead of on your machine:
+## Give your AI agent a computer
+
+`sbx mcp` serves sandboxes over the [Model Context Protocol](https://modelcontextprotocol.io). Your agent gets a whole
+Linux machine it can install packages on, break and throw away, and your laptop stays out of reach.
 
 ```sh
 claude mcp add sbx -- sbx mcp          # Claude Code
@@ -175,21 +170,25 @@ claude mcp add sbx -- sbx mcp          # Claude Code
 
 | Tool | What it does |
 | --- | --- |
-| `run` | Run one command in a fresh sandbox, return exit code, stdout and stderr, then delete it |
-| `create` | Start a long-lived sandbox, optionally named (it survives the MCP server) |
+| `run` | Run one command in a fresh microVM and return the exit code, stdout and stderr. The VM is deleted afterwards |
+| `create` | Start a long-lived sandbox, optionally named. It outlives the MCP server |
 | `exec` | Run a command in a running sandbox |
-| `write_file` / `read_file` | Move files in and out (text or base64; parent directories are created) |
+| `write_file` / `read_file` | Move files in and out, as text or base64. Parent directories are created |
 | `list` / `remove` | See and clean up sandboxes |
 
-The MCP layer adds no policy. Tool arguments go through the same parser and rules as the CLI. The network stays off
-unless a call passes `allow: ["host:port", ...]`, host folders are never mounted, and arguments can't be turned into
-other `sbx` options. Commands have a timeout (default 300 s); after it, `run` powers the VM off and `exec` kills the
-process. The first use of a large image reports pull progress (`notifications/progress`), so clients don't give up on it.
+The MCP server adds no policy of its own. Tool arguments go through the same parser and rules as the CLI:
+
+- The network stays off unless a call passes `allow: ["host:port", …]`.
+- Host folders are never mounted.
+- Arguments can't be turned into other `sbx` options.
+
+Every command has a timeout (300 s by default). When it runs out, `run` powers the VM off and `exec` kills the
+process. The first pull of a large image reports progress (`notifications/progress`), so clients don't give up waiting.
 
 ## How it works
 
 ```text
- sbx (CLI) ──────────────────────────────────────────────────────────────────────────────┐
+ sbx (CLI or MCP) ─────────────────────────────────────────────────────────────────────────┐
    │  manage core: pull OCI image → merge layers → write EROFS disk image (pure Rust, cached) │
    │  run core:    sandbox records, lifecycle, guest protocol, egress allow list            │
    ▼                                                                                        │
@@ -206,84 +205,77 @@ process. The first use of a large image reports pull progress (`notifications/pr
                          └────────────────────────────────────────────┘
 ```
 
-- The **guest init** is embedded in the `sbx` binary and boots as the initramfs. It mounts the image read-only, layers
-  the sandbox's own disk on top, and serves exec, file-copy and egress requests over vsock.
-- Your **images are never modified**. The kernel comes from the executor bundle (one per architecture, shared by every
-  image). An image can also carry its own kernel: add the label `io.github.toollyst.sandbox.kernel=/path/in/image` and
-  `sbx` boots that kernel instead.
-- Crates have **one-way dependencies**, enforced by `cargo xtask check-deps`: model → protocols → cores → CLI. The cores
-  never pick implementations, and only binaries do.
+- **The image pipeline is pure Rust.** Pulling, merging layers (gzip and zstd, whiteouts, hard links) and writing EROFS
+  happen in-process. There is no `mkfs`, no loop device and no `sudo`, and it works the same on macOS and Linux.
+- **The guest init** is embedded in `sbx` and boots as the initramfs. It mounts the image read-only, layers the
+  sandbox's own disk on top, and serves exec, file copy and egress over vsock.
+- **Your images are never modified.** The kernel comes from the executor bundle and is shared by every image. An image
+  can bring its own kernel instead, with the label `io.github.toollyst.sandbox.kernel=/path/in/image`.
+- **Dependencies point one way:** model → protocols → cores → CLI. `cargo xtask check-deps` enforces it. The cores never
+  pick implementations; only the binaries do.
 
-## Executors
+## Bring your own VMM
 
-An executor is any program that speaks the [executor protocol](crates/executor-proto/src/lib.rs): `capabilities`
-prints a JSON line, and `run` takes a `Launch` request on stdin and reports `Started` and `Exited`. The VMM and kernel are
-the executor's business. This repo ships an adapter for Firecracker's public interface (config file and vsock), so it
-works with upstream Firecracker on Linux and with any build that implements the same interface.
+`sbx` doesn't hard-code a VMM. It talks to an **executor**: any program that speaks the small, documented
+[executor protocol](crates/executor-proto/src/lib.rs). `capabilities` prints one JSON line, and `run` reads a `Launch`
+request on stdin and reports `Started` and `Exited`. The bundled adapter drives Firecracker through its public
+interface (a config file and vsock), so it works with upstream Firecracker on Linux and with
+[our Hypervisor.framework port](https://github.com/toollyst/firecracker) on macOS.
 
-Executor **repositories** are static: one `index.json` plus `.tar.gz` bundles, with OCI platform names, SHA-256 and
-size checks, and relative URLs. Host one anywhere, like an apt repo:
+Executors install and switch the way language versions do. They come from **static repositories**, following an
+[open spec](crates/executor-repo/src/lib.rs): one `index.json` plus `.tar.gz` bundles, with OCI platform names,
+SHA-256 and size checks. You can host one on GitHub Pages, S3 or a plain directory:
 
 ```sh
 sbx executor repo add mine https://my.example.com/executors
 sbx executor search
-sbx executor install firecracker@0.1.0
-sbx executor use firecracker@0.1.0
-```
+sbx executor install firecracker@0.1.1
+sbx executor use firecracker@0.1.1
 
-To publish your own, add bundles to a directory and upload it as is:
-
-```sh
-cargo xtask repo-add --repo ./executors --bundle ./bundle --name firecracker --version 0.1.0
+cargo xtask repo-add --repo ./executors --bundle ./bundle --name myvmm --version 0.1.0   # publish your own
 ```
 
 ## Platforms
 
 | Host | VMM | Status |
 | --- | --- | --- |
-| macOS 15+, Apple Silicon | Firecracker ported to Hypervisor.framework ([toollyst/firecracker](https://github.com/toollyst/firecracker)) | works end to end |
-| Linux x86_64 | upstream Firecracker on KVM | works end to end (real-VM checks in CI) |
-| Linux aarch64 | upstream Firecracker on KVM | test suite passes; real-VM checks wait for an arm runner with KVM |
-| Windows | – | not yet |
+| macOS 15+, Apple Silicon | Firecracker ported to Hypervisor.framework ([toollyst/firecracker](https://github.com/toollyst/firecracker)) | Works. Real-VM checks run on a Mac, since CI's macOS runners can't start guests |
+| Linux x86_64 | Upstream Firecracker on KVM | Works. Real VMs boot in CI on every push and before every release |
+| Linux aarch64 | Upstream Firecracker on KVM | Released and tested, but CI's arm runners have no KVM, so no real-VM run yet |
+| Windows | – | Not yet |
 
 ## Use it as a library
 
-The CLI is just one presentation of the cores. `sandbox-manage` (images and cache) and `sandbox-runtime` (sandbox
-lifecycle) are plain Rust crates with no CLI assumptions, and they can share or separate state directories. Bindings
-for other languages are planned.
+The CLI and the MCP server are thin layers over two plain Rust crates: `sandbox-manage` (images and cache) and
+`sandbox-runtime` (sandbox lifecycle). Neither assumes a CLI, and they can share state directories or keep their own.
+Bindings for other languages are planned.
 
 ## Development
 
 ```sh
-cargo test --workspace --all-features     # unit, protocol conformance, and CLI end-to-end tests (fake executor, no VM)
+cargo test --workspace --all-features     # unit, protocol conformance and CLI end-to-end tests (fake executor, no VM)
 cargo xtask check-deps                    # dependency direction between and inside crates
-cargo xtask dist && cargo xtask smoke     # real-VM checks with the installed executor
+cargo xtask dist && cargo xtask smoke     # 17 checks on real VMs with the installed executor
 cargo xtask bench                         # real numbers on your machine
 cargo xtask demo                          # re-record assets/demo.svg (real commands, real timing)
-cargo xtask kernel --arch x86_64          # the default guest kernel (Docker; cross-compiles if needed)
+cargo xtask kernel --arch x86_64          # the default guest kernel (built in Docker, cross-compiled if needed)
 ```
 
-Design notes and the roadmap are in [`docs/`](docs/), and per-crate rules are in each crate's docs. Both are written in
-Korean.
-
-## Status
-
-Pre-release. Done: the full Docker-style lifecycle, images, the egress allow list, the executor protocol v2 and
-repositories, image-provided kernels, the macOS/HVF end to end, and the release pipeline (static Linux binaries,
-executor bundles with a CI-built kernel, the official repository, and the installer). Next: the first release and
-a Linux aarch64 real-VM run. See the [roadmap](docs/roadmap.md).
+The design notes and roadmap in [`docs/`](docs/) and the per-crate rules in each crate's docs are written in Korean.
+The [roadmap](docs/roadmap.md) shows what's done and what's next.
 
 ## Not Docker Sandboxes
 
-Docker's [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/) also ships a CLI named `sbx`. The two are unrelated.
-Docker Sandboxes is a Docker product for running coding agents in microVMs, used with a Docker account. This `sbx` is
-an independent open-source project: a Docker-compatible CLI (and MCP server) that runs any OCI image in its own
-microVM, with no account, daemon or root, and VMMs plugged in through an open executor protocol.
+Docker's [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/) also ships a CLI named `sbx`, and the two are
+unrelated. Docker Sandboxes is a Docker product for running coding agents in microVMs, used with a Docker account.
+This `sbx` is an independent open-source project: a Docker-style CLI and MCP server that runs any OCI image in its own
+microVM, with no account, daemon or root, and with VMMs plugged in through an open executor protocol.
 
 ## Contributing and security
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Please report vulnerabilities privately, as described in
-[SECURITY.md](SECURITY.md).
+Bug reports, benchmark numbers from your machine and executors for other VMMs are all welcome: see
+[CONTRIBUTING.md](CONTRIBUTING.md). Please report vulnerabilities privately, as [SECURITY.md](SECURITY.md) describes.
+It also spells out the threat model: what `sbx` defends against, and what it doesn't.
 
 ## License
 
