@@ -215,7 +215,7 @@ is only the Firecracker binary of wick release `v1.18.0+wick.1`, and the adapter
 versioned and upgraded separately. Because the highest installed adapter wins, installing a newer adapter (from any
 repository) changes what every VMM package that names it runs under.
 
-**Installing.** `sbx executor install wick` reads each configured repository's index (`v2/index.json`, or
+**Installing.** `sbx executor install NAME` (say, `wick`) reads each configured repository's index (`v2/index.json`, or
 `index.json` if there is none) and picks the newest version for this host's platform
 ([`sbx-executor-repo`](../../crates/spec/executor-repo/src/lib.rs)). If it is a VMM package and its adapter isn't
 installed, it first installs the newest adapter for this host and protocol version from the repository the VMM

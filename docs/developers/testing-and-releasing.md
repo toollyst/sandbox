@@ -29,7 +29,7 @@ unit test or the fake executor could have found it.
 
 ```sh
 cargo xtask dist                         # release sbx with the guest init embedded
-sbx executor install wick                # once: the published VMM and its adapter (or --from, below)
+sbx executor install wick                # once: any executor, e.g. a published VMM and its adapter (or --from, below)
 cargo xtask smoke --sbx target/release/sbx
 ```
 

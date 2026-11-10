@@ -21,7 +21,7 @@
 
 ```sh
 curl -fsSL https://toollyst.github.io/sandbox/install.sh | sh
-sbx executor install wick
+sbx executor install wick          # or any executor: sbx runs whatever speaks its open protocol
 sbx run --rm -it python:3.12-alpine python
 ```
 
@@ -72,7 +72,8 @@ booting a VM. Try it on your machine with `cargo xtask bench` ([source](xtask/sr
 
 ```sh
 curl -fsSL https://toollyst.github.io/sandbox/install.sh | sh
-sbx executor install wick
+sbx executor search                # executors for this host in your repositories
+sbx executor install wick          # for example; any executor from any repository works the same way
 ```
 
 You need one of:
@@ -82,10 +83,14 @@ You need one of:
   need read and write access to `/dev/kvm` (usually through the `kvm` group). `sbx info` tells you if it's missing.
 
 The installer puts `sbx` and `sbx-shim` in `~/.local/bin` after checking their SHA-256, and nothing else: `sbx` on
-its own has no VMM. `sbx executor install wick` adds one from the
-[official repository](https://toollyst.github.io/sandbox/executors/): Firecracker for your host from the latest
-[wick](https://github.com/toollyst/wick) release (upstream Firecracker on Linux when that release has no Linux build), plus the `firecracker` adapter and guest kernel it runs with. See
-[Executors and versions](#executors-and-versions). Nothing runs as root.
+its own has no VMM and isn't tied to one. You add an **executor**, from a repository or from a directory of your own.
+Repositories are plain static sites that follow an [open spec](crates/spec/executor-repo/src/lib.rs); `sbx` only
+reads them, and works the same without them once an executor is installed. One comes preconfigured as `official`
+(<https://toollyst.github.io/sandbox/executors/>), and you can remove it or add your own. In it, `wick` is our
+Firecracker build ([toollyst/wick](https://github.com/toollyst/wick), the one that runs on macOS), run by the
+`firecracker` adapter with its guest kernel. Upstream Firecracker and your own builds run under the same adapter; see
+[Bring your own VMM](#bring-your-own-vmm) and [Executors and versions](#executors-and-versions). Nothing runs as
+root.
 
 > [!NOTE]
 > This README describes `main`. The latest release, v0.1.1, predates separate VMM packages: its installer also
@@ -113,7 +118,7 @@ git clone https://github.com/toollyst/sandbox && cd sandbox
 rustup target add "$(uname -m | sed s/arm64/aarch64/)-unknown-linux-musl"
 cargo xtask dist                  # target/release/sbx and sbx-shim
 export PATH="$PWD/target/release:$PATH"
-sbx executor install wick         # prebuilt VMM and adapter from the official repository
+sbx executor install wick         # a prebuilt VMM and its adapter from a repository, or build them (below)
 ```
 
 To build them yourself instead, follow [`executors.yml`](.github/workflows/executors.yml). The adapter is a directory
@@ -275,10 +280,10 @@ sandbox remembers the installed executor it was created with (label `io.github.t
 changing the default never changes what `start` or `restart` boots. The rules are in
 [`choose.rs`](crates/app/cli/src/choose.rs).
 
-A version has a **main version** and a **patch**, like Python's 3.12 and 3.12.4. wick's first build of Firecracker
-1.18.0 is `1.18.0`; if wick ever has to fix that build, the fix is `1.18.0+wick.1`, then `+wick.2`. Name the main
-version and you get its newest patch; name the full version to pin one exactly. Most people only ever pick a main
-version.
+A version has a **main version** and a **patch**, like Python's 3.12 and 3.12.4: the main version is everything
+before the first `-` or `+`. Name the main version and you get its newest patch; name the full version to pin one
+exactly. Most people only ever pick a main version. The rule is the same for every executor; with `wick`, a fix of
+its 1.18.0 build is `1.18.0+wick.1`:
 
 | You write | You get |
 | --- | --- |
@@ -286,14 +291,16 @@ version.
 | `wick@1.18.0` | the newest of `1.18.0`, `1.18.0+wick.1`, `1.18.0+wick.2`, … |
 | `wick@1.18.0+wick.1` | exactly that patch |
 
-`wick` versions are [wick release](https://github.com/toollyst/wick/releases) versions, registered as wick
-publishes them: release `v1.18.0` is `wick@1.18.0`, release `v1.18.0+wick.1` is `wick@1.18.0+wick.1`. Each platform
-gets that release's build, or upstream Firecracker of the same version (1.18.0) on Linux if the release has no Linux
-build. It is a **VMM package**, just the `firecracker` binary for your host, run by the **`firecracker` adapter** (the
-program that speaks the executor protocol, with its default guest kernel). `install` fetches the adapter first if it
-is missing, and `sbx executor adapter ls|install|search|rm` manages adapters directly. A VMM package always runs under
+An executor is either self-contained or a **VMM package**: just a VMM binary (for `wick`, `firecracker` for your
+host), run by an **adapter**, the program that speaks the executor protocol and ships the default guest kernel.
+`install` fetches the adapter first if it is missing, and `sbx executor adapter ls|install|search|rm` manages
+adapters directly. A VMM package always runs under
 the highest installed version of its adapter, so installing a newer adapter, from any repository, changes what runs
 every VMM package that names it.
+
+In the official repository, `wick` versions are [wick release](https://github.com/toollyst/wick/releases) tags as
+wick publishes them (`v1.18.0` is `wick@1.18.0`), and a platform without a build in that release (Linux) gets upstream
+Firecracker of the same version. Other repositories name and version their executors however they like.
 
 ## Bring your own VMM
 
@@ -301,7 +308,9 @@ An executor is any program that speaks the small, documented [executor protocol]
 `capabilities` prints one JSON line, and `run` reads a `Launch` request on stdin and reports `Started` and `Exited`.
 The `firecracker` adapter drives Firecracker through its public interface (a config file and vsock), so it runs
 upstream Firecracker on Linux, [wick](https://github.com/toollyst/wick) on macOS, and your own Firecracker build too.
-Register a build of your own as a VMM package, or ship a self-contained executor with its own VMM next to it:
+A different VMM needs an adapter of its own, which is any program that speaks the same protocol; `sbx` treats it
+exactly like ours. Register a build of your own as a VMM package, or ship a self-contained executor with its own VMM
+next to it:
 
 ```sh
 sbx executor install --from ./my-firecracker --adapter firecracker myfc@1.19.0-dev   # a directory with firecracker
@@ -328,12 +337,14 @@ packages for `firecracker` doesn't need to carry the adapter itself.
 
 ## Platforms
 
-| Host | VMM | Status |
+Any executor that speaks the protocol runs anywhere it can start a VM. These are the ones tested here:
+
+| Host | Tested VMM | Status |
 | --- | --- | --- |
-| macOS 15+, Apple Silicon | [wick](https://github.com/toollyst/wick): Firecracker on Hypervisor.framework | Works. Real-VM checks run on a Mac, since CI's macOS runners can't start guests. Sandboxed with Seatbelt instead of seccomp ([SECURITY.md](SECURITY.md)) |
-| Linux x86_64 | Upstream Firecracker on KVM (as the `wick` VMM package) | Works. Real VMs boot in CI on every push and before every release |
-| Linux aarch64 | Upstream Firecracker on KVM (as the `wick` VMM package) | Released and tested, but CI's arm runners have no KVM, so no real-VM run yet |
-| Windows | – | Not yet. `pull`, `prepare` and `images` work; [wick](https://github.com/toollyst/wick) has a Windows Hypervisor Platform preview |
+| macOS 15+, Apple Silicon | Firecracker on Hypervisor.framework ([wick](https://github.com/toollyst/wick)) under the `firecracker` adapter | Works. Real-VM checks run on a Mac, since CI's macOS runners can't start guests. Sandboxed with Seatbelt instead of seccomp ([SECURITY.md](SECURITY.md)) |
+| Linux x86_64 | Upstream Firecracker on KVM under the `firecracker` adapter | Works. Real VMs boot in CI on every push and before every release |
+| Linux aarch64 | Upstream Firecracker on KVM under the `firecracker` adapter | Released and tested, but CI's arm runners have no KVM, so no real-VM run yet |
+| Windows | – | Not yet. `pull`, `prepare` and `images` work; there is no tested executor yet ([wick](https://github.com/toollyst/wick) has a Windows Hypervisor Platform preview) |
 
 ## Use it as a library
 

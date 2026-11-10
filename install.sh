@@ -9,8 +9,8 @@
 #   SBX_DOWNLOAD_URL  where the release files are (default: GitHub Releases of toollyst/sandbox)
 #
 # What it does: downloads sbx-<os>-<arch>.tar.gz and its .sha256, checks the checksum, and copies sbx and sbx-shim into
-# SBX_INSTALL_DIR. It does not install an executor (the VMM that runs sandboxes); that is the next step it prints:
-# `sbx executor install wick`. Nothing is written outside SBX_INSTALL_DIR, and nothing runs as root.
+# SBX_INSTALL_DIR. It does not install an executor (the VMM that runs sandboxes); choosing one is the next step it
+# prints. Nothing is written outside SBX_INSTALL_DIR, and nothing runs as root.
 
 set -eu
 
@@ -97,6 +97,7 @@ case ":$PATH:" in
         sbx="$dir/sbx"
         ;;
 esac
-say "done. Next, install an executor (the VMM that runs sandboxes):"
-say "    $sbx executor install wick"
+say "done. Next, pick an executor (the VMM that runs sandboxes) from your repositories and install it:"
+say "    $sbx executor search"
+say "    $sbx executor install NAME"
 say "then check with: $sbx info   and try: $sbx run --rm alpine echo hello"

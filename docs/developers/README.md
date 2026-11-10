@@ -66,9 +66,9 @@ rustup target add "$(uname -m | sed s/arm64/aarch64/)-unknown-linux-musl"
 That is all you need for the unit tests, the end-to-end tests and the dependency checks. They use a fake executor
 and never start a VM, so they run on macOS, Linux and Windows.
 
-To run real VMs you also need an executor: install the published one with `sbx executor install wick`, on an
-Apple Silicon Mac with macOS 15+ or on Linux with `/dev/kvm`. Building the default kernel (`cargo xtask kernel`) needs
-Docker.
+To run real VMs you also need an executor, on an Apple Silicon Mac with macOS 15+ or on Linux with `/dev/kvm`: one
+from a repository (`sbx executor install NAME`, for example `wick`), or the adapter and a VMM you build yourself
+(`--from`). Building the default kernel (`cargo xtask kernel`) needs Docker.
 
 ## Everyday commands
 
