@@ -63,6 +63,11 @@ pub fn socket_dir() -> Option<PathBuf> {
     Some(PathBuf::from(format!("/tmp/sbx-{user}")))
 }
 
+/// 설치한 어댑터를 두는 곳: `<data_dir>/adapters`.
+pub fn adapters_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("adapters")
+}
+
 /// 설치한 실행기를 두는 곳: `<data_dir>/executors`.
 pub fn executors_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("executors")

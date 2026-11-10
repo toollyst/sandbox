@@ -240,11 +240,13 @@ VM off and `exec` kills the process. Output keeps the last 256 KiB of each strea
 do with nvm or gvm. `sbx` alone has none; the first one you install becomes the default.
 
 ```sh
-sbx executor search                        # what the repositories offer for this host (alias: ls-remote)
+sbx executor search                        # newest patch of each main version for this host (alias: ls-remote)
+sbx executor search --all                  # every patch
 sbx executor install wick                  # the highest version; same as wick@latest
+sbx executor install wick@1.18.0           # the newest patch of main version 1.18.0
 sbx executor ls                            # installed (* marks the default)
-sbx executor use wick@1.18.0-wick.1        # the global default
-echo wick@1.18.0-wick.1 > .sbx-executor    # this folder and everything below it
+sbx executor use wick@1.18.0               # the global default (the newest installed 1.18.0 patch)
+echo wick@1.18.0 > .sbx-executor           # this folder and everything below it
 sbx executor current                       # what a new sandbox would use here, and why
 sbx executor which wick                    # the program that runs it (for a VMM package, its adapter)
 sbx run --executor wick@1.18.0-wick.2 --rm alpine true   # just this once (or SBX_EXECUTOR)
@@ -257,6 +259,16 @@ A new sandbox uses the first of: `--executor` (an installed `NAME[@VERSION]` or 
 sandbox remembers the installed executor it was created with (label `io.github.toollyst.sandbox.executor`), so
 changing the default never changes what `start` or `restart` boots. The rules are in
 [`choose.rs`](crates/app/cli/src/choose.rs).
+
+A version has a **main version** and a **patch**, like Python's 3.12 and 3.12.4: in `1.18.0-wick.2` the main version
+is `1.18.0` (the Firecracker release) and the patch is `wick.2` (a fix to that build). Name the main version and you
+get its newest patch; name the full version to pin one patch exactly. Most people only ever pick a main version.
+
+| You write | You get |
+|---|---|
+| `wick`, `wick@latest` | the highest version |
+| `wick@1.18.0` | the newest `1.18.0-wick.N` |
+| `wick@1.18.0-wick.1` | exactly that patch |
 
 `wick` versions are [wick release](https://github.com/toollyst/wick/releases) versions: the release `v1.18.0-wick.1`
 is `wick@1.18.0-wick.1`, Firecracker 1.18.0 underneath. Each platform gets that release's build, or upstream

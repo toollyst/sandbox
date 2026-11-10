@@ -133,15 +133,34 @@ pub fn images(cache_dir: &Path, current: &str) -> Vec<CompletionCandidate> {
     out
 }
 
-/// 설치한 실행기 후보: `이름`(한 번)과 `이름@버전`.
+/// 설치한 실행기 후보: `이름`(한 번), `이름@주버전`(패치가 있는 주 버전마다 한 번), `이름@버전`.
 pub fn executors(data_dir: &Path, current: &str) -> Vec<CompletionCandidate> {
-    let list = sbx_executor_install::Executors::new(dirs::executors_dir(data_dir))
+    installed_in(&dirs::executors_dir(data_dir), current)
+}
+
+/// 설치한 어댑터 후보. 모양은 [`executors`]와 같다.
+pub fn adapters(data_dir: &Path, current: &str) -> Vec<CompletionCandidate> {
+    installed_in(&dirs::adapters_dir(data_dir), current)
+}
+
+fn installed_in(root: &Path, current: &str) -> Vec<CompletionCandidate> {
+    let list = sbx_executor_install::Executors::new(root)
         .list()
         .unwrap_or_default();
     let mut out: Vec<CompletionCandidate> = Vec::new();
     for i in &list {
         if keep(&i.name, current) && !out.iter().any(|c| c.get_value() == i.name.as_str()) {
             out.push(CompletionCandidate::new(&i.name).help(Some("latest installed".into())));
+        }
+    }
+    for i in &list {
+        let line = sbx_executor_install::version_line(&i.version);
+        let spec = format!("{}@{line}", i.name);
+        if line != i.version
+            && keep(&spec, current)
+            && !out.iter().any(|c| c.get_value() == spec.as_str())
+        {
+            out.push(CompletionCandidate::new(spec).help(Some("newest installed patch".into())));
         }
     }
     for i in &list {
@@ -283,6 +302,11 @@ pub fn cp_endpoint_arg() -> ArgValueCompleter {
 /// 설치한 실행기 인자의 완성기.
 pub fn executor() -> ArgValueCompleter {
     completer(|d, c| in_data(executors, d, c), None)
+}
+
+/// 설치한 어댑터 인자의 완성기.
+pub fn adapter() -> ArgValueCompleter {
+    completer(|d, c| in_data(adapters, d, c), None)
 }
 
 /// `shell`에 등록하는 스크립트를 쓴다. `COMPLETE=<shell> sbx`가 쓰는 것과 같다: 셸이 다시 부를 sbx는

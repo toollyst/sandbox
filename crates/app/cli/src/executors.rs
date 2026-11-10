@@ -45,7 +45,7 @@ pub fn installed(data_dir: &Path) -> Executors {
 
 /// 설치한 어댑터들.
 pub fn adapters(data_dir: &Path) -> Executors {
-    Executors::new(data_dir.join("adapters"))
+    Executors::new(crate::dirs::adapters_dir(data_dir))
 }
 
 /// 공식 실행기 저장소. 묶음은 GitHub Releases에, 색인은 GitHub Pages에 있다(CI가 올린다).

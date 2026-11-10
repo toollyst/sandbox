@@ -287,7 +287,7 @@ pub enum ExecutorCommand {
     /// Print the program that runs an installed executor (for a VMM package, its adapter).
     Which {
         /// `NAME[@VERSION]`. Defaults to the current executor.
-        #[arg(value_name = "EXECUTOR")]
+        #[arg(value_name = "EXECUTOR", add = complete::executor())]
         spec: Option<String>,
     },
     /// Remove an installed executor. Refused while a sandbox is pinned to it, unless --force.
@@ -351,7 +351,7 @@ pub enum AdapterCommand {
         #[arg(short, long)]
         force: bool,
         /// NAME@VERSION.
-        #[arg(value_name = "ADAPTER")]
+        #[arg(value_name = "ADAPTER", add = complete::adapter())]
         spec: String,
     },
 }
