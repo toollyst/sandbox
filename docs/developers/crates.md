@@ -424,11 +424,6 @@ The `firecracker` adapter. It is shipped as an adapter package: `sbx-executor` n
   `PATH`) and the kernel (`SBX_FIRECRACKER_KERNEL`, then next to itself). `config` writes the VM config (initrd,
   disks, vsock, kernel command line). `session` runs the protocol session and writes the config file next to the
   control socket as a new `0600` file.
-- Run as root on Linux, `settings` also finds Firecracker's `jailer` next to the chosen `firecracker` (or
-  `SBX_FIRECRACKER_JAILER`; `off` turns it off), and refuses to run as root without it. `jail` plans and stages one
-  jail per VM: a locked slot gives it its own uid and `<base>/firecracker/sbx-<n>/root` (hard links of the kernel, guest
-  init and disks; base `SBX_FIRECRACKER_CHROOT_BASE`, default `/srv/jailer`), cgroup v2 limits, and the control
-  socket becomes a link to the vsock socket inside the jail. It removes the jail and the cgroup when the VM ends.
 - It knows nothing about `sbx` except the executor protocol (`sbx-executor-proto` is its only workspace dependency).
 
 ### `sbx-executor-fake` · [`crates/executor/fake`](../../crates/executor/fake) · bin `sbx-executor-fake`
