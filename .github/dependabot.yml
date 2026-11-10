@@ -1,0 +1,19 @@
+# 의존성 갱신 PR. Actions는 커밋 SHA로 고정해 두고(뒤의 `# vX.Y.Z`를 dependabot이 읽는다) 여기서 올린다.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # 패치·마이너는 한 PR로 묶는다. 메이저는 따로 본다.
+      cargo-minor:
+        update-types: [minor, patch]

@@ -11,6 +11,17 @@ permissions:
   contents: read
 
 jobs:
+  # 의존성: RustSec 보안 권고(알려진 취약점, 회수된 크레이트), 라이선스, 출처(crates.io만). 규칙은 deny.toml.
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check advisories bans licenses sources
+
   test:
     strategy:
       fail-fast: false
@@ -18,7 +29,9 @@ jobs:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - run: rustup component add rustfmt clippy
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -51,7 +64,7 @@ jobs:
   privileged:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - run: |
           docker run --rm --privileged -v "$PWD":/src -w /src \
             -e SANDBOX_PRIVILEGED_TESTS=1 -e SANDBOX_REQUIRE_E2FSCK=1 rust:1 bash -ec '
@@ -81,7 +94,7 @@ jobs:
       FIRECRACKER: 1.17.0
       ARCH: ${{ matrix.arch }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - id: kvm
         run: |
           if [ -e /dev/kvm ]; then
@@ -95,7 +108,7 @@ jobs:
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
       - if: steps.kvm.outputs.ok == 'true'
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: target/kernel/${{ matrix.arch }}/kernel
           key: kernel-${{ matrix.arch }}-${{ hashFiles('xtask/kernel/*', 'xtask/src/kernel.rs') }}
@@ -131,7 +144,7 @@ jobs:
           av=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "sbx-executor-firecracker") | .version')
           .github/scripts/smoke-local.sh "$RUNNER_TEMP/bin/sbx" executors adapter "$av" vmm firecracker "$FIRECRACKER"
       - if: steps.kvm.outputs.ok == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: executors-linux-${{ matrix.arch }}
           path: executors

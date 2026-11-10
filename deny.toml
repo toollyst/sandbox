@@ -1,0 +1,40 @@
+# cargo deny check: 의존성의 보안 권고, 라이선스, 출처, 중복을 본다. CI의 `supply-chain` 작업이 돌린다.
+# 문서: https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+all-features = true
+
+[advisories]
+# RustSec 권고. 알려진 취약점(vulnerability)과 회수된(yanked) 크레이트는 막는다. 관리가 끊긴(unmaintained)
+# 크레이트는 직접 의존하는 것만 막는다. 예외는 이유와 함께 ignore에 적는다.
+version = 2
+yanked = "deny"
+unmaintained = "workspace"
+ignore = []
+
+[licenses]
+version = 2
+# sbx는 Apache-2.0 OR MIT로 배포한다. 그와 함께 재배포할 수 있는 허용형 라이선스만 받는다.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# 작업 공간 안의 path 의존성은 버전이 없어도 된다.
+allow-wildcard-paths = true
+
+[sources]
+# crates.io 말고는 받지 않는다(git 의존성 금지).
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
