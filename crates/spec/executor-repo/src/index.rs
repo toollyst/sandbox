@@ -9,6 +9,52 @@ use url::Url;
 use crate::location;
 use crate::platform::Platform;
 
+/// 클라이언트가 말하는 실행기 규약 버전의 범위(`sbx-executor-proto`의 `MIN_VERSION..=VERSION`). 묶음이 말하는
+/// 범위(`min_protocol..=protocol`)와 겹치는 것만 고른다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Protocols {
+    /// 가장 낮은 버전.
+    pub min: u32,
+    /// 가장 높은 버전.
+    pub max: u32,
+}
+
+impl Protocols {
+    /// 묶음이 말하는 `lo..=hi`와 겹치는가.
+    pub fn overlaps(&self, lo: u32, hi: u32) -> bool {
+        lo <= hi && lo.max(self.min) <= hi.min(self.max)
+    }
+
+    fn of(v: &Version) -> Option<(u32, u32)> {
+        v.protocol.map(|hi| (v.min_protocol.unwrap_or(hi), hi))
+    }
+}
+
+impl From<u32> for Protocols {
+    fn from(v: u32) -> Self {
+        Self { min: v, max: v }
+    }
+}
+
+impl From<std::ops::RangeInclusive<u32>> for Protocols {
+    fn from(r: std::ops::RangeInclusive<u32>) -> Self {
+        Self {
+            min: *r.start(),
+            max: *r.end(),
+        }
+    }
+}
+
+impl std::fmt::Display for Protocols {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.min == self.max {
+            write!(f, "{}", self.min)
+        } else {
+            write!(f, "{} to {}", self.min, self.max)
+        }
+    }
+}
+
 /// 이 클라이언트가 쓰는(가장 새) 색인 `schema`.
 pub const SCHEMA: u32 = 2;
 
@@ -36,8 +82,10 @@ pub struct Artifact {
 pub struct Version {
     /// 버전.
     pub version: String,
-    /// 이 묶음이 말하는 실행기 규약(`sbx-executor-proto`) 버전. 자체 완결 실행기와 어댑터에 있다.
+    /// 이 묶음이 말하는 가장 높은 실행기 규약(`sbx-executor-proto`) 버전. 자체 완결 실행기와 어댑터에 있다.
     pub protocol: Option<u32>,
+    /// 이 묶음이 말하는 가장 낮은 규약 버전(schema 2, 선택). 없으면 `protocol` 하나만.
+    pub min_protocol: Option<u32>,
     /// VMM 묶음이면 그것을 돌리는 어댑터 이름 (schema 2).
     pub adapter: Option<String>,
     /// 플랫폼별 묶음.
@@ -98,6 +146,8 @@ struct RawExecutor {
 struct RawVersion {
     #[serde(default)]
     protocol: Option<u32>,
+    #[serde(default)]
+    min_protocol: Option<u32>,
     #[serde(default)]
     adapter: Option<String>,
     #[serde(default)]
@@ -217,6 +267,22 @@ fn entries(
                 }
                 _ => {}
             }
+            let min_protocol = if kind == Kind::ExecutorV1 {
+                None
+            } else {
+                v.min_protocol
+            };
+            match (min_protocol, v.protocol) {
+                (Some(_), None) => {
+                    return Err(format!("{spec}: \"min_protocol\" needs \"protocol\""));
+                }
+                (Some(lo), Some(hi)) if lo > hi => {
+                    return Err(format!(
+                        "{spec}: \"min_protocol\" {lo} is above \"protocol\" {hi}"
+                    ));
+                }
+                _ => {}
+            }
             if let Some(a) = &adapter {
                 a.parse::<Spec>()
                     .ok()
@@ -257,6 +323,7 @@ fn entries(
             versions.push(Version {
                 version,
                 protocol: v.protocol,
+                min_protocol,
                 adapter,
                 artifacts,
             });
@@ -312,9 +379,9 @@ pub fn available(
     indexes: &[(String, Index)],
     name: Option<&str>,
     platform: &Platform,
-    protocol: u32,
+    protocol: impl Into<Protocols>,
 ) -> Vec<Candidate> {
-    candidates(indexes, |i| &i.executors, name, platform, protocol)
+    candidates(indexes, |i| &i.executors, name, platform, protocol.into())
 }
 
 /// [`available`]과 같고 어댑터를 고른다. 규약 버전이 맞는 것만.
@@ -322,9 +389,9 @@ pub fn available_adapters(
     indexes: &[(String, Index)],
     name: Option<&str>,
     platform: &Platform,
-    protocol: u32,
+    protocol: impl Into<Protocols>,
 ) -> Vec<Candidate> {
-    candidates(indexes, |i| &i.adapters, name, platform, protocol)
+    candidates(indexes, |i| &i.adapters, name, platform, protocol.into())
 }
 
 fn candidates(
@@ -332,7 +399,7 @@ fn candidates(
     list: fn(&Index) -> &Vec<Executor>,
     name: Option<&str>,
     platform: &Platform,
-    protocol: u32,
+    protocol: Protocols,
 ) -> Vec<Candidate> {
     let mut out = Vec::new();
     for (repo, index) in indexes {
@@ -341,7 +408,9 @@ fn candidates(
                 continue;
             }
             for v in &e.versions {
-                if v.adapter.is_none() && v.protocol != Some(protocol) {
+                if v.adapter.is_none()
+                    && !Protocols::of(v).is_some_and(|(lo, hi)| protocol.overlaps(lo, hi))
+                {
                     continue;
                 }
                 if let Some(a) = v.artifact(platform) {
@@ -372,7 +441,7 @@ pub fn pick(
     indexes: &[(String, Index)],
     spec: &Spec,
     platform: &Platform,
-    protocol: u32,
+    protocol: impl Into<Protocols>,
 ) -> Result<Candidate, String> {
     pick_from(
         indexes,
@@ -380,7 +449,7 @@ pub fn pick(
         "executor",
         spec,
         platform,
-        protocol,
+        protocol.into(),
     )
 }
 
@@ -389,9 +458,16 @@ pub fn pick_adapter(
     indexes: &[(String, Index)],
     spec: &Spec,
     platform: &Platform,
-    protocol: u32,
+    protocol: impl Into<Protocols>,
 ) -> Result<Candidate, String> {
-    pick_from(indexes, Index::adapter, "adapter", spec, platform, protocol)
+    pick_from(
+        indexes,
+        Index::adapter,
+        "adapter",
+        spec,
+        platform,
+        protocol.into(),
+    )
 }
 
 fn pick_from(
@@ -400,12 +476,14 @@ fn pick_from(
     kind: &str,
     spec: &Spec,
     platform: &Platform,
-    protocol: u32,
+    protocol: Protocols,
 ) -> Result<Candidate, String> {
-    let list = if kind == "adapter" {
-        available_adapters
-    } else {
-        available
+    let list = |i: &[(String, Index)], n: Option<&str>, p: &Platform, pr: Protocols| {
+        if kind == "adapter" {
+            available_adapters(i, n, p, pr)
+        } else {
+            available(i, n, p, pr)
+        }
     };
     // 그 버전과 같거나 그것으로 시작하는 것([`version_matches`]) 중 가장 높은 것. `1.18.0`은 그 주 버전의 가장 새 패치.
     // 이름은 그것을 내는 첫(우선순위가 가장 높은) 저장소의 것이다. 뒤 저장소는 같은 이름에 더 높은 버전을 내도
@@ -472,10 +550,16 @@ fn pick_from(
             }
         ));
     }
-    let mut protocols: Vec<u32> = for_platform.iter().filter_map(|v| v.protocol).collect();
+    let mut protocols: Vec<(u32, u32)> = for_platform
+        .iter()
+        .filter_map(|v| Protocols::of(v))
+        .collect();
     protocols.sort();
     protocols.dedup();
-    let list: Vec<String> = protocols.iter().map(u32::to_string).collect();
+    let list: Vec<String> = protocols
+        .iter()
+        .map(|&(min, max)| Protocols { min, max }.to_string())
+        .collect();
     Err(format!(
         "{what} speaks executor protocol {}; this sbx speaks {protocol}",
         list.join(", ")

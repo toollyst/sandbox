@@ -127,7 +127,7 @@ SLSA, TUF(색인 신선도), EU CRA. root는 금지 조건이 아니다: 쓸 수
 | P6 | Linux 격리: root가 있으면 Firecracker 공식 jailer(chroot, namespace, cgroup, 인스턴스마다 uid), 없으면 Landlock·seccomp와 위임받은 cgroup v2로 CPU·메모리·IO 상한. scratch 디스크 속도 제한. macOS는 wick에 jailer 상당이 생길 때까지 다중 테넌트용이 아니라고 적는다. 어댑터가 맡는다 | 남음 |
 | P7 | 자원 상한: MCP의 샌드박스 수·vCPU·메모리 합계, detached 샌드박스의 수명·유휴 시간, pull·prepare 디스크 사용량, egress 전송량, scratch 디스크 합계 (31의 MCP 부분) | 남음 |
 | P8 | 취약점 처리 절차(SECURITY.md): 첫 응답 48시간, 판단 7일, 고침이 준비되면 엠바고 최대 14일·신고 뒤 90일 안 공개, GHSA로 CVE, "위협 모델 표의 경계를 넘으면 CVE", 지원 버전(최신 minor 둘, 각 1년 이상), 어댑터·커널·wick·upstream의 신고처, 릴리스 노트의 Security 절, 받은 것을 확인하는 법 | 완료 |
-| P9 | 호환성 정책(COMPATIBILITY.md): 계약 목록(CLI 플래그·종료 코드, `--format json` 스키마는 더하기만, MCP 도구, 실행기·게스트 규약, 저장소 색인, data/cache 배치, `.sbx-executor`), 디스크 배치 버전과 마이그레이션 또는 거부, 실행기 규약을 같은 버전 대신 범위 협상으로 | 남음 |
+| P9 | 호환성 정책(`COMPATIBILITY.md`): semver, 지원 중단은 minor 하나 이상 경고한 뒤, 계약 목록(CLI 플래그·종료 코드, `--format json`은 더하기만, MCP 도구, 실행기 규약, 저장소 색인, data/cache 배치, `.sbx-executor`·라벨). 실행기 규약을 "같아야 한다"에서 범위 협상으로: sbx는 `MIN_VERSION..=VERSION`, 실행기는 `capabilities`의 `min_version`..`version`, 겹치는 가장 높은 버전으로 `Launch`. `capabilities`는 더하기만(모르는 필드 무시), 색인의 `min_protocol`. 남음: 디스크 배치 버전 파일(`layout-version`)과 옮기기/거부는 P16(이름 변경)에서 데이터 디렉터리를 옮길 때 | 일부 |
 | P10 | 거버넌스: CODE_OF_CONDUCT(Contributor Covenant 2.1), MAINTAINERS, GOVERNANCE, DCO(CI `dco` 작업이 PR 커밋을 본다), PR 양식. 남음: 브랜치·태그 rulesets(저장소 설정), 릴리스 권한을 가진 두 번째 메인테이너(지금은 한 명, 구한다고 적었다) | 일부 |
 | P11 | OpenSSF Scorecard 작업(`scorecard.yml`, main push와 손으로, 결과 공개와 코드 스캔)과 README 배지. 남음: Best Practices 배지(passing, bestpractices.dev에 사람이 등록), OSPS Baseline 자가 증명 | 일부 |
 | P12 | 커널·VMM 패치 정책(추적, 재빌드 주기), 색인의 `yanked`·`advisory`, `executor ls`와 tui가 설치된 취약 버전을 알린다 | 남음 |

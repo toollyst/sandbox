@@ -27,6 +27,7 @@ const POLL: Duration = Duration::from_millis(2);
 pub fn capabilities_value() -> Capabilities {
     Capabilities {
         version: VERSION,
+        min_version: None,
         name: "firecracker".into(),
         arch: if cfg!(target_arch = "aarch64") {
             Arch::Arm64

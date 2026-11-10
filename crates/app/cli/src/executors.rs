@@ -83,6 +83,11 @@ fn repositories(data_dir: &Path) -> Result<Vec<Repository>> {
         .collect())
 }
 
+/// 이 sbx가 말하는 실행기 규약 버전 범위.
+fn protocols() -> index::Protocols {
+    (sbx_executor_proto::MIN_VERSION..=sbx_executor_proto::VERSION).into()
+}
+
 /// 본 색인 일련번호를 적는 파일.
 fn seen(data_dir: &Path) -> sbx_executor_repo::Seen {
     sbx_executor_repo::Seen::new(data_dir.join("executor-repositories.seen"))
@@ -430,7 +435,7 @@ async fn install_remote(
 ) -> Result<()> {
     let (fetcher, idx) = indexes(cx, repo).await?;
     let platform = Platform::host();
-    let c = index::pick(&idx, spec, &platform, sbx_executor_proto::VERSION)?;
+    let c = index::pick(&idx, spec, &platform, protocols())?;
     // VMM 묶음이면 어댑터부터. 이미 있으면(어느 버전이든) 그것을 쓴다.
     if let Some(name) = &c.adapter {
         let a = Spec {
@@ -463,7 +468,7 @@ fn adapter_for(
     adapter: &Spec,
     platform: &Platform,
 ) -> std::result::Result<Candidate, String> {
-    let v = sbx_executor_proto::VERSION;
+    let v = protocols();
     let same = idx.iter().filter(|(r, _)| *r == c.repository);
     let others = idx.iter().filter(|(r, _)| *r != c.repository);
     for repo in same.chain(others) {
@@ -554,7 +559,7 @@ fn newest_patches(list: Vec<Candidate>) -> Vec<Candidate> {
 
 async fn search(cx: &Ctx<'_>, name: Option<&str>, all: bool, kind: Kind) -> Result<u8> {
     let (_, idx) = indexes(cx, None).await?;
-    let (p, v) = (Platform::host(), sbx_executor_proto::VERSION);
+    let (p, v) = (Platform::host(), protocols());
     let every = match kind {
         Kind::Executor => index::available(&idx, name, &p, v),
         Kind::Adapter => index::available_adapters(&idx, name, &p, v),
@@ -703,12 +708,7 @@ async fn adapter(cx: &Ctx<'_>, ex: &Executors, ad: &Executors, c: &AdapterComman
             repo,
         } => {
             let (fetcher, idx) = indexes(cx, repo.as_deref()).await?;
-            let c = index::pick_adapter(
-                &idx,
-                &spec.parse()?,
-                &Platform::host(),
-                sbx_executor_proto::VERSION,
-            )?;
+            let c = index::pick_adapter(&idx, &spec.parse()?, &Platform::host(), protocols())?;
             let i = fetch_and_install(cx, &fetcher, ad, &c, adapter_check).await?;
             print_ref(cx, &i)?;
             Ok(0)

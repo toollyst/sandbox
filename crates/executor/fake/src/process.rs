@@ -18,6 +18,7 @@ use crate::vm::REASON_KILLED;
 pub fn capabilities() -> proto::Capabilities {
     proto::Capabilities {
         version: proto::VERSION,
+        min_version: None,
         name: "fake".into(),
         arch: if cfg!(target_arch = "aarch64") {
             proto::Arch::Arm64

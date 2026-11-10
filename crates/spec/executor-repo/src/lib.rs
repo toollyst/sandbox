@@ -39,7 +39,8 @@
 //! | `schema` | 형식 버전. 이 클라이언트는 [`index::SCHEMAS`]를 읽는다. 다른 값이면 색인 전체를 거부한다. |
 //! | `executors` | 이름 → 실행기. 이름과 버전은 `sbx-executor-install` 규칙(`[A-Za-z0-9._+-]`, `.`으로 시작하지 않는다). |
 //! | `description` | 한 줄 설명 (선택). |
-//! | `protocol` | 그 버전이 말하는 실행기 규약(`sbx-executor-proto`의 `VERSION`). 클라이언트는 자기가 말하는 규약의 버전만 고른다. |
+//! | `protocol` | 그 버전이 말하는 가장 높은 실행기 규약(`sbx-executor-proto`의 `VERSION`). |
+//! | `min_protocol` | (schema 2, 선택) 그 버전이 말하는 가장 낮은 규약 버전. 없으면 `protocol` 하나만. 클라이언트는 자기 범위([`index::Protocols`])와 겹치는 것만 고른다. |
 //! | `os`, `architecture` | 묶음이 도는 호스트 플랫폼. OCI image-spec의 값: `linux`/`darwin`/`windows`, `amd64`/`arm64`. 버전 하나에 플랫폼마다 하나. |
 //! | `url` | 압축 파일. 절대 URL이거나 색인 URL 기준 상대 참조(RFC 3986). |
 //! | `sha256`, `size` | 압축 파일의 SHA-256과 바이트 수. 받은 뒤 둘 다 맞아야 푼다. |

@@ -36,24 +36,39 @@ pub struct ProcessExecutor {
     /// 실행기에 더 주는 환경 변수 (예: [`proto::VMM_DIR_ENV`]).
     env: Vec<(OsString, OsString)>,
     caps: Capabilities,
+    /// 이 실행기와 쓸 규약 버전.
+    version: u32,
 }
 
 fn invalid(m: impl Into<String>) -> ExecutorError {
     ExecutorError::Invalid(m.into())
 }
 
-fn version_mismatch(name: &str, version: u32) -> ExecutorError {
+fn range(min: u32, max: u32) -> String {
+    if min == max {
+        min.to_string()
+    } else {
+        format!("{min} to {max}")
+    }
+}
+
+fn version_mismatch(name: &str, min: u32, max: u32) -> ExecutorError {
     ExecutorError::Unsupported(format!(
-        "executor {name} speaks protocol {version}, sbx speaks {}",
-        proto::VERSION
+        "executor {name} speaks protocol {}, sbx speaks {}",
+        range(min, max),
+        range(proto::MIN_VERSION, proto::VERSION)
     ))
+}
+
+/// 실행기가 알린 범위로 쓸 규약 버전([`proto::negotiate`]).
+fn negotiated(name: &str, min: Option<u32>, max: u32) -> Result<u32, ExecutorError> {
+    let min = min.unwrap_or(max);
+    proto::negotiate(min, max).ok_or_else(|| version_mismatch(name, min, max))
 }
 
 /// 규약의 capability를 실행기 타입으로. 모르는 rootfs 형식 이름은 버린다.
 pub fn convert_capabilities(c: proto::Capabilities) -> Result<Capabilities, ExecutorError> {
-    if c.version != proto::VERSION {
-        return Err(version_mismatch(&c.name, c.version));
-    }
+    negotiated(&c.name, c.min_version, c.version)?;
     let name: &'static str = Box::leak(c.name.into_boxed_str());
     Ok(Capabilities {
         name,
@@ -141,14 +156,13 @@ impl ProcessExecutor {
         let header: proto::CapabilitiesHeader = proto::read_line(&mut out.stdout.as_slice())
             .map_err(bad)?
             .ok_or_else(|| invalid(format!("{} capabilities printed nothing", binary.display())))?;
-        if header.version != proto::VERSION {
-            return Err(version_mismatch(&header.name, header.version));
-        }
+        let version = negotiated(&header.name, header.min_version, header.version)?;
         let caps: proto::Capabilities = proto::read_line(&mut out.stdout.as_slice())
             .map_err(bad)?
             .ok_or_else(|| invalid(format!("{} capabilities printed nothing", binary.display())))?;
         Ok(Self {
             caps: convert_capabilities(caps)?,
+            version,
             binary,
             env,
         })
@@ -167,10 +181,10 @@ impl Executor for ProcessExecutor {
 
     fn launch(&self, vm: VmConfig) -> BoxFuture<'_, Result<Box<dyn VmHandle>, ExecutorError>> {
         let caps = self.caps.clone();
-        let (binary, env) = (self.binary.clone(), self.env.clone());
+        let (binary, env, version) = (self.binary.clone(), self.env.clone(), self.version);
         Box::pin(async move {
             vm.check(&caps)?;
-            let r = blocking(move || launch_blocking(&binary, &env, &vm)).await?;
+            let r = blocking(move || launch_blocking(&binary, &env, version, &vm)).await?;
             Ok(Box::new(r) as Box<dyn VmHandle>)
         })
     }
@@ -255,6 +269,7 @@ fn retry_busy<T>(mut f: impl FnMut() -> io::Result<T>) -> io::Result<T> {
 fn launch_blocking(
     binary: &Path,
     env: &[(OsString, OsString)],
+    version: u32,
     vm: &VmConfig,
 ) -> Result<ProcessVm, ExecutorError> {
     if let Some(dir) = vm.log.parent() {
@@ -282,7 +297,7 @@ fn launch_blocking(
     if let Err(e) = proto::write_line(
         &mut stdin,
         &proto::Request::Launch {
-            version: proto::VERSION,
+            version,
             vm: convert_vm(vm),
         },
     ) {
@@ -415,5 +430,65 @@ impl VmHandle for ProcessVm {
 impl Drop for ProcessVm {
     fn drop(&mut self) {
         let _ = Self::kill_blocking(&self.child, &self.stdin, &self.life);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// `capabilities`에 이 한 줄을 내는 실행기.
+    fn executor(name: &str, line: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("sbx-exproc-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("sbx-executor");
+        std::fs::write(&exe, format!("#!/bin/sh\ncat <<'EOF'\n{line}\nEOF\n")).unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        exe
+    }
+
+    fn caps(min: Option<u32>, max: u32) -> String {
+        let arch = if cfg!(target_arch = "aarch64") {
+            "arm64"
+        } else {
+            "amd64"
+        };
+        let min = min.map_or(String::new(), |m| format!(r#""min_version":{m},"#));
+        format!(
+            r#"{{"version":{max},{min}"name":"x","arch":"{arch}","rootfs_formats":["erofs"],"live_share":false,"custom_kernel":false,"snapshot":false,"max_disks":2}}"#
+        )
+    }
+
+    #[test]
+    fn executors_that_speak_a_range_meet_sbx_at_the_highest_common_version() {
+        // 더 새 버전까지 말하지만 이 sbx의 버전도 말하는 실행기: 이 sbx의 가장 높은 버전으로 쓴다.
+        let p = ProcessExecutor::new(executor(
+            "newer",
+            &caps(Some(proto::VERSION), proto::VERSION + 3),
+        ))
+        .unwrap();
+        assert_eq!(p.version, proto::VERSION);
+        let p = ProcessExecutor::new(executor("same", &caps(None, proto::VERSION))).unwrap();
+        assert_eq!(p.version, proto::VERSION);
+        // 겹치지 않으면 범위를 알린다.
+        let e = ProcessExecutor::new(executor(
+            "future",
+            &caps(Some(proto::VERSION + 1), proto::VERSION + 2),
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(
+            e.contains(&format!(
+                "speaks protocol {} to {}",
+                proto::VERSION + 1,
+                proto::VERSION + 2
+            )),
+            "{e}"
+        );
+        let e = ProcessExecutor::new(executor("old", &caps(None, proto::MIN_VERSION - 1)))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("sbx speaks"), "{e}");
     }
 }

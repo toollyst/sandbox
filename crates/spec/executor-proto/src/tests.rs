@@ -130,3 +130,23 @@ fn vsock_handshake() {
         io::ErrorKind::ConnectionRefused
     );
 }
+
+#[test]
+fn the_highest_common_version_is_used() {
+    assert_eq!(negotiate(VERSION, VERSION), Some(VERSION));
+    // 실행기가 더 새 버전까지 말해도 이 sbx의 가장 높은 버전에서 만난다.
+    assert_eq!(negotiate(MIN_VERSION, VERSION + 5), Some(VERSION));
+    // 겹치지 않으면 없다.
+    assert_eq!(negotiate(VERSION + 1, VERSION + 2), None);
+    assert_eq!(negotiate(0, MIN_VERSION - 1), None);
+    assert_eq!(negotiate(3, 2), None);
+    // 범위를 알리는 capabilities 한 줄은 옛 모양으로도 읽힌다(모르는 필드는 무시한다).
+    let line = format!(
+        r#"{{"version":{},"min_version":{VERSION},"name":"x","arch":"arm64","rootfs_formats":[],"live_share":false,"custom_kernel":false,"snapshot":false,"max_disks":2,"future":1}}"#,
+        VERSION + 1
+    );
+    let h: CapabilitiesHeader = serde_json::from_str(&line).unwrap();
+    assert_eq!((h.min_version, h.version), (Some(VERSION), VERSION + 1));
+    let c: Capabilities = serde_json::from_str(&line).unwrap();
+    assert_eq!(c.min_version, Some(VERSION));
+}

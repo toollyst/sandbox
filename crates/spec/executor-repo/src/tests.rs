@@ -207,6 +207,39 @@ fn a_main_version_picks_its_newest_patch() {
 }
 
 #[test]
+fn protocol_ranges_overlap_with_the_client_range() {
+    let mut v = sample_v2();
+    // 0.2.0은 2부터 3까지 말한다.
+    v["adapters"]["firecracker"]["versions"]["0.2.0"]["min_protocol"] = json!(2);
+    let idx = vec![("r".to_owned(), parse(v).unwrap())];
+    let a = spec("firecracker");
+    // 2만 말하는 클라이언트도 0.2.0을 고른다(가장 높은 버전).
+    assert_eq!(
+        index::pick_adapter(&idx, &a, &mac(), 2).unwrap().version,
+        "0.2.0"
+    );
+    assert_eq!(
+        index::pick_adapter(&idx, &a, &mac(), 1..=3)
+            .unwrap()
+            .version,
+        "0.2.0"
+    );
+    // 4부터 말하는 클라이언트는 고를 것이 없고, 범위를 알린다.
+    let e = index::pick_adapter(&idx, &a, &mac(), 4..=5).unwrap_err();
+    assert!(
+        e.contains("speaks executor protocol 2, 2 to 3; this sbx speaks 4 to 5"),
+        "{e}"
+    );
+    // 규칙에 어긋난 범위는 색인 전체를 거부한다.
+    let mut bad = sample_v2();
+    bad["adapters"]["firecracker"]["versions"]["0.2.0"]["min_protocol"] = json!(4);
+    assert!(parse(bad).unwrap_err().contains("above"));
+    let mut bad = sample_v2();
+    bad["executors"]["wick"]["versions"]["1.18.0"]["min_protocol"] = json!(1);
+    assert!(parse(bad).unwrap_err().contains("needs \"protocol\""));
+}
+
+#[test]
 fn schema_2_versions_are_checked() {
     let with = |f: &dyn Fn(&mut serde_json::Value)| {
         let mut v = sample_v2();

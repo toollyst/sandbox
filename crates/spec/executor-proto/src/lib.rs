@@ -20,7 +20,8 @@
 //!
 //! # 제어 세션 (`run`)
 //!
-//! 1. sbx가 [`Request::Launch`]를 보낸다. `version`이 [`VERSION`]과 다르면 실행기는 [`Event::Error`]를 보내고 끝난다.
+//! 1. sbx가 [`Request::Launch`]를 보낸다. `version`은 두 쪽이 말하는 버전 중 가장 높은 것이다(아래 "버전").
+//!    실행기는 자기가 말하지 않는 버전이면 [`Event::Error`]를 보내고 끝난다.
 //! 2. 실행기는 VM을 띄우고 [`Event::Started`]를 보낸다. 띄우지 못하면 [`Event::Error`]를 보내고 0이 아닌 코드로 끝난다.
 //!    `Started`는 게스트가 연결을 받을 준비가 되었다는 뜻이 아니다. sbx는 연결을 다시 시도한다.
 //! 3. sbx는 언제든 [`Request::Kill`]을 보낼 수 있다. 실행기는 VM을 즉시 끝낸다.
@@ -62,8 +63,18 @@
 //!
 //! # 버전
 //!
-//! [`VERSION`]이 바뀌면 호환되지 않는다. 1.0 전까지 규칙은 "같아야 한다"이다.
-//! 버전마다 모양이 다를 수 있으므로 `capabilities`를 읽는 쪽은 [`CapabilitiesHeader`]로 버전을 먼저 본다.
+//! 규약 버전은 정수다. sbx는 [`MIN_VERSION`]부터 [`VERSION`]까지 말하고, 실행기는 `capabilities`에 자기가 말하는
+//! 가장 높은 버전(`version`)과 가장 낮은 버전(`min_version`, 없으면 `version` 하나만)을 알린다. sbx는 두 범위가
+//! 겹치는 가장 높은 버전([`negotiate`])을 고르고, 그 버전으로 [`Request::Launch`]를 보낸다. 겹치지 않으면 쓰지 않는다.
+//!
+//! - sbx는 옛 버전을 적어도 minor 릴리스 하나와 12개월 동안 더 말한다(`COMPATIBILITY.md`). 그래서 따로 설치한
+//!   어댑터가 sbx를 올려도 바로 깨지지 않는다.
+//! - 새 버전은 `capabilities`에 필드를 **더하기만** 한다. 범위를 알리는 실행기는 그 범위의 가장 낮은 버전으로 읽어도
+//!   맞는 `capabilities` 한 줄을 낸다. 읽는 쪽은 모르는 필드를 무시한다.
+//! - [`Request`]와 [`Event`]는 고른 버전의 모양이다(모르는 필드는 거부한다).
+//!
+//! 읽는 쪽은 [`CapabilitiesHeader`]로 버전 범위를 먼저 본다. 그래야 맞지 않는 실행기에 "규약 버전이 다르다"고
+//! 알릴 수 있다(모양이 달라도).
 //!
 //! | 버전 | 바뀐 것 |
 //! |---|---|
@@ -79,8 +90,17 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 pub mod vsock;
 
-/// 규약 버전.
+/// 이 sbx가 말하는 가장 높은 규약 버전.
 pub const VERSION: u32 = 2;
+
+/// 이 sbx가 아직 말하는 가장 낮은 규약 버전.
+pub const MIN_VERSION: u32 = 2;
+
+/// 실행기가 `min..=max`를 말할 때 쓸 버전: 이 sbx의 범위([`MIN_VERSION`]..=[`VERSION`])와 겹치는 가장 높은 것.
+pub fn negotiate(min: u32, max: u32) -> Option<u32> {
+    let (lo, hi) = (min.max(MIN_VERSION), max.min(VERSION));
+    (min <= max && lo <= hi).then_some(hi)
+}
 
 /// 어댑터를 VMM 묶음과 함께 띄울 때 그 디렉터리를 알리는 환경 변수. 규칙은 크레이트 문서의 "어댑터와 VMM 묶음".
 pub const VMM_DIR_ENV: &str = "SBX_EXECUTOR_VMM_DIR";
@@ -98,12 +118,14 @@ pub enum Arch {
     Arm64,
 }
 
-/// `<실행기> capabilities`의 출력.
+/// `<실행기> capabilities`의 출력. 새 버전이 더한 필드를 옛 버전으로 읽을 수 있게 모르는 필드는 무시한다("버전").
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Capabilities {
-    /// 실행기가 구현한 규약 버전.
+    /// 실행기가 말하는 가장 높은 규약 버전.
     pub version: u32,
+    /// 실행기가 말하는 가장 낮은 규약 버전. 없으면 `version` 하나만 말한다.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_version: Option<u32>,
     /// 실행기 이름. 오류 메시지와 `inspect`에 쓴다.
     pub name: String,
     /// 게스트 아키텍처. 호스트와 같아야 한다.
@@ -120,12 +142,15 @@ pub struct Capabilities {
     pub max_disks: u32,
 }
 
-/// 모든 버전의 [`Capabilities`]에 있는 앞부분. 읽는 쪽은 이것으로 `version`을 먼저 보고, 같을 때만
-/// [`Capabilities`]로 읽는다. 그래야 버전이 다른 실행기에 "규약 버전이 다르다"고 알릴 수 있다(모양이 달라도).
+/// 모든 버전의 [`Capabilities`]에 있는 앞부분. 읽는 쪽은 이것으로 버전 범위를 먼저 보고, 겹칠 때만
+/// [`Capabilities`]로 읽는다. 그래야 맞지 않는 실행기에 "규약 버전이 다르다"고 알릴 수 있다(모양이 달라도).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct CapabilitiesHeader {
-    /// 실행기가 구현한 규약 버전.
+    /// 실행기가 말하는 가장 높은 규약 버전.
     pub version: u32,
+    /// 실행기가 말하는 가장 낮은 규약 버전. 없으면 `version`.
+    #[serde(default)]
+    pub min_version: Option<u32>,
     /// 실행기 이름 (없으면 빈 문자열).
     #[serde(default)]
     pub name: String,
@@ -196,7 +221,7 @@ pub struct VmSpec {
 pub enum Request {
     /// VM을 띄운다. 세션의 첫 메시지.
     Launch {
-        /// [`VERSION`].
+        /// 고른 규약 버전([`negotiate`]).
         version: u32,
         /// 띄울 VM.
         vm: VmSpec,
