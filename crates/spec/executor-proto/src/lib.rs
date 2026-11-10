@@ -183,6 +183,8 @@ pub struct VmSpec {
     /// 실시간 폴더 공유.
     pub shares: Vec<ShareSpec>,
     /// 게스트 연결용 Unix 소켓 경로. 실행기가 만든다. 이미 있으면 지우고 만든다.
+    /// 그 디렉터리는 sbx를 돌리는 사용자만 쓸 수 있다. 실행기는 VM 하나에 쓰는 임시 파일을 그 옆에, 이름을 소켓 파일
+    /// 이름으로 시작해 둘 수 있다(공용 임시 디렉터리 대신). VM이 끝나면 지운다.
     pub control_socket: PathBuf,
     /// 게스트 호스트 이름.
     pub hostname: String,

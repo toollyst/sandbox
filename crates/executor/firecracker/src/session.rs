@@ -98,15 +98,36 @@ pub fn run() -> ExitCode {
         Ok(c) => c,
         Err(e) => return fail(e),
     };
-    let config_path = std::env::temp_dir().join(format!(
-        "sbx-firecracker-{}-{}.json",
-        std::process::id(),
-        Instant::now().elapsed().as_nanos()
-    ));
+    let config_path = config_path(&vm.control_socket);
     let result = launch_and_watch(input, &vm, &settings, &config, &config_path);
     let _ = std::fs::remove_file(&config_path);
     let _ = std::fs::remove_file(&vm.control_socket);
     result
+}
+
+/// Firecracker 설정 파일 자리: 제어 소켓 옆. 그 디렉터리는 sbx가 만든, 이 사용자만 쓸 수 있는 곳이다
+/// (공용 임시 디렉터리에 두면 다른 사용자가 이름을 짐작해 미리 만들거나 링크를 걸 수 있다).
+fn config_path(control_socket: &Path) -> PathBuf {
+    let mut name = control_socket
+        .file_name()
+        .unwrap_or_default()
+        .to_os_string();
+    name.push(".firecracker.json");
+    control_socket.with_file_name(name)
+}
+
+/// 새 파일로만 쓴다(있던 것은 지우고, 링크를 따라가지 않는다). 이 사용자만 읽는다.
+fn write_config(path: &Path, text: &str) -> io::Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+    io::Write::write_all(&mut o.open(path)?, text.as_bytes())
 }
 
 fn launch_and_watch(
@@ -122,7 +143,7 @@ fn launch_and_watch(
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => return fail(format!("{}: {e}", vm.control_socket.display())),
     }
-    if let Err(e) = std::fs::write(config_path, config.to_string()) {
+    if let Err(e) = write_config(config_path, &config.to_string()) {
         return fail(format!("{}: {e}", config_path.display()));
     }
     let mut vmm = match spawn_vmm(&settings.firecracker, config_path) {
@@ -254,5 +275,42 @@ pub fn vmm(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
         thread::sleep(POLL);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_sits_beside_the_socket_and_never_follows_links() {
+        let dir = std::env::temp_dir().join(format!("sbx-fc-config-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = config_path(&dir.join("control.sock"));
+        assert_eq!(p, dir.join("control.sock.firecracker.json"));
+        write_config(&p, "{}").unwrap();
+        write_config(&p, "{\"a\":1}").unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "{\"a\":1}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&p).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+            // 링크가 있으면 링크를 지우고 새로 만든다. 가리키던 파일은 그대로다.
+            let target = dir.join("victim");
+            std::fs::write(&target, "keep").unwrap();
+            std::fs::remove_file(&p).unwrap();
+            std::os::unix::fs::symlink(&target, &p).unwrap();
+            write_config(&p, "{}").unwrap();
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
+            assert!(
+                !std::fs::symlink_metadata(&p)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -266,7 +266,7 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "usage: cargo xtask check-deps\n       cargo xtask guest-initramfs --arch <x86_64|aarch64> [--binary <file>] [--out <file>]\n       cargo xtask dist [--target <triple>]\n       cargo xtask kernel --arch <x86_64|aarch64> [--out <file>]\n       cargo xtask smoke [--sbx <file>] [--no-internet]\n       cargo xtask repo-add --repo <dir> --bundle <dir> --name <name> --version <version> [--os <os>] [--capabilities <file>] [--url <prefix>] [--description <text>]\n       cargo xtask demo [--sbx <file>] [--out <svg>]\n       cargo xtask bench [--sbx <file>] [--image <ref>] [--runs <n>] [--parallel <k>] [--docker]"
+                "usage: cargo xtask check-deps\n       cargo xtask guest-initramfs --arch <x86_64|aarch64> [--binary <file>] [--out <file>]\n       cargo xtask dist [--target <triple>]\n       cargo xtask kernel --arch <x86_64|aarch64> [--out <file>]\n       cargo xtask smoke [--sbx <file>] [--no-internet]\n       cargo xtask repo-add --repo <dir> --bundle <dir> --name <name> --version <version> [--os <os>] [--capabilities <file>] [--url <prefix>] [--description <text>] [--schema 1|2] [--adapter-package | --vmm-for <adapter> --arch <amd64|arm64>]\n       cargo xtask demo [--sbx <file>] [--out <svg>]\n       cargo xtask bench [--sbx <file>] [--image <ref>] [--runs <n>] [--parallel <k>] [--docker]"
             );
             ExitCode::from(2)
         }
