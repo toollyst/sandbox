@@ -396,7 +396,7 @@ impl Ctx {
                     .to_owned()
             }
             os => format!(
-                "sbx cannot run sandboxes on {os} yet: there is no executor for this platform \
+                "sandboxes cannot run on {os} yet: there is no executor for this platform \
                  (pull, prepare and images work)"
             ),
         }))
