@@ -99,7 +99,10 @@ fn layer_with(compression: Compression, entries: &[T<'_>]) -> (Vec<u8>, Layer) {
 struct FakeSource {
     image: ResolvedImage,
     blobs: HashMap<Digest, Vec<u8>>,
+    /// 마지막 바이트를 바꿔 보낸다(digest가 틀린다).
     tamper: bool,
+    /// 끝없이 보낸다(manifest의 크기를 넘는다).
+    endless: bool,
 }
 
 impl FakeSource {
@@ -125,6 +128,7 @@ impl FakeSource {
             },
             blobs,
             tamper: false,
+            endless: false,
         }
     }
 }
@@ -147,8 +151,16 @@ impl ImageSource for FakeSource {
     ) -> BoxFuture<'a, Result<u64, ImageError>> {
         Box::pin(async move {
             let mut data = self.blobs[digest].clone();
-            if self.tamper {
-                data.push(0);
+            if self.tamper
+                && let Some(b) = data.last_mut()
+            {
+                *b ^= 1;
+            }
+            if self.endless {
+                let chunk = vec![0u8; 64 * 1024];
+                loop {
+                    sink.write_all(&chunk)?;
+                }
             }
             sink.write_all(&data)?;
             Ok(data.len() as u64)
@@ -262,6 +274,25 @@ fn pull_rejects_tampered_blob_and_writes_nothing() {
     ));
     assert!(!m.store().has_image(&id));
     assert!(m.store().refs().unwrap().is_empty());
+    assert_eq!(
+        std::fs::read_dir(root.join("blobs/sha256"))
+            .unwrap()
+            .count(),
+        0
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn pull_stops_a_source_that_sends_more_than_the_manifest_size() {
+    let root = temp_root("endless");
+    let mut src = FakeSource::new(vec![layer(&[T::File("a", b"1")])]);
+    src.endless = true;
+    let m = manager(&root, src);
+    match ready(m.pull("test", Platform { arch: Arch::X86_64 })) {
+        Err(ManageError::Integrity(e)) => assert!(e.contains("larger than"), "{e}"),
+        other => panic!("{other:?}"),
+    }
     assert_eq!(
         std::fs::read_dir(root.join("blobs/sha256"))
             .unwrap()

@@ -99,11 +99,25 @@ pub struct PullProgress {
 struct Counting<'a> {
     inner: &'a mut (dyn Write + Send),
     done: u64,
+    /// manifest가 알린 크기. 소스가 이보다 많이 보내면 쓰지 않고 멈춘다(끝없는 응답으로 디스크를 채우지 못한다).
+    limit: u64,
+    /// `limit`을 넘겨 멈췄다.
+    over: bool,
     report: &'a (dyn Fn(u64) + Sync),
 }
 
 impl Write for Counting<'_> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if self.done + buf.len() as u64 > self.limit {
+            self.over = true;
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "the blob is larger than the {} bytes the manifest says",
+                    self.limit
+                ),
+            ));
+        }
         let n = self.inner.write(buf)?;
         self.done += n as u64;
         (self.report)(self.done);
@@ -180,6 +194,8 @@ impl Manager {
             let mut counting = Counting {
                 inner: &mut blob,
                 done: 0,
+                limit: layer.size,
+                over: false,
                 report: &|n| {
                     progress(PullProgress {
                         bytes_done: start + n,
@@ -187,10 +203,20 @@ impl Manager {
                     })
                 },
             };
-            self.source
+            let fetched = self
+                .source
                 .fetch_blob(&resolved.source, &layer.digest, &mut counting)
-                .await
-                .map_err(ManageError::Source)?;
+                .await;
+            if let Err(e) = fetched {
+                return Err(if counting.over {
+                    ManageError::Integrity(format!(
+                        "layer {}: the blob is larger than the {} bytes the manifest says",
+                        layer.digest, layer.size
+                    ))
+                } else {
+                    ManageError::Source(e)
+                });
+            }
             state.layers_done += 1;
             state.bytes_done = start + layer.size;
             progress(state);
