@@ -112,7 +112,7 @@ fn install_use_list_remove() {
     let left: Vec<_> = fs::read_dir(r.join("executors"))
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|n| n.starts_with('.'))
+        .filter(|n| n.starts_with(".staging"))
         .collect();
     assert!(left.is_empty(), "{left:?}");
     assert_eq!(ex.list().unwrap().len(), 2);
@@ -275,7 +275,11 @@ fn bad_origins_and_hostile_marker_files_leave_nothing_behind() {
     assert!(ex.list().unwrap().is_empty());
     assert_eq!(ex.default().unwrap(), None);
     let left: Vec<_> = fs::read_dir(r.join("executors"))
-        .map(|d| d.map(|e| e.unwrap().file_name()).collect())
+        .map(|d| {
+            d.map(|e| e.unwrap().file_name())
+                .filter(|n| n != ".install.lock")
+                .collect()
+        })
         .unwrap_or_default();
     assert!(left.is_empty(), "{left:?}");
     let _ = fs::remove_dir_all(&r);
@@ -329,5 +333,42 @@ fn names_and_versions_are_lowercase_so_case_cannot_alias_a_directory() {
     fs::create_dir_all(r.join("executors/Fake/1.0")).unwrap();
     fs::create_dir_all(r.join("executors/fake2/1.0-RC")).unwrap();
     assert!(ex.list().unwrap().is_empty());
+    let _ = fs::remove_dir_all(&r);
+}
+
+#[test]
+fn concurrent_installs_from_different_origins_cannot_both_win() {
+    let r = root("origin-race");
+    let src = r.join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join(executable_name()), b"#!/bin/sh\n").unwrap();
+    let ex = Executors::new(r.join("executors"));
+    // 같은 이름의 다른 버전을 출처 여럿에서 동시에 설치한다. 확인(verify)을 느리게 해 검사와 rename 사이를 벌린다.
+    let won: Vec<String> = std::thread::scope(|s| {
+        let hs: Vec<_> = (0..6)
+            .map(|t| {
+                let (ex, src) = (&ex, &src);
+                s.spawn(move || {
+                    let origin = format!("o{t}");
+                    ex.install_from(&spec(&format!("fc@{t}")), src, None, Some(&origin), |_| {
+                        std::thread::sleep(std::time::Duration::from_millis(30));
+                        Ok(())
+                    })
+                    .ok()
+                    .map(|_| origin)
+                })
+            })
+            .collect();
+        hs.into_iter().filter_map(|h| h.join().unwrap()).collect()
+    });
+    assert_eq!(won.len(), 1, "{won:?}");
+    let origins: Vec<_> = ex.list().unwrap().into_iter().map(|i| i.origin).collect();
+    assert_eq!(origins, [Some(won[0].clone())]);
+    // 받기 전 검사도 같은 답을 한다.
+    assert!(ex.check_origin(&spec("fc"), &won[0]).is_ok());
+    assert!(matches!(
+        ex.check_origin(&spec("fc"), "other"),
+        Err(InstallError::OtherOrigin { .. })
+    ));
     let _ = fs::remove_dir_all(&r);
 }

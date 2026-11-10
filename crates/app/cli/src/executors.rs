@@ -525,6 +525,8 @@ async fn fetch_and_install(
         eprintln!("{i} is already installed");
         return Ok(i);
     }
+    // 받기 전에: 다른 저장소에서 받은 이름이면 거부될 것을 끝까지 받지 않는다.
+    into.check_origin(&want, &c.repository)?;
     eprintln!(
         "downloading {}@{} ({}) from {}",
         c.name,

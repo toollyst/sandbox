@@ -11,6 +11,7 @@
 //!                                 (sbx-executor-proto의 VMM_DIR_ENV).
 //!   default                     기본 실행기 "<이름>@<버전>" 한 줄
 //!   .staging-*                  설치 중인 임시 디렉터리 (목록에 나오지 않는다)
+//!   .install.lock               설치를 한 번에 하나씩 하는 잠금
 //! ```
 //!
 //! **규칙**
@@ -387,7 +388,51 @@ impl Executors {
     /// [`Executors::install`]에 출처(`origin`: 저장소 이름이나 [`LOCAL_ORIGIN`])를 적는다. 같은 이름의 다른 버전이
     /// 다른 출처에서 왔으면 [`InstallError::OtherOrigin`]이다(다른 저장소가 같은 이름을 가로채지 못하게).
     /// 출처가 적히지 않은 옛 설치는 막지 않는다.
+    ///
+    /// 출처 검사부터 rename까지는 `<root>/.install.lock`을 잠그고 한다. 그래서 출처가 다른 두 설치가 동시에 돌아도
+    /// 둘 다 통과하지 못한다.
     pub fn install_from(
+        &self,
+        spec: &Spec,
+        src: &Path,
+        adapter: Option<&str>,
+        origin: Option<&str>,
+        verify: impl FnOnce(&Installed) -> Result<(), String>,
+    ) -> Result<Installed, InstallError> {
+        fs::create_dir_all(&self.root)?;
+        let lock = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.root.join(INSTALL_LOCK))?;
+        lock.lock()?;
+        let r = self.install_locked(spec, src, adapter, origin, verify);
+        drop(lock);
+        r
+    }
+
+    /// 받기 전에 볼 수 있는 것: `spec`의 이름을 `origin`에서 설치할 수 있는지([`InstallError::OtherOrigin`]).
+    /// 설치할 때([`Executors::install_from`]) 다시 본다.
+    pub fn check_origin(&self, spec: &Spec, origin: &str) -> Result<(), InstallError> {
+        if !valid_part(origin) {
+            return Err(InstallError::Rejected(format!("invalid origin {origin:?}")));
+        }
+        if let Some(have) = self
+            .list()?
+            .into_iter()
+            .filter(|i| i.name == spec.name)
+            .find_map(|i| i.origin.filter(|h| h != origin))
+        {
+            return Err(InstallError::OtherOrigin {
+                name: spec.name.clone(),
+                have,
+                want: origin.to_owned(),
+            });
+        }
+        Ok(())
+    }
+
+    fn install_locked(
         &self,
         spec: &Spec,
         src: &Path,
@@ -402,21 +447,7 @@ impl Executors {
             .filter(|v| *v != LATEST)
             .ok_or(InstallError::NoVersion)?;
         if let Some(o) = origin {
-            if !valid_part(o) {
-                return Err(InstallError::Rejected(format!("invalid origin {o:?}")));
-            }
-            if let Some(have) = self
-                .list()?
-                .into_iter()
-                .filter(|i| i.name == spec.name)
-                .find_map(|i| i.origin.filter(|h| h != o))
-            {
-                return Err(InstallError::OtherOrigin {
-                    name: spec.name.clone(),
-                    have,
-                    want: o.to_owned(),
-                });
-            }
+            self.check_origin(spec, o)?;
         }
         if let Some(a) = adapter
             && !valid_name(a)
@@ -513,6 +544,9 @@ impl Executors {
         Ok(found)
     }
 }
+
+/// 설치를 한 번에 하나씩 하게 하는 잠금 파일(설치 디렉터리 안). 이름이 `.`으로 시작하므로 목록에 나오지 않는다.
+const INSTALL_LOCK: &str = ".install.lock";
 
 /// VMM 묶음에 어댑터 이름을 적는 파일.
 pub const ADAPTER_FILE: &str = ".sbx-adapter";
