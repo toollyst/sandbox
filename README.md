@@ -180,11 +180,12 @@ claude mcp add sbx -- sbx mcp          # Claude Code
 The MCP server adds no policy of its own. Tool arguments go through the same parser and rules as the CLI:
 
 - The network stays off unless a call passes `allow: ["host:port", …]`.
-- Host folders are never mounted.
+- Host folders are never mounted, and tools only see sandboxes created through MCP, not the ones you started
+  with the CLI (`sbx mcp --all-sandboxes` changes that).
 - Arguments can't be turned into other `sbx` options.
 
-Every command has a timeout (300 s by default). When it runs out, `run` powers the VM off and `exec` kills the
-process. The first pull of a large image reports progress (`notifications/progress`), so clients don't give up waiting.
+Every command has a timeout (300 s by default). When it runs out or the client cancels the call, `run` powers the
+VM off and `exec` kills the process. Output keeps the last 256 KiB of each stream, where errors usually are. The first pull of a large image reports progress (`notifications/progress`), so clients don't give up waiting.
 
 ## How it works
 
@@ -242,7 +243,7 @@ cargo xtask repo-add --repo ./executors --bundle ./bundle --name myvmm --version
 
 | Host | VMM | Status |
 | --- | --- | --- |
-| macOS 15+, Apple Silicon | Firecracker ported to Hypervisor.framework ([toollyst/firecracker](https://github.com/toollyst/firecracker)) | Works. Real-VM checks run on a Mac, since CI's macOS runners can't start guests |
+| macOS 15+, Apple Silicon | Firecracker ported to Hypervisor.framework ([toollyst/firecracker](https://github.com/toollyst/firecracker)) | Works. Real-VM checks run on a Mac, since CI's macOS runners can't start guests. No seccomp on macOS ([SECURITY.md](SECURITY.md)) |
 | Linux x86_64 | Upstream Firecracker on KVM | Works. Real VMs boot in CI on every push and before every release |
 | Linux aarch64 | Upstream Firecracker on KVM | Released and tested, but CI's arm runners have no KVM, so no real-VM run yet |
 | Windows | – | Not yet |
@@ -251,7 +252,8 @@ cargo xtask repo-add --repo ./executors --bundle ./bundle --name myvmm --version
 
 The CLI and the MCP server are thin layers over two plain Rust crates: `sbx-manage` (images and cache) and
 `sbx-runtime` (sandbox lifecycle). Neither assumes a CLI, and they can share state directories or keep their own.
-Bindings for other languages are planned.
+They are not on crates.io yet and their API will change before 1.0; for now, depend on them through git. Bindings
+for other languages are planned.
 
 ## Development
 

@@ -59,6 +59,21 @@ Linux KVM(upstream Firecracker)과 CI 자동 실행은 남았다.
 | 21 | AI 에이전트 입구: MCP 서버 | 완료: `sbx mcp`(stdio, JSON-RPC 직접 구현). 도구 `run`, `create`, `exec`, `write_file`, `read_file`, `list`, `remove`. 정책 없음: 인자를 CLI 인자(`--이름=값`)로 바꿔 같은 파서로 해석, 네트워크는 `allow`로만, 호스트 마운트는 내보내지 않는다. 시간 제한(기본 300초). 이미지를 받는 동안 `notifications/progress`. e2e(가짜 실행기)와 macOS 실제 VM으로 확인 |
 | 22 | Docker 사용 편의 | 완료: `--name`(ID 대신 어디서나, `cp 이름:경로`도), `ps -q`·`images -q`, `ps`의 CREATED·NAMES와 새것부터, `--env-file`, `logs --tail`, `sbx completion`(bash, zsh, fish, powershell, elvish), `sbx info`(호스트, 가상화, 실행기, 디렉터리), 받기 진행 막대(터미널일 때만). e2e로 확인 |
 
+## M5. 적대적 검토 대응 (2026-11-10)
+
+게스트, 레지스트리, 에이전트를 공격자로 보고 호스트 쪽 코드를 검토했다. 고친 것마다 공격을 흉내 내는 테스트가 있다.
+
+| 단계 | 내용 | 상태 |
+|---|---|---|
+| 23 | `cp` 대상 이름을 호스트가 정한다, setuid 등 버림 | 완료 (`hostfs` 적대적 게스트 테스트) |
+| 24 | MCP `read_file`은 메모리로만 받고 호스트 링크를 따라가지 않는다 | 완료 (`Sandbox::read_file`) |
+| 25 | MCP 도구는 MCP로 만든 샌드박스만 (`--all-sandboxes`) | 완료 (e2e) |
+| 26 | 이미지 받기: realm·redirect는 인터넷 쪽·https만, 읽기 시간 제한, blob 크기 상한, `is_public_ip` 범위 보강 | 완료 (가짜 레지스트리 테스트) |
+| 27 | 자원: 출력 채널 4 MiB, `main.log` 256 MiB, egress 동시 연결 256, socket 디렉터리 소유자 확인 | 완료 |
+| 28 | MCP: 취소, 클라이언트가 사라지면 정리, 출력 끝 보존, 규약 오류 코드 | 완료 (e2e) |
+| 29 | Firecracker adapter의 설정 파일을 공용 `/tmp`에 예측 가능한 이름으로 쓴다 (Linux 다중 사용자) | 남음: adapter 수정 중이라 그쪽에서 |
+| 30 | MCP 자원 상한(샌드박스 수, vCPU, 메모리), 게스트 프로토콜 퍼징 | 남음 |
+
 ## 그 뒤
 
 - 다른 외부 실행기 (libkrun 등). 규약(`sbx-executor-proto`)만 지키면 된다.
