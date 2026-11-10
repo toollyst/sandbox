@@ -6,6 +6,8 @@
 //!
 //! 받기 (게스트 → 호스트)
 //! - 게스트가 보낸 경로를 믿지 않는다. 안전한 상대 경로만 받고, 중간 구성 요소가 심볼릭 링크이면 오류다.
+//!   `/`로 나눈 조각은 이 호스트에서도 이름 하나여야 한다(`plain_name`). Windows에서는 `\`가 구분자이고 `C:`가
+//!   드라이브라서, 게스트에게는 이름 하나인 `..\x`가 대상 밖을 가리킨다.
 //! - 맨 위 이름(`to`)은 호스트가 정한다. 한 단계 이름이 아니면 오류다. 게스트가 고른 이름으로 대상 디렉터리
 //!   아래 다른 곳(예: `.ssh/authorized_keys`)에 쓰지 못하게 한다.
 //! - 소유자는 바꾸지 않는다(지금 사용자). 권한(Unix)은 `0o777` 안만 둔다(setuid, setgid, sticky는 버린다).
@@ -14,7 +16,7 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sbx_guest_proto::{CHUNK_LEN, Entry, FileKind, GuestMsg, HostMsg, check_relative_path};
@@ -163,11 +165,29 @@ fn time(mtime: i64) -> SystemTime {
     }
 }
 
+/// 게스트가 보낸 경로 조각 하나가 이 호스트에서도 그대로 이름 하나인지.
+///
+/// Windows에서는 `\`도 구분자이고 `C:`는 드라이브라 `..\x`, `C:\x`가 대상 밖을 가리킨다(`PathBuf::push`는 절대
+/// 경로를 받으면 앞을 버린다). 또 이름 끝의 `.`과 공백은 지워지고(`.. `이 `..`이 된다) `:`는 스트림 구분자다.
+fn plain_name(c: &str) -> bool {
+    let mut parts = Path::new(c).components();
+    let one = matches!(
+        (parts.next(), parts.next()),
+        (Some(Component::Normal(n)), None) if n == std::ffi::OsStr::new(c)
+    );
+    one && !(cfg!(windows) && (c.ends_with(['.', ' ']) || c.contains(':')))
+}
+
 fn target(dest: &Path, rel: &str) -> Result<PathBuf, RuntimeError> {
     check_relative_path(rel).map_err(proto_err)?;
     let mut p = dest.to_path_buf();
     let mut parts = rel.split('/').peekable();
     while let Some(c) = parts.next() {
+        if !plain_name(c) {
+            return Err(proto_err(format!(
+                "{rel:?}: {c:?} is not a plain file name on this host"
+            )));
+        }
         p.push(c);
         if parts.peek().is_some() {
             let m =
@@ -455,6 +475,39 @@ mod tests {
         if cfg!(unix) {
             assert!(receive(&d, "t", Some("t"), &mut next).is_err());
             assert!(!outside.join("pwned").exists());
+        }
+    }
+
+    /// 게스트(Linux)에게는 이름 하나인 조각이 호스트에서는 경로일 수 있다. Windows에서는 `..\..\x`가 대상
+    /// 밖으로, `C:x`가 다른 드라이브로 간다. 그런 이름은 받지 않는다. Unix에서는 그냥 이름이라 대상 안에 생긴다.
+    /// (퍼징 대상 copy_from_guest를 만들며 코드를 읽다 찾았다.)
+    #[test]
+    fn hostile_names_that_are_paths_on_this_host_stay_inside() {
+        for (i, name) in ["..\\..\\x", "C:x", "x\\", ".. ", "a:b"]
+            .into_iter()
+            .enumerate()
+        {
+            let root = dest(&format!("winname{i}"));
+            let d = root.join("dest");
+            fs::create_dir(&d).unwrap();
+            let mut next = feed(vec![
+                entry("t", FileKind::Dir, 0o755),
+                entry(&format!("t/{name}"), FileKind::File { size: 1 }, 0o644),
+                GuestMsg::Data(b"x".to_vec()),
+            ]);
+            let got = receive(&d, "t", Some("t"), &mut next);
+            let mut top: Vec<_> = fs::read_dir(&root)
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            top.sort();
+            assert_eq!(top, ["dest"], "{name:?} wrote next to the destination");
+            if cfg!(windows) {
+                assert!(got.is_err(), "{name:?} was accepted");
+            } else {
+                got.unwrap();
+                assert_eq!(fs::read(d.join("t").join(name)).unwrap(), b"x", "{name:?}");
+            }
         }
     }
 
