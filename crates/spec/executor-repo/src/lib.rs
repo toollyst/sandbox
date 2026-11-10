@@ -177,6 +177,23 @@ pub async fn indexes(
     (ok, failed)
 }
 
+/// `order`(저장소 목록 순서)에서 `chosen`보다 앞에 있는데 읽지 못한(`read`에 없는) 첫 저장소.
+///
+/// 이름은 그것을 내는 첫 저장소의 것이다. 앞 저장소를 읽지 못했으면 그 저장소가 이 이름을 내는지 알 수 없으므로,
+/// 뒤 저장소에서 고른 것을 설치하면 안 된다. 그러지 않으면 앞 저장소의 응답을 막거나 망가뜨리거나 옛 서명본을
+/// 내미는 것(롤백 탐지에 걸린다)만으로 이름이 뒤 저장소로 넘어간다. 호출자는 이것이 있으면 설치를 거부한다.
+pub fn unread_before<'a>(
+    order: &'a [String],
+    read: &[(String, Index)],
+    chosen: &str,
+) -> Option<&'a str> {
+    order
+        .iter()
+        .take_while(|n| *n != chosen)
+        .find(|n| !read.iter().any(|(r, _)| r == *n))
+        .map(String::as_str)
+}
+
 /// 고른 것을 `work`(빈 디렉터리이거나 없는 곳)에 받아 풀고, 묶음 디렉터리를 돌려준다.
 /// 설치(`sbx_executor_install::Executors::install`)는 호출자가 한다. `work`를 지우는 것도 호출자다.
 pub async fn fetch_bundle(

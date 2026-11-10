@@ -2254,15 +2254,15 @@ mod unix {
         // 앞 저장소는 읽을 수 없다: 경고하고 건너뛴다.
         let missing = format!("file://{}", e.path("missing").display());
         // 키도 --unsigned도 없으면 더하지 않는다.
-        let o = without(&["executor", "repo", "add", "local", &url]);
+        let o = without(&["executor", "repo", "add", "mine", &url]);
         assert_ne!(o.status.code(), Some(0));
         assert!(text(&o.stderr).contains("--key"), "{}", text(&o.stderr));
-        for (name, u) in [("broken", missing.as_str()), ("local", url.as_str())] {
+        for (name, u) in [("broken", missing.as_str()), ("mine", url.as_str())] {
             let o = without(&["executor", "repo", "add", name, u, "--unsigned"]);
             assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
         }
         let o = without(&["executor", "repo", "ls"]);
-        assert!(text(&o.stdout).contains("local"), "{}", text(&o.stdout));
+        assert!(text(&o.stdout).contains("mine"), "{}", text(&o.stdout));
 
         let o = without(&["executor", "search"]);
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
@@ -2277,6 +2277,22 @@ mod unix {
             .map(|l| l.split_whitespace().take(2).collect::<Vec<_>>().join("@"))
             .collect();
         assert_eq!(rows, ["fake@1.0", "fake@0.5"]);
+
+        // 앞 저장소(broken)를 읽지 못하면, 그 저장소가 이 이름을 가졌을 수 있으므로 뒤 저장소에서 설치하지 않는다.
+        let o = without(&["executor", "install", "fake"]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("repository broken could not be read")
+                && text(&o.stderr).contains("--repo mine"),
+            "{}",
+            text(&o.stderr)
+        );
+        assert!(
+            without(&["executor", "ls"]).stdout.is_empty()
+                || !text(&without(&["executor", "ls"]).stdout).contains("fake")
+        );
+        let o = without(&["executor", "repo", "rm", "broken"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
 
         // 이름만: 이 호스트와 규약 버전으로 되는 가장 높은 버전. 처음 설치한 것이 기본이 된다.
         let o = without(&["executor", "install", "fake"]);
@@ -2317,23 +2333,40 @@ mod unix {
             .unwrap_or(0);
         assert_eq!(left, 0);
 
-        // 묶음 압축 파일을 직접 설치.
+        // 묶음 압축 파일을 직접 설치. 저장소 mine에서 받은 이름(fake)에는 섞지 않는다.
+        let archive = repo.join("fake/1.0.tar.gz");
         let o = without(&[
             "executor",
             "install",
             "--from",
-            repo.join("fake/1.0.tar.gz").to_str().unwrap(),
-            "fake@local",
+            archive.to_str().unwrap(),
+            "fake@9.9",
+        ]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("installed from mine"),
+            "{}",
+            text(&o.stderr)
+        );
+        let o = without(&[
+            "executor",
+            "install",
+            "--from",
+            archive.to_str().unwrap(),
+            "direct@1",
         ]);
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
         let o = without(&["executor", "ls"]);
         let ls = text(&o.stdout);
-        assert!(ls.contains("local") && !ls.contains("0.5"), "{ls}");
-
-        assert_eq!(
-            without(&["executor", "repo", "rm", "broken"]).status.code(),
-            Some(0)
+        assert!(
+            ls.contains("direct") && ls.contains("local") && !ls.contains("0.5"),
+            "{ls}"
         );
+        // `local`은 직접 설치한 것의 출처라서 저장소 이름으로 쓸 수 없다.
+        let o = without(&["executor", "repo", "add", "local", &url, "--unsigned"]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(text(&o.stderr).contains("reserved"), "{}", text(&o.stderr));
+        // 이미 지운 저장소는 다시 지울 수 없다.
         assert_ne!(
             without(&["executor", "repo", "rm", "broken"]).status.code(),
             Some(0)

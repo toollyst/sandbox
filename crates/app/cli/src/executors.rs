@@ -393,7 +393,7 @@ fn install_local(
 async fn indexes(
     cx: &Ctx<'_>,
     only: Option<&str>,
-) -> Result<(Fetcher, Vec<(String, index::Index)>)> {
+) -> Result<(Fetcher, Vec<(String, index::Index)>, Vec<String>)> {
     let mut repos = repositories(cx.data_dir)?;
     if let Some(name) = only {
         repos.retain(|r| r.name == name);
@@ -423,7 +423,25 @@ async fn indexes(
     if ok.is_empty() {
         return Err("no executor repository could be read".into());
     }
-    Ok((fetcher, ok))
+    let order = repos.into_iter().map(|r| r.name).collect();
+    Ok((fetcher, ok, order))
+}
+
+/// `chosen`에서 고른 `what`을 설치해도 되는지: 그보다 앞 저장소를 읽지 못했으면 안 된다
+/// ([`sbx_executor_repo::unread_before`]).
+fn owner_was_read(
+    order: &[String],
+    idx: &[(String, index::Index)],
+    chosen: &str,
+    what: &str,
+) -> std::result::Result<(), String> {
+    match sbx_executor_repo::unread_before(order, idx, chosen) {
+        None => Ok(()),
+        Some(f) => Err(format!(
+            "repository {f} could not be read (see the warning above), and it comes before {chosen}: {f} may own \
+             {what}, so it is not installed from {chosen}. Fix {f}, or pick a repository with --repo {chosen}"
+        )),
+    }
 }
 
 async fn install_remote(
@@ -433,9 +451,10 @@ async fn install_remote(
     spec: &Spec,
     repo: Option<&str>,
 ) -> Result<()> {
-    let (fetcher, idx) = indexes(cx, repo).await?;
+    let (fetcher, idx, order) = indexes(cx, repo).await?;
     let platform = Platform::host();
     let c = index::pick(&idx, spec, &platform, protocols())?;
+    owner_was_read(&order, &idx, &c.repository, &c.name)?;
     // VMM 묶음이면 어댑터부터. 이미 있으면(어느 버전이든) 그것을 쓴다.
     if let Some(name) = &c.adapter {
         let a = Spec {
@@ -443,7 +462,7 @@ async fn install_remote(
             version: None,
         };
         if ad.find(&a)?.is_none() {
-            let ac = adapter_for(&idx, &c, &a, &platform)
+            let ac = adapter_for(&idx, &order, &c, &a, &platform)
                 .map_err(|e| format!("{}@{} needs adapter {name}: {e}", c.name, c.version))?;
             eprintln!("{}@{} needs adapter {name}", c.name, c.version);
             fetch_and_install(cx, &fetcher, ad, &ac, adapter_check).await?;
@@ -459,11 +478,13 @@ async fn install_remote(
     print_ref(cx, &i)
 }
 
-/// VMM 묶음 `c`가 가리키는 어댑터를 고른다: 그 묶음이 있던 저장소에서 먼저, 없으면 저장소 목록 순서대로 처음 가진
-/// 저장소에서. 모든 저장소에서 가장 높은 버전을 고르지 않는다(나중에 더한 저장소가 같은 이름의 더 높은 버전으로 공식
-/// 묶음의 어댑터를 바꾸지 못하게).
+/// VMM 묶음 `c`가 가리키는 어댑터를 고른다: 그 묶음이 있던 저장소가 그 이름을 내면 거기서만, 아니면 저장소 목록
+/// 순서대로 그 이름을 내는 첫 저장소에서만. 그 저장소에 이 플랫폼·규약에 맞는 빌드가 없어도 다른 저장소로 넘어가지
+/// 않는다(이름은 그것을 내는 저장소의 것이다. 다른 저장소가 같은 이름으로 공식 묶음의 어댑터를 대신하지 못하게).
+/// 다른 저장소에서 고를 때는 그보다 앞 저장소를 모두 읽었어야 한다.
 fn adapter_for(
     idx: &[(String, index::Index)],
+    order: &[String],
     c: &Candidate,
     adapter: &Spec,
     platform: &Platform,
@@ -472,11 +493,22 @@ fn adapter_for(
     let same = idx.iter().filter(|(r, _)| *r == c.repository);
     let others = idx.iter().filter(|(r, _)| *r != c.repository);
     for repo in same.chain(others) {
-        if let Ok(found) = index::pick_adapter(std::slice::from_ref(repo), adapter, platform, v) {
-            return Ok(found);
+        if repo.1.adapter(&adapter.name).is_none() {
+            continue;
         }
+        if repo.0 != c.repository {
+            owner_was_read(order, idx, &repo.0, &adapter.name)?;
+        }
+        return index::pick_adapter(std::slice::from_ref(repo), adapter, platform, v).map_err(
+            |e| {
+                format!(
+                    "{e} (in {}, the repository that has adapter {})",
+                    repo.0, adapter.name
+                )
+            },
+        );
     }
-    // 이유는 모든 저장소를 보고 알린다.
+    // 아무 저장소도 그 이름을 내지 않는다. 읽지 못한 저장소가 있으면 그것 때문일 수 있다.
     index::pick_adapter(idx, adapter, platform, v)
 }
 
@@ -558,7 +590,7 @@ fn newest_patches(list: Vec<Candidate>) -> Vec<Candidate> {
 }
 
 async fn search(cx: &Ctx<'_>, name: Option<&str>, all: bool, kind: Kind) -> Result<u8> {
-    let (_, idx) = indexes(cx, None).await?;
+    let (_, idx, _) = indexes(cx, None).await?;
     let (p, v) = (Platform::host(), protocols());
     let every = match kind {
         Kind::Executor => index::available(&idx, name, &p, v),
@@ -707,8 +739,9 @@ async fn adapter(cx: &Ctx<'_>, ex: &Executors, ad: &Executors, c: &AdapterComman
             spec,
             repo,
         } => {
-            let (fetcher, idx) = indexes(cx, repo.as_deref()).await?;
+            let (fetcher, idx, order) = indexes(cx, repo.as_deref()).await?;
             let c = index::pick_adapter(&idx, &spec.parse()?, &Platform::host(), protocols())?;
+            owner_was_read(&order, &idx, &c.repository, &c.name)?;
             let i = fetch_and_install(cx, &fetcher, ad, &c, adapter_check).await?;
             print_ref(cx, &i)?;
             Ok(0)
@@ -816,6 +849,13 @@ fn repo(cx: &Ctx<'_>, c: &RepoCommand) -> Result<u8> {
                 )
                 .into());
             }
+            if name == sbx_executor_install::LOCAL_ORIGIN {
+                return Err(format!(
+                    "{name:?} is reserved: it marks executors installed directly (--from), so a repository with \
+                     that name could take them over; choose another name"
+                )
+                .into());
+            }
             let r = Repository::new(name, url)?.with_keys(keys.clone())?;
             s.add(r.clone())?;
             print_repository(cx, &r)?;
@@ -867,6 +907,94 @@ mod tests {
         index::Index::parse(v.to_string().as_bytes(), &url).unwrap()
     }
 
+    fn names(idx: &[(String, index::Index)]) -> Vec<String> {
+        idx.iter().map(|(n, _)| n.clone()).collect()
+    }
+
+    /// 어댑터 `firecracker`의 버전 하나를 이 규약 버전으로 낸 색인.
+    fn adapter_only(version: &str, protocol: u32) -> index::Index {
+        let p = Platform::host();
+        let art = serde_json::json!([{"os": p.os, "architecture": p.architecture, "url": "x.tar.gz",
+            "sha256": "0".repeat(64), "size": 1}]);
+        let v = serde_json::json!({"schema": 2, "executors": {}, "adapters": {"firecracker": {"versions": {
+            version: {"protocol": protocol, "artifacts": art}}}}});
+        let repo = sbx_executor_repo::location::repository("https://example.com/").unwrap();
+        let url = sbx_executor_repo::location::index_v2(&repo);
+        index::Index::parse(v.to_string().as_bytes(), &url).unwrap()
+    }
+
+    #[test]
+    fn an_adapter_name_never_falls_through_to_another_repository() {
+        let a: Spec = "firecracker".parse().unwrap();
+        let p = Platform::host();
+        let wick = |idx: &[(String, index::Index)]| {
+            index::pick(
+                idx,
+                &"wick".parse().unwrap(),
+                &p,
+                sbx_executor_proto::VERSION,
+            )
+            .unwrap()
+        };
+        // 앞 저장소가 그 이름을 내지만 이 규약에 맞는 빌드가 없다: 뒤 저장소의 같은 이름으로 넘어가지 않는다.
+        let idx = vec![
+            (
+                "official".to_owned(),
+                adapter_only("9.0", sbx_executor_proto::VERSION + 7),
+            ),
+            (
+                "evil".to_owned(),
+                adapter_only("1.0", sbx_executor_proto::VERSION),
+            ),
+            ("vmm".to_owned(), index(None, true)),
+        ];
+        let e = adapter_for(&idx, &names(&idx), &wick(&idx), &a, &p).unwrap_err();
+        assert!(e.contains("official"), "{e}");
+        // VMM 묶음의 저장소가 그 이름을 내면, 맞는 빌드가 없어도 거기서 멈춘다.
+        let mut vmm = index(None, true);
+        vmm.adapters = adapter_only("2.0", sbx_executor_proto::VERSION + 7).adapters;
+        let idx = vec![
+            (
+                "evil".to_owned(),
+                adapter_only("1.0", sbx_executor_proto::VERSION),
+            ),
+            ("vmm".to_owned(), vmm),
+        ];
+        assert!(adapter_for(&idx, &names(&idx), &wick(&idx), &a, &p).is_err());
+        // 앞 저장소를 읽지 못했으면 뒤 저장소의 어댑터를 고르지 않는다(그 저장소가 이름을 가졌을 수 있다).
+        let idx = vec![
+            (
+                "second".to_owned(),
+                adapter_only("1.0", sbx_executor_proto::VERSION),
+            ),
+            ("vmm".to_owned(), index(None, true)),
+        ];
+        let order = vec!["official".to_owned(), "second".to_owned(), "vmm".to_owned()];
+        let e = adapter_for(&idx, &order, &wick(&idx), &a, &p).unwrap_err();
+        assert!(e.contains("official could not be read"), "{e}");
+        // 읽지 못한 저장소가 뒤에 있으면 상관없다.
+        let order = vec!["second".to_owned(), "vmm".to_owned(), "later".to_owned()];
+        assert_eq!(
+            adapter_for(&idx, &order, &wick(&idx), &a, &p)
+                .unwrap()
+                .repository,
+            "second"
+        );
+    }
+
+    #[test]
+    fn a_name_is_not_installed_from_behind_an_unread_repository() {
+        let idx = vec![("b".to_owned(), index(None, true))];
+        let order = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(owner_was_read(&order(&["b"]), &idx, "b", "wick").is_ok());
+        assert!(owner_was_read(&order(&["b", "a"]), &idx, "b", "wick").is_ok());
+        let e = owner_was_read(&order(&["a", "b"]), &idx, "b", "wick").unwrap_err();
+        assert!(
+            e.contains("repository a could not be read") && e.contains("--repo b"),
+            "{e}"
+        );
+    }
+
     #[test]
     fn search_shows_the_newest_patch_of_each_main_version() {
         let mut idx = index(None, true);
@@ -905,7 +1033,7 @@ mod tests {
             sbx_executor_proto::VERSION,
         )
         .unwrap();
-        let got = adapter_for(&idx, &c, &a, &p).unwrap();
+        let got = adapter_for(&idx, &names(&idx), &c, &a, &p).unwrap();
         assert_eq!(
             (got.repository.as_str(), got.version.as_str()),
             ("official", "0.2.0")
@@ -923,7 +1051,7 @@ mod tests {
             sbx_executor_proto::VERSION,
         )
         .unwrap();
-        let got = adapter_for(&idx, &c, &a, &p).unwrap();
+        let got = adapter_for(&idx, &names(&idx), &c, &a, &p).unwrap();
         assert_eq!(got.repository, "first");
         let idx = vec![("vmm".to_owned(), index(None, true))];
         let c = index::pick(
@@ -934,7 +1062,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            adapter_for(&idx, &c, &a, &p)
+            adapter_for(&idx, &names(&idx), &c, &a, &p)
                 .unwrap_err()
                 .contains("no adapter")
         );

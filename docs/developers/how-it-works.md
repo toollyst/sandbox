@@ -222,9 +222,11 @@ with keys (`repo add --key`), it also needs `v2/index.json.minisig` signed by on
 `serial` against the highest one seen (`<data_dir>/executor-repositories.seen`) and its `expires` against the clock
 ([`trust.rs`](../../crates/spec/executor-repo/src/trust.rs)); a repository that fails is skipped with a warning. The
 name belongs to the first repository that publishes it (`--repo` picks another), and within it the newest version
-for this host's platform wins. If it is a VMM package and its adapter isn't installed, it first installs the newest
-adapter for this host and protocol version from the repository the VMM package came from, or, if that one has none,
-from the first repository in the list that has one. Every install records its origin (`.sbx-origin`, the repository
+for this host's platform wins. If a repository before that one failed, nothing is installed
+([`unread_before`](../../crates/spec/executor-repo/src/lib.rs)): the failed one may own the name. If it is a VMM
+package and its adapter isn't installed, it first installs the newest adapter for this host and protocol version from
+the repository the VMM package came from if that one has the adapter's name, or else from the first repository in
+the list that has the name, and only from that one. Every install records its origin (`.sbx-origin`, the repository
 name or `local`), and a name already installed from one origin is never installed from another
 ([`sbx-executor-install`](../../crates/spec/executor-install/src/lib.rs)).
 Each download is checked against the sha256 and size in the index and unpacked into a staging directory. Before the

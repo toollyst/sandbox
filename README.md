@@ -345,9 +345,14 @@ time it reads one.
 **A name belongs to one repository.** `install NAME` takes NAME from the first repository in `repo ls` order that
 publishes it, even if a later one has a higher version, and once installed, a name only comes from where it came
 from (`sbx executor ls` shows it under FROM). So adding a repository can't take over an executor you already use.
+If a repository earlier in the list can't be read (down, tampered with, rolled back), `install` won't take a name
+from one after it, since the unreadable one may own that name; fix it, or say where with `--repo`. Names and
+versions are lowercase, so on macOS and Windows a different spelling can't land in the same directory. `local` is
+reserved: it marks executors you installed directly with `--from`.
 A VMM package names its adapter. If the adapter isn't installed yet, `install` takes it from the repository the
-VMM package came from, or else from the first repository in `repo ls` order that has it. So a repository of VMM
-packages for `firecracker` doesn't need to carry the adapter itself.
+VMM package came from if that one has the adapter, or else from the first repository in `repo ls` order that has
+it, and only from there, even when that repository has no build for your platform. So a repository of VMM packages
+for `firecracker` doesn't need to carry the adapter itself, and can't swap in its own.
 
 ## Platforms
 

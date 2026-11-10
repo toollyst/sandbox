@@ -998,3 +998,18 @@ async fn v2_index_is_preferred_and_index_json_is_the_fallback() {
     fs::write(v2.join("index.json"), b"{").unwrap();
     assert!(matches!(f.index(&r).await, Err(RepoError::Index { .. })));
 }
+
+#[test]
+fn only_unread_repositories_before_the_chosen_one_block_it() {
+    let read = vec![
+        ("b".to_owned(), parse(sample()).unwrap()),
+        ("d".to_owned(), parse(sample()).unwrap()),
+    ];
+    let order: Vec<String> = ["a", "b", "c", "d"].iter().map(|s| s.to_string()).collect();
+    assert_eq!(unread_before(&order, &read, "b"), Some("a"));
+    assert_eq!(unread_before(&order, &read, "d"), Some("a"));
+    assert_eq!(unread_before(&order[1..], &read, "b"), None);
+    assert_eq!(unread_before(&order[1..], &read, "d"), Some("c"));
+    // 고른 저장소가 목록에 없으면(있을 수 없지만) 앞의 읽지 못한 것 모두가 막는다.
+    assert_eq!(unread_before(&order[1..], &read, "zzz"), Some("c"));
+}

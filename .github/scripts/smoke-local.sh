@@ -3,7 +3,7 @@
 # `sbx executor install <VMM_NAME>@<VMM_VERSION>`(예: wick@1.18.0+wick.1, firecracker@1.17.0. 어댑터는 함께
 # 설치된다)과 `executor use`를 한 뒤 `cargo xtask smoke`를 돌린다. 사용자가 공식 저장소에서 받는 것과 같은 경로다.
 # executors.yml(올리기 전에), ci.yml(vm), release.yml(smoke)이 쓴다. 공식 저장소에는 닿지 않는다.
-# 저장소 루트에서 돌린다. sbx의 데이터 디렉터리를 바꾼다(`official` 저장소를 빼고 `local`을 더한다).
+# 저장소 루트에서 돌린다. sbx의 데이터 디렉터리를 바꾼다(`official` 저장소를 빼고 `ci`를 더한다).
 #
 #   .github/scripts/smoke-local.sh SBX REPO ADAPTER_DIR ADAPTER_VERSION VMM_DIR VMM_NAME VMM_VERSION
 set -euo pipefail
@@ -26,7 +26,7 @@ pk=$(cargo xtask repo-keygen --out "$keydir/k")
 cargo xtask repo-sign --repo "$repo" --key "$keydir/k.key" >/dev/null
 rm -rf "$keydir"
 "$sbx" executor repo rm official
-"$sbx" executor repo add local "file://$repo" --key "$pk"
+"$sbx" executor repo add ci "file://$repo" --key "$pk"
 "$sbx" executor install "$name@$ver"
 "$sbx" executor use "$name@$ver"
 "$sbx" executor ls
