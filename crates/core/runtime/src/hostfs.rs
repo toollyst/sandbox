@@ -303,6 +303,65 @@ pub fn receive(
     Ok(())
 }
 
+/// 게스트가 보낸 파일 하나를 메모리로 받은 결과. [`receive_bytes`].
+#[derive(Debug, PartialEq, Eq)]
+pub enum Received {
+    /// 일반 파일의 내용.
+    File(Vec<u8>),
+    /// 맨 위가 심볼릭 링크였다. 대상(해석하지 않은 값). 호스트에서는 따라가지 않는다.
+    Symlink(String),
+}
+
+/// 파일 하나를 호스트 파일시스템을 거치지 않고 메모리로 받는다. `from`은 요청한 경로의 마지막 이름이다.
+///
+/// 게스트가 알린 크기가 `limit`을 넘으면 내용을 받기 전에 오류다. 디렉터리, 이름이 다른 항목, 항목 여럿은
+/// 규약 위반이나 오류다.
+pub fn receive_bytes(
+    from: &str,
+    limit: u64,
+    next: &mut dyn FnMut() -> Result<GuestMsg, RuntimeError>,
+) -> Result<Received, RuntimeError> {
+    let entry = match next()? {
+        GuestMsg::Entry(e) => e,
+        GuestMsg::Error(e) => return Err(RuntimeError::Guest(e)),
+        other => return Err(proto_err(format!("expected Entry, got {other:?}"))),
+    };
+    if entry.path != from {
+        return Err(proto_err(format!(
+            "{:?} is not the requested {from:?}",
+            entry.path
+        )));
+    }
+    let got = match entry.kind {
+        FileKind::Dir => return Err(RuntimeError::Invalid(format!("{from} is a directory"))),
+        FileKind::Symlink { target } => Received::Symlink(target),
+        FileKind::File { size } => {
+            if size > limit {
+                return Err(RuntimeError::Invalid(format!(
+                    "{from} is {size} bytes; the limit is {limit}"
+                )));
+            }
+            let mut buf = Vec::with_capacity(size as usize);
+            while (buf.len() as u64) < size {
+                match next()? {
+                    GuestMsg::Data(d) if (buf.len() + d.len()) as u64 <= size => {
+                        buf.extend_from_slice(&d)
+                    }
+                    GuestMsg::Data(_) => return Err(proto_err("more data than the declared size")),
+                    other => return Err(proto_err(format!("expected Data, got {other:?}"))),
+                }
+            }
+            Received::File(buf)
+        }
+    };
+    match next()? {
+        GuestMsg::End => Ok(got),
+        other => Err(proto_err(format!(
+            "expected End after one file, got {other:?}"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -421,5 +480,61 @@ mod tests {
         let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o7777;
         assert_eq!(mode(&d.join("t/suid")), 0o755);
         assert_eq!(mode(&d.join("t")), 0o777);
+    }
+
+    #[test]
+    fn receive_bytes_keeps_files_in_memory_and_never_follows_links() {
+        let mut next = feed(vec![
+            entry("f", FileKind::File { size: 3 }, 0o644),
+            GuestMsg::Data(b"ab".to_vec()),
+            GuestMsg::Data(b"c".to_vec()),
+        ]);
+        assert_eq!(
+            receive_bytes("f", 8, &mut next).unwrap(),
+            Received::File(b"abc".to_vec())
+        );
+        let mut next = feed(vec![entry(
+            "x",
+            FileKind::Symlink {
+                target: "/etc/passwd".into(),
+            },
+            0o777,
+        )]);
+        assert_eq!(
+            receive_bytes("x", 8, &mut next).unwrap(),
+            Received::Symlink("/etc/passwd".into())
+        );
+    }
+
+    #[test]
+    fn hostile_receive_bytes_cases_are_refused() {
+        // 크기가 한도를 넘으면 내용을 받기 전에 끝난다(Data를 하나도 꺼내지 않는다).
+        let mut pulled = 0;
+        let mut next = || {
+            pulled += 1;
+            Ok(if pulled == 1 {
+                entry("f", FileKind::File { size: 1 << 40 }, 0o644)
+            } else {
+                GuestMsg::Data(vec![0; 1024])
+            })
+        };
+        assert!(receive_bytes("f", 8, &mut next).is_err());
+        assert_eq!(pulled, 1);
+        let cases: Vec<Vec<GuestMsg>> = vec![
+            vec![entry("other", FileKind::File { size: 0 }, 0o644)],
+            vec![entry("f", FileKind::Dir, 0o755)],
+            vec![
+                entry("f", FileKind::File { size: 1 }, 0o644),
+                GuestMsg::Data(b"xx".to_vec()),
+            ],
+            vec![
+                entry("f", FileKind::File { size: 0 }, 0o644),
+                entry("f/more", FileKind::File { size: 0 }, 0o644),
+            ],
+        ];
+        for msgs in cases {
+            let mut next = feed(msgs);
+            assert!(receive_bytes("f", 8, &mut next).is_err());
+        }
     }
 }

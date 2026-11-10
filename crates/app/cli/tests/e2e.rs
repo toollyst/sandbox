@@ -1503,6 +1503,41 @@ mod unix {
             (r["encoding"].as_str(), r["content"].as_str()),
             (Some("utf-8"), Some("hello"))
         );
+        // 링크는 게스트 경로로 따라간다(상대 경로도). 고리는 끝이 있다.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("a.txt", dir.join("rel")).unwrap();
+            std::os::unix::fs::symlink(dir.join("rel"), dir.join("abs")).unwrap();
+            let r = m
+                .call(
+                    "read_file",
+                    serde_json::json!({"id": id, "path": dir.join("abs")}),
+                )
+                .unwrap();
+            assert_eq!(r["content"], "hello", "{r}");
+            std::os::unix::fs::symlink("loop", dir.join("loop")).unwrap();
+            let err = m
+                .call(
+                    "read_file",
+                    serde_json::json!({"id": id, "path": dir.join("loop")}),
+                )
+                .unwrap_err();
+            assert!(err.contains("symbolic links"), "{err}");
+        }
+        // 한도를 넘는 파일과 디렉터리는 내용을 옮기기 전에 거절한다.
+        let big = std::fs::File::create(dir.join("big")).unwrap();
+        big.set_len(sbx_cli::mcp::FILE_LIMIT + 1).unwrap();
+        let err = m
+            .call(
+                "read_file",
+                serde_json::json!({"id": id, "path": dir.join("big")}),
+            )
+            .unwrap_err();
+        assert!(err.contains("the limit is"), "{err}");
+        let err = m
+            .call("read_file", serde_json::json!({"id": id, "path": dir}))
+            .unwrap_err();
+        assert!(err.contains("is a directory"), "{err}");
         // 없는 부모 디렉터리는 만든다.
         let nested = dir.join("x/y/z.txt").to_string_lossy().into_owned();
         m.call(

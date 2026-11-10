@@ -612,15 +612,31 @@ async fn exec(ctx: &Ctx, a: &Args<'_>) -> AppResult<Value> {
 }
 
 /// 호스트 쪽 임시 디렉터리. 지우는 것은 부른 쪽이다.
+///
+/// 새로 만든 것만 쓴다(`create_dir`, 이미 있으면 다른 이름). 공용 `/tmp`에서 다른 사용자가 미리 만들어 둔
+/// 디렉터리나 링크를 받아들이지 않는다. Unix에서는 0700이다.
 fn scratch() -> AppResult<PathBuf> {
     static N: AtomicU64 = AtomicU64::new(0);
-    let dir = std::env::temp_dir().join(format!(
-        "sbx-mcp-{}-{}",
-        std::process::id(),
-        N.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir)
+    let salt = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    for _ in 0..100 {
+        let dir = std::env::temp_dir().join(format!(
+            "sbx-mcp-{}-{salt:08x}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut b = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
+        match b.create(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Err("could not create a temporary directory".into())
 }
 
 async fn write_file(ctx: &Ctx, a: &Args<'_>) -> AppResult<Value> {
@@ -679,34 +695,18 @@ async fn write_file(ctx: &Ctx, a: &Args<'_>) -> AppResult<Value> {
 async fn read_file(ctx: &Ctx, a: &Args<'_>) -> AppResult<Value> {
     let id = a.required("id")?;
     let path = a.required("path")?;
-    let dir = scratch()?;
-    let host = dir.join("file");
-    let r: AppResult<Value> = async {
-        let rt = ctx.runtime()?;
-        let sandbox = rt.find(&id).await?;
-        sandbox.copy_out(&path, &host).await?;
-        let meta = std::fs::metadata(&host)?;
-        if !meta.is_file() {
-            return Err(format!("{path} is not a regular file").into());
-        }
-        if meta.len() > FILE_LIMIT {
-            return Err(
-                format!("{path} is {} bytes; the limit is {FILE_LIMIT}", meta.len()).into(),
-            );
-        }
-        let bytes = std::fs::read(&host)?;
-        Ok(match String::from_utf8(bytes) {
-            Ok(s) => json!({ "path": path, "encoding": "utf-8", "content": s }),
-            Err(e) => json!({
-                "path": path,
-                "encoding": "base64",
-                "content": base64::engine::general_purpose::STANDARD.encode(e.as_bytes()),
-            }),
-        })
-    }
-    .await;
-    let _ = std::fs::remove_dir_all(&dir);
-    r
+    let rt = ctx.runtime()?;
+    let sandbox = rt.find(&id).await?;
+    // 호스트에 꺼내지 않고 메모리로 받는다. 게스트가 만든 링크가 호스트 파일을 가리켜도 따라가지 않는다.
+    let bytes = sandbox.read_file(&path, FILE_LIMIT).await?;
+    Ok(match String::from_utf8(bytes) {
+        Ok(s) => json!({ "path": path, "encoding": "utf-8", "content": s }),
+        Err(e) => json!({
+            "path": path,
+            "encoding": "base64",
+            "content": base64::engine::general_purpose::STANDARD.encode(e.as_bytes()),
+        }),
+    })
 }
 
 async fn list(ctx: &Ctx) -> AppResult<Value> {

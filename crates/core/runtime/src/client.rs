@@ -172,6 +172,25 @@ impl Guest {
         hostfs::receive(dest_dir, &from, to, &mut || recv(&mut *c))
     }
 
+    /// 게스트 파일 하나를 메모리로 받는다. 맨 위 심볼릭 링크는 따라가지 않는다. [`hostfs::receive_bytes`].
+    pub fn read_bytes(&self, path: &str, limit: u64) -> Result<hostfs::Received, RuntimeError> {
+        let from = path
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .filter(|n| !n.is_empty())
+            .ok_or_else(|| RuntimeError::Invalid(format!("cannot read {path:?}")))?
+            .to_owned();
+        let mut c = self.open()?;
+        send(
+            &mut *c,
+            &HostMsg::CopyOut {
+                path: path.to_owned(),
+            },
+        )?;
+        hostfs::receive_bytes(&from, limit, &mut || recv(&mut *c))
+    }
+
     /// 실행기가 붙인 공유 폴더를 게스트 `target`에 마운트하게 한다.
     pub fn share(&self, tag: &str, target: &str, readonly: bool) -> Result<(), RuntimeError> {
         let mut c = self.open()?;

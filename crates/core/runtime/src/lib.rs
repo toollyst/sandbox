@@ -409,6 +409,9 @@ fn guest_parent(path: &str) -> (String, String) {
     }
 }
 
+/// [`Sandbox::read_file`]이 따라가는 심볼릭 링크 수 (Linux `MAXSYMLINKS`와 같다).
+pub const MAX_READ_LINKS: usize = 40;
+
 /// 게스트 경로의 마지막 이름. `/`처럼 이름이 없으면 `None`.
 fn guest_basename(path: &str) -> Option<&str> {
     path.trim_end_matches('/')
@@ -697,6 +700,36 @@ impl Sandbox {
                     guest.copy_in(&host, &parent, Some(&name))
                 }
             }
+        })
+        .await
+    }
+
+    /// 게스트 파일 하나의 내용을 읽는다. 호스트 파일시스템에는 아무것도 쓰지 않는다.
+    ///
+    /// 심볼릭 링크는 게스트 안의 경로로 따라간다([`MAX_READ_LINKS`]번까지). 호스트의 같은 이름은 보지 않는다.
+    /// 크기가 `limit`을 넘거나 일반 파일이 아니면 내용을 받기 전에 오류다.
+    pub async fn read_file(&self, guest_path: &str, limit: u64) -> Result<Vec<u8>, RuntimeError> {
+        let (_, guest) = self.require_running("read")?;
+        require_absolute(guest_path)?;
+        let asked = guest_path.to_owned();
+        let mut path = asked.clone();
+        blocking(move || {
+            for _ in 0..=MAX_READ_LINKS {
+                match guest.read_bytes(&path, limit)? {
+                    hostfs::Received::File(b) => return Ok(b),
+                    hostfs::Received::Symlink(target) => {
+                        path = if target.starts_with('/') {
+                            target
+                        } else {
+                            let (parent, _) = guest_parent(&path);
+                            format!("{}/{target}", parent.trim_end_matches('/'))
+                        };
+                    }
+                }
+            }
+            Err(RuntimeError::Invalid(format!(
+                "{asked}: more than {MAX_READ_LINKS} symbolic links"
+            )))
         })
         .await
     }
