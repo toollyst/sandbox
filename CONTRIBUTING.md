@@ -27,7 +27,15 @@ cargo xtask dist && cargo xtask smoke     # 17 checks on real VMs
 cargo xtask bench                         # numbers to paste into a PR that touches the hot path
 ```
 
-CI runs all of this on Linux (x86_64 and arm64), macOS and Windows, and boots real VMs on Linux x86_64.
+If you change code that parses what a guest, a registry, an image or an executor repository sends, also fuzz it
+(nightly and `cargo install cargo-fuzz`; see [Fuzzing](docs/developers/testing-and-releasing.md#fuzzing)):
+
+```sh
+cargo xtask fuzz                          # every target in fuzz/, 60 s each
+```
+
+CI runs all of this on Linux (x86_64 and arm64), macOS and Windows, and boots real VMs on Linux x86_64. Fuzzing runs on
+Linux.
 
 ## How the code is laid out
 

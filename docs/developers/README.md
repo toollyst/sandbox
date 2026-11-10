@@ -32,13 +32,14 @@ crates/              the Rust workspace, one folder per layer (see crates.md)
   executor/          executors: the Firecracker adapter and the test fake
 xtask/               development tasks: cargo xtask <task>
   kernel/            config fragments for the default guest kernel
+fuzz/                cargo-fuzz targets, seeds and dictionaries (its own workspace, nightly)
 docs/
   developers/        this guide (English)
   plan/              design notes (Korean)
   roadmap.md         what is done and what is next (Korean)
 assets/demo.svg      the README recording, made by cargo xtask demo
 install.sh           the installer served from GitHub Pages
-.github/workflows/   ci.yml (every push), release.yml (tags v*), executors.yml (by hand)
+.github/workflows/   ci.yml and fuzz.yml (every push), release.yml (tags v*), executors.yml (by hand)
 .github/scripts/     shell steps the workflows share (VMM packages, kernel notice, smoke with wick)
 ```
 
@@ -94,6 +95,7 @@ cargo xtask bench                          # timings (add --docker to compare wi
 | `bench [--docker]` | p50/p90 of `run`, `exec` and parallel runs | [`bench.rs`](../../xtask/src/bench.rs) |
 | `demo` | Re-records `assets/demo.svg` from real commands | [`demo.rs`](../../xtask/src/demo.rs) |
 | `repo-add` | Adds an executor, adapter or VMM package to a static executor repository | [`repo.rs`](../../xtask/src/repo.rs) |
+| `fuzz [--time S] [T…]`, `fuzz --seeds` | Runs the cargo-fuzz targets in `fuzz/` (nightly, `cargo-fuzz`), or regenerates their seeds ([Fuzzing](testing-and-releasing.md#fuzzing)) | [`fuzz.rs`](../../xtask/src/fuzz.rs) |
 
 A plain `cargo build` gives you an `sbx` without the guest init. It works for everything that doesn't boot a VM. For
 real VMs, use `cargo xtask dist`, or point a development build at an initramfs with `--guest-init`.

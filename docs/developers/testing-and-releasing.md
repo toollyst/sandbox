@@ -19,6 +19,7 @@ fake executor serves it over the same protocol. Real VMs are the last check, not
 | TUI without a terminal | [`tui/model/tests.rs`](../../crates/app/cli/src/tui/model/tests.rs), [`tui/view/tests.rs`](../../crates/app/cli/src/tui/view/tests.rs) | nothing | every key's `sbx` command line, filtering, virtual scrolling, drawing (ratatui `TestBackend`) |
 | CLI end to end | [`crates/app/cli/tests/e2e.rs`](../../crates/app/cli/tests/e2e.rs) | nothing (Windows skips the parts that need Unix sockets) | the real `sbx` binary: flags, output, exit codes, `--rm`, names, `ps`, `logs` (timestamps, `--since`), `cp`, `events`, `--filter`, `--jq`, every JSON output read back strictly as its type, completion candidates, executor versions and pins, MCP |
 | Dependency rules | `cargo xtask check-deps` | nothing | layers, per-crate allow lists, forbidden features, module cycles, the map in `crates.md` |
+| Fuzzing | [`fuzz/`](../../fuzz), `cargo xtask fuzz` ([below](#fuzzing)) | nightly, `cargo-fuzz` | inputs no hand-written test thought of, in every parser that reads bytes from a guest, a registry, an image or an executor repository |
 | Real VMs | `cargo xtask smoke` | an installed executor | 17 checks: output and exit codes, stdin, no network device, fast DNS failure, writable root, detached `exec`/`cp`/`logs`/`stop`/`rm`, allow list |
 | Numbers | `cargo xtask bench [--docker]` | an installed executor (and Docker for `--docker`) | regressions on the hot path: `run`, `exec`, parallel runs |
 
@@ -37,6 +38,54 @@ cargo xtask smoke --sbx target/release/sbx
 Point them at scratch directories to keep test sandboxes away from your own. `--no-internet` skips the check that
 needs an HTTPS site.
 
+## Fuzzing
+
+[`fuzz/`](../../fuzz) is a [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) (libFuzzer) crate. It is its own
+workspace, outside the main one, because it needs nightly and sanitizers; `cargo test --workspace` and
+`cargo xtask check-deps` don't see it. Each target checks invariants, not only "doesn't crash": what decodes
+re-encodes to the same bytes, what is shown parses back to the same value, nothing is written outside the destination
+directory, version order is a total order. The doc comment at the top of each target says exactly what it checks.
+
+| Target | Input | Code |
+| --- | --- | --- |
+| `guest_msg` | a message body and a stream of frames from the guest | [`sbx-guest-proto`](../../crates/spec/guest-proto/src/lib.rs) decoders, both directions |
+| `copy_from_guest` | a hostile guest's answer to `sbx cp` | `hostfs::receive`, `receive_bytes` in [`sbx-runtime`](../../crates/core/runtime/src/hostfs.rs), into a temp dir next to a directory that must stay untouched |
+| `egress_rules` | `--network allow=` rules and a guest's `Connect { host, port }` | `AllowRule` in `sbx-model`, [`egress::check`](../../crates/core/runtime/src/egress.rs) (IP hosts only, so no DNS), `is_public_ip` |
+| `shim_log` | a `main.log` file, and guest output written then read back | `LogWriter`, `LogReader` in [`sbx-shim`](../../crates/app/shim/src/log.rs) |
+| `oci_documents` | manifest, index and image config JSON, `WWW-Authenticate`, image references | [`sbx-oci`](../../crates/adapter/oci/src/manifest.rs), and the image's `User`, `StopSignal` and `Env` through [`process`](../../crates/core/runtime/src/process.rs) |
+| `image_layer` | a layer blob (plain, gzip or zstd) | the `prepare` path: zstd and tar reading in `sbx-manage`, the merge and the EROFS writer in [`sbx-rootfs`](../../crates/port/rootfs/src/lib.rs) |
+| `rootfs_merge` | structured layers (whiteouts, opaque dirs, hard links, devices) and a kernel path | `MergedTree::apply_layer`, `resolve`, `ErofsBuilder` |
+| `executor_index` | an executor repository index | `Index::parse`, `available`, `pick` in [`sbx-executor-repo`](../../crates/spec/executor-repo/src/index.rs) |
+| `executor_spec` | `NAME@VERSION` (also what `.sbx-executor` holds), versions, repository URLs | `Spec`, `version_cmp`, `version_matches` in [`sbx-executor-install`](../../crates/spec/executor-install/src/lib.rs), `location::repository` |
+| `executor_unpack` | a package archive (the target gzips it) | `unpack::unpack` in [`sbx-executor-repo`](../../crates/spec/executor-repo/src/unpack.rs), into a temp dir next to one that must stay untouched |
+
+`sbx-runtime` and `sbx-manage` open their internal readers to the fuzz crate with a `fuzzing` feature;
+`check-deps` fails if `sbx-cli` or `sbx-shim` ever enables it.
+
+```sh
+rustup toolchain install nightly
+cargo install cargo-fuzz
+cargo xtask fuzz                          # every target, 60 s each
+cargo xtask fuzz --time 600 guest_msg     # one target, longer
+cargo xtask fuzz image_layer -- -max_len=65536   # anything after -- goes to libFuzzer
+```
+
+`cargo xtask fuzz` runs `cargo +nightly fuzz run <target> fuzz/corpus/<target> fuzz/seeds/<target>` with the
+dictionary `fuzz/dict/<target>.dict` (when there is one) and a 30 s limit per input, then prints a table of runs,
+coverage and corpus size. `SBX_FUZZ_TOOLCHAIN` picks another toolchain. New inputs go to `fuzz/corpus/` (ignored by
+git). A failing input is saved in `fuzz/artifacts/<target>/`; reproduce it with
+`cargo +nightly fuzz run <target> fuzz/artifacts/<target>/<file>`, then turn it into a unit test in the crate that
+owns the code (the fixes found so far each have one) and fix it there.
+
+The checked-in seeds in `fuzz/seeds/` are made by [`fuzz/examples/seeds.rs`](../../fuzz/examples/seeds.rs) with the
+real encoders (`encode`, `tar::Builder`, gzip, zstd, the shapes the unit tests use), which also checks that each seed
+gets past the first parser. Regenerate them with `cargo xtask fuzz --seeds` after changing a format; CI fails when they
+differ from the generator. Targets that take structured input (`copy_from_guest`, `rootfs_merge`, `shim_log`) have no
+seeds; libFuzzer grows them from nothing within seconds. When you add a parser that reads untrusted bytes, add a
+target (a file in `fuzz/fuzz_targets/` and a `[[bin]]` in `fuzz/Cargo.toml`); CI picks it up by file name.
+
+GitHub's runners are Linux, so CI fuzzes on Linux only. On macOS, `cargo fuzz` works the same on Apple Silicon.
+
 ## CI
 
 [`ci.yml`](../../.github/workflows/ci.yml) runs on every push to `main` and `feat/**`, and on pull requests.
@@ -46,6 +95,15 @@ needs an HTTPS site.
 | `test` | Linux x86_64 and arm64, macOS, Windows | `fmt --check`, `clippy -D warnings`, `test --no-fail-fast`, `doc -D warnings`, `check-deps`. On Linux also `shellcheck` on `install.sh` and `.github/scripts/*.sh`, both guest initramfs builds, the e2e tests again with the init embedded, and `cargo xtask dist` |
 | `privileged` | Linux, in a `--privileged` container | the guest tests that need root and loop devices |
 | `vm` | Linux x86_64 with KVM (arm64 runs when the runner has KVM) | builds `sbx`, the adapter and the kernel (cached by its config), and makes a VMM package from upstream Firecracker (checked by its sha256). It installs `sbx` with `install.sh`, puts the adapter and the VMM package (as `firecracker@1.17.0`) in a local schema 2 `file://` repository, and installs from there the way a user does (`.github/scripts/smoke-local.sh`). It uses neither wick nor the official repository. Then it runs `smoke` and `bench` (the numbers go to the job summary) |
+
+[`fuzz.yml`](../../.github/workflows/fuzz.yml) runs on every push to `main` and `feat/**`, and by hand
+(`gh workflow run fuzz.yml -f seconds=1800 [-f targets="guest_msg copy_from_guest"]`).
+
+| Job | Does |
+| --- | --- |
+| `build` | builds every target once with the pinned nightly and cargo-fuzz (AddressSanitizer, debug assertions) |
+| `lint` | `fmt --check` and `clippy -D warnings` on `fuzz/`, and that `fuzz/seeds` matches `cargo xtask fuzz --seeds` |
+| `run (<target>)` | one job per target: 60 s on a push (`seconds` by hand), starting from the seeds and the corpus the last run left in the Actions cache, with the same arguments as `cargo xtask fuzz`. A crash, a 30 s hang or running out of memory fails the job and uploads the input as the artifact `fuzz-<target>-artifacts` |
 
 GitHub's macOS runners can't start guests, so the macOS real-VM path (Hypervisor.framework through
 [wick](https://github.com/toollyst/wick)) is checked on a Mac with `cargo xtask smoke`,

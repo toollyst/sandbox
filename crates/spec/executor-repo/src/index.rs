@@ -238,16 +238,21 @@ fn entries(
         let mut versions = Vec::new();
         for (version, v) in e.versions {
             let spec = format!("{name}@{version}");
-            spec.parse::<Spec>().map_err(|_| {
-                format!(
-                    "invalid {} name or version {spec:?}",
-                    if kind == Kind::Adapter {
-                        "adapter"
-                    } else {
-                        "executor"
-                    }
-                )
-            })?;
+            // 다시 읽어 같은 이름과 그 버전이어야 한다. `latest`는 규칙에 맞는 글자지만 "가장 높은 버전"으로
+            // 읽히므로(LATEST) 버전이 될 수 없다. 받으면 설치는 되고 이름으로 가리킬 수 없는 버전이 생긴다.
+            spec.parse::<Spec>()
+                .ok()
+                .filter(|s| s.name == name && s.version.as_deref() == Some(version.as_str()))
+                .ok_or_else(|| {
+                    format!(
+                        "invalid {} name or version {spec:?}",
+                        if kind == Kind::Adapter {
+                            "adapter"
+                        } else {
+                            "executor"
+                        }
+                    )
+                })?;
             let adapter = if kind == Kind::ExecutorV1 {
                 None
             } else {

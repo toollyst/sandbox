@@ -45,6 +45,15 @@ mod layer;
 mod zstd;
 pub use error::ManageError;
 
+/// 퍼징(`fuzz/`)만 쓰는 입구: 레이어 tar 읽기와 zstd 풀기. `fuzzing` feature를 켜야 있다.
+/// 배포하는 바이너리는 이 feature를 켜지 않는다(`cargo xtask check-deps`가 확인한다).
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub mod fuzzing {
+    pub use crate::layer::{Spool, read as read_layer};
+    pub use crate::zstd::ZstdReader;
+}
+
 /// 받아 둔 이미지 하나.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageInfo {

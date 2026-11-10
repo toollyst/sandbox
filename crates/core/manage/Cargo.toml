@@ -10,6 +10,10 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[features]
+# 퍼징(fuzz/)에 레이어 tar 읽기와 zstd 풀기를 연다. 배포하는 바이너리는 켜지 않는다(cargo xtask check-deps).
+fuzzing = []
+
 [dependencies]
 sbx-model.workspace = true
 flate2.workspace = true

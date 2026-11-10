@@ -282,6 +282,23 @@ fn schema_2_versions_are_checked() {
     );
 }
 
+/// 퍼징 대상 executor_index를 만들며 찾았다(대상의 불변식이 손으로 넣은 입력에서 걸렸다): 색인이 버전
+/// `latest`를 내면 받아들였다. 그 버전은 설치되지만 `x@latest`가 "가장 높은 것"으로 읽혀 이름으로 지울 수 없었다.
+#[test]
+fn a_version_named_latest_is_refused() {
+    for kind in ["executors", "adapters"] {
+        let mut v = sample_v2();
+        let first = if kind == "executors" {
+            "solo"
+        } else {
+            "firecracker"
+        };
+        v[kind][first]["versions"]["latest"] =
+            json!({"protocol": 2, "artifacts": [artifact("darwin", "arm64", "l.tar.gz")]});
+        assert!(parse(v).unwrap_err().contains("invalid"), "{kind}");
+    }
+}
+
 #[test]
 fn schema_1_ignores_schema_2_fields() {
     let mut v = sample();
