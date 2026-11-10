@@ -820,9 +820,13 @@ fn scratch() -> AppResult<PathBuf> {
             std::process::id(),
             N.fetch_add(1, Ordering::Relaxed)
         ));
-        let mut b = std::fs::DirBuilder::new();
-        #[cfg(unix)]
-        std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
+        let b = {
+            #[allow(unused_mut)]
+            let mut b = std::fs::DirBuilder::new();
+            #[cfg(unix)]
+            std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
+            b
+        };
         match b.create(&dir) {
             Ok(()) => return Ok(dir),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
