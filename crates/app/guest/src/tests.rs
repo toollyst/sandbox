@@ -238,15 +238,22 @@ fn signal_main_reaches_the_main_process_from_another_connection() {
         &[
             "sh",
             "-c",
-            "trap 'echo got; exit 7' USR1; while :; do sleep 0.05; done",
+            "trap 'echo got; exit 7' USR1; echo ready; while :; do sleep 0.05; done",
         ],
         false,
     );
     x.main = true;
     send(&mut c, HostMsg::Exec(x));
     started(&mut c);
-    // 트랩을 걸 시간. Linux 번호 10(USR1)을 이 OS의 USR1로 바꿔 보낸다.
-    thread::sleep(Duration::from_millis(300));
+    // 트랩을 건 뒤에 보낸다(시간으로 기다리면 느린 기계에서 트랩보다 시그널이 먼저 간다).
+    let mut ready = Vec::new();
+    while ready != b"ready\n" {
+        match recv(&mut c) {
+            GuestMsg::Stdout(b) => ready.extend(b),
+            other => panic!("expected ready, got {other:?}"),
+        }
+    }
+    // Linux 번호 10(USR1)을 이 OS의 USR1로 바꿔 보낸다.
     assert_eq!(signal_main(10), GuestMsg::Done);
     let (out, _, status) = collect(&mut c);
     assert_eq!((out.as_str(), status), ("got\n", ExitStatus::Code(7)));
