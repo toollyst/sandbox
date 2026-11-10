@@ -49,6 +49,8 @@
 //! 색인 전체를 거부한다. 색인은 [`index::MAX_INDEX_BYTES`] 이하다.
 //!
 //! **URL**: `https`, `file`, 그리고 loopback 호스트의 `http`만 쓴다([`location::check`]). redirect된 곳도 같다.
+//! 압축 파일의 URL은 색인과 같은 scheme이거나 `https`여야 한다([`location::check_artifact`]): `https` 색인이
+//! `file:`이나 loopback `http:`를 가리킬 수 없다.
 //! 묶음의 무결성은 색인의 `sha256`이 지킨다. 색인은 서명된 저장소(아래 "서명")가 아니면 TLS에만 기댄다.
 //!
 //! # 저장소 (schema 2): 어댑터와 VMM 묶음

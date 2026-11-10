@@ -580,6 +580,91 @@ fn serial_and_expires_must_be_plain_numbers_once() {
 }
 
 #[test]
+fn a_remote_index_cannot_point_at_this_machine() {
+    let at = |index: &str, artifact: &str| {
+        let mut v = sample();
+        v["executors"]["fc"]["versions"]["1.9"]["artifacts"][0]["url"] = json!(artifact);
+        Index::parse(v.to_string().as_bytes(), &Url::parse(index).unwrap())
+    };
+    let https = "https://example.com/repo/index.json";
+    // https 색인: https 압축 파일만. 이 기계의 파일이나 loopback 서비스는 안 된다.
+    assert!(at(https, "https://cdn.example.net/x.tar.gz").is_ok());
+    assert!(at(https, "x.tar.gz").is_ok());
+    for bad in [
+        "file:///etc/passwd",
+        "file:///dev/zero",
+        "http://127.0.0.1:8080/admin",
+        "http://localhost/x.tar.gz",
+        "http://[::1]/x",
+        "ftp://example.com/x",
+        "http://example.com/x",
+    ] {
+        let e = at(https, bad).unwrap_err();
+        assert!(e.contains(bad.split(':').next().unwrap()), "{bad}: {e}");
+    }
+    // file 색인: file과 https. loopback http 색인: 그 http와 https.
+    let file = "file:///srv/repo/index.json";
+    assert!(at(file, "x.tar.gz").is_ok() && at(file, "https://example.com/x").is_ok());
+    assert!(at(file, "http://127.0.0.1/x").is_err());
+    let local = "http://127.0.0.1:9000/repo/index.json";
+    assert!(at(local, "x.tar.gz").is_ok() && at(local, "https://example.com/x").is_ok());
+    assert!(at(local, "file:///etc/passwd").is_err());
+}
+
+#[test]
+fn the_repository_list_round_trips_and_keeps_removals() {
+    let root = std::env::temp_dir().join(format!("sbx-exrepo-list-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let official = Repository::new("official", "https://example.com/o").unwrap();
+    let src = Sources::new(root.join("repos")).with_defaults(vec![official.clone()]);
+    // 파일이 없으면 기본값. 지우면 그 상태가 남는다(기본값이 되살아나지 않는다).
+    assert_eq!(src.list().unwrap(), std::slice::from_ref(&official));
+    src.remove("official").unwrap();
+    assert!(src.list().unwrap().is_empty());
+    assert!(matches!(
+        src.remove("official"),
+        Err(RepoError::NotFound(_))
+    ));
+    // 줄을 깨뜨릴 수 있는 URL(줄바꿈, 공백, #)도 한 줄로 저장되고 그대로 읽힌다.
+    let tricky = Repository::new("t", "https://example.com/a b\nevil https://x/").unwrap();
+    src.add(tricky.clone()).unwrap();
+    src.add(Repository::new("l", "http://127.0.0.1:1/r").unwrap())
+        .unwrap();
+    assert_eq!(src.list().unwrap().len(), 2);
+    assert_eq!(src.list().unwrap()[0], tricky);
+    assert!(
+        src.add(Repository::new("t", "https://example.com/other").unwrap())
+            .is_err()
+    );
+    // 이름과 URL 규칙.
+    for bad in ["", ".x", "a b", "a/b", "é", "a\nb"] {
+        assert!(
+            Repository::new(bad, "https://example.com/").is_err(),
+            "{bad:?}"
+        );
+    }
+    for bad in [
+        "http://example.com/r",
+        "ftp://example.com/r",
+        "https://example.com/r?x=1",
+        "https://example.com/r#f",
+        "not a url",
+    ] {
+        assert!(Repository::new("ok", bad).is_err(), "{bad}");
+    }
+    // 주석과 빈 줄은 건너뛰고, 같은 이름이 두 번이면 거부한다.
+    fs::write(root.join("repos"), "# c\n\n  a https://example.com/a\n").unwrap();
+    assert_eq!(src.list().unwrap().len(), 1);
+    fs::write(
+        root.join("repos"),
+        "a https://example.com/a\na https://example.com/b\n",
+    )
+    .unwrap();
+    assert!(src.list().unwrap_err().to_string().contains("twice"));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn verify_needs_a_key_and_reports_bad_keys() {
     let kp = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
     let sig = minisign::sign(None, &kp.sk, &b"body"[..], None, None)

@@ -306,7 +306,7 @@ fn entries(
                 let artifact_url = url
                     .join(&a.url)
                     .map_err(|e| format!("{spec}: artifact URL {:?}: {e}", a.url))?;
-                location::check(&artifact_url).map_err(|e| format!("{spec}: {e}"))?;
+                location::check_artifact(url, &artifact_url).map_err(|e| format!("{spec}: {e}"))?;
                 if a.sha256.len() != 64
                     || !a
                         .sha256

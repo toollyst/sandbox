@@ -25,6 +25,21 @@ pub fn check(url: &Url) -> Result<(), String> {
     }
 }
 
+/// 색인 `index`가 가리키는 압축 파일 `artifact`의 URL. [`check`]에 더해, 색인과 같은 scheme이거나 `https`여야
+/// 한다. 원격 색인이 이 기계의 파일(`file:`)이나 이 기계의 서비스(loopback `http:`)를 가리키지 못하게 한다.
+pub fn check_artifact(index: &Url, artifact: &Url) -> Result<(), String> {
+    check(artifact)?;
+    if artifact.scheme() == index.scheme() || artifact.scheme() == "https" {
+        Ok(())
+    } else {
+        Err(format!(
+            "{artifact}: an index at a {}: URL may point only to {}: or https: archives",
+            index.scheme(),
+            index.scheme()
+        ))
+    }
+}
+
 fn is_loopback(url: &Url) -> bool {
     match url.host() {
         Some(url::Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
