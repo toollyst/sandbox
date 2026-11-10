@@ -841,3 +841,31 @@ fn hostile_signal_numbers_do_not_overflow_the_exit_code() {
     assert_eq!(crate::exit_code(ExitStatus::Signal(i32::MAX)), i32::MAX);
     assert_eq!(crate::exit_code(ExitStatus::Code(-1)), -1);
 }
+
+#[cfg(unix)]
+#[test]
+fn a_planted_socket_directory_link_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = PathBuf::from(format!("/tmp/sbx-rt-sockdir-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("real")).unwrap();
+    std::fs::set_permissions(root.join("real"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::os::unix::fs::symlink(root.join("real"), root.join("link")).unwrap();
+    let e = crate::prepare_socket_dir(&root.join("link")).unwrap_err();
+    assert!(e.to_string().contains("not a directory owned"), "{e}");
+    // 링크가 가리킨 디렉터리의 권한은 바꾸지 않는다.
+    let mode = std::fs::metadata(root.join("real"))
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o755);
+    crate::prepare_socket_dir(&root.join("own")).unwrap();
+    let mode = std::fs::metadata(root.join("own"))
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o700);
+    std::fs::remove_dir_all(&root).unwrap();
+}

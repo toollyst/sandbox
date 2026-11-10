@@ -25,3 +25,7 @@ sbx-executor-fake.workspace = true
 # macOS의 fsync(2) (records::sync). std의 sync_all은 F_FULLFSYNC다.
 [target.'cfg(target_vendor = "apple")'.dependencies]
 rustix = { version = "1", default-features = false, features = ["fs", "std"] }
+
+# socket_dir의 소유자 확인 (geteuid).
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", default-features = false, features = ["process", "std"] }

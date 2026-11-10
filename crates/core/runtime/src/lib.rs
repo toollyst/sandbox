@@ -187,12 +187,7 @@ impl Runtime {
         if path.as_os_str().len() > MAX_SOCKET_PATH {
             return Err(RuntimeError::SocketPathTooLong(path));
         }
-        std::fs::create_dir_all(dir)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
-        }
+        prepare_socket_dir(dir)?;
         Ok(path)
     }
 
@@ -416,6 +411,27 @@ pub const OUTPUT_BUFFER: usize = 4 << 20;
 
 /// [`Sandbox::read_file`]이 따라가는 심볼릭 링크 수 (Linux `MAXSYMLINKS`와 같다).
 pub const MAX_READ_LINKS: usize = 40;
+
+/// socket_dir을 만들고 이 사용자만 쓰게 한다. 공용 `/tmp` 아래일 수 있으므로, 다른 사용자가 미리 만들어 둔
+/// 디렉터리나 링크는 쓰지 않는다(Unix).
+fn prepare_socket_dir(dir: &Path) -> Result<(), RuntimeError> {
+    std::fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let m = std::fs::symlink_metadata(dir)?;
+        let me = rustix::process::geteuid().as_raw();
+        if !m.is_dir() || m.uid() != me {
+            return Err(RuntimeError::Invalid(format!(
+                "socket directory {} is not a directory owned by this user (uid {me}); \
+                 remove it or choose another with --socket-dir",
+                dir.display()
+            )));
+        }
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
 
 /// 게스트 경로의 마지막 이름. `/`처럼 이름이 없으면 `None`.
 fn guest_basename(path: &str) -> Option<&str> {

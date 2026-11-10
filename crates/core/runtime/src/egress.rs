@@ -7,6 +7,8 @@
 //! - `Connected` 뒤로 목적지에서 받은 바이트는 `HostMsg::Data`로 보내고, 목적지가 보내기를 끝내면 `HostMsg::End`.
 //!   게스트가 보낸 `GuestMsg::Data`는 목적지에 쓰고, `GuestMsg::End`면 목적지 쪽 보내기를 닫는다(반쯤 닫기).
 //!   양쪽이 끝나면(또는 어느 쪽이든 오류면) 둘 다 닫는다.
+//! - 동시에 열린 연결은 샌드박스마다 [`MAX_CONNECTIONS`]개까지다. 넘으면 `Refused`다(연결마다 호스트 스레드와
+//!   소켓을 쓰므로 게스트가 사용자의 스레드나 파일 기술자를 다 쓰지 못하게 한다).
 //!
 //! **허용 규칙** ([`check`]):
 //! 1. 요청한 호스트와 포트에 맞는 규칙([`AllowRule::matches`])이 하나도 없으면 거부.
@@ -18,6 +20,7 @@
 use std::io;
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -30,25 +33,56 @@ use crate::client::Guest;
 /// 게스트에 맡겨 두는 연결 수. 동시에 새로 시작하는 연결이 이보다 많으면 잠깐 기다린다.
 pub const POOL: usize = 4;
 
+/// 샌드박스 하나가 동시에 열 수 있는 연결 수.
+pub const MAX_CONNECTIONS: usize = 256;
+
 /// 목적지 연결을 기다리는 시간.
 pub const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// 맡기는 일을 시작한다. 돌아온 뒤 스레드가 돈다.
 pub fn start(guest: Guest, rules: Vec<AllowRule>) {
     let rules = Arc::new(rules);
+    let open = Arc::new(AtomicUsize::new(0));
     for _ in 0..POOL {
-        let (guest, rules) = (guest.clone(), rules.clone());
-        thread::spawn(move || keep_slot(&guest, &rules));
+        let (guest, rules, open) = (guest.clone(), rules.clone(), open.clone());
+        thread::spawn(move || keep_slot(&guest, &rules, &open));
+    }
+}
+
+/// 열린 연결 수를 하나 차지한다. 버리면 돌려준다.
+struct Opened(Arc<AtomicUsize>);
+
+impl Opened {
+    fn take(open: &Arc<AtomicUsize>, max: usize) -> Option<Self> {
+        open.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+            (n < max).then_some(n + 1)
+        })
+        .ok()
+        .map(|_| Self(open.clone()))
+    }
+}
+
+impl Drop for Opened {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
 /// 연결 하나를 맡기고, 쓰이면 처리를 넘기고 다시 맡긴다.
-fn keep_slot(guest: &Guest, rules: &Arc<Vec<AllowRule>>) {
+fn keep_slot(guest: &Guest, rules: &Arc<Vec<AllowRule>>, open: &Arc<AtomicUsize>) {
     while let Ok(mut conn) = guest.egress_slot() {
         match GuestMsg::read_from(&mut *conn) {
             Ok(GuestMsg::Connect { host, port }) => {
+                let Some(opened) = Opened::take(open, MAX_CONNECTIONS) else {
+                    let reason = format!("more than {MAX_CONNECTIONS} connections are open");
+                    let _ = HostMsg::Refused { reason }.write_to(&mut *conn);
+                    continue;
+                };
                 let rules = rules.clone();
-                thread::spawn(move || serve(conn, &rules, &host, port));
+                thread::spawn(move || {
+                    let _opened = opened;
+                    serve(conn, &rules, &host, port)
+                });
             }
             // 게스트가 다른 것을 보냈다(예: 지원하지 않음). 더 맡기지 않는다.
             Ok(_) => return,
@@ -168,6 +202,17 @@ mod tests {
 
     fn rules(list: &[&str]) -> Vec<AllowRule> {
         list.iter().map(|r| r.parse().unwrap()).collect()
+    }
+
+    #[test]
+    fn open_connections_are_counted_and_capped() {
+        let open = Arc::new(AtomicUsize::new(0));
+        let held: Vec<Opened> = (0..3).filter_map(|_| Opened::take(&open, 3)).collect();
+        assert_eq!(held.len(), 3);
+        assert!(Opened::take(&open, 3).is_none());
+        drop(held);
+        assert_eq!(open.load(Ordering::SeqCst), 0);
+        assert!(Opened::take(&open, 3).is_some());
     }
 
     #[test]
