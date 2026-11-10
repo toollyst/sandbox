@@ -14,6 +14,8 @@
 //!   더한다. [`repo`]에 있다.
 //! - `demo [--sbx <파일>] [--out <SVG>]`: README의 데모를 실제로 돌려 만든다. [`demo`]에 있다.
 //! - `bench [--sbx <파일>] [--image <참조>] [--runs <N>] [--parallel <K>]`: `sbx`로 시간을 잰다. [`bench`](mod@bench)에 있다.
+//! - `fuzz [--time <초>] [대상...] [-- <libFuzzer 옵션>]`, `fuzz --seeds`: `fuzz/`의 퍼징 대상을 돌린다
+//!   (nightly와 cargo-fuzz가 필요하다). [`fuzz`](mod@fuzz)에 있다.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -22,6 +24,7 @@ use std::process::{Command, ExitCode};
 mod bench;
 mod demo;
 mod dist;
+mod fuzz;
 mod initramfs;
 mod kernel;
 mod layout;
@@ -124,10 +127,14 @@ const RULES: &[(&str, Allowed)] = &[
 
 /// 켜면 안 되는 feature: (크레이트, 의존 크레이트, feature).
 ///
-/// 실행 쪽이 캐시 쓰기 API를 켜면 "실행은 캐시를 읽기만 한다"가 깨진다.
+/// - 실행 쪽이 캐시 쓰기 API를 켜면 "실행은 캐시를 읽기만 한다"가 깨진다.
+/// - `fuzzing`은 퍼징(`fuzz/`, workspace 밖)에 내부 함수를 여는 feature다. 배포하는 바이너리에는 들어가지 않는다.
 const FORBIDDEN_FEATURES: &[(&str, &str, &str)] = &[
     ("sbx-runtime", "sbx-store", "write"),
     ("sbx-shim", "sbx-store", "write"),
+    ("sbx-cli", "sbx-runtime", "fuzzing"),
+    ("sbx-cli", "sbx-manage", "fuzzing"),
+    ("sbx-shim", "sbx-runtime", "fuzzing"),
 ];
 
 fn main() -> ExitCode {
@@ -249,6 +256,21 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("fuzz") => {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("xtask lives inside the workspace");
+            match fuzz::run(root, &args[1..]) {
+                Ok(out) => {
+                    print!("{out}");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("fuzz: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Some("bench") => {
             let root = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .parent()
@@ -266,7 +288,7 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "usage: cargo xtask check-deps\n       cargo xtask guest-initramfs --arch <x86_64|aarch64> [--binary <file>] [--out <file>]\n       cargo xtask dist [--target <triple>]\n       cargo xtask kernel --arch <x86_64|aarch64> [--out <file>]\n       cargo xtask smoke [--sbx <file>] [--no-internet]\n       cargo xtask repo-add --repo <dir> --bundle <dir> --name <name> --version <version> [--os <os>] [--capabilities <file>] [--url <prefix>] [--description <text>] [--schema 1|2] [--adapter-package | --vmm-for <adapter> --arch <amd64|arm64>]\n       cargo xtask demo [--sbx <file>] [--out <svg>]\n       cargo xtask bench [--sbx <file>] [--image <ref>] [--runs <n>] [--parallel <k>] [--docker]"
+                "usage: cargo xtask check-deps\n       cargo xtask guest-initramfs --arch <x86_64|aarch64> [--binary <file>] [--out <file>]\n       cargo xtask dist [--target <triple>]\n       cargo xtask kernel --arch <x86_64|aarch64> [--out <file>]\n       cargo xtask smoke [--sbx <file>] [--no-internet]\n       cargo xtask repo-add --repo <dir> --bundle <dir> --name <name> --version <version> [--os <os>] [--capabilities <file>] [--url <prefix>] [--description <text>] [--schema 1|2] [--adapter-package | --vmm-for <adapter> --arch <amd64|arm64>]\n       cargo xtask demo [--sbx <file>] [--out <svg>]\n       cargo xtask bench [--sbx <file>] [--image <ref>] [--runs <n>] [--parallel <k>] [--docker]\n       cargo xtask fuzz [--time <secs>] [<target>...] [-- <libFuzzer args>] | --seeds"
             );
             ExitCode::from(2)
         }

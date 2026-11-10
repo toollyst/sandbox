@@ -1,0 +1,79 @@
+{
+  "adapters": {
+    "firecracker": {
+      "versions": {
+        "0.1.0": {
+          "artifacts": [
+            {
+              "architecture": "arm64",
+              "os": "darwin",
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "size": 1,
+              "url": "a/0.1.0.tar.gz"
+            }
+          ],
+          "protocol": 2
+        },
+        "0.2.0": {
+          "artifacts": [
+            {
+              "architecture": "arm64",
+              "os": "darwin",
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "size": 1,
+              "url": "a/0.2.0.tar.gz"
+            }
+          ],
+          "protocol": 3
+        }
+      }
+    }
+  },
+  "executors": {
+    "solo": {
+      "versions": {
+        "1": {
+          "artifacts": [
+            {
+              "architecture": "arm64",
+              "os": "linux",
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "size": 1,
+              "url": "http://localhost:8000/solo.tar.gz"
+            }
+          ],
+          "protocol": 2
+        }
+      }
+    },
+    "wick": {
+      "versions": {
+        "1.18.0": {
+          "adapter": "firecracker",
+          "artifacts": [
+            {
+              "architecture": "arm64",
+              "os": "darwin",
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "size": 1,
+              "url": "wick/1.18.0.tar.gz"
+            }
+          ]
+        },
+        "1.18.0+wick.1": {
+          "adapter": "firecracker",
+          "artifacts": [
+            {
+              "architecture": "amd64",
+              "os": "linux",
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "size": 1,
+              "url": "file:///srv/wick.tar.gz"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "schema": 2
+}

@@ -41,11 +41,7 @@ fn utf8(layer: usize, what: &str, bytes: &[u8]) -> Result<String, ManageError> {
 }
 
 /// 레이어 하나를 읽는다. 일반 파일 내용은 `spool`에 저장한다.
-pub(crate) fn read(
-    layer: usize,
-    reader: impl Read,
-    spool: &Path,
-) -> Result<Vec<LayerEntry>, ManageError> {
+pub fn read(layer: usize, reader: impl Read, spool: &Path) -> Result<Vec<LayerEntry>, ManageError> {
     let io = |e: io::Error| err(layer, e.to_string());
     let mut archive = tar::Archive::new(reader);
     let mut out = Vec::new();
@@ -120,12 +116,13 @@ pub(crate) fn read(
 }
 
 /// 작업 공간에 저장한 파일 내용.
-pub(crate) struct Spool {
+pub struct Spool {
     dir: PathBuf,
 }
 
 impl Spool {
-    pub(crate) fn new(dir: &Path) -> Self {
+    /// `dir`(레이어를 읽을 때 준 작업 공간)에 저장한 내용을 읽는다.
+    pub fn new(dir: &Path) -> Self {
         Self {
             dir: dir.to_owned(),
         }

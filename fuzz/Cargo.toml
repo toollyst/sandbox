@@ -1,0 +1,110 @@
+# 커버리지 기반 퍼징(cargo-fuzz, libFuzzer). 본 workspace 밖에 둔다: nightly와 sanitizer가 필요하고,
+# `cargo test --workspace`와 `cargo xtask check-deps`가 이 크레이트를 모르게 한다.
+# 돌리는 법: docs/developers/testing-and-releasing.md의 "Fuzzing" (`cargo xtask fuzz`).
+[package]
+name = "sbx-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0 OR MIT"
+
+[package.metadata]
+cargo-fuzz = true
+
+# 본 workspace에 들지 않는다.
+[workspace]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+flate2 = "1"
+tar = "0.4"
+ruzstd = "0.9"
+serde_json = "1"
+url = "2"
+
+sbx-model = { path = "../crates/model" }
+sbx-guest-proto = { path = "../crates/spec/guest-proto" }
+sbx-executor-install = { path = "../crates/spec/executor-install" }
+sbx-executor-repo = { path = "../crates/spec/executor-repo" }
+sbx-rootfs = { path = "../crates/port/rootfs", features = ["erofs"] }
+sbx-oci = { path = "../crates/adapter/oci" }
+sbx-runtime = { path = "../crates/core/runtime", features = ["fuzzing"] }
+sbx-manage = { path = "../crates/core/manage", features = ["fuzzing"] }
+sbx-shim = { path = "../crates/app/shim" }
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "guest_msg"
+path = "fuzz_targets/guest_msg.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "copy_from_guest"
+path = "fuzz_targets/copy_from_guest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "egress_rules"
+path = "fuzz_targets/egress_rules.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "shim_log"
+path = "fuzz_targets/shim_log.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "oci_documents"
+path = "fuzz_targets/oci_documents.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "image_layer"
+path = "fuzz_targets/image_layer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rootfs_merge"
+path = "fuzz_targets/rootfs_merge.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "executor_index"
+path = "fuzz_targets/executor_index.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "executor_spec"
+path = "fuzz_targets/executor_spec.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "executor_unpack"
+path = "fuzz_targets/executor_unpack.rs"
+test = false
+doc = false
+bench = false

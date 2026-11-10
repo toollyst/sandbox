@@ -10,6 +10,10 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[features]
+# 퍼징(fuzz/)에 `hostfs`(게스트가 보낸 파일 받기)를 연다. 배포하는 바이너리는 켜지 않는다(cargo xtask check-deps).
+fuzzing = []
+
 [dependencies]
 sbx-model.workspace = true
 serde.workspace = true
