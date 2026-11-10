@@ -141,6 +141,22 @@ fn parse(args: &[String]) -> Result<Options, String> {
     })
 }
 
+/// 막 쓴 실행 파일을 다른 스레드가 fork한 자식이 잠깐 쓰기로 쥐고 있으면(Linux `ETXTBSY`) 실행이 실패한다.
+/// 잠깐씩 기다리며 몇 번 다시 해 본다(sbx-executor-process의 `retry_busy`와 같다).
+fn retry_busy<T>(mut f: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    let mut wait = std::time::Duration::from_millis(5);
+    for _ in 0..8 {
+        match f() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(wait);
+                wait *= 2;
+            }
+            r => return r,
+        }
+    }
+    f()
+}
+
 /// 묶음의 `capabilities`(또는 저장해 둔 그 출력): (규약 버전, OCI 아키텍처 이름).
 fn capabilities(bundle: &Path, saved: Option<&Path>) -> Result<(u64, String), String> {
     let (what, stdout) = match saved {
@@ -150,9 +166,7 @@ fn capabilities(bundle: &Path, saved: Option<&Path>) -> Result<(u64, String), St
         ),
         None => {
             let exe = bundle.join(format!("sbx-executor{}", std::env::consts::EXE_SUFFIX));
-            let out = Command::new(&exe)
-                .arg("capabilities")
-                .output()
+            let out = retry_busy(|| Command::new(&exe).arg("capabilities").output())
                 .map_err(|e| format!("cannot run {}: {e}", exe.display()))?;
             if !out.status.success() {
                 return Err(format!(
