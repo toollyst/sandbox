@@ -10,7 +10,7 @@
 //!   따로 둔다. 이미 있으면 덮어쓰지 않는다.
 //! - `repo-sign`: `<디렉터리>/v2/index.json`의 맨 위 `serial`과 `expires`를 새로 정하고 서명해
 //!   `v2/index.json.minisig`를 쓴다. `serial`의 기본은 지금 Unix 초와 (있던 값 + 1) 중 큰 것(늘 커진다).
-//!   `expires`는 지금부터 `--expires-days`(기본 90)일. 색인을 고칠 때마다(`repo-add` 뒤), 그리고 기한 전에 다시 한다.
+//!   `expires`는 지금부터 `--expires-days`(기본 90, 1~3650)일. 색인을 고칠 때마다(`repo-add` 뒤), 그리고 기한 전에 다시 한다.
 //!   `--key-env`는 비밀키 내용을 담은 환경 변수(CI가 비밀 값을 파일로 쓰지 않게).
 
 use std::path::{Path, PathBuf};
@@ -67,6 +67,9 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// `--expires-days`의 상한(10년). 그보다 길면 기한이 동결 공격을 막지 못하고, 아주 큰 값은 시각을 넘친다.
+const MAX_EXPIRES_DAYS: u64 = 3650;
+
 struct Options {
     repo: PathBuf,
     key: String,
@@ -97,8 +100,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 days = val()?
                     .parse()
                     .map_err(|_| "--expires-days needs a number")?;
-                if days == 0 {
-                    return Err("--expires-days must be at least 1".into());
+                if !(1..=MAX_EXPIRES_DAYS).contains(&days) {
+                    return Err(format!("--expires-days must be 1 to {MAX_EXPIRES_DAYS}"));
                 }
             }
             other => return Err(format!("unknown option {other}")),
@@ -211,6 +214,84 @@ mod tests {
         sign(&sign_args(&[])).unwrap();
         assert!(f.index(&repo).await.unwrap().serial > first.serial);
         assert!(sign(&sign_args(&["--serial", "1"])).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn signing_keeps_serials_growing_and_refuses_bad_input() {
+        let root = std::env::temp_dir().join(format!("sbx-xtask-sign2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("repo/v2")).unwrap();
+        let s = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        keygen(&s(&["--out", root.join("k").to_str().unwrap()])).unwrap();
+        let index = root.join("repo/v2/index.json");
+        let args = |extra: &[&str]| {
+            let mut a = s(&[
+                "--repo",
+                root.join("repo").to_str().unwrap(),
+                "--key",
+                root.join("k.key").to_str().unwrap(),
+            ]);
+            a.extend(s(extra));
+            a
+        };
+        let read = || -> Value {
+            serde_json::from_str(&std::fs::read_to_string(&index).unwrap()).unwrap()
+        };
+        // 있던 serial이 지금보다 크면(시계가 늦은 곳, 손으로 준 serial) 그보다 하나 크게 한다.
+        let future = now() + 1_000_000;
+        std::fs::write(
+            &index,
+            format!(r#"{{"schema": 2, "serial": {future}, "executors": {{}}}}"#),
+        )
+        .unwrap();
+        sign(&args(&[])).unwrap();
+        assert_eq!(read()["serial"], json!(future + 1));
+        sign(&args(&[
+            "--serial",
+            &(future + 10).to_string(),
+            "--expires-days",
+            "1",
+        ]))
+        .unwrap();
+        let v = read();
+        assert_eq!(v["serial"], json!(future + 10));
+        let exp = v["expires"].as_u64().unwrap();
+        assert!(exp > now() && exp <= now() + 86_400, "{exp}");
+        // 다른 필드와 내용은 그대로 둔다.
+        assert_eq!(v["executors"], json!({}));
+
+        // 기한은 1일 이상 10년 이하. 넘치는 값도 거부한다.
+        for bad in ["0", "3651", "18446744073709551615", "x"] {
+            assert!(sign(&args(&["--expires-days", bad])).is_err(), "{bad}");
+        }
+        // schema 2가 아닌 색인, 없는 키 변수, 읽을 수 없는 키, 모르는 옵션.
+        std::fs::write(&index, r#"{"schema": 1, "executors": {}}"#).unwrap();
+        assert!(sign(&args(&[])).unwrap_err().contains("schema 2"));
+        std::fs::write(&index, r#"{"schema": 2, "executors": {}}"#).unwrap();
+        let no_env = s(&[
+            "--repo",
+            root.join("repo").to_str().unwrap(),
+            "--key-env",
+            "SBX_TEST_NO_SUCH_VAR_9",
+        ]);
+        assert!(sign(&no_env).unwrap_err().contains("not set"));
+        std::fs::write(root.join("bad.key"), "not a key").unwrap();
+        let bad_key = s(&[
+            "--repo",
+            root.join("repo").to_str().unwrap(),
+            "--key",
+            root.join("bad.key").to_str().unwrap(),
+        ]);
+        assert!(sign(&bad_key).unwrap_err().contains("secret key"));
+        assert!(sign(&args(&["--what"])).is_err());
+        // 실패한 서명은 색인을 바꾸지 않고 임시 파일도 남기지 않는다.
+        assert_eq!(read(), json!({"schema": 2, "executors": {}}));
+        let names: Vec<_> = std::fs::read_dir(root.join("repo/v2"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert!(names.iter().all(|n| !n.contains("tmp")), "{names:?}");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

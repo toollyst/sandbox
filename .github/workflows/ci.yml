@@ -56,6 +56,9 @@ jobs:
           persist-credentials: false
       - run: rustup component add rustfmt clippy
       - run: cargo fmt --all --check
+      # install.sh의 확인 분기(체크섬, SBX_VERIFY, 서명): 가짜 릴리스와 가짜 cosign으로.
+      - if: runner.os != 'Windows'
+        run: .github/scripts/test-install.sh
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       # Linux에서는 erofs와 ext2 공식 검사기로 만든 이미지를 검증한다. 도구가 없으면 테스트가 실패한다.
       - if: runner.os == 'Linux'
