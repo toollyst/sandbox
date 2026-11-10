@@ -1,0 +1,150 @@
+# 커버리지 기반 퍼징(cargo-fuzz, libFuzzer). 대상은 fuzz/fuzz_targets/*.rs이고, 무엇을 보는지는 각 파일 머리에 있다.
+#
+#   push (main, feat/**): 대상마다 60초.
+#   gh workflow run fuzz.yml [-f seconds=1800] [-f targets="guest_msg copy_from_guest"]
+#
+# 1. build: nightly + cargo-fuzz로 모든 대상을 한 번 만든다(ASan, debug assertions). 대상 이름 목록이 matrix가 된다.
+# 2. lint: fuzz 크레이트의 fmt, clippy, 그리고 시작 입력(fuzz/seeds)이 생성기(fuzz/examples/seeds.rs)와 같은지.
+# 3. run: 대상마다 한 job. `cargo xtask fuzz`(로컬)와 같은 인자로 libFuzzer를 돌린다: fuzz/seeds/<대상>과 지난
+#    실행의 corpus(캐시)에서 시작하고, fuzz/dict/<대상>.dict가 있으면 쓴다. 입력 하나가 30초를 넘으면 실패다(멈춤).
+#    충돌·시간 초과·메모리 초과면 job이 실패하고 재현 입력을 artifact `fuzz-<대상>-artifacts`로 올린다.
+#    재현: artifact를 받아 `cargo +nightly fuzz run <대상> <파일>`.
+name: fuzz
+
+on:
+  push:
+    branches: [main, 'feat/**']
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: Seconds to fuzz each target
+        required: false
+        type: string
+        default: '1800'
+      targets:
+        description: Targets to run, separated by spaces (empty = all of fuzz/fuzz_targets)
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # 퍼징에 쓰는 nightly. sanitizer 플래그가 nightly에만 있다. 올릴 때는 로컬에서 `cargo xtask fuzz`를 한 번 돌려 본다.
+  NIGHTLY: nightly-2026-11-01
+  CARGO_FUZZ: 0.13.2
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.targets.outputs.list }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: targets
+        env:
+          WANT: ${{ inputs.targets }}
+        run: |
+          set -euo pipefail
+          all=$(for f in fuzz/fuzz_targets/*.rs; do basename "$f" .rs; done)
+          if [ -n "${WANT:-}" ]; then
+            read -ra want <<< "$WANT"
+            for t in "${want[@]}"; do
+              echo "$all" | grep -qx -- "$t" || { echo "::error::no fuzz target $t"; exit 1; }
+            done
+            all=$(printf '%s\n' "${want[@]}")
+          fi
+          echo "list=$(echo "$all" | jq -R . | jq -cs .)" >> "$GITHUB_OUTPUT"
+      - run: rustup toolchain install "$NIGHTLY" --profile minimal
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-fuzz
+          key: cargo-fuzz-${{ env.CARGO_FUZZ }}-${{ runner.os }}
+      - run: command -v cargo-fuzz || cargo install cargo-fuzz --locked --version "$CARGO_FUZZ"
+      - run: cargo "+$NIGHTLY" fuzz build
+      - name: collect the target binaries
+        run: |
+          mkdir bin
+          for f in fuzz/fuzz_targets/*.rs; do
+            cp "fuzz/target/x86_64-unknown-linux-gnu/release/$(basename "$f" .rs)" bin/
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-bin
+          path: bin
+          retention-days: 3
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup component add rustfmt clippy
+      - run: cargo fmt --manifest-path fuzz/Cargo.toml --check
+      - run: cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
+      # 생성기는 시작 입력이 해석의 깊은 곳까지 닿는지도 확인한다. 다르면 `cargo xtask fuzz --seeds`로 다시 만든다.
+      - run: |
+          cargo xtask fuzz --seeds
+          git add -N fuzz/seeds
+          git diff --exit-code --stat fuzz/seeds
+
+  run:
+    needs: build
+    name: run (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.build.outputs.targets) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && 360 || 20 }}
+    env:
+      TARGET: ${{ matrix.target }}
+      SECONDS_PER_TARGET: ${{ inputs.seconds || '60' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: fuzz-bin
+          path: bin
+      # 지난 실행이 키운 corpus에서 이어 간다. 없으면 fuzz/seeds만으로 시작한다.
+      - uses: actions/cache/restore@v4
+        with:
+          path: corpus
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+      - name: fuzz
+        run: |
+          set -euo pipefail
+          chmod +x "bin/$TARGET"
+          mkdir -p corpus artifacts
+          args=(-max_total_time="$SECONDS_PER_TARGET" -timeout=30 -print_final_stats=1 -artifact_prefix=artifacts/)
+          if [ -f "fuzz/dict/$TARGET.dict" ]; then args+=(-dict="fuzz/dict/$TARGET.dict"); fi
+          dirs=(corpus)
+          if [ -d "fuzz/seeds/$TARGET" ]; then dirs+=("fuzz/seeds/$TARGET"); fi
+          set +e
+          "bin/$TARGET" "${args[@]}" "${dirs[@]}" 2>&1 | tee fuzz.log
+          status=${PIPESTATUS[0]}
+          set -e
+          {
+            echo "### $TARGET"
+            echo '```'
+            grep -E '^(Done|stat::)' fuzz.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+      - if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: corpus
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-${{ matrix.target }}-artifacts
+          path: |
+            artifacts
+            fuzz.log
