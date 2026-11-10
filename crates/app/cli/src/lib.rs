@@ -37,6 +37,12 @@ pub async fn run(cli: cli::Cli) -> app::AppResult<u8> {
     {
         return Err(why.into());
     }
+    if let Some(code) = &cli.jq {
+        if cli.format != cli::Format::Json {
+            return Err("--jq needs --format json".into());
+        }
+        output::set_jq(output::Jq::compile(code)?);
+    }
     match cli.command {
         cli::Command::Mcp { .. } => mcp::serve(&cli).await,
         cli::Command::Completion { shell } => {

@@ -50,6 +50,10 @@ pub struct Cli {
     /// Output format.
     #[arg(long, global = true, value_enum, default_value_t = Format::Text)]
     pub format: Format,
+    /// With --format json: run this jq expression on the output and print each result on its own line
+    /// (strings without quotes). Built in (jaq); jq itself is not needed.
+    #[arg(long, global = true, value_name = "EXPR")]
+    pub jq: Option<String>,
     /// Command.
     #[command(subcommand)]
     pub command: Command,

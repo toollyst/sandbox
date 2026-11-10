@@ -346,6 +346,12 @@ pub const DOCKER_DIFFERENCES: &[(&str, &str, &str)] = &[
         "짧은 문자열이 우연히 맞아 엉뚱한 이미지를 지우는 일을 막는다",
     ),
     (
+        "--format",
+        "text와 json만. Go 템플릿(--format '{{.ID}}')은 없고, 대신 --jq EXPR로 JSON 출력을 고른다(gh와 같다). \
+         json의 모양은 crate::output이 정본이다(docs/developers/cli-output.md)",
+        "Go 템플릿을 Rust로 똑같이 만들 수 없고, 반쯤 같은 것은 명시적 동작에 어긋난다. jq는 사실상 표준 언어다",
+    ),
+    (
         "--filter",
         "ps, images, events만. 키는 crate::filter의 표(PS, IMAGES, EVENTS)가 정본이다. name은 정규식이 아니라 부분 문자열, \
          reference는 *와 ?만 있는 패턴. ps의 before/since/health 등, images의 before/since, events의 container/label은 없다. \

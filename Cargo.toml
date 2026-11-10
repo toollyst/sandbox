@@ -42,6 +42,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # CLI JSON 출력의 JSON Schema 문서(sbx-cli 테스트에서만 만든다).
 schemars = "1"
+# --jq: jq 식(jaq, Rust 구현). 세 크레이트는 같은 jaq 릴리스에서 함께 올린다.
+jaq-core = "3.1"
+jaq-std = "3.0"
+jaq-json = "2.0"
 sha2 = "0.11"
 flate2 = "1"
 # zstd 레이어 풀기. 순수 Rust (C 라이브러리를 묶지 않는다).

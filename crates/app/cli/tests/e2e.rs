@@ -64,6 +64,7 @@ mod unix {
         ("json_output_contract", json_output_contract),
         ("events_replay_and_follow", events_replay_and_follow),
         ("filters", filters),
+        ("jq_shapes_json_output", jq_shapes_json_output),
         (
             "exec_cp_stop_on_a_running_sandbox",
             exec_cp_stop_on_a_running_sandbox,
@@ -820,6 +821,65 @@ mod unix {
         );
 
         ok(&["rm", "-f", &stopped, &running, &created]);
+    }
+
+    /// `--jq`(gh와 같다): JSON 출력 값(또는 줄)마다 식을 돌린다. 문자열은 따옴표 없이. 틀린 식이면 아무것도 하지 않는다.
+    fn jq_shapes_json_output() {
+        let e = Env::new();
+        let jq = |args: &[&str]| {
+            let mut all = vec!["--format", "json"];
+            all.extend_from_slice(args);
+            e.sbx(&all)
+        };
+        // 틀린 식: 만들지 않는다.
+        let o = jq(&["--jq", ".[", "create", IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(1));
+        assert!(
+            text(&o.stderr).contains("at character"),
+            "{}",
+            text(&o.stderr)
+        );
+        assert!(e.ps().is_empty());
+        // --format json 없이는 받지 않는다.
+        let o = e.sbx(&["--jq", ".", "ps"]);
+        assert_eq!(o.status.code(), Some(1));
+        assert!(text(&o.stderr).contains("--jq needs --format json"));
+
+        // 값 하나(create의 SandboxRef) → 문자열은 그대로.
+        let o = jq(&["--jq", ".name", "create", "--name", "jq1", IMAGE, "true"]);
+        assert_eq!(text(&o.stdout), "jq1\n", "{}", text(&o.stderr));
+        let o = jq(&["create", "--name", "jq2", IMAGE, "sleep", "1"]);
+        assert_eq!(o.status.code(), Some(0));
+        let o = jq(&[
+            "--jq",
+            r#"map(select(.name | startswith("jq"))) | sort_by(.name) | .[] | "\(.name) \(.state)""#,
+            "ps",
+            "-a",
+        ]);
+        assert_eq!(text(&o.stdout), "jq1 created\njq2 created\n");
+        let o = jq(&["--jq", "{n: length}", "ps", "-a"]);
+        assert_eq!(text(&o.stdout), "{\"n\":2}\n");
+        // 대상마다 한 줄인 명령은 줄마다 돌린다.
+        let o = jq(&["--jq", ".target", "rm", "jq1", "jq2"]);
+        assert_eq!(text(&o.stdout), "jq1\njq2\n", "{}", text(&o.stderr));
+        let o = jq(&[
+            "--jq",
+            "select(.type == \"sandbox\") | .action",
+            "events",
+            "--since",
+            "1h",
+            "--until",
+            "0s",
+        ]);
+        assert_eq!(text(&o.stdout), "create\ncreate\nremove\nremove\n");
+        // 식이 실행 중에 실패하면 명령의 오류다.
+        let o = jq(&["--jq", ".foo", "ps", "-a"]);
+        assert_eq!(o.status.code(), Some(1));
+        assert!(
+            text(&o.stderr).contains("cannot index"),
+            "{}",
+            text(&o.stderr)
+        );
     }
 
     fn names_work_in_place_of_ids() {

@@ -1256,8 +1256,8 @@ impl Ctx {
                 {
                     continue;
                 }
-                let line = if self.json() {
-                    serde_json::to_string(&output::Event::new(&e))?
+                let lines = if self.json() {
+                    output::render_line(&output::Event::new(&e))?
                 } else {
                     let attrs: Vec<String> = e
                         .attributes
@@ -1269,16 +1269,18 @@ impl Ctx {
                     } else {
                         format!(" ({})", attrs.join(", "))
                     };
-                    format!(
+                    vec![format!(
                         "{} {} {} {}{attrs}",
                         behavior::rfc3339_ns(e.time_ns),
                         e.kind,
                         e.action,
                         e.id
-                    )
+                    )]
                 };
-                if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
-                    return Ok(0);
+                for line in lines {
+                    if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
+                        return Ok(0);
+                    }
                 }
             }
             if done {

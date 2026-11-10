@@ -26,6 +26,9 @@ crossterm.workspace = true
 tokio = { workspace = true, features = ["signal", "time", "net", "io-util", "io-std", "sync"] }
 serde_json.workspace = true
 serde.workspace = true
+jaq-core.workspace = true
+jaq-std.workspace = true
+jaq-json.workspace = true
 sbx-runtime.workspace = true
 sbx-shim.workspace = true
 sbx-manage.workspace = true

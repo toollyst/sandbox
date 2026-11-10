@@ -13,6 +13,10 @@
 //! - 오류는 stderr에 [`ErrorLine`] 한 줄이다. 명령 전체가 실패하면 마지막 줄이고, 여러 대상 중 하나가 실패하면 그 대상의
 //!   줄(`target`이 있다)이다. stderr의 그 밖의 줄은 사람이 읽는 안내이고 모양을 약속하지 않는다.
 //! - 필드 이름은 snake_case, 시각은 RFC 3339(UTC), 값이 없으면 `null`이다.
+//! - `--jq EXPR`(gh와 같다, [`Jq`]): `--format json`일 때만 받는다. 위 모양의 값 하나(`Value`)나 줄 하나(`Lines`)마다
+//!   jq 식을 돌리고, 결과 값마다 한 줄을 낸다. 문자열은 따옴표 없이 그대로, 그 밖은 한 줄 JSON이다. 식은 명령을 실행하기
+//!   전에 컴파일하므로 틀린 식이면 아무것도 하지 않는다. 식을 돌리다 난 오류는 명령의 오류다(그 앞의 동작은 이미 했다).
+//!   jq는 jaq(Rust 구현)로 내장한다. 실행 중에 한 번 정하는 프로세스 설정이다([`set_jq`]).
 //! - 자료형은 저장 형식(`sbx-model`의 기록)과 따로 둔다. 저장 형식이 바뀌어도 출력은 이 파일이 바뀔 때만 바뀐다.
 //!   문서 주석은 영어다. clap 도움말처럼 사용자에게 보이는 스키마 설명이 되기 때문이다.
 //! - 문서 `docs/developers/cli-output.md`와 JSON Schema `docs/developers/cli-output.schema.json`은 여기서 만든다.
@@ -137,16 +141,125 @@ pub fn refusal(command: &Command) -> Option<String> {
     refuse(name, attached)
 }
 
-/// 값 하나를 stdout에 쓴다([`Form::Value`]).
-pub fn print_value<T: Serialize + ?Sized>(v: &T) -> serde_json::Result<()> {
-    println!("{}", serde_json::to_string_pretty(v)?);
+/// 출력 오류: 직렬화나 `--jq` 식 실행.
+pub type PrintResult<T> = Result<T, Box<dyn std::error::Error>>;
+
+/// 값 하나를 stdout에 쓴다([`Form::Value`]). `--jq`가 있으면 그 결과 줄들.
+pub fn print_value<T: Serialize + ?Sized>(v: &T) -> PrintResult<()> {
+    match jq() {
+        Some(jq) => jq.run(v)?.iter().for_each(|l| println!("{l}")),
+        None => println!("{}", serde_json::to_string_pretty(v)?),
+    }
     Ok(())
 }
 
-/// 한 줄을 stdout에 쓴다([`Form::Lines`]).
-pub fn print_line<T: Serialize + ?Sized>(v: &T) -> serde_json::Result<()> {
-    println!("{}", serde_json::to_string(v)?);
+/// 한 줄을 stdout에 쓴다([`Form::Lines`]). `--jq`가 있으면 그 결과 줄들.
+pub fn print_line<T: Serialize + ?Sized>(v: &T) -> PrintResult<()> {
+    for l in render_line(v)? {
+        println!("{l}");
+    }
     Ok(())
+}
+
+/// [`print_line`]이 쓸 줄들. 흐르는 명령(`events`)이 stdout이 닫힌 것을 직접 다룰 때 쓴다.
+pub fn render_line<T: Serialize + ?Sized>(v: &T) -> PrintResult<Vec<String>> {
+    Ok(match jq() {
+        Some(jq) => jq.run(v)?,
+        None => vec![serde_json::to_string(v)?],
+    })
+}
+
+static JQ: std::sync::OnceLock<Jq> = std::sync::OnceLock::new();
+
+/// `--jq`를 정한다. 실행을 시작할 때 한 번만 부른다(두 번째부터는 무시한다).
+pub fn set_jq(jq: Jq) {
+    let _ = JQ.set(jq);
+}
+
+fn jq() -> Option<&'static Jq> {
+    JQ.get()
+}
+
+/// 컴파일한 jq 식 하나(`--jq`). 표준 jq 함수(jaq-std)와 JSON 함수(jaq-json)를 쓸 수 있다.
+pub struct Jq {
+    filter: jaq_core::compile::Filter<jaq_core::Native<jaq_core::data::JustLut<jaq_json::Val>>>,
+}
+
+impl std::fmt::Debug for Jq {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Jq")
+    }
+}
+
+impl Jq {
+    /// 컴파일한다. 오류 문구는 몇 번째 글자에서 무엇을 기대했는지, 또는 무엇이 정의되지 않았는지다.
+    pub fn compile(code: &str) -> Result<Self, String> {
+        use jaq_core::load::{Arena, Error as LoadError, File, Loader};
+        let at = |rest: &str| code.len() - rest.len() + 1;
+        let defs = jaq_core::defs()
+            .chain(jaq_std::defs())
+            .chain(jaq_json::defs());
+        let funs = jaq_core::funs()
+            .chain(jaq_std::funs())
+            .chain(jaq_json::funs());
+        let arena = Arena::default();
+        let modules = Loader::new(defs)
+            .load(&arena, File { code, path: () })
+            .map_err(|errs| {
+                let mut why = Vec::new();
+                for (_, e) in errs {
+                    match e {
+                        LoadError::Io(v) => why.extend(v.into_iter().map(|(_, m)| m)),
+                        LoadError::Lex(v) => why.extend(v.into_iter().map(|(exp, rest)| {
+                            format!("expected {} at character {}", exp.as_str(), at(rest))
+                        })),
+                        LoadError::Parse(v) => why.extend(v.into_iter().map(|(exp, rest)| {
+                            format!("expected {} at character {}", exp.as_str(), at(rest))
+                        })),
+                    }
+                }
+                format!("--jq {code:?}: {}", why.join("; "))
+            })?;
+        let filter = jaq_core::Compiler::default()
+            .with_funs(funs)
+            .compile(modules)
+            .map_err(|errs| {
+                let why: Vec<String> = errs
+                    .into_iter()
+                    .flat_map(|(_, v)| v)
+                    .map(|(name, kind)| match kind {
+                        jaq_core::compile::Undefined::Filter(arity) => {
+                            format!("undefined function {name}/{arity}")
+                        }
+                        jaq_core::compile::Undefined::Var => format!("undefined variable ${name}"),
+                        other => {
+                            format!("undefined {} {name}", format!("{other:?}").to_lowercase())
+                        }
+                    })
+                    .collect();
+                format!("--jq {code:?}: {}", why.join("; "))
+            })?;
+        Ok(Self { filter })
+    }
+
+    /// `v`에 돌린 결과 값마다 한 줄: 문자열은 그대로, 그 밖은 한 줄 JSON.
+    pub fn run<T: Serialize + ?Sized>(&self, v: &T) -> Result<Vec<String>, String> {
+        use jaq_core::{Ctx, Vars, data, unwrap_valr};
+        use jaq_json::Val;
+        let bytes = serde_json::to_vec(v).map_err(|e| e.to_string())?;
+        let input = jaq_json::read::parse_single(&bytes).map_err(|e| format!("--jq: {e}"))?;
+        let ctx = Ctx::<data::JustLut<Val>>::new(&self.filter.lut, Vars::new([]));
+        self.filter
+            .id
+            .run((ctx, input))
+            .map(unwrap_valr)
+            .map(|r| match r {
+                Ok(Val::TStr(s)) => Ok(String::from_utf8_lossy(&s).into_owned()),
+                Ok(v) => Ok(v.to_string()),
+                Err(e) => Err(format!("--jq: {e}")),
+            })
+            .collect()
+    }
 }
 
 /// 오류 한 줄을 stderr에 쓴다.
@@ -716,6 +829,36 @@ mod tests {
     }
 
     #[test]
+    fn jq_prints_strings_raw_and_other_values_as_one_line_json() {
+        let jq = Jq::compile(r#".[] | select(.n > 1) | .name, {n}, [.n, null]"#).unwrap();
+        let v = serde_json::json!([{"name": "a", "n": 1}, {"name": "b \"q\"\n한", "n": 2}]);
+        assert_eq!(
+            jq.run(&v).unwrap(),
+            ["b \"q\"\n한", r#"{"n":2}"#, "[2,null]"]
+        );
+        assert_eq!(
+            Jq::compile("empty").unwrap().run(&v).unwrap(),
+            Vec::<String>::new()
+        );
+        // 표준 함수(jaq-std)도 있다.
+        let jq = Jq::compile(r#"map(.name) | join(",") | ascii_upcase"#).unwrap();
+        assert_eq!(jq.run(&v).unwrap(), ["A,B \"Q\"\n한"]);
+    }
+
+    #[test]
+    fn jq_errors_say_where_and_what() {
+        let e = Jq::compile(".[").unwrap_err();
+        assert!(
+            e.starts_with("--jq \".[\":") && e.contains("at character"),
+            "{e}"
+        );
+        let e = Jq::compile("nosuchfn(1)").unwrap_err();
+        assert!(e.contains("undefined") && e.contains("nosuchfn"), "{e}");
+        let e = Jq::compile(".foo").unwrap().run(&[1]).unwrap_err();
+        assert!(e.starts_with("--jq: ") && e.contains("index"), "{e}");
+    }
+
+    #[test]
     fn refusals_name_the_command() {
         assert!(refuse("exec", false).unwrap().contains("`exec`"));
         assert!(refuse("run", false).is_none());
@@ -780,6 +923,9 @@ mod tests {
              - **empty**: nothing on success.\n\
              - **not supported**: sbx refuses `--format json` and exits with an error.\n\
              - `-q` (`ps`, `images`) wins over `--format`: one ID per line.\n\
+             - `--jq EXPR` (only with `--format json`, like gh) runs a jq expression on each value or line \
+             and prints each result on its own line, strings without quotes. A bad expression fails before \
+             the command does anything. jq is built in (jaq).\n\
              - Errors go to stderr as one `ErrorLine` per line. Other stderr lines are for humans.\n\
              - Field names are snake_case, times are RFC 3339 (UTC), missing values are `null`.\n\n\
              The JSON Schema (draft 2020-12) of every type is in \
