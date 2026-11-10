@@ -2323,7 +2323,7 @@ mod unix {
         assert_eq!(r["stdout"], "piped in");
         // 시간이 넘으면 끄고 지운다.
         let started = Instant::now();
-        let r = m.call("run", serde_json::json!({"image": IMAGE, "command": ["sh", "-c", "echo before; sleep 30"], "timeout_secs": 1})).unwrap();
+        let r = m.call("run", serde_json::json!({"image": IMAGE, "command": ["sh", "-c", "echo before; sleep 30"], "timeout_secs": 3})).unwrap();
         assert!(
             started.elapsed() < Duration::from_secs(15),
             "{:?}",

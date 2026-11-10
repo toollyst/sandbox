@@ -43,10 +43,12 @@ These are known gaps, in rough order of importance. Some are on the [roadmap](do
 - **Repository indexes are not signed.** The SHA-256 in the index protects each package, and TLS is all that protects
   the index, so whoever controls the repository host controls what you install. This holds for adapters and VMM
   packages alike.
-- **Names are not tied to a repository.** `sbx executor install` takes the highest version of a name from any
-  configured repository (an equal version from the earlier one), and that includes the adapter a VMM package needs.
-  A VMM package then runs under the highest installed version of its adapter. Add only repositories you trust as
-  much as the official one.
+- **Names are not tied to a repository.** `sbx executor install NAME` takes the highest version of that name from
+  any configured repository (an equal version from the earlier one). The adapter a VMM package needs, if it isn't
+  installed yet, comes from the repository that served the VMM package, or else from the first repository in the
+  list that has it. But a VMM package always runs under the highest *installed* version of its adapter, wherever
+  that came from: an adapter you install with `sbx executor adapter install` from another repository takes over
+  every VMM package that names it. Add only repositories you trust as much as the official one.
 - **Data you allow out can leave.** The allow list decides *where* a sandbox may connect, not *what* it sends there.
 - **Resource limits are coarse.** vCPU count, memory and scratch disk size are fixed per sandbox. There are no CPU
   quotas, I/O limits or caps on how much disk an image pull and prepare may use, and `sbx mcp` does not cap how

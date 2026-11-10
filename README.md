@@ -83,8 +83,8 @@ You need one of:
 
 The installer puts `sbx` and `sbx-shim` in `~/.local/bin` after checking their SHA-256, and nothing else: `sbx` on
 its own has no VMM. `sbx executor install wick` adds one from the
-[official repository](https://toollyst.github.io/sandbox/executors/): Firecracker for your host (upstream on Linux,
-[wick](https://github.com/toollyst/wick) on macOS), plus the `firecracker` adapter and guest kernel it runs with. See
+[official repository](https://toollyst.github.io/sandbox/executors/): Firecracker for your host from the latest
+[wick](https://github.com/toollyst/wick) release (upstream Firecracker on Linux when that release has no Linux build), plus the `firecracker` adapter and guest kernel it runs with. See
 [Executors and versions](#executors-and-versions). Nothing runs as root.
 
 You can change what the installer does with `SBX_VERSION` or `SBX_INSTALL_DIR`. The script is
@@ -240,16 +240,16 @@ VM off and `exec` kills the process. Output keeps the last 256 KiB of each strea
 do with nvm or gvm. `sbx` alone has none; the first one you install becomes the default.
 
 ```sh
-sbx executor search                 # what the repositories offer for this host (alias: ls-remote)
-sbx executor install wick           # latest; or wick@1.18.0, wick@latest
-sbx executor ls                     # installed (* marks the default)
-sbx executor use wick@1.18.0        # the global default
-echo wick@1.18.0 > .sbx-executor    # this folder and everything below it
-sbx executor current                # what a new sandbox would use here, and why
-sbx executor which wick             # the program that runs it (for a VMM package, its adapter)
-sbx run --executor wick@1.19.0 --rm alpine true   # just this once (or SBX_EXECUTOR)
-sbx executor rm wick@1.18.0         # refused while a sandbox is pinned to it, unless -f
-sbx executor prune -n               # what prune would remove: old versions nothing uses
+sbx executor search                        # what the repositories offer for this host (alias: ls-remote)
+sbx executor install wick                  # the highest version; same as wick@latest
+sbx executor ls                            # installed (* marks the default)
+sbx executor use wick@1.18.0-wick.1        # the global default
+echo wick@1.18.0-wick.1 > .sbx-executor    # this folder and everything below it
+sbx executor current                       # what a new sandbox would use here, and why
+sbx executor which wick                    # the program that runs it (for a VMM package, its adapter)
+sbx run --executor wick@1.18.0-wick.2 --rm alpine true   # just this once (or SBX_EXECUTOR)
+sbx executor rm wick@1.18.0-wick.1         # refused while a sandbox is pinned to it, unless -f
+sbx executor prune -n                      # what prune would remove: old versions nothing uses
 ```
 
 A new sandbox uses the first of: `--executor` (an installed `NAME[@VERSION]` or a path to a program),
@@ -258,10 +258,13 @@ sandbox remembers the installed executor it was created with (label `io.github.t
 changing the default never changes what `start` or `restart` boots. The rules are in
 [`choose.rs`](crates/app/cli/src/choose.rs).
 
-`wick` versions follow upstream Firecracker: `wick@1.18.0` is Firecracker 1.18.0. It is a **VMM package**, just the
-`firecracker` binary for your host, run by the **`firecracker` adapter** (the program that speaks the executor
-protocol, with its default guest kernel). `install` fetches the adapter first if it is missing, and
-`sbx executor adapter ls|install|search|rm` manages adapters directly.
+`wick` versions are [wick release](https://github.com/toollyst/wick/releases) versions: the release `v1.18.0-wick.1`
+is `wick@1.18.0-wick.1`, Firecracker 1.18.0 underneath. Each platform gets that release's build, or upstream
+Firecracker 1.18.0 on Linux if the release has no Linux build. It is a **VMM package**, just the `firecracker` binary
+for your host, run by the **`firecracker` adapter** (the program that speaks the executor protocol, with its default
+guest kernel). `install` fetches the adapter first if it is missing, and `sbx executor adapter ls|install|search|rm`
+manages adapters directly. A VMM package runs under the highest installed version of its adapter, so an adapter you
+install yourself, from any repository, is the one that runs it.
 
 ## Bring your own VMM
 
@@ -290,8 +293,9 @@ cargo xtask repo-add --repo ./executors --schema 2 --vmm-for firecracker --arch 
 cargo xtask repo-add --repo ./executors --schema 2 --bundle ./my-executor --name myvmm --version 0.1.0
 ```
 
-A VMM package names its adapter, and `install` takes that adapter from any configured repository, so a repository
-of VMM packages for `firecracker` doesn't need to carry the adapter itself.
+A VMM package names its adapter. If the adapter isn't installed yet, `install` takes it from the repository the
+VMM package came from, or else from the first repository in `repo ls` order that has it. So a repository of VMM
+packages for `firecracker` doesn't need to carry the adapter itself.
 
 ## Platforms
 

@@ -365,7 +365,7 @@ async fn install_remote(cx: &Ctx<'_>, ex: &Executors, ad: &Executors, spec: &Spe
             version: None,
         };
         if ad.find(&a)?.is_none() {
-            let ac = index::pick_adapter(&idx, &a, &platform, sbx_executor_proto::VERSION)
+            let ac = adapter_for(&idx, &c, &a, &platform)
                 .map_err(|e| format!("{}@{} needs adapter {name}: {e}", c.name, c.version))?;
             eprintln!("{}@{} needs adapter {name}", c.name, c.version);
             fetch_and_install(cx, &fetcher, ad, &ac, adapter_check).await?;
@@ -373,6 +373,27 @@ async fn install_remote(cx: &Ctx<'_>, ex: &Executors, ad: &Executors, spec: &Spe
     }
     let i = fetch_and_install(cx, &fetcher, ex, &c, |i| verify_installed(ad, i)).await?;
     print_ref(cx, &i)
+}
+
+/// VMM 묶음 `c`가 가리키는 어댑터를 고른다: 그 묶음이 있던 저장소에서 먼저, 없으면 저장소 목록 순서대로 처음 가진
+/// 저장소에서. 모든 저장소에서 가장 높은 버전을 고르지 않는다(나중에 더한 저장소가 같은 이름의 더 높은 버전으로 공식
+/// 묶음의 어댑터를 바꾸지 못하게).
+fn adapter_for(
+    idx: &[(String, index::Index)],
+    c: &Candidate,
+    adapter: &Spec,
+    platform: &Platform,
+) -> std::result::Result<Candidate, String> {
+    let v = sbx_executor_proto::VERSION;
+    let same = idx.iter().filter(|(r, _)| *r == c.repository);
+    let others = idx.iter().filter(|(r, _)| *r != c.repository);
+    for repo in same.chain(others) {
+        if let Ok(found) = index::pick_adapter(std::slice::from_ref(repo), adapter, platform, v) {
+            return Ok(found);
+        }
+    }
+    // 이유는 모든 저장소를 보고 알린다.
+    index::pick_adapter(idx, adapter, platform, v)
 }
 
 /// `c`를 받아 `into`에 설치한다. 이미 있으면 받지 않는다.
@@ -690,4 +711,78 @@ fn print_repository(cx: &Ctx<'_>, r: &Repository) -> Result<()> {
         println!("{}", r.name);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn index(adapter_version: Option<&str>, with_vmm: bool) -> index::Index {
+        let p = Platform::host();
+        let art = serde_json::json!([{"os": p.os, "architecture": p.architecture, "url": "x.tar.gz",
+            "sha256": "0".repeat(64), "size": 1}]);
+        let mut v = serde_json::json!({"schema": 2, "executors": {}, "adapters": {}});
+        if with_vmm {
+            v["executors"]["wick"]["versions"]["1.0-wick.1"] =
+                serde_json::json!({"adapter": "firecracker", "artifacts": art});
+        }
+        if let Some(a) = adapter_version {
+            v["adapters"]["firecracker"]["versions"][a] =
+                serde_json::json!({"protocol": sbx_executor_proto::VERSION, "artifacts": art});
+        }
+        let repo = sbx_executor_repo::location::repository("https://example.com/").unwrap();
+        let url = sbx_executor_repo::location::index_v2(&repo);
+        index::Index::parse(v.to_string().as_bytes(), &url).unwrap()
+    }
+
+    #[test]
+    fn the_adapter_comes_from_the_vmm_repository_first_then_list_order() {
+        let a: Spec = "firecracker".parse().unwrap();
+        let p = Platform::host();
+        // 앞 저장소가 더 높은 버전을 올려도 VMM 묶음이 있던 저장소의 어댑터를 고른다.
+        let idx = vec![
+            ("other".to_owned(), index(Some("99.0"), false)),
+            ("official".to_owned(), index(Some("0.2.0"), true)),
+        ];
+        let c = index::pick(
+            &idx,
+            &"wick".parse().unwrap(),
+            &p,
+            sbx_executor_proto::VERSION,
+        )
+        .unwrap();
+        let got = adapter_for(&idx, &c, &a, &p).unwrap();
+        assert_eq!(
+            (got.repository.as_str(), got.version.as_str()),
+            ("official", "0.2.0")
+        );
+        // 그 저장소에 없으면 목록 순서대로.
+        let idx = vec![
+            ("first".to_owned(), index(Some("0.1.0"), false)),
+            ("second".to_owned(), index(Some("0.3.0"), false)),
+            ("vmm".to_owned(), index(None, true)),
+        ];
+        let c = index::pick(
+            &idx,
+            &"wick".parse().unwrap(),
+            &p,
+            sbx_executor_proto::VERSION,
+        )
+        .unwrap();
+        let got = adapter_for(&idx, &c, &a, &p).unwrap();
+        assert_eq!(got.repository, "first");
+        let idx = vec![("vmm".to_owned(), index(None, true))];
+        let c = index::pick(
+            &idx,
+            &"wick".parse().unwrap(),
+            &p,
+            sbx_executor_proto::VERSION,
+        )
+        .unwrap();
+        assert!(
+            adapter_for(&idx, &c, &a, &p)
+                .unwrap_err()
+                .contains("no adapter")
+        );
+    }
 }

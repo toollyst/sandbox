@@ -901,6 +901,8 @@ impl Ctx {
         a: &RunArgs,
         on_pull: &(dyn Fn(sbx_manage::PullProgress) + Sync),
     ) -> AppResult<SandboxId> {
+        // 실행기를 먼저 고른다. 없으면 이미지를 받기 전에 실패한다.
+        let chosen = self.choose(None)?;
         let network = behavior::network_policy(&a.network, &a.allow)?;
         let user = a.user.as_deref().map(str::parse::<UserSpec>).transpose()?;
         let stop_signal = a
@@ -998,7 +1000,6 @@ impl Ctx {
                         signal: sbx_runtime::process::stop_signal(&record.config, stop_signal)?,
                         timeout_secs: a.stop_timeout,
                     };
-                    let chosen = self.choose(None)?;
                     let mut labels = sbx_runtime::process::labels(&record.config, &labels);
                     if let Some(pin) = chosen.pin() {
                         labels.insert(choose::PIN_LABEL.to_owned(), pin);

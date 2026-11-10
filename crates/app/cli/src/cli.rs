@@ -41,8 +41,10 @@ pub struct Cli {
     /// Guest init initramfs. Defaults to the one embedded in sbx.
     #[arg(long, global = true, env = "SBX_GUEST_INIT")]
     pub guest_init: Option<PathBuf>,
-    /// Executor program (speaks the executor protocol). Looked up on PATH unless it is a path.
-    /// Defaults to the installed default executor (`sbx executor use`), then `sbx-executor` on PATH.
+    /// Executor to use: an installed `NAME[@VERSION]`, or a program that speaks the executor protocol (a path, or a
+    /// name looked up on PATH). Without it: the executor a sandbox was created with (for start and restart), then
+    /// `.sbx-executor` in this folder or the nearest one above, then the default (`sbx executor use`), then
+    /// `sbx-executor` on PATH.
     #[arg(long, global = true, env = "SBX_EXECUTOR")]
     pub executor: Option<PathBuf>,
     /// Shim program that owns detached sandboxes. Defaults to `sbx-shim` next to sbx, then on PATH.
@@ -293,8 +295,8 @@ pub enum ExecutorCommand {
         #[arg(value_name = "EXECUTOR", add = complete::executor())]
         spec: String,
     },
-    /// Remove executor and adapter versions nothing uses: not the default, not the highest version of their name,
-    /// not pinned by a sandbox, and (for adapters) not the highest version.
+    /// Remove versions nothing uses: executors that are not the default, not the highest version of their name, and
+    /// not pinned by a sandbox; adapters that are not the highest version of their name.
     Prune {
         /// Only print what would be removed.
         #[arg(short = 'n', long)]
@@ -356,7 +358,8 @@ pub enum RepoCommand {
     Add {
         /// Repository name.
         name: String,
-        /// Repository URL (https, file, or http on localhost). The index is `<URL>/index.json`.
+        /// Repository URL (https, file, or http on localhost). The index is `<URL>/v2/index.json`, or
+        /// `<URL>/index.json` if there is none.
         url: String,
     },
     /// Remove a repository from the list (including `official`; the removal is kept).

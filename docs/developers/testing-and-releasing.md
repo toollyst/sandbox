@@ -59,7 +59,7 @@ so on. The result is `target/kernel/<arch>/kernel`. CI caches it by the hash of 
 ## Releasing
 
 `sbx` and its executors are released separately. A tag releases `sbx`; the executors (the `wick` VMM packages and
-the `firecracker` adapter) are published by hand with `executors.yml`, usually when upstream Firecracker releases.
+the `firecracker` adapter) are published by hand with `executors.yml`, usually after a new wick release.
 
 ### `sbx`
 
@@ -88,16 +88,19 @@ bump the version and tag again rather than moving a pushed tag.
 
 ### Executors (`executors.yml`)
 
-[`executors.yml`](../../.github/workflows/executors.yml) runs only by hand. Give it an upstream Firecracker version:
+[`executors.yml`](../../.github/workflows/executors.yml) runs only by hand. Give it a
+[toollyst/wick](https://github.com/toollyst/wick/releases) release, or nothing for the latest one:
 
 ```sh
-gh workflow run executors.yml -f upstream=1.18.0
+gh workflow run executors.yml                          # the latest wick release
+gh workflow run executors.yml -f wick=v1.18.0-wick.1   # that release, published as wick@1.18.0-wick.1
 ```
 
-It publishes `wick@1.18.0` for every platform the official repository doesn't have yet, and never rebuilds or
-overwrites what is already there. For each platform, the VMM package is a directory with `firecracker`: upstream's
-release on Linux (checked by its sha256), and the newest `v1.18.0-wick.<N>` release of
-[toollyst/wick](https://github.com/toollyst/wick/releases) on macOS (skipped with a warning if there is none). The
+Versions follow wick's releases, not upstream's: tag `v1.18.0-wick.1` becomes `wick@1.18.0-wick.1`, and
+`sbx executor install wick` (or `wick@latest`) picks the highest. The workflow publishes it for every platform the
+official repository doesn't have yet, and never rebuilds or overwrites what is already there. For each platform, the
+VMM package is a directory with `firecracker`: that wick release's build for the platform, or, on Linux when the
+release has none, upstream Firecracker of the same upstream version (checked by its sha256). The
 adapter is `sbx-executor-firecracker` plus the default kernel. An adapter version that is already published is reused
 as is; a new one is built from the commit you run it on. On Linux with KVM it installs both from a local repository
 and runs `cargo xtask smoke`. Then it adds them to `executors/v2/index.json` on `gh-pages` and uploads the archives to

@@ -185,13 +185,16 @@ which names the adapter that runs it. Adapters live in `data_dir/adapters` with 
 `sbx` runs the highest installed version of that adapter and passes the package directory in `SBX_EXECUTOR_VMM_DIR`
 (["adapters and VMM packages"](../../crates/spec/executor-proto/src/lib.rs) in the protocol). The `firecracker`
 adapter looks for `firecracker` there, and keeps the default kernel next to itself
-([`sbx-executor-firecracker`](../../crates/executor/firecracker/src/lib.rs) lists the lookup order). So `wick@1.18.0`
-is only Firecracker 1.18.0, and the adapter, the kernel and the VMM are versioned and upgraded separately.
+([`sbx-executor-firecracker`](../../crates/executor/firecracker/src/lib.rs) lists the lookup order). So `wick@1.18.0-wick.1`
+is only the Firecracker binary of wick release `v1.18.0-wick.1`, and the adapter, the kernel and the VMM are
+versioned and upgraded separately. Because the highest installed adapter wins, installing a newer adapter (from any
+repository) changes what every VMM package that names it runs under.
 
 **Installing.** `sbx executor install wick` reads each configured repository's index (`v2/index.json`, or
 `index.json` if there is none) and picks the newest version for this host's platform
 ([`sbx-executor-repo`](../../crates/spec/executor-repo/src/lib.rs)). If it is a VMM package and its adapter isn't
-installed, it installs the newest adapter for this host and protocol version first, from any configured repository.
+installed, it first installs the newest adapter for this host and protocol version from the repository the VMM
+package came from, or, if that one has none, from the first repository in the list that has one.
 Each download is checked against the sha256 and size in the index and unpacked into a staging directory. Before the
 rename into place, `sbx-executor capabilities` (for a VMM package, the adapter given that directory) must report this
 `sbx`'s protocol version and the host's architecture ([`executors.rs`](../../crates/app/cli/src/executors.rs)).
