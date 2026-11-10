@@ -109,6 +109,8 @@ pub struct Installed {
     pub executable: PathBuf,
     /// VMM 묶음이면 함께 쓸 어댑터 이름.
     pub adapter: Option<String>,
+    /// 받아 온 저장소 이름, 또는 디렉터리에서 직접 설치했으면 [`LOCAL_ORIGIN`]. 출처를 적기 전에 설치한 것은 없다.
+    pub origin: Option<String>,
 }
 
 impl Installed {
@@ -138,6 +140,15 @@ pub enum InstallError {
     NoExecutable(PathBuf),
     /// 어댑터 이름이 규칙에 맞지 않는다.
     BadAdapter(String),
+    /// 같은 이름의 다른 버전이 다른 출처(저장소)에서 왔다. 한 이름은 한 출처에서만 받는다.
+    OtherOrigin {
+        /// 이름.
+        name: String,
+        /// 이미 설치된 것의 출처.
+        have: String,
+        /// 이번 출처.
+        want: String,
+    },
     /// 호출자의 확인을 통과하지 못했다.
     Rejected(String),
     /// 입출력.
@@ -156,6 +167,11 @@ impl fmt::Display for InstallError {
                 executable_name()
             ),
             InstallError::BadAdapter(a) => write!(f, "invalid adapter name {a:?}"),
+            InstallError::OtherOrigin { name, have, want } => write!(
+                f,
+                "{name} is installed from {have}, not {want}; a name comes from one source only \
+                 (remove the installed versions of {name} first, or install from {have})"
+            ),
             InstallError::Rejected(m) => f.write_str(m),
             InstallError::Io(e) => e.fmt(f),
         }
@@ -267,6 +283,7 @@ impl Executors {
             version: version.to_owned(),
             executable: dir.join(executable_name()),
             adapter: read_adapter(&dir),
+            origin: read_origin(&dir),
             dir,
         }
     }
@@ -356,7 +373,38 @@ impl Executors {
         adapter: Option<&str>,
         verify: impl FnOnce(&Installed) -> Result<(), String>,
     ) -> Result<Installed, InstallError> {
+        self.install_from(spec, src, adapter, None, verify)
+    }
+
+    /// [`Executors::install`]에 출처(`origin`: 저장소 이름이나 [`LOCAL_ORIGIN`])를 적는다. 같은 이름의 다른 버전이
+    /// 다른 출처에서 왔으면 [`InstallError::OtherOrigin`]이다(다른 저장소가 같은 이름을 가로채지 못하게).
+    /// 출처가 적히지 않은 옛 설치는 막지 않는다.
+    pub fn install_from(
+        &self,
+        spec: &Spec,
+        src: &Path,
+        adapter: Option<&str>,
+        origin: Option<&str>,
+        verify: impl FnOnce(&Installed) -> Result<(), String>,
+    ) -> Result<Installed, InstallError> {
         let version = spec.version.as_deref().ok_or(InstallError::NoVersion)?;
+        if let Some(o) = origin {
+            if !valid_part(o) {
+                return Err(InstallError::Rejected(format!("invalid origin {o:?}")));
+            }
+            if let Some(have) = self
+                .list()?
+                .into_iter()
+                .filter(|i| i.name == spec.name)
+                .find_map(|i| i.origin.filter(|h| h != o))
+            {
+                return Err(InstallError::OtherOrigin {
+                    name: spec.name.clone(),
+                    have,
+                    want: o.to_owned(),
+                });
+            }
+        }
         if let Some(a) = adapter
             && !valid_part(a)
         {
@@ -390,6 +438,16 @@ impl Executors {
                 make_executable(&to)?;
             }
             let exe = staging.join(executable_name());
+            // 이 두 파일은 sbx가 적는다. 묶음에 들어 있던 것은 믿지 않는다(출처나 어댑터를 사칭하지 못하게).
+            for f in [ORIGIN_FILE, ADAPTER_FILE] {
+                match fs::remove_file(staging.join(f)) {
+                    Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e.into()),
+                    _ => {}
+                }
+            }
+            if let Some(o) = origin {
+                fs::write(staging.join(ORIGIN_FILE), format!("{o}\n"))?;
+            }
             match adapter {
                 Some(a) => fs::write(staging.join(ADAPTER_FILE), format!("{a}\n"))?,
                 None if !exe.is_file() => return Err(InstallError::NoExecutable(src.to_owned())),
@@ -400,6 +458,7 @@ impl Executors {
                 version: version.to_owned(),
                 executable: exe.clone(),
                 adapter: adapter.map(str::to_owned),
+                origin: origin.map(str::to_owned),
                 dir: staging.clone(),
             };
             verify(&staged).map_err(InstallError::Rejected)?;
@@ -444,6 +503,18 @@ impl Executors {
 
 /// VMM 묶음에 어댑터 이름을 적는 파일.
 pub const ADAPTER_FILE: &str = ".sbx-adapter";
+
+/// 설치한 묶음에 출처(저장소 이름이나 [`LOCAL_ORIGIN`])를 적는 파일.
+pub const ORIGIN_FILE: &str = ".sbx-origin";
+
+/// 저장소가 아니라 디렉터리나 파일에서 직접 설치한 것의 출처.
+pub const LOCAL_ORIGIN: &str = "local";
+
+fn read_origin(dir: &Path) -> Option<String> {
+    let text = fs::read_to_string(dir.join(ORIGIN_FILE)).ok()?;
+    let name = text.trim();
+    valid_part(name).then(|| name.to_owned())
+}
 
 fn read_adapter(dir: &Path) -> Option<String> {
     let text = fs::read_to_string(dir.join(ADAPTER_FILE)).ok()?;

@@ -180,3 +180,48 @@ fn a_main_version_finds_its_newest_patch() {
     assert!(ex.remove(&spec("wick@1.18.0+wick.1")).is_ok());
     fs::remove_dir_all(r).unwrap();
 }
+
+#[test]
+fn a_name_comes_from_one_origin_and_packages_cannot_claim_one() {
+    let r = root("origin");
+    let src = r.join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join(executable_name()), b"#!/bin/sh\n").unwrap();
+    // 묶음 안에 든 출처·어댑터 파일은 믿지 않는다.
+    fs::write(src.join(ORIGIN_FILE), b"official\n").unwrap();
+    fs::write(src.join(ADAPTER_FILE), b"firecracker\n").unwrap();
+    let ex = Executors::new(r.join("executors"));
+
+    let a = ex.install(&spec("fc@1"), &src, None, |_| Ok(())).unwrap();
+    assert_eq!((a.origin, a.adapter), (None, None));
+    // 출처가 없는 옛 설치는 막지 않는다.
+    let b = ex
+        .install_from(&spec("fc@2"), &src, None, Some("mine"), |_| Ok(()))
+        .unwrap();
+    assert_eq!(b.origin.as_deref(), Some("mine"));
+    assert_eq!(
+        ex.find(&spec("fc@2")).unwrap().unwrap().origin.as_deref(),
+        Some("mine")
+    );
+    // 같은 출처는 된다, 다른 출처는 거부한다(아무것도 남지 않는다).
+    ex.install_from(&spec("fc@3"), &src, None, Some("mine"), |_| Ok(()))
+        .unwrap();
+    assert!(matches!(
+        ex.install_from(&spec("fc@4"), &src, None, Some("other"), |_| Ok(())),
+        Err(InstallError::OtherOrigin { name, have, want }) if name == "fc" && have == "mine" && want == "other"
+    ));
+    assert!(ex.find(&spec("fc@4")).unwrap().is_none());
+    // 직접 설치도 출처 하나로 친다.
+    assert!(matches!(
+        ex.install_from(&spec("fc@5"), &src, None, Some(LOCAL_ORIGIN), |_| Ok(())),
+        Err(InstallError::OtherOrigin { .. })
+    ));
+    // 다른 이름은 상관없다.
+    ex.install_from(&spec("other@1"), &src, None, Some("other"), |_| Ok(()))
+        .unwrap();
+    assert!(
+        ex.install_from(&spec("x@1"), &src, None, Some("../x"), |_| Ok(()))
+            .is_err()
+    );
+    let _ = fs::remove_dir_all(&r);
+}
