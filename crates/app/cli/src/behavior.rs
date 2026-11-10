@@ -346,10 +346,17 @@ pub const DOCKER_DIFFERENCES: &[(&str, &str, &str)] = &[
         "짧은 문자열이 우연히 맞아 엉뚱한 이미지를 지우는 일을 막는다",
     ),
     (
+        "--filter",
+        "ps, images, events만. 키는 crate::filter의 표(PS, IMAGES, EVENTS)가 정본이다. name은 정규식이 아니라 부분 문자열, \
+         reference는 *와 ?만 있는 패턴. ps의 before/since/health 등, images의 before/since, events의 container/label은 없다. \
+         모르는 키와 값은 오류다(Docker는 일부를 무시한다)",
+        "명시적 동작: 받는 것을 표로 정하고, 정규식 엔진을 들이지 않는다",
+    ),
+    (
         "sbx events",
         "종류는 sandbox와 image, 동작은 create, start, stop, remove와 pull, prepare, untag, delete다 \
          (Docker는 container의 die, destroy 등). 시각은 RFC 3339 나노초. --since/--until은 시간대 없는 날짜를 받지 않는다. \
-         --filter는 아직 없다. 기록은 1 MiB 두 세대까지 남는다(Docker는 최근 256개)",
+         기록은 1 MiB 두 세대까지 남는다(Docker는 최근 256개)",
         "데몬이 없어서 상태를 바꾸는 프로세스가 data_dir과 cache_dir에 직접 남긴다(sbx-events). 그래서 소유 프로세스가 \
          갑자기 죽어 아무도 stopped를 기록하지 못하면 stop 이벤트도 없다",
     ),

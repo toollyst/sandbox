@@ -63,6 +63,7 @@ mod unix {
         ("names_work_in_place_of_ids", names_work_in_place_of_ids),
         ("json_output_contract", json_output_contract),
         ("events_replay_and_follow", events_replay_and_follow),
+        ("filters", filters),
         (
             "exec_cp_stop_on_a_running_sandbox",
             exec_cp_stop_on_a_running_sandbox,
@@ -683,6 +684,142 @@ mod unix {
         let o = e.sbx(&["events", "--since", "yesterday"]);
         assert_eq!(o.status.code(), Some(1));
         assert!(text(&o.stderr).contains("--since"), "{}", text(&o.stderr));
+    }
+
+    /// `--filter` (`ps`, `images`, `events`): 다른 키는 AND, 같은 키는 OR, 모르는 키는 오류.
+    fn filters() {
+        let e = Env::new();
+        let ok = |args: &[&str]| {
+            let o = e.sbx(args);
+            assert_eq!(o.status.code(), Some(0), "{args:?}: {}", text(&o.stderr));
+            text(&o.stdout)
+        };
+        let ids = |args: &[&str]| -> Vec<String> {
+            let mut v: Vec<String> = ok(args).lines().map(str::to_owned).collect();
+            v.sort();
+            v
+        };
+        let short = |id: &str| id[..12].to_owned();
+        let stopped = ok(&["create", "-l", "owner=mcp", IMAGE, "sh", "-c", "exit 3"])
+            .trim()
+            .to_owned();
+        assert_eq!(e.sbx(&["start", "-a", &stopped]).status.code(), Some(3));
+        let running = ok(&["run", "-d", "--name", "web1", IMAGE, "sleep", "30"])
+            .trim()
+            .to_owned();
+        let created = ok(&["create", IMAGE, "true"]).trim().to_owned();
+        let sorted = |mut v: Vec<String>| {
+            v.sort();
+            v
+        };
+
+        // status, exited는 -a 없이도 멈춘 것을 본다.
+        assert_eq!(
+            ids(&["ps", "-q", "--filter", "status=stopped"]),
+            [short(&stopped)]
+        );
+        assert_eq!(ids(&["ps", "-q", "-f", "exited=3"]), [short(&stopped)]);
+        assert_eq!(ids(&["ps", "-q", "-f", "exited=0"]), Vec::<String>::new());
+        assert_eq!(
+            ids(&["ps", "-aq", "-f", "label=owner=mcp"]),
+            [short(&stopped)]
+        );
+        assert_eq!(ids(&["ps", "-aq", "-f", "label=owner"]), [short(&stopped)]);
+        assert_eq!(ids(&["ps", "-aq", "-f", "name=web"]), [short(&running)]);
+        // 같은 키는 OR.
+        assert_eq!(
+            ids(&["ps", "-q", "-f", "status=running", "-f", "status=created"]),
+            sorted(vec![short(&running), short(&created)])
+        );
+        // 다른 키는 AND.
+        assert_eq!(
+            ids(&["ps", "-aq", "-f", "status=running", "-f", "label=owner"]),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            ids(&["ps", "-aq", "-f", &format!("id={}", &created[..6])]),
+            [short(&created)]
+        );
+        assert_eq!(ids(&["ps", "-aq", "-f", "ancestor=e2e-fake"]).len(), 3);
+        assert_eq!(
+            ids(&["ps", "-aq", "-f", "ancestor=alpine"]),
+            Vec::<String>::new()
+        );
+        let o = e.sbx(&["ps", "-f", "color=red"]);
+        assert_eq!(o.status.code(), Some(1));
+        assert!(
+            text(&o.stderr).contains("unknown key \"color\""),
+            "{}",
+            text(&o.stderr)
+        );
+
+        // images
+        assert_eq!(
+            ok(&["images", "-q", "-f", "reference=e2e*"])
+                .lines()
+                .count(),
+            1
+        );
+        assert_eq!(
+            ok(&[
+                "images",
+                "-q",
+                "-f",
+                &format!("reference=docker.io/library/{IMAGE}:*")
+            ])
+            .lines()
+            .count(),
+            1
+        );
+        assert_eq!(ok(&["images", "-q", "-f", "reference=alpine"]), "");
+        assert_eq!(
+            ok(&["images", "-q", "-f", "dangling=false"])
+                .lines()
+                .count(),
+            1
+        );
+        assert_eq!(ok(&["images", "-q", "-f", "dangling=true"]), "");
+
+        // events
+        let o = ok(&[
+            "events",
+            "--since",
+            "1h",
+            "--until",
+            "0s",
+            "-f",
+            "sandbox=web1",
+            "-f",
+            "event=start",
+        ]);
+        assert_eq!(o.lines().count(), 1, "{o}");
+        assert!(o.contains(&format!("sandbox start {running}")), "{o}");
+        let o = ok(&[
+            "events",
+            "--since",
+            "1h",
+            "--until",
+            "0s",
+            "-f",
+            "image=e2e-fake",
+            "-f",
+            "event=create",
+        ]);
+        assert_eq!(o.lines().count(), 3, "{o}");
+        assert_eq!(
+            ok(&[
+                "events",
+                "--since",
+                "1h",
+                "--until",
+                "0s",
+                "-f",
+                "type=image"
+            ]),
+            ""
+        );
+
+        ok(&["rm", "-f", &stopped, &running, &created]);
     }
 
     fn names_work_in_place_of_ids() {

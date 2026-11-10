@@ -2,7 +2,7 @@
 //!
 //! CLI는 코어를 표현하는 방식 중 하나일 뿐이다. 도메인 로직을 두지 않고, 다음만 한다.
 //!
-//! - 인자 해석과 출력 형식 ([`cli`], [`parse`])
+//! - 인자 해석과 출력 형식 ([`cli`], [`parse`], [`filter`])
 //! - 구현체 조립과 코어 호출 ([`app`]), 붙어서 실행하기 ([`attach`]), 실행기 설치와 저장소 ([`executors`])
 //! - AI 에이전트용 MCP 서버 ([`mcp`]): 같은 코어를 도구로 내보낸다
 //! - `--format json` 출력의 모양 ([`output`]): 스크립트와 도구가 기대는 공개 규약
@@ -22,6 +22,7 @@ pub mod cli;
 pub mod commands;
 pub mod dirs;
 pub mod executors;
+pub mod filter;
 pub mod guest;
 pub mod host;
 pub mod mcp;

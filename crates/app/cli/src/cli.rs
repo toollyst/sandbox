@@ -82,6 +82,9 @@ pub enum Command {
         /// Only show image IDs, one per image.
         #[arg(short, long)]
         quiet: bool,
+        /// Filter: reference=PATTERN, dangling=true|false, label=KEY[=VALUE]. Different keys must all match, a repeated key any of its values.
+        #[arg(short = 'f', long = "filter", value_name = "KEY=VALUE")]
+        filter: Vec<String>,
     },
     #[command(about = about("rmi"))]
     Rmi {
@@ -178,6 +181,10 @@ pub enum Command {
         /// Only show sandbox IDs (e.g. `sbx rm -f $(sbx ps -aq)`).
         #[arg(short, long)]
         quiet: bool,
+        /// Filter: id=PREFIX, name=TEXT, label=KEY[=VALUE], status=STATE, exited=CODE, ancestor=IMAGE.
+        /// Different keys must all match, a repeated key any of its values. status and exited imply -a.
+        #[arg(short = 'f', long = "filter", value_name = "KEY=VALUE")]
+        filter: Vec<String>,
     },
     #[command(about = about("inspect"))]
     Inspect {
@@ -204,6 +211,10 @@ pub enum Command {
         /// Stop at this time (same forms as --since). Without it, keep streaming.
         #[arg(long)]
         until: Option<String>,
+        /// Filter: type=sandbox|image, event=ACTION, sandbox=ID-PREFIX|NAME, image=IMAGE.
+        /// Different keys must all match, a repeated key any of its values.
+        #[arg(short = 'f', long = "filter", value_name = "KEY=VALUE")]
+        filter: Vec<String>,
     },
     #[command(about = about("mcp"))]
     Mcp {

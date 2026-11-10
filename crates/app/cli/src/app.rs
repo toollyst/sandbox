@@ -38,6 +38,7 @@ use sbx_store::CacheLayout;
 use crate::attach::{self, attach};
 use crate::behavior::{self, ImageMatch, LookupError, RmiAction, RmiDecision, Step};
 use crate::cli::{AttachArgs, Cli, Command, ExecArgs, ExecutorCommand, Format, RunArgs, StopArgs};
+use crate::filter::{self, Filters};
 use crate::output;
 use crate::parse::{self, CpEndpoint};
 use crate::progress::Status;
@@ -126,7 +127,7 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
             rootfs_format,
             image,
         } => ctx.prepare(*rootfs_format, image).await,
-        Command::Images { quiet } => ctx.images(*quiet),
+        Command::Images { quiet, filter } => ctx.images(*quiet, filter),
         Command::Info => ctx.info().await,
         Command::Rmi { force, images } => ctx.rmi(*force, images).await,
         Command::Run { attach, args } => ctx.run_sandbox(attach, args).await,
@@ -179,9 +180,13 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
             detach_keys,
             id,
         } => ctx.attach_cmd(*no_stdin, *sig_proxy, detach_keys, id).await,
-        Command::Ps { all, quiet } => ctx.ps(*all, *quiet).await,
+        Command::Ps { all, quiet, filter } => ctx.ps(*all, *quiet, filter).await,
         Command::Inspect { id } => ctx.inspect(id).await,
-        Command::Events { since, until } => ctx.events(since.as_deref(), until.as_deref()).await,
+        Command::Events {
+            since,
+            until,
+            filter,
+        } => ctx.events(since.as_deref(), until.as_deref(), filter).await,
         // `mcp`는 이 위(`sbx_cli::run`)에서 [`crate::mcp`]로 간다.
         Command::Mcp { .. } | Command::Completion { .. } => {
             Err(msg("internal: served by sbx_cli::run"))
@@ -604,8 +609,21 @@ impl Ctx {
         Ok(0)
     }
 
-    fn images(&self, quiet: bool) -> AppResult<u8> {
-        let images = self.manager()?.images()?;
+    fn images(&self, quiet: bool, filters: &[String]) -> AppResult<u8> {
+        let f = Filters::parse(filters, filter::IMAGES).map_err(msg)?;
+        let images: Vec<_> = self
+            .manager()?
+            .images()?
+            .into_iter()
+            .filter(|i| {
+                f.allows("reference", |p| {
+                    i.refs
+                        .iter()
+                        .any(|r| filter::glob(p, r) || filter::glob(p, behavior::familiar(r)))
+                }) && f.allows("dangling", |v| (v == "true") == i.refs.is_empty())
+                    && f.allows("label", |v| filter::label(&i.record.config.labels, v))
+            })
+            .collect();
         if quiet {
             for i in &images {
                 println!("{}", short(&i.record.id));
@@ -1066,13 +1084,37 @@ impl Ctx {
         .await
     }
 
-    async fn ps(&self, all: bool, quiet: bool) -> AppResult<u8> {
+    async fn ps(&self, all: bool, quiet: bool, filters: &[String]) -> AppResult<u8> {
+        let f = Filters::parse(filters, filter::PS).map_err(msg)?;
+        // 상태로 거르면 멈춘 것도 본다(Docker와 같다).
+        let all = all || f.has("status") || f.has("exited");
+        let store = sbx_store::Store::open(&self.cache_dir);
         let list: Vec<SandboxInfo> = self
             .runtime()?
             .list()
             .await?
             .into_iter()
             .filter(|s| all || s.state == State::Running)
+            .filter(|s| {
+                f.allows("id", |v| s.id.as_str().starts_with(v))
+                    && f.allows("name", |v| {
+                        s.spec.name.as_deref().is_some_and(|n| n.contains(v))
+                    })
+                    && f.allows("label", |v| filter::label(&s.spec.labels, v))
+                    && f.allows("status", |v| v == s.state.as_str())
+                    && f.allows("exited", |v| {
+                        s.state == State::Stopped && s.exit_code == v.parse().ok()
+                    })
+                    && f.allows("ancestor", |v| {
+                        let reference = store.image(&s.spec.image).ok().map(|r| r.reference);
+                        filter::image(
+                            &s.spec.image.to_string(),
+                            reference.as_deref(),
+                            v,
+                            normalized(v).as_deref(),
+                        )
+                    })
+            })
             .collect();
         // 새로 만든 것이 위로 (Docker와 같다).
         let mut list = list;
@@ -1143,8 +1185,38 @@ impl Ctx {
     /// - `--until`이 없으면 끝나지 않는다. 있으면 그 시각이 지나면 남은 것을 마저 읽고 끝난다.
     /// - [`FOLLOW_POLL`]마다 두 기록을 읽어 모은 것을 시각 순으로 낸다. 그래서 두 기록 사이의 순서는 그 간격 안에서만 맞춘다.
     /// - stdout이 닫히면(예: `| head`) 조용히 끝난다.
-    async fn events(&self, since: Option<&str>, until: Option<&str>) -> AppResult<u8> {
+    async fn events(
+        &self,
+        since: Option<&str>,
+        until: Option<&str>,
+        filters: &[String],
+    ) -> AppResult<u8> {
         use std::io::Write as _;
+        let f = Filters::parse(filters, filter::EVENTS).map_err(msg)?;
+        let store = sbx_store::Store::open(&self.cache_dir);
+        let wanted = |e: &sbx_events::Event| {
+            let attr = |k: &str| e.attributes.get(k).map(String::as_str);
+            f.allows("type", |v| v == e.kind)
+                && f.allows("event", |v| v == e.action)
+                && f.allows("sandbox", |v| {
+                    e.kind == sbx_runtime::EVENT_KIND
+                        && (e.id.starts_with(v) || attr("name") == Some(v))
+                })
+                && f.allows("image", |v| {
+                    let id = if e.kind == sbx_manage::EVENT_KIND {
+                        Some(e.id.as_str())
+                    } else {
+                        attr("image")
+                    };
+                    let Some(id) = id else { return false };
+                    // 이벤트에 참조가 없으면(샌드박스 이벤트, delete) 캐시에서 찾는다. 지워졌으면 ID로만 맞는다.
+                    let reference = attr("reference").map(str::to_owned).or_else(|| {
+                        let id = ImageId::new(sbx_model::Digest::parse(id).ok()?);
+                        store.image(&id).ok().map(|r| r.reference)
+                    });
+                    filter::image(id, reference.as_deref(), v, normalized(v).as_deref())
+                })
+        };
         let now = || {
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1178,7 +1250,10 @@ impl Ctx {
             }
             batch.sort_by_key(|e| e.time_ns);
             for e in batch {
-                if since.is_some_and(|s| e.time_ns < s) || until.is_some_and(|u| e.time_ns > u) {
+                if since.is_some_and(|s| e.time_ns < s)
+                    || until.is_some_and(|u| e.time_ns > u)
+                    || !wanted(&e)
+                {
                     continue;
                 }
                 let line = if self.json() {
@@ -1296,6 +1371,11 @@ fn env_values(files: &[PathBuf], env: &[String]) -> AppResult<Vec<(String, Strin
     }
     all.extend_from_slice(env);
     Ok(parse::env(&all, |k| std::env::var(k).ok()))
+}
+
+/// 필터 값을 이미지 참조로 정규화한다(`alpine` → `docker.io/library/alpine:latest`). 참조가 아니면 `None`.
+fn normalized(value: &str) -> Option<String> {
+    Reference::parse(value).ok().map(|r| r.to_string())
 }
 
 fn join_ids(ids: &[SandboxId]) -> String {
