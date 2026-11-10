@@ -39,7 +39,10 @@ moving to the newest patch of a supported minor. `main` always has the fix.
 
 From v0.2.0, every release archive comes with a Sigstore signature (`.sigstore.json`), a GitHub build provenance
 attestation (SLSA) and an SBOM (SPDX, `sbx-<version>.spdx.json`). `install.sh` checks the signature when `cosign` is
-on `PATH` (`SBX_VERIFY=require` makes that mandatory). To check by hand:
+on `PATH` (`SBX_VERIFY=require` makes that mandatory). Then a missing signature is an error too, since whoever
+controls the download can delete it; only a release before v0.2.0 named with `SBX_VERSION` installs without one. With
+`SBX_VERSION`, the signature must come from that exact tag, so an older signed release can't be served in its
+place. To check by hand:
 
 ```sh
 gh attestation verify sbx-linux-x86_64.tar.gz -R toollyst/sandbox

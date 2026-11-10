@@ -70,8 +70,13 @@ if $no_cosign; then
 fi
 run "off: no signature check" ok "installed" "$with" SBX_VERIFY=off FAKE_COSIGN_EXIT=1
 run "bad SBX_VERIFY value" fail "must be auto, require or off" "$with" SBX_VERIFY=yes
-run "auto, unsigned release: checksum only" ok "has no signature" "$with"
-run "require, unsigned release: refused" fail "no signature" "$with" SBX_VERIFY=require
+# cosign이 있으면 서명이 없는 것은 오류다(URL을 쥔 쪽이 서명만 지울 수 있다). 이름으로 고른 v0.2.0 전 릴리스만 예외.
+run "auto, signature removed: refused" fail "no signature" "$with"
+run "auto, unsigned old release by name: checksum only" ok "releases before v0.2.0 are unsigned" "$with" SBX_VERSION=v0.1.1
+run "auto, unsigned new release by name: refused" fail "no signature" "$with" SBX_VERSION=v0.2.0
+run "require, unsigned old release: refused" fail "no signature" "$with" SBX_VERIFY=require SBX_VERSION=v0.1.1
+run "bad SBX_VERSION: refused" fail "must be a release tag" "$with" SBX_VERSION='v1;rm -rf x'
+run "bad SBX_VERSION (not a tag): refused" fail "must be a release tag" "$with" SBX_VERSION=latest
 echo '{}' >"$work/rel/$asset.sigstore.json"
 run "auto, signature that does not verify: refused" fail "does not verify" "$with" FAKE_COSIGN_EXIT=1
 run "require, signature that does not verify: refused" fail "does not verify" "$with" SBX_VERIFY=require FAKE_COSIGN_EXIT=1
@@ -83,6 +88,10 @@ grep -qxF '^https://github[.]com/toollyst/sandbox/[.]github/workflows/release[.]
 grep -qxF 'https://token.actions.githubusercontent.com' <<<"$args" || { echo "FAIL: cosign issuer: $args"; exit 1; }
 grep -qxF -- '--certificate-identity-regexp' <<<"$args" || { echo "FAIL: cosign flags: $args"; exit 1; }
 run "require, good signature" ok "verified the Sigstore signature" "$with" SBX_VERIFY=require
+# 버전을 고르면 그 태그에서 온 서명이어야 한다(옛 서명본으로 바꿔치지 못하게). 정규식의 . 과 +는 글자 그대로다.
+run "by name: the exact tag" ok "verified the Sigstore signature" "$with" SBX_VERSION=v0.2.0+build.1
+grep -qxF '^https://github[.]com/toollyst/sandbox/[.]github/workflows/release[.]yml@refs/tags/v0[.]2[.]0[+]build[.]1$' "$work/cosign-args" \
+    || { echo "FAIL: exact tag regexp: $(cat "$work/cosign-args")"; exit 1; }
 
 # 체크섬이 틀리면(서명보다 먼저) 거부한다.
 echo "0000000000000000000000000000000000000000000000000000000000000000  $asset" >"$work/rel/$asset.sha256"
