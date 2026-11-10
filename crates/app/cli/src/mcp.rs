@@ -14,8 +14,11 @@
 //!   끝나도 남는다), `exec`, `write_file`, `read_file`, `list`, `remove`.
 //! - 시간 제한: `run`은 넘으면 VM을 끄고 지운다. `exec`은 넘으면 그 프로세스에 SIGKILL을 보낸다.
 //!   기본 [`DEFAULT_TIMEOUT_SECS`], 최대 [`MAX_TIMEOUT_SECS`].
-//! - 출력은 스트림마다 [`OUTPUT_LIMIT`] 바이트까지 담고, 넘치면 `truncated`로 알린다.
-//! - 도구 호출은 동시에 처리한다(호출마다 작업 하나). 표준 입력이 닫히면 진행 중인 호출을 마치고 끝난다.
+//! - 출력은 스트림마다 마지막 [`OUTPUT_LIMIT`] 바이트를 담는다(오류는 보통 끝에 있다). 앞을 버렸으면 `truncated`다.
+//! - 취소: `notifications/cancelled`를 받으면 그 호출은 시간이 넘은 것처럼 끝낸다(`run`은 VM을 끄고 지우고,
+//!   `exec`은 프로세스를 죽인다). 규약대로 답은 보내지 않는다. 표준 입력이 닫히면(클라이언트가 사라짐)
+//!   진행 중인 호출을 모두 취소하고 정리한 뒤 끝난다.
+//! - 도구 호출은 동시에 처리한다(호출마다 작업 하나).
 //! - 요청이 `_meta.progressToken`을 주면 이미지를 받는 동안 `notifications/progress`를 보낸다(`Progress`).
 
 use std::path::PathBuf;
@@ -36,7 +39,7 @@ use crate::app::{AppResult, Ctx};
 use crate::cli::{Cli, Command, RunArgs};
 
 /// 스트림 하나에서 담는 출력의 최대 바이트.
-pub const OUTPUT_LIMIT: usize = 1 << 20;
+pub const OUTPUT_LIMIT: usize = 256 << 10;
 /// `read_file`로 읽는 파일의 최대 바이트.
 pub const FILE_LIMIT: u64 = 8 << 20;
 /// 시간 제한 기본값(초).
@@ -117,13 +120,32 @@ pub async fn serve(cli: &Cli) -> AppResult<u8> {
 
 async fn serve_on(ctx: Rc<Server>) -> AppResult<u8> {
     let out: Stdout = Rc::new(Mutex::new(tokio::io::stdout()));
-    let mut lines = BufReader::new(tokio::io::stdin()).lines();
+    let mut input = BufReader::new(tokio::io::stdin());
     let mut calls = Vec::new();
-    while let Some(line) = lines.next_line().await? {
-        if line.trim().is_empty() {
+    // 진행 중인 호출의 취소 신호 (요청 id의 JSON → 신호).
+    let pending: Rc<std::cell::RefCell<std::collections::HashMap<String, Cancel>>> = Rc::default();
+    let mut raw = Vec::new();
+    loop {
+        raw.clear();
+        if input.read_until(b'\n', &mut raw).await? == 0 {
+            break;
+        }
+        // 잘못된 UTF-8이나 JSON은 그 줄만 오류로 답한다. 서버는 계속 돈다.
+        let line = match std::str::from_utf8(&raw) {
+            Ok(l) => l.trim(),
+            Err(e) => {
+                send(
+                    &out,
+                    error(Value::Null, -32700, &format!("parse error: {e}")),
+                )
+                .await;
+                continue;
+            }
+        };
+        if line.is_empty() {
             continue;
         }
-        let msg: Value = match serde_json::from_str(&line) {
+        let msg: Value = match serde_json::from_str(line) {
             Ok(v) => v,
             Err(e) => {
                 send(
@@ -134,25 +156,44 @@ async fn serve_on(ctx: Rc<Server>) -> AppResult<u8> {
                 continue;
             }
         };
+        if msg.is_array() {
+            send(
+                &out,
+                error(Value::Null, -32600, "JSON-RPC batches are not supported"),
+            )
+            .await;
+            continue;
+        }
+        let method = msg.get("method").and_then(Value::as_str);
         // 알림(id 없음)과 응답(method 없음)에는 답하지 않는다. 이 서버는 요청을 보내지 않는다.
-        let (Some(id), Some(method)) = (
-            msg.get("id").cloned(),
-            msg.get("method").and_then(Value::as_str),
-        ) else {
+        let Some(id) = msg.get("id").cloned() else {
+            if method == Some("notifications/cancelled")
+                && let Some(req) = msg.pointer("/params/requestId")
+                && let Some(c) = pending.borrow().get(&req.to_string())
+            {
+                c.cancel();
+            }
             continue;
         };
+        let Some(method) = method else { continue };
         let params = msg.get("params").cloned().unwrap_or(Value::Null);
         match method {
             "initialize" => send(&out, result(id, initialize(&params))).await,
             "ping" => send(&out, result(id, json!({}))).await,
             "tools/list" => send(&out, result(id, json!({ "tools": tools() }))).await,
             "tools/call" => {
-                let (ctx, out) = (ctx.clone(), out.clone());
+                let (ctx, out, pending) = (ctx.clone(), out.clone(), pending.clone());
+                let cancel = Cancel::new();
+                let key = id.to_string();
+                pending.borrow_mut().insert(key.clone(), cancel.clone());
                 calls.push(tokio::task::spawn_local(async move {
                     let progress = Progress::start(&out, &params);
-                    let r = call(&ctx, &params, &progress).await;
+                    let r = call(&ctx, &params, &progress, &cancel).await;
                     progress.finish().await;
-                    send(&out, result(id, r)).await;
+                    pending.borrow_mut().remove(&key);
+                    if !cancel.is_cancelled() {
+                        send(&out, r.into_response(id)).await;
+                    }
                 }));
                 calls.retain(|c| !c.is_finished());
             }
@@ -165,10 +206,55 @@ async fn serve_on(ctx: Rc<Server>) -> AppResult<u8> {
             }
         }
     }
+    // 클라이언트가 사라졌다. 답을 받을 쪽이 없으므로 모두 취소하고 정리를 기다린다.
+    for c in pending.borrow().values() {
+        c.cancel();
+    }
     for c in calls {
         let _ = c.await;
     }
     Ok(0)
+}
+
+/// 호출 하나의 취소 신호.
+#[derive(Clone)]
+struct Cancel(Rc<tokio::sync::watch::Sender<bool>>);
+
+impl Cancel {
+    fn new() -> Self {
+        Self(Rc::new(tokio::sync::watch::channel(false).0))
+    }
+
+    fn cancel(&self) {
+        self.0.send_replace(true);
+    }
+
+    fn is_cancelled(&self) -> bool {
+        *self.0.borrow()
+    }
+
+    /// 취소될 때 끝난다.
+    async fn cancelled(&self) {
+        let mut rx = self.0.subscribe();
+        let _ = rx.wait_for(|c| *c).await;
+    }
+}
+
+/// 명령이 어떻게 끝났는지.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ended {
+    Done,
+    TimedOut,
+    Cancelled,
+}
+
+/// 끝나거나, 시간이 넘거나, 취소될 때까지 출력을 담는다.
+async fn wait_for(p: &mut Process, c: &mut Captured, timeout: Duration, cancel: &Cancel) -> Ended {
+    tokio::select! {
+        () = capture(p, c) => Ended::Done,
+        () = tokio::time::sleep(timeout) => Ended::TimedOut,
+        () = cancel.cancelled() => Ended::Cancelled,
+    }
 }
 
 /// 도구 호출 하나의 진행 알림(`notifications/progress`). 요청이 `_meta.progressToken`을 주었을 때만 보낸다.
@@ -301,7 +387,7 @@ pub fn tools() -> Value {
     let stdin =
         json!({ "type": "string", "description": "Text written to the command's standard input." });
     let timeout = json!({ "type": "integer", "minimum": 1, "maximum": MAX_TIMEOUT_SECS, "description": format!("Seconds before the command is killed (default {DEFAULT_TIMEOUT_SECS}).") });
-    let cpus = json!({ "type": "number", "description": "vCPUs (default 1)." });
+    let cpus = json!({ "type": "integer", "minimum": 1, "maximum": 255, "description": "vCPUs (default 1)." });
     let memory =
         json!({ "type": "string", "description": "Memory, e.g. 512m or 2g (default 512m)." });
     let id = json!({ "type": "string", "description": "Sandbox ID (or a unique prefix), or the name given to create." });
@@ -332,7 +418,7 @@ pub fn tools() -> Value {
         {
             "name": "exec",
             "title": "Run a command in a sandbox",
-            "description": "Run a command in a running sandbox and return its exit code and output.",
+            "description": "Run a command in a running sandbox and return its exit code and output. The call returns when the command's output is closed, so to leave a server running in the background, redirect its output, e.g. [\"sh\", \"-c\", \"server >/tmp/server.log 2>&1 &\"].",
             "inputSchema": { "type": "object", "required": ["id", "command"], "properties": {
                 "id": id, "command": command, "env": env, "workdir": workdir, "stdin": stdin, "timeout_secs": timeout } },
             "outputSchema": output,
@@ -365,30 +451,47 @@ pub fn tools() -> Value {
     ])
 }
 
-/// 도구 하나를 부르고 MCP `CallToolResult`를 돌려준다. 도구가 실패하면 `isError`다(명령의 0 아닌 종료 코드는
-/// 실패가 아니다).
-async fn call(ctx: &Server, params: &Value, progress: &Progress) -> Value {
+/// 도구 호출의 결과.
+enum Called {
+    /// 도구가 돌았다(명령의 0 아닌 종료 코드도 여기다). 실패면 `isError`.
+    Tool(AppResult<Value>),
+    /// 없는 도구. JSON-RPC 오류 -32602로 답한다(MCP 규약).
+    Unknown(String),
+}
+
+impl Called {
+    fn into_response(self, id: Value) -> Value {
+        match self {
+            Called::Unknown(name) => error(id, -32602, &format!("unknown tool {name:?}")),
+            Called::Tool(Ok(v)) => result(
+                id,
+                json!({
+                    "content": [{ "type": "text", "text": text(&v) }],
+                    "structuredContent": v,
+                    "isError": false,
+                }),
+            ),
+            Called::Tool(Err(e)) => result(
+                id,
+                json!({ "content": [{ "type": "text", "text": e.to_string() }], "isError": true }),
+            ),
+        }
+    }
+}
+
+/// 도구 하나를 부른다.
+async fn call(ctx: &Server, params: &Value, progress: &Progress, cancel: &Cancel) -> Called {
     let args = Args(params.get("arguments").unwrap_or(&Value::Null));
-    let r = match params["name"].as_str().unwrap_or_default() {
-        "run" => run(ctx, &args, progress).await,
+    Called::Tool(match params["name"].as_str().unwrap_or_default() {
+        "run" => run(ctx, &args, progress, cancel).await,
         "create" => create(ctx, &args, progress).await,
-        "exec" => exec(ctx, &args).await,
+        "exec" => exec(ctx, &args, cancel).await,
         "write_file" => write_file(ctx, &args).await,
         "read_file" => read_file(ctx, &args).await,
         "list" => list(ctx).await,
         "remove" => remove(ctx, &args).await,
-        other => Err(format!("unknown tool {other:?}").into()),
-    };
-    match r {
-        Ok(v) => json!({
-            "content": [{ "type": "text", "text": text(&v) }],
-            "structuredContent": v,
-            "isError": false,
-        }),
-        Err(e) => {
-            json!({ "content": [{ "type": "text", "text": e.to_string() }], "isError": true })
-        }
-    }
+        other => return Called::Unknown(other.to_owned()),
+    })
 }
 
 /// 사람(과 모델)이 읽는 결과. 명령 결과는 종료 코드와 두 출력을 나눠 쓰고, 나머지는 JSON.
@@ -403,7 +506,7 @@ fn text(v: &Value) -> String {
     };
     if v["truncated"].as_bool() == Some(true) {
         s.push_str(&format!(
-            " (output truncated to {OUTPUT_LIMIT} bytes per stream)"
+            " (only the last {OUTPUT_LIMIT} bytes of each stream are kept)"
         ));
     }
     for k in ["stdout", "stderr"] {
@@ -502,8 +605,14 @@ fn run_args(a: &Args, stdin: bool, default_command: &[&str]) -> AppResult<RunArg
     }
     match a.get("cpus") {
         None => {}
-        Some(v) if v.is_number() => argv.push(format!("--cpus={v}")),
-        Some(_) => return Err("`cpus` must be a number".into()),
+        Some(v) => match v.as_f64() {
+            Some(n) if n >= 1.0 && n.fract() == 0.0 && n <= f64::from(u8::MAX) => {
+                argv.push(format!("--cpus={}", n as u8))
+            }
+            _ => {
+                return Err(format!("`cpus` must be a whole number from 1 to 255, not {v}").into());
+            }
+        },
     }
     if let Some(m) = a.str("memory")? {
         argv.push(format!("--memory={m}"));
@@ -522,12 +631,38 @@ fn run_args(a: &Args, stdin: bool, default_command: &[&str]) -> AppResult<RunArg
         argv.extend(command);
     }
     match Cli::try_parse_from(&argv)
-        .map_err(|e| e.render().to_string())?
+        .map_err(|e| arg_error(&e.render().to_string()))?
         .command
     {
         Command::Create(r) => Ok(r),
         _ => Err("internal: not a create command".into()),
     }
+}
+
+/// clap 오류에서 모델이 고칠 수 있는 첫 줄만 남긴다(`Usage:`와 CLI 도움말은 도구 인자와 맞지 않는다).
+/// `'--memory <MEMORY>'` 같은 플래그는 도구 인자 이름(`memory`)으로 바꾼다.
+fn arg_error(rendered: &str) -> String {
+    let line = rendered
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or(rendered)
+        .trim();
+    let line = line.strip_prefix("error: ").unwrap_or(line);
+    let mut out = String::new();
+    let mut rest = line;
+    while let Some(i) = rest.find("'--") {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 3..];
+        let name_end = after.find(['\'', ' ', '=']).unwrap_or(after.len());
+        out.push('`');
+        out.push_str(&after[..name_end].replace('-', "_"));
+        out.push('`');
+        // 닫는 따옴표까지 건너뛴다(`<MEMORY>` 같은 자리 표시).
+        let close = after.find('\'').map_or(after.len(), |j| j + 1);
+        rest = &after[close..];
+    }
+    out.push_str(rest);
+    out
 }
 
 #[derive(Default)]
@@ -544,11 +679,12 @@ async fn capture(p: &mut Process, c: &mut Captured) {
             Output::Stdout(d) => (&mut c.stdout, d),
             Output::Stderr(d) => (&mut c.stderr, d),
         };
-        let room = OUTPUT_LIMIT.saturating_sub(buf.len());
-        if data.len() > room {
+        buf.extend_from_slice(&data);
+        if buf.len() > OUTPUT_LIMIT {
+            let drop = buf.len() - OUTPUT_LIMIT;
+            buf.drain(..drop);
             c.truncated = true;
         }
-        buf.extend_from_slice(&data[..data.len().min(room)]);
     }
 }
 
@@ -569,13 +705,15 @@ fn feed(p: &Process, stdin: Option<&str>) {
     }
 }
 
-async fn run(ctx: &Server, a: &Args<'_>, progress: &Progress) -> AppResult<Value> {
+async fn run(ctx: &Server, a: &Args<'_>, progress: &Progress, cancel: &Cancel) -> AppResult<Value> {
     let stdin = a.str("stdin")?;
     let timeout = a.timeout()?;
     let spec = run_args(a, stdin.is_some(), &[])?;
-    let id = ctx
-        .create_with(&spec, &|p| progress.pull(spec.image(), p))
-        .await?;
+    let report = |p| progress.pull(spec.image(), p);
+    let id = tokio::select! {
+        id = ctx.create_with(&spec, &report) => id?,
+        () = cancel.cancelled() => return Err("cancelled".into()),
+    };
     let rt = ctx.launcher()?;
     let r: AppResult<Value> = async {
         // `?`가 만드는 값(Send가 아닌 오류를 담는다)이 다음 await까지 남지 않게 문장을 나눈다.
@@ -588,9 +726,7 @@ async fn run(ctx: &Server, a: &Args<'_>, progress: &Progress) -> AppResult<Value
             .await?;
         feed(&p, stdin.as_deref());
         let mut c = Captured::default();
-        let done = tokio::time::timeout(timeout, capture(&mut p, &mut c))
-            .await
-            .is_ok();
+        let done = wait_for(&mut p, &mut c, timeout, cancel).await == Ended::Done;
         if !done {
             let sandbox = rt.get(&id).await?;
             sandbox.stop(None, Duration::ZERO).await?;
@@ -632,7 +768,7 @@ async fn create(ctx: &Server, a: &Args<'_>, progress: &Progress) -> AppResult<Va
     Ok(json!({ "id": id }))
 }
 
-async fn exec(ctx: &Server, a: &Args<'_>) -> AppResult<Value> {
+async fn exec(ctx: &Server, a: &Args<'_>, cancel: &Cancel) -> AppResult<Value> {
     let id = a.required("id")?;
     let command = a.strings("command")?;
     if command.is_empty() {
@@ -660,9 +796,7 @@ async fn exec(ctx: &Server, a: &Args<'_>) -> AppResult<Value> {
         .await?;
     feed(&p, stdin.as_deref());
     let mut c = Captured::default();
-    let done = tokio::time::timeout(timeout, capture(&mut p, &mut c))
-        .await
-        .is_ok();
+    let done = wait_for(&mut p, &mut c, timeout, cancel).await == Ended::Done;
     if !done {
         p.signal(SIGKILL);
         let _ = tokio::time::timeout(KILL_GRACE, capture(&mut p, &mut c)).await;
@@ -906,6 +1040,28 @@ mod tests {
         assert!(parse(json!({ "image": "alpine", "env": { "A=B": "x" } }), false).is_err());
         assert!(parse(json!({ "image": 3 }), false).is_err());
         assert!(parse(json!({ "image": "alpine", "allow": "x" }), false).is_err());
+    }
+
+    #[test]
+    fn cpus_must_be_a_whole_number() {
+        let cpus = |v: Value| parse(json!({ "image": "alpine", "cpus": v }), false).map(|r| r.cpus);
+        assert_eq!(cpus(json!(2.0)).unwrap().as_deref(), Some("2"));
+        assert_eq!(cpus(json!(3)).unwrap().as_deref(), Some("3"));
+        for bad in [json!(1.5), json!(0), json!(-1), json!(256), json!("2")] {
+            assert!(cpus(bad.clone()).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn argument_errors_name_tool_arguments_not_cli_flags() {
+        let e = arg_error(
+            "error: invalid value 'lots' for '--memory <MEMORY>': not a size\n\nUsage: sbx create [OPTIONS]\n",
+        );
+        assert_eq!(e, "invalid value 'lots' for `memory`: not a size");
+        assert_eq!(
+            arg_error("error: invalid value 'x' for '--stop-timeout <SECS>': bad\n\nUsage: sbx"),
+            "invalid value 'x' for `stop_timeout`: bad"
+        );
     }
 
     #[test]

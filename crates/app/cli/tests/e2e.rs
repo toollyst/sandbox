@@ -1366,6 +1366,22 @@ mod unix {
             v
         }
 
+        /// 한 줄을 그대로 보낸다.
+        fn write_raw(&mut self, line: &[u8]) {
+            let stdin = self.child.stdin.as_mut().unwrap();
+            stdin.write_all(line).unwrap();
+            stdin.write_all(b"\n").unwrap();
+            stdin.flush().unwrap();
+        }
+
+        /// 다음 한 줄을 JSON으로 읽는다.
+        fn read(&mut self) -> serde_json::Value {
+            use std::io::BufRead;
+            let mut line = String::new();
+            self.out.read_line(&mut line).unwrap();
+            serde_json::from_str(&line).unwrap_or_else(|e| panic!("{e}: {line:?}"))
+        }
+
         /// 도구를 부르고 `structuredContent`(실패면 글)를 돌려준다.
         fn call(
             &mut self,
@@ -1416,6 +1432,53 @@ mod unix {
         assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 7);
         let unknown = m.request("resources/list", serde_json::json!({}));
         assert_eq!(unknown["error"]["code"], -32601);
+        // 없는 도구는 JSON-RPC 오류 -32602다.
+        let r = m.request(
+            "tools/call",
+            serde_json::json!({"name": "nope", "arguments": {}}),
+        );
+        assert_eq!(r["error"]["code"], -32602, "{r}");
+        // 잘못된 UTF-8과 batch에도 서버는 죽지 않고 답한다.
+        m.write_raw(&[0xff, 0xfe]);
+        assert_eq!(m.read()["error"]["code"], -32700);
+        m.write_raw(br#"[{"jsonrpc":"2.0","id":99,"method":"ping"}]"#);
+        assert_eq!(m.read()["error"]["code"], -32600);
+        assert!(m.request("ping", serde_json::json!({}))["result"].is_object());
+
+        // 출력은 끝을 남긴다(오류는 보통 끝에 있다).
+        let r = m.call("run", serde_json::json!({"image": IMAGE, "command": ["sh", "-c", "i=0; while [ $i -lt 40000 ]; do echo xxxxxxxxx; i=$((i+1)); done; echo END"]})).unwrap();
+        let out = r["stdout"].as_str().unwrap();
+        assert!(
+            out.ends_with("END\n") && r["truncated"] == true,
+            "{}",
+            &out[out.len().saturating_sub(40)..]
+        );
+        assert!(out.len() <= sbx_cli::mcp::OUTPUT_LIMIT, "{}", out.len());
+
+        // 취소하면 답하지 않고, VM을 끄고 지운다.
+        m.next += 1;
+        let cancelled = m.next;
+        let call = serde_json::json!({"jsonrpc": "2.0", "id": cancelled, "method": "tools/call",
+            "params": {"name": "run", "arguments": {"image": IMAGE, "command": ["sleep", "30"]}}});
+        m.write_raw(call.to_string().as_bytes());
+        let started = Instant::now();
+        while e.ps().is_empty() && started.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        m.write_raw(
+            serde_json::json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
+            "params": {"requestId": cancelled}})
+            .to_string()
+            .as_bytes(),
+        );
+        while !e.ps().is_empty() && started.elapsed() < Duration::from_secs(15) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(e.ps().is_empty(), "{:?}", e.ps());
+        assert!(started.elapsed() < Duration::from_secs(15));
+        // 다음 답은 다음 요청의 것이다(취소한 호출의 답은 오지 않는다).
+        let pong = m.request("ping", serde_json::json!({}));
+        assert!(pong["result"].is_object(), "{pong}");
 
         // run: 종료 코드와 두 출력. 끝나면 지운다.
         let r = m.call("run", serde_json::json!({"image": IMAGE, "command": ["sh", "-c", "echo out; echo err >&2; exit 3"]})).unwrap();
