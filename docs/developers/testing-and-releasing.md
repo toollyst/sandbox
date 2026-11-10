@@ -45,7 +45,7 @@ needs an HTTPS site.
 | `vm` | Linux x86_64 with KVM (arm64 runs when the runner has KVM) | builds `sbx`, the adapter and the kernel (cached by its config). It publishes a bundle with upstream Firecracker to a `file://` repository, installs it from there and installs `sbx` with `install.sh`, then runs `smoke` and `bench` (the numbers go to the job summary) |
 
 GitHub's macOS runners can't start guests, so the macOS real-VM path (Hypervisor.framework through
-[toollyst/firecracker](https://github.com/toollyst/firecracker)) is checked on a Mac with `cargo xtask smoke`,
+[wick](https://github.com/toollyst/wick)) is checked on a Mac with `cargo xtask smoke`,
 before a release.
 
 ## The default guest kernel
@@ -67,9 +67,10 @@ A release is a tag. Pushing `v<version>` runs [`release.yml`](../../.github/work
 4. **`executor-linux`** bundles the adapter, upstream Firecracker (checked by its sha256) and the kernel. It installs
    the bundle into the freshly built `sbx` and runs `smoke` on KVM before anything is published. The arm64 bundle is
    published without that run while GitHub's arm runners have no KVM.
-5. **`executor-darwin`** runs only when the repository variable `FC_FORK_TAG` is set. It downloads that
-   [toollyst/firecracker](https://github.com/toollyst/firecracker/releases) release, checks its sha256, signature and
-   `--version` on macOS 15, and bundles it with the adapter and the arm64 kernel.
+5. **`executor-darwin`** runs only when the repository variable `WICK_TAG` (for example `v1.18.0-wick.1`) is set.
+   It downloads `wick-<tag>-darwin-aarch64.tgz` from that [toollyst/wick](https://github.com/toollyst/wick/releases)
+   release, checks its sha256, signature and `--version` on macOS 15, and bundles it with the adapter and the arm64
+   kernel. Without the variable the release has no macOS executor bundle.
 6. **`publish`** creates the GitHub release with the `sbx` archives, adds every bundle to the official executor
    repository on the `gh-pages` branch (`cargo xtask repo-add --url <release URL>`), uploads the bundles to the
    release, and copies `install.sh` next to the index. GitHub Pages serves that branch at

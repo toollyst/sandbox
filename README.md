@@ -230,7 +230,7 @@ VM off and `exec` kills the process. Output keeps the last 256 KiB of each strea
 [executor protocol](crates/spec/executor-proto/src/lib.rs). `capabilities` prints one JSON line, and `run` reads a `Launch`
 request on stdin and reports `Started` and `Exited`. The bundled adapter drives Firecracker through its public
 interface (a config file and vsock), so it works with upstream Firecracker on Linux and with
-[our Hypervisor.framework port](https://github.com/toollyst/firecracker) on macOS.
+[wick](https://github.com/toollyst/wick) on macOS (Firecracker built from upstream's source for Hypervisor.framework).
 
 Executors install and switch the way language versions do. They come from **static repositories**, following an
 [open spec](crates/spec/executor-repo/src/lib.rs): one `index.json` plus `.tar.gz` bundles, with OCI platform names,
@@ -250,10 +250,10 @@ cargo xtask repo-add --repo ./executors --bundle ./bundle --name myvmm --version
 
 | Host | VMM | Status |
 | --- | --- | --- |
-| macOS 15+, Apple Silicon | Firecracker ported to Hypervisor.framework ([toollyst/firecracker](https://github.com/toollyst/firecracker)) | Works. Real-VM checks run on a Mac, since CI's macOS runners can't start guests. No seccomp on macOS ([SECURITY.md](SECURITY.md)) |
+| macOS 15+, Apple Silicon | [wick](https://github.com/toollyst/wick): Firecracker on Hypervisor.framework | Works. Real-VM checks run on a Mac, since CI's macOS runners can't start guests. Sandboxed with Seatbelt instead of seccomp ([SECURITY.md](SECURITY.md)) |
 | Linux x86_64 | Upstream Firecracker on KVM | Works. Real VMs boot in CI on every push and before every release |
 | Linux aarch64 | Upstream Firecracker on KVM | Released and tested, but CI's arm runners have no KVM, so no real-VM run yet |
-| Windows | – | Not yet |
+| Windows | – | Not yet. `pull`, `prepare` and `images` work; [wick](https://github.com/toollyst/wick) has a Windows Hypervisor Platform preview |
 
 ## Use it as a library
 

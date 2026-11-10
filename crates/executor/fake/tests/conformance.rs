@@ -1,6 +1,6 @@
 //! 적합성 테스트: `sbx-executor-process` 어댑터가 규약을 지키는 외부 실행기(`sbx-executor-fake`)를 다룬다.
 //!
-//! 실행기 저장소(fc-fork 등)는 같은 시나리오를 자기 실행 파일로 돌려 규약을 지키는지 확인할 수 있다.
+//! 실행기 저장소(다른 VMM의 실행기 등)는 같은 시나리오를 자기 실행 파일로 돌려 규약을 지키는지 확인할 수 있다.
 #![cfg(unix)]
 
 use std::os::unix::fs::PermissionsExt;

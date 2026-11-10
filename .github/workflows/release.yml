@@ -3,7 +3,7 @@
 # 1. sbx: Linux x86_64/aarch64(musl 정적)와 macOS arm64의 `sbx-<os>-<arch>.tar.gz`(+ `.sha256`)
 # 2. 실행기 묶음 `firecracker@<버전>`: 어댑터 + Firecracker + `cargo xtask kernel`로 만든 기본 커널.
 #    Linux는 upstream Firecracker(`FIRECRACKER`)로 만들고, KVM이 있는 러너에서 smoke를 통과해야 올린다.
-#    macOS는 저장소 변수 `FC_FORK_TAG`가 있을 때만 toollyst/firecracker 릴리스로 만든다.
+#    macOS는 저장소 변수 `WICK_TAG`(예: v1.18.0-wick.1)가 있을 때만 toollyst/wick 릴리스로 만든다. 없으면 건너뛴다.
 # 3. GitHub Release에 1과 2의 파일을 올리고, gh-pages 브랜치의 실행기 저장소(`executors/index.json`)에
 #    `cargo xtask repo-add --url <Release 주소>`로 더한다. `install.sh`도 gh-pages 맨 위에 둔다.
 #    (저장소 설정의 Pages 소스를 gh-pages 브랜치로 해 두어야 https://toollyst.github.io/sandbox/ 로 보인다.)
@@ -155,29 +155,31 @@ jobs:
 
   executor-darwin:
     needs: [version, kernel]
-    if: vars.FC_FORK_TAG != ''
-    # fork 바이너리는 macOS 15 이상에서만 뜬다(hv_gic_*). 아래 --version 확인을 위해 같은 러너를 쓴다.
+    if: vars.WICK_TAG != ''
+    # wick의 macOS 바이너리는 macOS 15 이상에서만 뜬다(hv_gic_*). 아래 --version 확인을 위해 같은 러너를 쓴다.
     runs-on: macos-15
     env:
-      FC: ${{ vars.FC_FORK_TAG }}
+      WICK: ${{ vars.WICK_TAG }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: kernel-aarch64
           path: kernel
-      - name: bundle (toollyst/firecracker release; macOS runners cannot run HVF guests, so no smoke here)
+      - name: bundle (toollyst/wick release; macOS runners cannot run HVF guests, so no smoke here)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           cargo build --release -p sbx-executor-firecracker
           mkdir -p fc bundle && cd fc
-          name="firecracker-$FC-darwin-aarch64"
-          gh release download "$FC" --repo toollyst/firecracker --pattern "$name.tgz" --pattern "$name.tgz.sha256.txt"
+          # wick의 tools/package-release.sh 배치: wick-T-darwin-aarch64.tgz 안에
+          # release-T-darwin-aarch64/firecracker-T-darwin-aarch64 (hypervisor 권한으로 서명).
+          name="wick-$WICK-darwin-aarch64"
+          gh release download "$WICK" --repo toollyst/wick --pattern "$name.tgz" --pattern "$name.tgz.sha256.txt"
           shasum -a 256 -c "$name.tgz.sha256.txt"
           tar xzf "$name.tgz"
           cd ..
-          cp "fc/release-$FC-darwin-aarch64/$name" bundle/firecracker
+          cp "fc/release-$WICK-darwin-aarch64/firecracker-$WICK-darwin-aarch64" bundle/firecracker
           codesign --verify --strict bundle/firecracker
           bundle/firecracker --version
           cp target/release/sbx-executor-firecracker bundle/sbx-executor
