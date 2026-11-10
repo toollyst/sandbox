@@ -1,22 +1,30 @@
-# 실행기 저장소에 `wick@<upstream>`(VMM 묶음)과 그것을 돌리는 `firecracker` 어댑터를 올린다. 손으로만 돌린다.
+# 실행기 저장소에 toollyst/wick 릴리스 하나를 `wick@<wick 버전>`(VMM 묶음)으로, 그것을 돌리는 `firecracker` 어댑터와
+# 함께 올린다. wick 태그 `v1.18.0-wick.1`은 `wick@1.18.0-wick.1`이 된다(앞의 v만 뺀다). 손으로만 돌린다.
 #
-#   gh workflow run executors.yml -f upstream=1.18.0 [-f adapter_version=0.2.0] [-f require_darwin=true]
+#   gh workflow run executors.yml [-f wick=v1.18.0-wick.1] [-f include_prereleases=true] [-f adapter_version=0.2.0]
+#                                 [-f require_darwin=true]
 #
-# 1. plan: gh-pages의 `executors/v2/index.json`(지금 공개된 색인)을 읽어, 아직 없는 플랫폼만 고른다.
-#    이미 있는 항목은 다시 만들지도 덮어쓰지도 않는다. 어댑터 버전(기본: 이 커밋의 작업 공간 버전)이 그 플랫폼에
-#    이미 있으면 공개된 것을 받아(sha256 확인) 그대로 쓰고, 없으면 이 커밋에서 만든다(버전이 이 커밋과 같아야 한다).
-# 2. 플랫폼마다(linux amd64/arm64, darwin arm64)
-#    - VMM 묶음: 디렉터리 하나에 `firecracker`, `LICENSE`, `NOTICE`.
-#      Linux는 upstream Firecracker 릴리스 `v<upstream>`(firecracker-v<X>-<arch>.tgz, .sha256.txt로 확인).
-#      macOS는 toollyst/wick의 `v<upstream>-wick.<N>` 중 N이 가장 큰 릴리스(wick-<tag>-darwin-aarch64.tgz,
-#      .sha256.txt로 확인). 없으면 darwin은 경고하고 건너뛴다(`require_darwin`이면 실패).
+# 1. plan
+#    - wick 릴리스: `wick`을 비우면 toollyst/wick에서 가장 높은 `v<X.Y.Z>-wick.<N>`(draft 제외, prerelease는
+#      `include_prereleases`일 때만). 주면(v가 있든 없든) 그 릴리스. sbx의 `install wick`, `wick@latest`도 가장 높은
+#      버전을 고른다(숫자 조각은 숫자로 비교해 wick.10 > wick.2).
+#    - 플랫폼(linux amd64/arm64, darwin arm64)마다 VMM의 출처: 그 릴리스에 `wick-<tag>-<os>-<arch>.tgz`와
+#      `.sha256.txt`가 있으면 그것. 없으면 Linux는 태그의 upstream 부분(v1.18.0)의 upstream Firecracker 릴리스,
+#      macOS는 건너뛴다(경고, `require_darwin`이면 실패).
+#    - gh-pages의 `executors/v2/index.json`(지금 공개된 색인)에 그 wick 버전이 이미 있는 플랫폼은 빼고 고른다.
+#      플랫폼마다 처음 공개한 것을 다시 만들지도 덮어쓰지도 않는다.
+#    - 어댑터 버전(기본: 이 커밋의 작업 공간 버전)이 그 플랫폼에 이미 있으면 공개된 것을 받아(sha256 확인) 그대로
+#      쓰고, 없으면 이 커밋에서 만든다(버전이 이 커밋과 같아야 한다).
+# 2. 플랫폼마다
+#    - VMM 묶음: 디렉터리 하나에 `firecracker`, `LICENSE`, `NOTICE`(.github/scripts/wick-vmm.sh, upstream-vmm.sh).
+#      `firecracker --version`이 wick 출처면 `v<X.Y.Z>-wick.<N>`, upstream 출처면 `v<X.Y.Z>`여야 한다.
 #    - 어댑터 묶음: `sbx-executor`(sbx-executor-firecracker) + `cargo xtask kernel`로 만든 기본 커널 `kernel`
 #      + 커널(GPL-2.0)의 소스와 설정을 알리는 `KERNEL-SOURCE.txt`(.github/scripts/kernel-notice.sh).
-#    - KVM이 있는 Linux 러너에서는 이 커밋의 sbx로 로컬 v2 저장소(file://)에서 `sbx executor install wick@<X>`를
+#    - KVM이 있는 Linux 러너에서는 이 커밋의 sbx로 로컬 v2 저장소(file://)에서 `sbx executor install wick@<버전>`을
 #      하고 `cargo xtask smoke`를 통과해야 한다(.github/scripts/smoke-wick.sh, ci.yml의 vm과 같다).
 #      x86_64에는 /dev/kvm이 꼭 있어야 한다. macOS 러너는 HVF 게스트를 돌리지 못해 smoke가 없다.
 # 3. publish: `cargo xtask repo-add --schema 2`로 gh-pages의 `executors/v2/index.json`에 더하고, 압축 파일은
-#    GitHub Release `wick-<X>`, `firecracker-adapter-<버전>`에 올린 뒤(`--latest=false`: install.sh가 받는
+#    GitHub Release `wick-<wick 버전>`, `firecracker-adapter-<버전>`에 올린 뒤(`--latest=false`: install.sh가 받는
 #    sbx의 latest 릴리스를 가리지 않게) gh-pages에 push한다. schema 1 `executors/index.json`(sbx 0.1.x가 읽는다)은
 #    건드리지 않는다.
 name: executors
@@ -24,10 +32,16 @@ name: executors
 on:
   workflow_dispatch:
     inputs:
-      upstream:
-        description: Upstream Firecracker version (e.g. 1.18.0). Published as wick@<this>.
-        required: true
+      wick:
+        description: toollyst/wick release tag (e.g. v1.18.0-wick.1; the v is optional). Empty = the highest release.
+        required: false
         type: string
+        default: ''
+      include_prereleases:
+        description: With an empty wick, also consider prereleases (drafts are never used).
+        required: false
+        type: boolean
+        default: false
       adapter_version:
         description: >-
           firecracker adapter version to pair with it. Empty = this commit's workspace version.
@@ -36,7 +50,7 @@ on:
         type: string
         default: ''
       require_darwin:
-        description: Fail when toollyst/wick has no v<upstream>-wick.N release (default is to skip macOS with a warning).
+        description: Fail when the wick release has no macOS build (default is to skip macOS with a warning).
         required: false
         type: boolean
         default: false
@@ -50,7 +64,6 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  UPSTREAM: ${{ inputs.upstream }}
 
 jobs:
   plan:
@@ -58,6 +71,8 @@ jobs:
     outputs:
       adapter_version: ${{ steps.p.outputs.adapter_version }}
       wick_tag: ${{ steps.p.outputs.wick_tag }}
+      wick_version: ${{ steps.p.outputs.wick_version }}
+      upstream: ${{ steps.p.outputs.upstream }}
       build: ${{ steps.p.outputs.build }}
       count: ${{ steps.p.outputs.count }}
       matrix: ${{ steps.p.outputs.matrix }}
@@ -66,32 +81,41 @@ jobs:
       - id: p
         env:
           GH_TOKEN: ${{ github.token }}
+          WICK: ${{ inputs.wick }}
+          INCLUDE_PRERELEASES: ${{ inputs.include_prereleases }}
           ADAPTER_VERSION: ${{ inputs.adapter_version }}
           REQUIRE_DARWIN: ${{ inputs.require_darwin }}
         run: |
           set -euo pipefail
-          [[ "$UPSTREAM" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::upstream must look like 1.18.0 (got '$UPSTREAM')"; exit 1; }
+          re='^v([0-9]+\.[0-9]+\.[0-9]+)-wick\.[0-9]+$'
           crate=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "sbx-executor-firecracker") | .version')
           av=${ADAPTER_VERSION:-$crate}
           [[ "$av" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]*$ ]] || { echo "::error::invalid adapter_version '$av'"; exit 1; }
+
+          # wick 릴리스.
+          if [ -z "$WICK" ] || [ "$WICK" = latest ]; then
+            flags=(--exclude-drafts)
+            [ "$INCLUDE_PRERELEASES" = true ] || flags+=(--exclude-pre-releases)
+            tag=$(gh release list --repo toollyst/wick "${flags[@]}" --limit 200 --json tagName --jq '.[].tagName' \
+                    | { grep -E "$re" || true; } | sort -V | tail -n1)
+            [ -n "$tag" ] || { echo "::error::toollyst/wick has no v<X.Y.Z>-wick.<N> release"; exit 1; }
+          else
+            tag="v${WICK#v}"
+            [[ "$tag" =~ $re ]] || { echo "::error::wick must look like v1.18.0-wick.1 (got '$WICK')"; exit 1; }
+            draft=$(gh release view "$tag" --repo toollyst/wick --json isDraft --jq .isDraft) \
+              || { echo "::error::toollyst/wick has no release $tag"; exit 1; }
+            [ "$draft" = false ] || { echo "::error::toollyst/wick $tag is a draft"; exit 1; }
+          fi
+          [[ "$tag" =~ $re ]]
+          upstream=${BASH_REMATCH[1]}
+          wv=${tag#v}
+          assets=$(gh release view "$tag" --repo toollyst/wick --json assets --jq '.assets[].name')
 
           # 지금 공개된 v2 색인. 없으면 빈 색인.
           if git fetch -q origin gh-pages 2>/dev/null && git show FETCH_HEAD:executors/v2/index.json > published.json 2>/dev/null; then
             echo "published v2 index found"
           else
             echo '{"schema":2,"executors":{},"adapters":{}}' > published.json
-          fi
-
-          # macOS VMM: v<upstream>-wick.<N> 중 N이 가장 큰 릴리스.
-          esc=${UPSTREAM//./\\.}
-          n=$(gh release list --repo toollyst/wick --exclude-drafts --limit 200 --json tagName --jq '.[].tagName' \
-                | { grep -E "^v${esc}-wick\.[0-9]+$" || true; } | sed -E 's/.*-wick\.//' | sort -n | tail -n1)
-          wick_tag=${n:+v$UPSTREAM-wick.$n}
-          if [ -z "$wick_tag" ]; then
-            if [ "$REQUIRE_DARWIN" = true ]; then
-              echo "::error::toollyst/wick has no v$UPSTREAM-wick.N release"; exit 1
-            fi
-            echo "::warning::toollyst/wick has no v$UPSTREAM-wick.N release; skipping darwin"
           fi
 
           has() { # 섹션 이름 버전 os arch
@@ -101,9 +125,20 @@ jobs:
           entries='[]'
           build=false
           while read -r os oci arch runner kvm; do
-            if [ "$os" = darwin ] && [ -z "$wick_tag" ]; then continue; fi
-            if has executors wick "$UPSTREAM" "$os" "$oci"; then
-              echo "::notice::wick@$UPSTREAM for $os/$oci is already published; skipping it"
+            if has executors wick "$wv" "$os" "$oci"; then
+              echo "::notice::wick@$wv for $os/$oci is already published; skipping it"
+              continue
+            fi
+            asset="wick-$tag-$os-$arch.tgz"
+            if grep -qxF "$asset" <<<"$assets" && grep -qxF "$asset.sha256.txt" <<<"$assets"; then
+              source=wick
+            elif [ "$os" = linux ]; then
+              source=upstream
+              echo "::notice::wick $tag has no $os/$arch build; using upstream Firecracker v$upstream"
+            elif [ "$REQUIRE_DARWIN" = true ]; then
+              echo "::error::wick $tag has no $asset (with .sha256.txt)"; exit 1
+            else
+              echo "::warning::wick $tag has no $asset (with .sha256.txt); skipping $os/$oci"
               continue
             fi
             a=$(jq -c --arg v "$av" --arg o "$os" --arg a "$oci" \
@@ -117,8 +152,8 @@ jobs:
               mode=build; url=''; sha=''; build=true
             fi
             entries=$(jq -c --arg os "$os" --arg oci "$oci" --arg arch "$arch" --arg runner "$runner" --arg kvm "$kvm" \
-                        --arg mode "$mode" --arg url "$url" --arg sha "$sha" \
-                        '. + [{os: $os, oci: $oci, arch: $arch, runner: $runner, require_kvm: ($kvm == "true"),
+                        --arg source "$source" --arg mode "$mode" --arg url "$url" --arg sha "$sha" \
+                        '. + [{os: $os, oci: $oci, arch: $arch, runner: $runner, require_kvm: ($kvm == "true"), source: $source,
                                adapter: $mode, adapter_url: $url, adapter_sha256: $sha}]' <<<"$entries")
           done <<'EOF'
           linux amd64 x86_64 ubuntu-latest true
@@ -130,16 +165,17 @@ jobs:
           [ "$count" != 0 ] || entries='[{"os":"none"}]'
           {
             echo "adapter_version=$av"
-            echo "wick_tag=$wick_tag"
+            echo "wick_tag=$tag"
+            echo "wick_version=$wv"
+            echo "upstream=$upstream"
             echo "build=$build"
             echo "count=$count"
             echo "matrix=$(jq -c '{include: .}' <<<"$entries")"
           } >> "$GITHUB_OUTPUT"
           {
-            echo "### plan: wick@$UPSTREAM, firecracker adapter $av"
-            echo "macOS VMM: ${wick_tag:-none}"
+            echo "### plan: wick@$wv (toollyst/wick $tag), firecracker adapter $av"
             echo
-            jq -r '.[] | select(.os != "none") | "- \(.os)/\(.oci): adapter \(.adapter)"' <<<"$entries"
+            jq -r '.[] | select(.os != "none") | "- \(.os)/\(.oci): VMM from \(.source), adapter \(.adapter)"' <<<"$entries"
             [ "$count" != 0 ] || echo "nothing to publish"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -180,44 +216,37 @@ jobs:
       ADAPTER_MODE: ${{ matrix.adapter }}
       ADAPTER_URL: ${{ matrix.adapter_url }}
       ADAPTER_SHA256: ${{ matrix.adapter_sha256 }}
+      VMM_SOURCE: ${{ matrix.source }}
       ADAPTER_VERSION: ${{ needs.plan.outputs.adapter_version }}
       WICK_TAG: ${{ needs.plan.outputs.wick_tag }}
+      WICK_VERSION: ${{ needs.plan.outputs.wick_version }}
+      UPSTREAM: ${{ needs.plan.outputs.upstream }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: VMM (upstream Firecracker release)
-        if: matrix.os == 'linux'
-        run: WORK=dl .github/scripts/upstream-vmm.sh "$UPSTREAM" "$ARCH" vmm
-
       - name: VMM (toollyst/wick release)
-        if: matrix.os == 'darwin'
+        if: matrix.source == 'wick'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
-          # wick의 tools/package-release.sh 배치: wick-T-darwin-aarch64.tgz 안에
-          # release-T-darwin-aarch64/{firecracker-T-darwin-aarch64,LICENSE,NOTICE} (hypervisor 권한으로 서명).
-          name="wick-$WICK_TAG-darwin-aarch64"
-          mkdir -p dl vmm
-          (cd dl && gh release download "$WICK_TAG" --repo toollyst/wick --pattern "$name.tgz" --pattern "$name.tgz.sha256.txt" \
-             && shasum -a 256 -c "$name.tgz.sha256.txt" && tar xzf "$name.tgz")
-          rel="dl/release-$WICK_TAG-darwin-aarch64"
-          install -m 755 "$rel/firecracker-$WICK_TAG-darwin-aarch64" vmm/firecracker
-          codesign --verify --strict vmm/firecracker
-          for f in LICENSE NOTICE; do
-            if [ -f "$rel/$f" ]; then cp "$rel/$f" vmm/
-            elif [ -f "dl/$f" ]; then cp "dl/$f" vmm/
-            else echo "::error::$name.tgz has no $f"; exit 1; fi
-          done
+          WORK=dl .github/scripts/wick-vmm.sh "$WICK_TAG" "$OS" "$ARCH" vmm
+          echo "toollyst/wick $WICK_TAG (wick-$WICK_TAG-$OS-$ARCH.tgz)" > vmm-source
+
+      - name: VMM (upstream Firecracker release)
+        if: matrix.source == 'upstream'
+        run: |
+          WORK=dl .github/scripts/upstream-vmm.sh "$UPSTREAM" "$ARCH" vmm
+          echo "upstream Firecracker v$UPSTREAM (firecracker-v$UPSTREAM-$ARCH.tgz)" > vmm-source
 
       - name: VMM version
         run: |
           set -euo pipefail
-          # upstream은 v1.18.0, wick은 v1.18.0-wick.1처럼 알린다.
+          # wick 빌드는 v1.18.0-wick.1, upstream은 v1.18.0처럼 알린다.
+          if [ "$VMM_SOURCE" = wick ]; then want=$WICK_TAG; else want="v$UPSTREAM"; fi
           out=$(vmm/firecracker --version)
           printf '%s\n' "$out"
-          printf '%s\n' "$out" | grep -Eq "(^|[^0-9.])v${UPSTREAM//./\\.}(-wick\.[0-9]+)?([^0-9.]|$)" \
-            || { echo "::error::vmm/firecracker does not report v$UPSTREAM"; exit 1; }
+          printf '%s\n' "$out" | grep -Eq "(^|[^0-9A-Za-z.])${want//./\\.}([^0-9A-Za-z.-]|$)" \
+            || { echo "::error::vmm/firecracker does not report $want"; exit 1; }
           ls -l vmm
 
       - if: matrix.adapter == 'build'
@@ -285,13 +314,13 @@ jobs:
           set -euo pipefail
           rustup target add "$ARCH-unknown-linux-musl"
           cargo xtask dist
-          .github/scripts/smoke-wick.sh target/release/sbx local adapter "$ADAPTER_VERSION" vmm "$UPSTREAM"
+          .github/scripts/smoke-wick.sh target/release/sbx local adapter "$ADAPTER_VERSION" vmm "$WICK_VERSION"
 
       # 업로드한 artifact는 실행 권한을 잃으므로 tar로 묶는다.
       - name: pack
         run: |
           echo "$ADAPTER_MODE" > adapter-mode
-          tar -czf platform.tar.gz adapter vmm capabilities.json adapter-mode
+          tar -czf platform.tar.gz adapter vmm capabilities.json adapter-mode vmm-source
       - uses: actions/upload-artifact@v4
         with:
           name: platform-${{ matrix.os }}-${{ matrix.oci }}
@@ -311,6 +340,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       ADAPTER_VERSION: ${{ needs.plan.outputs.adapter_version }}
       WICK_TAG: ${{ needs.plan.outputs.wick_tag }}
+      WICK_VERSION: ${{ needs.plan.outputs.wick_version }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -335,9 +365,9 @@ jobs:
               '(.[$s][$n].versions[$v].artifacts // []) | any(.os == $o and .architecture == $a)' "$idx" >/dev/null
           }
           releases="https://github.com/$GITHUB_REPOSITORY/releases/download"
-          wick_rel="wick-$UPSTREAM"
+          wick_rel="wick-$WICK_VERSION"
           adapter_rel="firecracker-adapter-$ADAPTER_VERSION"
-          wick_files=(); adapter_files=()
+          wick_files=(); adapter_files=(); sources=()
           for a in artifacts/platform-*; do
             p=${a#artifacts/platform-}; os=${p%%-*}; oci=${p#*-}
             mkdir -p "x/$p" && tar xzf "$a/platform.tar.gz" -C "x/$p"
@@ -348,12 +378,13 @@ jobs:
                 --url "$releases/$adapter_rel" \
                 --description "Firecracker adapter for the sbx executor protocol, with the default guest kernel")")
             fi
-            if has executors wick "$UPSTREAM" "$os" "$oci"; then
-              echo "::notice::wick@$UPSTREAM for $os/$oci is already published; leaving it"
+            if has executors wick "$WICK_VERSION" "$os" "$oci"; then
+              echo "::notice::wick@$WICK_VERSION for $os/$oci is already published; leaving it"
             else
               wick_files+=("$(cargo xtask repo-add --repo "$repo" --schema 2 --vmm-for firecracker --arch "$oci" \
-                --bundle "x/$p/vmm" --name wick --version "$UPSTREAM" --os "$os" --url "$releases/$wick_rel" \
-                --description "Firecracker VMM (upstream on Linux, toollyst/wick on macOS), run by the firecracker adapter")")
+                --bundle "x/$p/vmm" --name wick --version "$WICK_VERSION" --os "$os" --url "$releases/$wick_rel" \
+                --description "Firecracker VMM from toollyst/wick releases (upstream Firecracker where wick has no build), run by the firecracker adapter")")
+              sources+=("- $os/$oci: $(cat "x/$p/vmm-source")")
             fi
           done
 
@@ -383,8 +414,9 @@ jobs:
             for f in "${adapter_files[@]}"; do upload_once "$adapter_rel" "$f"; done
           fi
           if [ ${#wick_files[@]} -gt 0 ]; then
-            ensure_release "$wick_rel" "wick $UPSTREAM" \
-              "VMM packages for \`sbx executor install wick@$UPSTREAM\`. Linux: upstream Firecracker [v$UPSTREAM](https://github.com/firecracker-microvm/firecracker/releases/tag/v$UPSTREAM). macOS: toollyst/wick ${WICK_TAG:-(not yet)}."
+            ensure_release "$wick_rel" "wick $WICK_VERSION" \
+              "$(printf 'VMM packages for `sbx executor install wick@%s`, from toollyst/wick [%s](https://github.com/toollyst/wick/releases/tag/%s).\n\nFirst published:\n%s\n' \
+                   "$WICK_VERSION" "$WICK_TAG" "$WICK_TAG" "$(printf '%s\n' "${sources[@]}")")"
             for f in "${wick_files[@]}"; do upload_once "$wick_rel" "$f"; done
           fi
 
@@ -400,5 +432,5 @@ jobs:
           cd pages
           git add -A
           git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-            commit -qm "executors: wick@$UPSTREAM, firecracker adapter $ADAPTER_VERSION"
+            commit -qm "executors: wick@$WICK_VERSION, firecracker adapter $ADAPTER_VERSION"
           git push origin gh-pages
