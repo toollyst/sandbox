@@ -193,6 +193,7 @@ mod tests {
             a.extend(s(extra));
             a
         };
+        let before = now();
         sign(&sign_args(&[])).unwrap();
         let repo = sbx_executor_repo::Repository::new(
             "s",
@@ -205,7 +206,7 @@ mod tests {
         .unwrap();
         let f = sbx_executor_repo::Fetcher::new().unwrap();
         let first = f.index(&repo).await.unwrap();
-        assert!(first.serial.unwrap() >= now() && first.expires.unwrap() > now() + 89 * 86_400);
+        assert!(first.serial.unwrap() >= before && first.expires.unwrap() >= before + 90 * 86_400);
         // 다시 서명하면 serial이 커진다. 더 작은 serial은 거부한다.
         sign(&sign_args(&[])).unwrap();
         assert!(f.index(&repo).await.unwrap().serial > first.serial);
