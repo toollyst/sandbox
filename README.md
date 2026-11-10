@@ -221,7 +221,8 @@ The MCP server adds no policy of its own. Tool arguments go through the same par
 - Host folders are never mounted, and tools only see sandboxes created through MCP, not the ones you started
   with the CLI (`sbx mcp --all-sandboxes` changes that).
 - Arguments can't be turned into other `sbx` options.
-- An agent gets at most 8 sandboxes at once, each with at most 4 vCPUs and 4 GiB of memory. Change these with
+- Agents get at most 8 sandboxes at once (counting every MCP server that shares your data directory), each with
+  at most 4 vCPUs and 4 GiB of memory. Change these with
   `--max-sandboxes`, `--max-cpus` and `--max-memory`, for example `sbx mcp --max-sandboxes 2 --max-memory 1g`.
 
 Every command has a timeout (300 s by default). When it runs out or the client cancels the call, `run` powers the

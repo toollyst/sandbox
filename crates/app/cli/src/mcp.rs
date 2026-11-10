@@ -145,7 +145,7 @@ impl Server {
         let taken = existing + self.reserved.get() - 1;
         if taken >= l.sandboxes {
             return Err(format!(
-                "this server already has {taken} sandboxes, its limit (sbx mcp --max-sandboxes {}); remove one first",
+                "there are already {taken} MCP sandboxes, the limit (sbx mcp --max-sandboxes {}); remove one first",
                 l.sandboxes
             )
             .into());

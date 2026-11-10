@@ -175,7 +175,29 @@ fn plain_name(c: &str) -> bool {
         (parts.next(), parts.next()),
         (Some(Component::Normal(n)), None) if n == std::ffi::OsStr::new(c)
     );
-    one && !(cfg!(windows) && (c.ends_with(['.', ' ']) || c.contains(':')))
+    one && !(cfg!(windows) && (c.ends_with(['.', ' ']) || c.contains(':') || windows_device(c)))
+}
+
+/// Windows가 어느 디렉터리에서나 장치로 여는 이름(`CON`, `NUL`, `COM1`, `con.txt`처럼 확장자가 붙어도 같다).
+/// 게스트가 이 이름으로 보내면 파일 대신 장치에 쓰게 된다.
+fn windows_device(c: &str) -> bool {
+    let stem = c
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .trim_end()
+        .to_ascii_uppercase();
+    matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || ["COM", "LPT"].iter().any(|p| {
+        stem.strip_prefix(p).is_some_and(|n| {
+            matches!(
+                n,
+                "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+            )
+        })
+    })
 }
 
 fn target(dest: &Path, rel: &str) -> Result<PathBuf, RuntimeError> {
@@ -386,6 +408,28 @@ pub fn receive_bytes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_device_names_are_recognized_with_any_case_or_extension() {
+        for d in [
+            "CON",
+            "con",
+            "Nul.txt",
+            "aux.tar.gz",
+            "COM1",
+            "lpt9.log",
+            "com¹",
+            "PRN ",
+            "conin$",
+        ] {
+            assert!(windows_device(d), "{d}");
+        }
+        for n in ["console", "COM10", "LPT", "nul_", "a.con", "CONx", "com"] {
+            assert!(!windows_device(n), "{n}");
+        }
+        // 이 호스트가 Windows일 때만 이름으로 거부한다.
+        assert_eq!(plain_name("NUL.txt"), !cfg!(windows));
+    }
 
     #[test]
     fn rename_top_rules() {

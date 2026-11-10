@@ -134,7 +134,10 @@ pub fn sign(args: &[String]) -> Result<PathBuf, String> {
             ));
         }
         Some(s) => s,
-        None => now().max(old + 1),
+        None => now().max(
+            old.checked_add(1)
+                .ok_or("the index serial is at its maximum; it cannot grow")?,
+        ),
     };
     index["serial"] = json!(serial);
     index["expires"] = json!(now() + o.expires_days * 86_400);
@@ -261,6 +264,17 @@ mod tests {
         // 다른 필드와 내용은 그대로 둔다.
         assert_eq!(v["executors"], json!({}));
 
+        // serial이 최대값이면 더 키울 수 없다(넘쳐서 0이 되면 모든 클라이언트가 롤백으로 본다).
+        std::fs::write(
+            &index,
+            format!(
+                r#"{{"schema": 2, "serial": {}, "executors": {{}}}}"#,
+                u64::MAX
+            ),
+        )
+        .unwrap();
+        assert!(sign(&args(&[])).unwrap_err().contains("maximum"));
+        std::fs::write(&index, r#"{"schema": 2, "executors": {}}"#).unwrap();
         // 기한은 1일 이상 10년 이하. 넘치는 값도 거부한다.
         for bad in ["0", "3651", "18446744073709551615", "x"] {
             assert!(sign(&args(&["--expires-days", bad])).is_err(), "{bad}");
