@@ -350,10 +350,12 @@ If a repository earlier in the list can't be read (down, tampered with, rolled b
 from one after it, since the unreadable one may own that name; fix it, or say where with `--repo`. Names and
 versions are lowercase, so on macOS and Windows a different spelling can't land in the same directory. `local` is
 reserved: it marks executors you installed directly with `--from`.
-A VMM package names its adapter. If the adapter isn't installed yet, `install` takes it from the repository the
-VMM package came from if that one has the adapter, or else from the first repository in `repo ls` order that has
-it, and only from there, even when that repository has no build for your platform. So a repository of VMM packages
-for `firecracker` doesn't need to carry the adapter itself, and can't swap in its own.
+A VMM package names its adapter, and an adapter name belongs to a repository the same way: the first one in
+`repo ls` order that publishes it. If the adapter isn't installed yet, `install` takes it from that repository only,
+even when it has no build for your platform; an adapter already installed from another repository isn't used for
+it. One adapter is shared by every VMM package that names it, so a repository of VMM packages for `firecracker`
+doesn't need to carry the adapter itself, and a repository added later can't bring in its own `firecracker` that
+would then run everyone's VMM packages.
 
 ## Platforms
 

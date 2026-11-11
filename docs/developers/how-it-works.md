@@ -224,9 +224,10 @@ with keys (`repo add --key`), it also needs `v2/index.json.minisig` signed by on
 name belongs to the first repository that publishes it (`--repo` picks another), and within it the newest version
 for this host's platform wins. If a repository before that one failed, nothing is installed
 ([`unread_before`](../../crates/spec/executor-repo/src/lib.rs)): the failed one may own the name. If it is a VMM
-package and its adapter isn't installed, it first installs the newest adapter for this host and protocol version from
-the repository the VMM package came from if that one has the adapter's name, or else from the first repository in
-the list that has the name, and only from that one. Every install records its origin (`.sbx-origin`, the repository
+package, the adapter's name has an owner too (the first repository in the list that publishes it): if the adapter
+isn't installed, it installs the newest one for this host and protocol version from the owner only, and an adapter
+already installed from a repository other than the owner (or `local`) is refused. The VMM package's own origin is
+checked before any of this, so a refusal doesn't leave an adapter behind. Every install records its origin (`.sbx-origin`, the repository
 name or `local`), and a name already installed from one origin is never installed from another
 ([`sbx-executor-install`](../../crates/spec/executor-install/src/lib.rs)).
 Each download is checked against the sha256 and size in the index and unpacked into a staging directory. Before the

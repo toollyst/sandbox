@@ -429,19 +429,29 @@ async fn indexes(
 
 /// `chosen`에서 고른 `what`을 설치해도 되는지: 그보다 앞 저장소를 읽지 못했으면 안 된다
 /// ([`sbx_executor_repo::unread_before`]).
+/// `retry`는 `chosen`에서 받도록 고르는 명령이다.
 fn owner_was_read(
     order: &[String],
     idx: &[(String, index::Index)],
     chosen: &str,
     what: &str,
+    retry: &str,
 ) -> std::result::Result<(), String> {
     match sbx_executor_repo::unread_before(order, idx, chosen) {
         None => Ok(()),
         Some(f) => Err(format!(
             "repository {f} could not be read (see the warning above), and it comes before {chosen}: {f} may own \
-             {what}, so it is not installed from {chosen}. Fix {f}, or pick a repository with --repo {chosen}"
+             {what}, so it is not installed from {chosen}. Fix {f}, or choose {chosen} with: {retry}"
         )),
     }
+}
+
+/// 어댑터 이름의 주인: 저장소 목록 순서대로 그 이름을 내는 첫 저장소(실행기 이름과 같은 규칙).
+fn adapter_owner<'a>(
+    idx: &'a [(String, index::Index)],
+    name: &str,
+) -> Option<&'a (String, index::Index)> {
+    idx.iter().find(|(_, i)| i.adapter(name).is_some())
 }
 
 async fn install_remote(
@@ -454,18 +464,29 @@ async fn install_remote(
     let (fetcher, idx, order) = indexes(cx, repo).await?;
     let platform = Platform::host();
     let c = index::pick(&idx, spec, &platform, protocols())?;
-    owner_was_read(&order, &idx, &c.repository, &c.name)?;
-    // VMM 묶음이면 어댑터부터. 이미 있으면(어느 버전이든) 그것을 쓴다.
+    owner_was_read(
+        &order,
+        &idx,
+        &c.repository,
+        &c.name,
+        &format!("sbx executor install --repo {} {spec}", c.repository),
+    )?;
+    // 어댑터를 받기 전에: 이 이름을 다른 저장소에서 받았으면 어댑터만 남기고 실패하지 않게 먼저 거부한다.
+    ex.check_origin(&c.spec(), &c.repository)?;
+    // VMM 묶음이면 어댑터부터. 이미 있으면(어느 버전이든) 그것을 쓰되, 그 이름의 주인에게서 받은 것이어야 한다.
     if let Some(name) = &c.adapter {
         let a = Spec {
             name: name.clone(),
             version: None,
         };
-        if ad.find(&a)?.is_none() {
-            let ac = adapter_for(&idx, &order, &c, &a, &platform)
-                .map_err(|e| format!("{}@{} needs adapter {name}: {e}", c.name, c.version))?;
-            eprintln!("{}@{} needs adapter {name}", c.name, c.version);
-            fetch_and_install(cx, &fetcher, ad, &ac, adapter_check).await?;
+        match ad.find(&a)? {
+            None => {
+                let ac = adapter_for(&idx, &order, &a, &platform)
+                    .map_err(|e| format!("{}@{} needs adapter {name}: {e}", c.name, c.version))?;
+                eprintln!("{}@{} needs adapter {name}", c.name, c.version);
+                fetch_and_install(cx, &fetcher, ad, &ac, adapter_check).await?;
+            }
+            Some(have) => installed_adapter_is_the_owners(&idx, &have)?,
         }
     }
     if let Some(want) = spec.version.as_deref().filter(|w| *w != c.version) {
@@ -478,38 +499,62 @@ async fn install_remote(
     print_ref(cx, &i)
 }
 
-/// VMM 묶음 `c`가 가리키는 어댑터를 고른다: 그 묶음이 있던 저장소가 그 이름을 내면 거기서만, 아니면 저장소 목록
-/// 순서대로 그 이름을 내는 첫 저장소에서만. 그 저장소에 이 플랫폼·규약에 맞는 빌드가 없어도 다른 저장소로 넘어가지
-/// 않는다(이름은 그것을 내는 저장소의 것이다. 다른 저장소가 같은 이름으로 공식 묶음의 어댑터를 대신하지 못하게).
-/// 다른 저장소에서 고를 때는 그보다 앞 저장소를 모두 읽었어야 한다.
+/// VMM 묶음이 가리키는 어댑터를 고른다: 그 이름의 주인([`adapter_owner`])에게서만. 주인에게 이 플랫폼·규약에 맞는
+/// 빌드가 없어도 다른 저장소로 넘어가지 않고, 주인보다 앞 저장소는 모두 읽었어야 한다. 어댑터는 이름마다 하나
+/// 설치되어 그 이름을 쓰는 모든 VMM 묶음이 함께 쓰므로, VMM 묶음의 저장소가 아니라 이름의 주인이 정한다(나중에
+/// 더한 저장소가 자기 VMM과 함께 같은 이름의 어댑터를 들여와 공식 VMM 묶음까지 돌리지 못하게).
 fn adapter_for(
     idx: &[(String, index::Index)],
     order: &[String],
-    c: &Candidate,
     adapter: &Spec,
     platform: &Platform,
 ) -> std::result::Result<Candidate, String> {
     let v = protocols();
-    let same = idx.iter().filter(|(r, _)| *r == c.repository);
-    let others = idx.iter().filter(|(r, _)| *r != c.repository);
-    for repo in same.chain(others) {
-        if repo.1.adapter(&adapter.name).is_none() {
-            continue;
+    let Some(repo) = adapter_owner(idx, &adapter.name) else {
+        if let Some(f) = order.iter().find(|n| !idx.iter().any(|(r, _)| r == *n)) {
+            return Err(format!(
+                "no repository that could be read has adapter {}, and repository {f} could not be read",
+                adapter.name
+            ));
         }
-        if repo.0 != c.repository {
-            owner_was_read(order, idx, &repo.0, &adapter.name)?;
-        }
-        return index::pick_adapter(std::slice::from_ref(repo), adapter, platform, v).map_err(
-            |e| {
-                format!(
-                    "{e} (in {}, the repository that has adapter {})",
-                    repo.0, adapter.name
-                )
-            },
-        );
+        return index::pick_adapter(idx, adapter, platform, v).map_err(|e| e.to_string());
+    };
+    owner_was_read(
+        order,
+        idx,
+        &repo.0,
+        &adapter.name,
+        &format!(
+            "sbx executor adapter install --repo {} {}",
+            repo.0, adapter.name
+        ),
+    )?;
+    index::pick_adapter(std::slice::from_ref(repo), adapter, platform, v).map_err(|e| {
+        format!(
+            "{e} (in {}, the first repository that has adapter {})",
+            repo.0, adapter.name
+        )
+    })
+}
+
+/// 이미 설치된 어댑터를 쓸 때: 그 이름의 주인이 아닌 저장소에서 받은 것이면 쓰지 않는다. 직접 설치한 것(`--from`,
+/// 출처 [`LOCAL_ORIGIN`])과 출처가 적히지 않은 옛 설치는 쓴다.
+fn installed_adapter_is_the_owners(
+    idx: &[(String, index::Index)],
+    have: &Installed,
+) -> std::result::Result<(), String> {
+    let (Some(from), Some((owner, _))) = (have.origin.as_deref(), adapter_owner(idx, &have.name))
+    else {
+        return Ok(());
+    };
+    if from == owner || from == sbx_executor_install::LOCAL_ORIGIN {
+        return Ok(());
     }
-    // 아무 저장소도 그 이름을 내지 않는다. 읽지 못한 저장소가 있으면 그것 때문일 수 있다.
-    index::pick_adapter(idx, adapter, platform, v)
+    Err(format!(
+        "adapter {} is installed from {from}, but {owner} owns that name (it comes first in `sbx executor repo ls`); \
+         remove it with `sbx executor adapter rm --force {}@{}`, or choose {from} with --repo {from}",
+        have.name, have.name, have.version
+    ))
 }
 
 /// `c`를 받아 `into`에 설치한다. 이미 있으면 받지 않는다.
@@ -743,7 +788,16 @@ async fn adapter(cx: &Ctx<'_>, ex: &Executors, ad: &Executors, c: &AdapterComman
         } => {
             let (fetcher, idx, order) = indexes(cx, repo.as_deref()).await?;
             let c = index::pick_adapter(&idx, &spec.parse()?, &Platform::host(), protocols())?;
-            owner_was_read(&order, &idx, &c.repository, &c.name)?;
+            owner_was_read(
+                &order,
+                &idx,
+                &c.repository,
+                &c.name,
+                &format!(
+                    "sbx executor adapter install --repo {} {spec}",
+                    c.repository
+                ),
+            )?;
             let i = fetch_and_install(cx, &fetcher, ad, &c, adapter_check).await?;
             print_ref(cx, &i)?;
             Ok(0)
@@ -929,16 +983,7 @@ mod tests {
     fn an_adapter_name_never_falls_through_to_another_repository() {
         let a: Spec = "firecracker".parse().unwrap();
         let p = Platform::host();
-        let wick = |idx: &[(String, index::Index)]| {
-            index::pick(
-                idx,
-                &"wick".parse().unwrap(),
-                &p,
-                sbx_executor_proto::VERSION,
-            )
-            .unwrap()
-        };
-        // 앞 저장소가 그 이름을 내지만 이 규약에 맞는 빌드가 없다: 뒤 저장소의 같은 이름으로 넘어가지 않는다.
+        // 주인(official)에게 이 규약에 맞는 빌드가 없다: 뒤 저장소의 같은 이름으로 넘어가지 않는다.
         let idx = vec![
             (
                 "official".to_owned(),
@@ -950,20 +995,9 @@ mod tests {
             ),
             ("vmm".to_owned(), index(None, true)),
         ];
-        let e = adapter_for(&idx, &names(&idx), &wick(&idx), &a, &p).unwrap_err();
+        let e = adapter_for(&idx, &names(&idx), &a, &p).unwrap_err();
         assert!(e.contains("official"), "{e}");
-        // VMM 묶음의 저장소가 그 이름을 내면, 맞는 빌드가 없어도 거기서 멈춘다.
-        let mut vmm = index(None, true);
-        vmm.adapters = adapter_only("2.0", sbx_executor_proto::VERSION + 7).adapters;
-        let idx = vec![
-            (
-                "evil".to_owned(),
-                adapter_only("1.0", sbx_executor_proto::VERSION),
-            ),
-            ("vmm".to_owned(), vmm),
-        ];
-        assert!(adapter_for(&idx, &names(&idx), &wick(&idx), &a, &p).is_err());
-        // 앞 저장소를 읽지 못했으면 뒤 저장소의 어댑터를 고르지 않는다(그 저장소가 이름을 가졌을 수 있다).
+        // 주인보다 앞 저장소를 읽지 못했으면 고르지 않는다. 안내는 어댑터를 직접 고르는 명령이다.
         let idx = vec![
             (
                 "second".to_owned(),
@@ -972,14 +1006,16 @@ mod tests {
             ("vmm".to_owned(), index(None, true)),
         ];
         let order = vec!["official".to_owned(), "second".to_owned(), "vmm".to_owned()];
-        let e = adapter_for(&idx, &order, &wick(&idx), &a, &p).unwrap_err();
-        assert!(e.contains("official could not be read"), "{e}");
+        let e = adapter_for(&idx, &order, &a, &p).unwrap_err();
+        assert!(
+            e.contains("official could not be read")
+                && e.contains("sbx executor adapter install --repo second firecracker"),
+            "{e}"
+        );
         // 읽지 못한 저장소가 뒤에 있으면 상관없다.
         let order = vec!["second".to_owned(), "vmm".to_owned(), "later".to_owned()];
         assert_eq!(
-            adapter_for(&idx, &order, &wick(&idx), &a, &p)
-                .unwrap()
-                .repository,
+            adapter_for(&idx, &order, &a, &p).unwrap().repository,
             "second"
         );
     }
@@ -988,11 +1024,11 @@ mod tests {
     fn a_name_is_not_installed_from_behind_an_unread_repository() {
         let idx = vec![("b".to_owned(), index(None, true))];
         let order = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert!(owner_was_read(&order(&["b"]), &idx, "b", "wick").is_ok());
-        assert!(owner_was_read(&order(&["b", "a"]), &idx, "b", "wick").is_ok());
-        let e = owner_was_read(&order(&["a", "b"]), &idx, "b", "wick").unwrap_err();
+        assert!(owner_was_read(&order(&["b"]), &idx, "b", "wick", "").is_ok());
+        assert!(owner_was_read(&order(&["b", "a"]), &idx, "b", "wick", "").is_ok());
+        let e = owner_was_read(&order(&["a", "b"]), &idx, "b", "wick", "RETRY").unwrap_err();
         assert!(
-            e.contains("repository a could not be read") && e.contains("--repo b"),
+            e.contains("repository a could not be read") && e.contains("RETRY"),
             "{e}"
         );
     }
@@ -1020,53 +1056,62 @@ mod tests {
     }
 
     #[test]
-    fn the_adapter_comes_from_the_vmm_repository_first_then_list_order() {
+    fn an_adapter_name_belongs_to_the_first_repository_that_has_it() {
         let a: Spec = "firecracker".parse().unwrap();
         let p = Platform::host();
-        // 앞 저장소가 더 높은 버전을 올려도 VMM 묶음이 있던 저장소의 어댑터를 고른다.
+        let pick = |idx: &[(String, index::Index)]| adapter_for(idx, &names(idx), &a, &p);
+        // 앞 저장소의 것이다. VMM 묶음의 저장소가 같은 이름을 내도 그렇다(어댑터는 이름마다 하나라 함께 쓴다).
         let idx = vec![
-            ("other".to_owned(), index(Some("99.0"), false)),
             ("official".to_owned(), index(Some("0.2.0"), true)),
+            ("later".to_owned(), index(Some("99.0"), true)),
         ];
-        let c = index::pick(
-            &idx,
-            &"wick".parse().unwrap(),
-            &p,
-            sbx_executor_proto::VERSION,
-        )
-        .unwrap();
-        let got = adapter_for(&idx, &names(&idx), &c, &a, &p).unwrap();
+        let got = pick(&idx).unwrap();
         assert_eq!(
             (got.repository.as_str(), got.version.as_str()),
             ("official", "0.2.0")
         );
-        // 그 저장소에 없으면 목록 순서대로.
-        let idx = vec![
-            ("first".to_owned(), index(Some("0.1.0"), false)),
-            ("second".to_owned(), index(Some("0.3.0"), false)),
-            ("vmm".to_owned(), index(None, true)),
-        ];
-        let c = index::pick(
-            &idx,
-            &"wick".parse().unwrap(),
-            &p,
-            sbx_executor_proto::VERSION,
-        )
-        .unwrap();
-        let got = adapter_for(&idx, &names(&idx), &c, &a, &p).unwrap();
-        assert_eq!(got.repository, "first");
+        // 그 이름을 내는 저장소가 없으면 없다.
         let idx = vec![("vmm".to_owned(), index(None, true))];
-        let c = index::pick(
-            &idx,
-            &"wick".parse().unwrap(),
-            &p,
-            sbx_executor_proto::VERSION,
-        )
-        .unwrap();
         assert!(
-            adapter_for(&idx, &names(&idx), &c, &a, &p)
-                .unwrap_err()
-                .contains("no adapter")
+            pick(&idx).unwrap_err().contains("no adapter"),
+            "{}",
+            pick(&idx).unwrap_err()
         );
+        // 읽지 못한 저장소가 있으면 그 탓일 수 있다고 알린다.
+        let order = vec!["gone".to_owned(), "vmm".to_owned()];
+        let e = adapter_for(&idx, &order, &a, &p).unwrap_err();
+        assert!(e.contains("gone could not be read"), "{e}");
+    }
+
+    #[test]
+    fn an_installed_adapter_must_come_from_the_owner_of_its_name() {
+        let installed = |origin: Option<&str>| Installed {
+            name: "firecracker".into(),
+            version: "1.0".into(),
+            dir: "/x".into(),
+            executable: "/x/sbx-executor".into(),
+            adapter: None,
+            origin: origin.map(str::to_owned),
+        };
+        let idx = vec![
+            ("official".to_owned(), index(Some("0.2.0"), true)),
+            ("x".to_owned(), index(Some("9.0"), true)),
+        ];
+        // 나중에 더한 저장소 x가 자기 VMM과 함께 들여온 어댑터는 official의 VMM 묶음에 쓰지 않는다.
+        let e = installed_adapter_is_the_owners(&idx, &installed(Some("x"))).unwrap_err();
+        assert!(
+            e.contains("official owns that name")
+                && e.contains("adapter rm --force firecracker@1.0"),
+            "{e}"
+        );
+        assert!(installed_adapter_is_the_owners(&idx, &installed(Some("official"))).is_ok());
+        // 직접 설치한 것, 출처가 없는 옛 설치, 주인을 모르는 이름은 막지 않는다.
+        assert!(installed_adapter_is_the_owners(&idx, &installed(Some(LOCAL_ORIGIN))).is_ok());
+        assert!(installed_adapter_is_the_owners(&idx, &installed(None)).is_ok());
+        let only_vmm = vec![("v".to_owned(), index(None, true))];
+        assert!(installed_adapter_is_the_owners(&only_vmm, &installed(Some("x"))).is_ok());
+        // --repo x로 좁히면 x가 주인이다.
+        let just_x = vec![("x".to_owned(), index(Some("9.0"), true))];
+        assert!(installed_adapter_is_the_owners(&just_x, &installed(Some("x"))).is_ok());
     }
 }

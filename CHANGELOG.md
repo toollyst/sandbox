@@ -18,6 +18,8 @@ to release a tag without one. Changes land under `## Unreleased` first, and the 
 - Executor and adapter names and versions are lowercase: macOS and Windows file systems treat `Fake` and `fake` as
   one directory.
 - The repository name `local` is reserved for executors installed with `--from`.
+- A VMM package's adapter now comes from the first repository that publishes the adapter's name, not from the
+  VMM package's repository first; an adapter installed from another repository is not used for it.
 - `sbx executor install NAME` refuses to take NAME from a repository when one earlier in `repo ls` order could not be
   read; fix that repository or choose with `--repo`.
 - `sbx mcp` caps what agents can ask for: 8 sandboxes at once, 4 vCPUs and 4 GiB of memory each (`--max-sandboxes`,
