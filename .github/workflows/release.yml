@@ -1,14 +1,16 @@
 # 릴리스: 태그 `v<버전>`(작업 공간 버전과 같아야 한다)을 push하면
 #
-# 1. sbx: Linux x86_64/aarch64(musl 정적)와 macOS arm64의 `sbx-<os>-<arch>.tar.gz`, Windows x86_64의
-#    `sbx-windows-x86_64.zip`(+ 각각 `.sha256`)
+# 1. sbx (재사용 워크플로 sbx-build.yml, SLSA Build L3): Linux x86_64/aarch64(musl 정적)와 macOS arm64의
+#    `sbx-<os>-<arch>.tar.gz`, Windows x86_64의 `sbx-windows-x86_64.zip`(+ 각각 `.sha256`). 실행 파일에는
+#    cargo-auditable로 의존성 목록이 들어 있다. 같은 워크플로가 SBOM(SPDX, Cargo.lock 전체)을 만들고, 태그에서는
+#    출처 증명(SLSA build provenance)과 SBOM 증명을 sbx-build.yml의 신원으로 만든다.
 # 2. smoke: KVM이 있는 Linux x86_64 러너에서, 이 커밋으로 만든 어댑터와 upstream Firecracker VMM 묶음을 로컬 v2
 #    저장소(file://)에 두고 1의 sbx로 `sbx executor install firecracker@<FIRECRACKER>`를 한 뒤 `cargo xtask smoke`를
 #    통과해야 올린다(ci.yml의 vm과 같다). sbx 릴리스는 wick 릴리스에도 공식 저장소의 내용에도 기대지 않는다.
 #    sbx는 VMM 런타임에 묶이지 않는다.
-# 3. 서명: 각 묶음에 Sigstore 번들(`.sigstore.json`, keyless: 이 워크플로의 GitHub OIDC 신원), GitHub 출처 증명
-#    (SLSA build provenance)과 SBOM(SPDX, Cargo.lock 전체) 증명을 만든다.
-# 4. GitHub Release에 1과 3의 파일을 올리고, `install.sh`와 `install.ps1`을 gh-pages 맨 위에 둔다.
+# 3. sign: 각 묶음에 Sigstore 번들(`.sigstore.json`, keyless: 이 워크플로 release.yml의 GitHub OIDC 신원).
+# 4. publish (environment `release`: 승인자가 승인해야 돈다, 태그 v*만): GitHub Release에 1과 3의 파일을 올리고,
+#    `install.sh`와 `install.ps1`을 gh-pages 맨 위에 둔다.
 #    (저장소 설정의 Pages 소스를 gh-pages 브랜치로 해 두어야 https://toollyst.github.io/sandbox/ 로 보인다.)
 #
 # 실행기(wick VMM 묶음, firecracker 어댑터)는 여기서 만들지 않는다. 공식 실행기 저장소는 따로 있는
@@ -19,7 +21,7 @@ on:
   push:
     tags: ['v*']
   # 리허설: 아무 브랜치에서나 손으로 돌려 1~3(빌드, smoke, SBOM, Sigstore 서명)을 해 보고, 결과를 작업 산출물로
-  # 남긴다. GitHub Release, 출처 증명, gh-pages는 건드리지 않는다.
+  # 남긴다. 출처 증명, publish(GitHub Release, gh-pages)는 하지 않는다.
   workflow_dispatch:
 
 permissions:
@@ -51,53 +53,17 @@ jobs:
           fi
           echo "version=$want" >> "$GITHUB_OUTPUT"
 
+  # 빌드와 출처 증명은 재사용 워크플로(sbx-build.yml) 안에서 한다(SLSA Build L3).
   sbx:
     needs: version
-    strategy:
-      matrix:
-        include:
-          - { os: ubuntu-latest, platform: linux-x86_64, target: x86_64-unknown-linux-musl }
-          - { os: ubuntu-24.04-arm, platform: linux-aarch64, target: aarch64-unknown-linux-musl }
-          - { os: macos-15, platform: darwin-aarch64, target: '' }
-          # Windows: 샌드박스를 띄울 실행기는 아직 없지만 pull·prepare·images가 되고, install.ps1이 받는다.
-          - { os: windows-latest, platform: windows-x86_64, target: '' }
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: build
-        shell: bash
-        run: |
-          arch=$(uname -m | sed s/arm64/aarch64/)
-          rustup target add "$arch-unknown-linux-musl"
-          if [ -n "${{ matrix.target }}" ]; then
-            sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
-            cargo xtask dist --target "${{ matrix.target }}"
-            out="target/${{ matrix.target }}/release"
-          else
-            cargo xtask dist
-            out=target/release
-          fi
-          d="sbx-${{ matrix.platform }}"
-          exe=""; [ "$RUNNER_OS" != Windows ] || exe=.exe
-          mkdir -p "dist/$d"
-          cp "$out/sbx$exe" "$out/sbx-shim$exe" LICENSE-APACHE LICENSE-MIT README.md "dist/$d/"
-          "dist/$d/sbx$exe" --version
-          # Windows는 zip(install.ps1이 Expand-Archive로 푼다), 나머지는 tar.gz.
-          if [ "$RUNNER_OS" = Windows ]; then
-            f="$d.zip"
-            (cd dist && 7z a -tzip -bso0 "$f" "$d")
-          else
-            f="$d.tar.gz"
-            tar -czf "dist/$f" -C dist "$d"
-          fi
-          if command -v sha256sum >/dev/null; then sum() { sha256sum "$1"; }; else sum() { shasum -a 256 "$1"; }; fi
-          (cd dist && sum "$f" | sed 's/ \*/  /' > "$f.sha256" && cat "$f.sha256")
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: sbx-${{ matrix.platform }}
-          path: |
-            dist/sbx-${{ matrix.platform }}.tar.gz*
-            dist/sbx-${{ matrix.platform }}.zip*
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/sbx-build.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      attest: ${{ github.event_name == 'push' }}
 
   smoke:
     needs: [version, sbx]
@@ -136,49 +102,24 @@ jobs:
           av=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "sbx-executor-firecracker") | .version')
           .github/scripts/smoke-local.sh "$PWD/dist/sbx-linux-x86_64/sbx" executors adapter "$av" vmm firecracker "$FIRECRACKER"
 
-  publish:
+  # 서명: 묶음마다 Sigstore 번들. 신원은 이 파일(release.yml@refs/tags/v…)이고 install.sh·install.ps1이 그것을 본다.
+  sign:
     needs: [version, sbx, smoke]
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      # Sigstore 서명(keyless, GitHub OIDC)과 GitHub 출처 증명(attestation)에 쓴다.
+      contents: read
+      # Sigstore 서명(keyless, GitHub OIDC)에 쓴다.
       id-token: write
-      attestations: write
-    # gh-pages에 push하는 것은 이 job 하나다.
-    concurrency:
-      group: gh-pages
-      cancel-in-progress: false
-    env:
-      GH_TOKEN: ${{ github.token }}
-      VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: sbx-*
           path: artifacts
-      # SBOM: Cargo.lock의 의존성 전부(SPDX JSON). 릴리스에 올리고 각 묶음에 증명으로도 붙인다.
-      - uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          path: .
-          format: spdx-json
-          output-file: artifacts/sbx-${{ needs.version.outputs.version }}.spdx.json
-          upload-artifact: false
-          upload-release-assets: false
-      # 출처 증명(SLSA build provenance)과 SBOM 증명. `gh attestation verify <file> -R toollyst/sandbox`로 확인한다.
-      - if: github.event_name == 'push'
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-path: |
-            artifacts/sbx-*/sbx-*.tar.gz
-            artifacts/sbx-*/sbx-*.zip
-      - if: github.event_name == 'push'
-        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
-        with:
-          subject-path: |
-            artifacts/sbx-*/sbx-*.tar.gz
-            artifacts/sbx-*/sbx-*.zip
-          sbom-path: artifacts/sbx-${{ needs.version.outputs.version }}.spdx.json
+          name: sbom
+          path: artifacts
       # Sigstore 번들(.sigstore.json): gh 없이 cosign verify-blob으로 확인할 수 있게. install.sh가 쓴다.
       - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
       - name: sign (Sigstore keyless)
@@ -197,14 +138,39 @@ jobs:
           name: rehearsal
           path: artifacts
       - if: github.event_name == 'push'
-        name: release
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: signed
+          path: artifacts
+
+  # 올리기: 태그에서만, 승인이 필요한 environment `release`에서(저장소 설정: 승인자, 태그 v*만).
+  publish:
+    if: github.event_name == 'push'
+    needs: [version, sign]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    # gh-pages에 push하는 것은 이 job 하나다.
+    concurrency:
+      group: gh-pages
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signed
+          path: artifacts
+      - name: release
         run: |
           gh release create "$GITHUB_REF_NAME" --title "sbx $VERSION" --notes-file artifacts/release-notes.md --generate-notes \
             artifacts/sbx-*/sbx-*.tar.gz artifacts/sbx-*/sbx-*.tar.gz.sha256 artifacts/sbx-*/sbx-*.tar.gz.sigstore.json \
             artifacts/sbx-*/sbx-*.zip artifacts/sbx-*/sbx-*.zip.sha256 artifacts/sbx-*/sbx-*.zip.sigstore.json \
             "artifacts/sbx-$VERSION.spdx.json"
-      - if: github.event_name == 'push'
-        name: install.sh and install.ps1 (gh-pages)
+      - name: install.sh and install.ps1 (gh-pages)
         run: |
           if git fetch origin gh-pages:gh-pages 2>/dev/null; then
             git worktree add pages gh-pages

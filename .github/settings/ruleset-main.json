@@ -1,0 +1,34 @@
+{
+  "name": "main",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": { "ref_name": { "include": ["~DEFAULT_BRANCH"], "exclude": [] } },
+  "bypass_actors": [
+    { "actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always" },
+    { "actor_id": 1, "actor_type": "OrganizationAdmin", "bypass_mode": "always" }
+  ],
+  "rules": [
+    { "type": "deletion" },
+    { "type": "non_fast_forward" },
+    { "type": "pull_request", "parameters": {
+        "required_approving_review_count": 0,
+        "dismiss_stale_reviews_on_push": true,
+        "require_code_owner_review": false,
+        "require_last_push_approval": false,
+        "required_review_thread_resolution": true,
+        "allowed_merge_methods": ["merge", "squash", "rebase"] } },
+    { "type": "required_status_checks", "parameters": {
+        "strict_required_status_checks_policy": false,
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [
+          { "context": "supply-chain", "integration_id": 15368 },
+          { "context": "dco", "integration_id": 15368 },
+          { "context": "test (ubuntu-latest)", "integration_id": 15368 },
+          { "context": "test (ubuntu-24.04-arm)", "integration_id": 15368 },
+          { "context": "test (macos-latest)", "integration_id": 15368 },
+          { "context": "test (windows-latest)", "integration_id": 15368 },
+          { "context": "privileged", "integration_id": 15368 },
+          { "context": "vm (x86_64)", "integration_id": 15368 }
+        ] } }
+  ]
+}

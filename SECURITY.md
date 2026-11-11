@@ -52,6 +52,13 @@ cosign verify-blob --bundle sbx-linux-x86_64.tar.gz.sigstore.json \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com sbx-linux-x86_64.tar.gz
 ```
 
+From v0.2.1, the archives are built and attested inside a reusable workflow,
+[`sbx-build.yml`](.github/workflows/sbx-build.yml), which the release workflow can call but not change (SLSA Build
+Level 3). Add `--signer-workflow toollyst/sandbox/.github/workflows/sbx-build.yml` to `gh attestation verify` to
+require that. The binaries also carry their dependency list ([cargo-auditable](https://github.com/rust-secure-code/cargo-auditable)),
+so `cargo audit bin sbx`, syft or Trivy can check an installed `sbx` without the source. Publishing a release needs a
+maintainer's approval (the `release` environment), and release tags and `main` are protected by repository rulesets.
+
 Dependencies are checked on every push against the RustSec advisory database, an allow list of licenses and
 crates.io as the only source ([`deny.toml`](deny.toml)), and GitHub Actions are pinned to commit SHAs.
 

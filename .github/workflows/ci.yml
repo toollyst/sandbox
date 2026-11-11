@@ -3,7 +3,7 @@ name: ci
 on:
   push:
     # 작업 브랜치(feat/**)도 PR 없이 실제 VM까지 돌려 본다.
-    branches: [main, 'feat/**']
+    branches: [main, 'feat/**', 'release/**']
   pull_request:
   workflow_dispatch:
 

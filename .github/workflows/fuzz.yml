@@ -13,7 +13,7 @@ name: fuzz
 
 on:
   push:
-    branches: [main, 'feat/**']
+    branches: [main, 'feat/**', 'release/**']
   workflow_dispatch:
     inputs:
       seconds:

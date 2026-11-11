@@ -5,6 +5,10 @@
 //!
 //! 결과는 `target/release/sbx`와 `target/release/sbx-shim`이다. 둘을 같은 디렉터리에 두면 sbx가 shim을 찾는다.
 //!
+//! `--auditable`: `cargo auditable build`로 빌드해 실행 파일 안에 의존성 목록(이름, 버전, 출처)을 넣는다
+//! ([cargo-auditable](https://github.com/rust-secure-code/cargo-auditable)). 그러면 `cargo audit bin`, syft, Trivy가
+//! 받은 실행 파일만 보고 알려진 취약점을 찾는다. 릴리스가 쓴다. `cargo install cargo-auditable`이 있어야 한다.
+//!
 //! `--target <triple>`: 그 대상으로 빌드한다(결과는 `target/<triple>/release/`). 릴리스는 Linux에서
 //! `<arch>-unknown-linux-musl`로 정적 실행 파일을 만든다(어느 배포판에서나 돈다). 게스트 init의 아키텍처는 대상의
 //! 아키텍처다.
@@ -22,10 +26,12 @@ use crate::initramfs;
 /// 실행한다. 만든 실행 파일 경로를 돌려준다.
 pub fn run(root: &Path, args: &[String]) -> Result<Vec<PathBuf>, String> {
     let mut target: Option<String> = None;
+    let mut auditable = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--target" => target = Some(it.next().ok_or("--target needs a value")?.clone()),
+            "--auditable" => auditable = true,
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
@@ -36,9 +42,11 @@ pub fn run(root: &Path, args: &[String]) -> Result<Vec<PathBuf>, String> {
     let guest = initramfs::run(root, &["--arch".into(), arch.into()])?;
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let mut build = Command::new(cargo);
-    build
-        .current_dir(root)
-        .args(["build", "--release", "-p", "sbx-cli", "-p", "sbx-shim"]);
+    build.current_dir(root);
+    if auditable {
+        build.arg("auditable");
+    }
+    build.args(["build", "--release", "-p", "sbx-cli", "-p", "sbx-shim"]);
     if let Some(t) = &target {
         build.args(["--target", t]);
     }

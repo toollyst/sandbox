@@ -155,13 +155,20 @@ To cut a release:
    scratch `SBX_INSTALL_DIR`, then `sbx info`, and with an executor installed (`sbx executor install wick` once the official repository has
    it), `cargo xtask smoke --sbx <that sbx>`.
 
+`build` and the attestations run in the reusable [`sbx-build.yml`](../../.github/workflows/sbx-build.yml) (SLSA Build
+L3: the provenance is signed as that workflow, not as `release.yml`), and the binaries are built with
+`cargo xtask dist --auditable`. `sign` makes the Sigstore bundles as `release.yml`, the identity `install.sh` and
+`install.ps1` check. `publish` runs in the `release` environment, so it waits until a maintainer approves the
+deployment on the run's page (Settings → Environments → `release`: required reviewers, tags `v*` only). Tags `v*` can
+only be created by admins, and `main` and `gh-pages` can't be force-pushed or deleted (Settings → Rules).
+
 A tag whose workflow fails publishes nothing, because `publish` only runs when every build succeeded. Fix the cause,
 bump the version and tag again rather than moving a pushed tag. If only the `gh-pages` push fails, the GitHub release
 is already up: copy `install.sh` and `install.ps1` to `gh-pages` by hand and fix the step on `main`.
 
 **Rehearsal.** `gh workflow run release.yml --ref <branch>` runs the same jobs on any branch without a tag. It builds,
 runs the smoke test, signs with Sigstore and uploads the result as the artifact `rehearsal`, with the notes from
-`## Unreleased`. It creates no GitHub release and no attestations, and it leaves `gh-pages` alone.
+`## Unreleased`. It creates no GitHub release and no attestations, skips `publish`, and leaves `gh-pages` alone.
 
 **Actions updates.** Dependabot opens one weekly PR for all GitHub Actions
 ([`dependabot.yml`](../../.github/dependabot.yml)). A pull request runs only `ci.yml`, so before merging one that
