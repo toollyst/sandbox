@@ -63,6 +63,7 @@ pub mod cpplan;
 pub mod egress;
 mod error;
 mod hostfs;
+mod ports;
 pub mod process;
 mod records;
 pub mod validate;
@@ -116,6 +117,8 @@ struct Owned {
     started: std::time::Instant,
     /// 기본 프로세스가 아닌 쪽이 VM을 끈 까닭(수명). 끝을 기록할 때 오류로 쓴다.
     ended_by: Option<String>,
+    /// `-p`의 듣기. 버리면(정리할 때) 멈춘다.
+    _ports: Option<ports::Forwarding>,
     _lease: RootfsLease,
     _lock: OwnerLock,
 }
@@ -159,6 +162,8 @@ pub struct SandboxInfo {
     pub control: Option<PathBuf>,
     /// 게스트 안 나가는 연결 프록시의 포트 (실행 중이고 네트워크를 허용했을 때).
     pub egress_port: Option<u16>,
+    /// 공개한 포트(`-p`, 실행 중일 때): (듣는 호스트 주소, 게스트 포트). 포트 0을 준 것은 OS가 고른 포트다.
+    pub published: Vec<(std::net::SocketAddr, u16)>,
     /// 만든 시각. 만든 뒤 바뀌지 않는 설정 파일의 수정 시각이다. 파일 시스템이 주지 않으면 `None`.
     pub created: Option<std::time::SystemTime>,
 }
@@ -354,6 +359,7 @@ impl Runtime {
             exit_code: state.exit_code,
             control: state.control,
             egress_port: state.egress_port,
+            published: state.published,
             created: std::fs::metadata(paths.spec())
                 .and_then(|m| m.modified())
                 .ok(),
@@ -457,6 +463,7 @@ impl Runtime {
             exit_code,
             control: None,
             egress_port: None,
+            published: Vec::new(),
         };
         if records::write_state(&self.paths(id), &state).is_ok() {
             let spec = records::read(&self.paths(id))
@@ -709,6 +716,9 @@ impl Sandbox {
             let _ = records::write_state(&paths, &state);
             e
         };
+        // 포트는 VM을 띄우기 전에 잡는다: 이미 쓰는 포트면 VM 없이 실패한다.
+        let bound = ports::bind(&spec.ports).map_err(record_failure)?;
+        let published = bound.published();
         let vm = rt
             .inner
             .executor
@@ -757,7 +767,11 @@ impl Sandbox {
                         Some(port)
                     }
                 };
-                guest.exec(main).map(|(c, pid)| (c, pid, egress_port))
+                let forwarding =
+                    (!bound.listeners_empty()).then(|| ports::serve(bound, guest.clone()));
+                guest
+                    .exec(main)
+                    .map(|(c, pid)| (c, pid, egress_port, forwarding))
             })();
             if r.is_err() {
                 let _ = vm.kill();
@@ -765,7 +779,7 @@ impl Sandbox {
             (vm, r)
         })
         .await;
-        let (conn, pid, egress_port) = started.map_err(record_failure)?;
+        let (conn, pid, egress_port, forwarding) = started.map_err(record_failure)?;
 
         let state = StateRecord {
             state: State::Running,
@@ -774,6 +788,7 @@ impl Sandbox {
             exit_code: None,
             control: Some(control.clone()),
             egress_port,
+            published,
         };
         records::write_state(&paths, &state)?;
         rt.emit("start", &id, Some(&spec), &[]);
@@ -785,6 +800,7 @@ impl Sandbox {
                 control,
                 started,
                 ended_by: None,
+                _ports: forwarding,
                 _lease: lease,
                 _lock: owner,
             },

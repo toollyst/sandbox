@@ -435,6 +435,43 @@ fn host_disconnect_kills_the_process() {
 }
 
 #[test]
+fn forward_connects_to_a_port_inside_and_relays_both_ways() {
+    use std::io::{Read, Write};
+    let f = Fixture::new("forward");
+    // 게스트 안의 서비스 흉내: 받은 것을 대문자로 돌려주고 닫는다.
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    thread::spawn(move || {
+        let (mut s, _) = l.accept().unwrap();
+        let mut b = Vec::new();
+        s.read_to_end(&mut b).unwrap();
+        s.write_all(&b.to_ascii_uppercase()).unwrap();
+    });
+    let mut c = f.connect();
+    send(&mut c, HostMsg::Forward { port });
+    assert_eq!(recv(&mut c), GuestMsg::Done);
+    send(&mut c, HostMsg::Data(b"ping".to_vec()));
+    send(&mut c, HostMsg::End);
+    let mut got = Vec::new();
+    loop {
+        match recv(&mut c) {
+            GuestMsg::Data(b) => got.extend(b),
+            GuestMsg::End => break,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    assert_eq!(got, b"PING");
+
+    // 듣는 것이 없으면 NotFound.
+    let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let closed = free.local_addr().unwrap().port();
+    drop(free);
+    let mut c = f.connect();
+    send(&mut c, HostMsg::Forward { port: closed });
+    assert_eq!(error_kind(&mut c), ErrorKind::NotFound);
+}
+
+#[test]
 fn a_detached_process_outlives_its_connection() {
     let f = Fixture::new("detached");
     let mark = f.dir.join("done");

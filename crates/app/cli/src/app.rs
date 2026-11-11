@@ -1042,6 +1042,7 @@ impl Ctx {
                         tty: a.tty,
                         name: a.name.clone(),
                         lifetime_secs: a.timeout,
+                        ports: a.publish.clone(),
                     };
                     let sandbox = self.launcher_with(&chosen)?.create(spec).await?;
                     return Ok(sandbox.id().clone());

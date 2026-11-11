@@ -406,6 +406,11 @@ pub fn cp_endpoint(value: &str) -> CpEndpoint {
     }
 }
 
+/// `-p`의 값([`sbx_model::PortMapping`]).
+pub fn port_mapping(v: &str) -> Result<sbx_model::PortMapping, String> {
+    v.parse()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

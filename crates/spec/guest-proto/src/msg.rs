@@ -226,6 +226,13 @@ pub enum HostMsg {
     ExecDetached(Exec),
     /// 자원 사용량을 묻는다(`sbx stats`). 흐름: 게스트가 [`GuestMsg::Usage`]. 모르는 게스트(0.2.0)는 답 없이 닫는다.
     Usage,
+    /// 호스트에 온 TCP 연결 하나를 게스트 `127.0.0.1:port`로 잇는다(`-p`). 흐름: 게스트가 연결하면 [`GuestMsg::Done`],
+    /// 못 하면 [`GuestMsg::Error`]. `Done` 뒤로는 나가는 연결과 같다: 호스트는 [`HostMsg::Data`]·[`HostMsg::End`],
+    /// 게스트는 [`GuestMsg::Data`]·[`GuestMsg::End`]. 모르는 게스트(0.2.0)는 답 없이 닫는다.
+    Forward {
+        /// 게스트 포트.
+        port: u16,
+    },
 }
 
 /// 게스트 → 호스트.
@@ -343,6 +350,7 @@ mod tag {
     pub const SIGNAL_MAIN: u8 = 0x13;
     pub const EXEC_DETACHED: u8 = 0x14;
     pub const USAGE: u8 = 0x15;
+    pub const FORWARD: u8 = 0x16;
 
     pub const HELLO_ACK: u8 = 0x81;
     pub const STARTED: u8 = 0x82;
@@ -561,6 +569,10 @@ impl HostMsg {
                 e.i32(*n);
             }
             HostMsg::Usage => e = Encoder::new(tag::USAGE),
+            HostMsg::Forward { port } => {
+                e = Encoder::new(tag::FORWARD);
+                e.u16(*port);
+            }
         }
         e.finish()
     }
@@ -618,6 +630,7 @@ impl HostMsg {
             },
             tag::SIGNAL_MAIN => HostMsg::SignalMain(d.i32()?),
             tag::USAGE => HostMsg::Usage,
+            tag::FORWARD => HostMsg::Forward { port: d.u16()? },
             t => return bad(format!("unknown host message {t:#04x}")),
         };
         d.end()?;

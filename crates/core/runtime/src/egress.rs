@@ -152,7 +152,7 @@ fn dial(addrs: &[SocketAddr]) -> Result<TcpStream, String> {
     ))
 }
 
-fn splice(conn: Box<dyn GuestConn>, tcp: TcpStream) {
+pub(crate) fn splice(conn: Box<dyn GuestConn>, tcp: TcpStream) {
     let (Ok(mut conn_out), Ok(mut tcp_in)) = (conn.try_clone_conn(), tcp.try_clone()) else {
         return;
     };

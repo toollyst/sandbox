@@ -74,6 +74,19 @@ A rule can be `host:port`, `*.example.com:443`, `10.0.0.5:*` or `[::1]:80`. A na
 private address is refused unless the rule names that IP, or `localhost`, explicitly. Without `--network allow`, name
 lookups fail at once instead of hanging.
 
+`-p` publishes a TCP port of the sandbox on the host, with Docker's syntax:
+
+```sh
+sbx run -d --name web -p 8080:80 nginx          # http://127.0.0.1:8080 reaches port 80 inside
+sbx run -d -p 3000 node:22 node server.js       # a free host port; `sbx inspect` shows it under ports
+sbx run -d -p 0.0.0.0:8080:80 nginx             # reachable from other machines too
+```
+
+Unlike Docker, a mapping without an address listens on `127.0.0.1` only. The service inside must listen on its
+loopback (or on all addresses). It works with `--network none`: published ports don't let the sandbox reach anything.
+The process that owns the VM (`sbx` for an attached sandbox, `sbx-shim` for a detached one) does the listening, so a
+port that is already in use makes the start fail. A sandbox started by an older `sbx` needs a restart first.
+
 ## Images
 
 `pull` (with a progress bar), `prepare` (build the disk image ahead of time), `images [-q]` and `rmi [-f]`. `run`

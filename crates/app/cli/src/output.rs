@@ -830,6 +830,10 @@ pub struct Sandbox {
     /// Seconds after each start when sbx stops it (`--timeout`); absent when it runs until stopped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
+    /// Published ports (`-p`) as `HOST_IP:HOST_PORT->PORT/tcp`. While it runs, the addresses it listens on (with
+    /// the port the OS picked for a `-p PORT`); otherwise what was asked for (`:0` = pick one).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ports: Vec<String>,
 }
 
 /// Sandbox lifecycle state (OCI names).
@@ -1007,6 +1011,14 @@ impl Sandbox {
             interactive: spec.open_stdin,
             tty: spec.tty,
             timeout_secs: spec.lifetime_secs,
+            ports: if s.published.is_empty() {
+                spec.ports.iter().map(ToString::to_string).collect()
+            } else {
+                s.published
+                    .iter()
+                    .map(|(a, g)| format!("{a}->{g}/tcp"))
+                    .collect()
+            },
         }
     }
 }

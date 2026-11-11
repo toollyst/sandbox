@@ -816,6 +816,83 @@ pub struct SandboxSpec {
     /// 기다림 뒤 전원 끄기. VM을 소유한 프로세스(붙어 실행하는 sbx나 `sbx-shim`)가 잰다. 없으면 끝없이.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifetime_secs: Option<u64>,
+    /// 호스트 TCP 포트를 게스트의 포트로 잇는다(`-p`). VM을 소유한 프로세스가 듣는다.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ports: Vec<PortMapping>,
+}
+
+/// `-p [IP:][HOST_PORT:]PORT[/tcp]`: 호스트의 `IP:HOST_PORT`에 온 TCP 연결을 게스트 `127.0.0.1:PORT`로 잇는다.
+/// IP가 없으면 `127.0.0.1`이다(Docker는 모든 주소다: 같은 기계 밖에서 닿게 하려면 `0.0.0.0:`을 적는다).
+/// HOST_PORT가 없거나 0이면 빈 포트를 고른다. TCP만 된다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PortMapping {
+    /// 듣는 호스트 주소.
+    pub host_ip: std::net::IpAddr,
+    /// 듣는 호스트 포트. 0이면 빈 포트.
+    pub host_port: u16,
+    /// 게스트 포트(1 이상).
+    pub guest_port: u16,
+}
+
+impl FromStr for PortMapping {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, String> {
+        let bad = |why: &str| {
+            format!("invalid port mapping {s:?}: {why} (want [IP:][HOST_PORT:]PORT[/tcp])")
+        };
+        let body = match s.rsplit_once('/') {
+            Some((b, "tcp")) => b,
+            Some((_, proto)) => return Err(bad(&format!("only tcp is supported, not {proto}"))),
+            None => s,
+        };
+        let port = |v: &str, zero: bool| -> Result<u16, String> {
+            match v.parse::<u16>() {
+                Ok(0) if !zero => Err(bad("the sandbox port must be 1 to 65535")),
+                Ok(p) => Ok(p),
+                Err(_) => Err(bad(&format!("{v:?} is not a port"))),
+            }
+        };
+        // IPv6는 대괄호로: `[::1]:8080:80`.
+        let (ip, rest) = if let Some(r) = body.strip_prefix('[') {
+            let (ip, rest) = r.split_once("]:").ok_or_else(|| bad("unclosed ["))?;
+            (Some(ip), rest)
+        } else {
+            match body.matches(':').count() {
+                2 => {
+                    let (ip, rest) = body.split_once(':').unwrap_or_default();
+                    (Some(ip), rest)
+                }
+                0 | 1 => (None, body),
+                _ => return Err(bad("put an IPv6 address in brackets")),
+            }
+        };
+        let host_ip = match ip {
+            None => std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            Some(ip) => ip
+                .parse()
+                .map_err(|_| bad(&format!("{ip:?} is not an IP address")))?,
+        };
+        let (host_port, guest_port) = match rest.split_once(':') {
+            Some((h, g)) => (
+                if h.is_empty() { 0 } else { port(h, true)? },
+                port(g, false)?,
+            ),
+            None => (0, port(rest, false)?),
+        };
+        Ok(Self {
+            host_ip,
+            host_port,
+            guest_port,
+        })
+    }
+}
+
+impl fmt::Display for PortMapping {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let addr = std::net::SocketAddr::new(self.host_ip, self.host_port);
+        write!(f, "{addr}->{}/tcp", self.guest_port)
+    }
 }
 
 /// 샌드박스 이름 규칙(Docker와 같다): 영문자나 숫자로 시작하고, 영문자, 숫자, `_`, `.`, `-`로 이어지는
@@ -1055,6 +1132,29 @@ mod signal_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn port_mappings_parse_like_docker_but_bind_localhost() {
+        let p = |s: &str| s.parse::<PortMapping>().map(|m| m.to_string());
+        assert_eq!(p("8080:80").unwrap(), "127.0.0.1:8080->80/tcp");
+        assert_eq!(p("80").unwrap(), "127.0.0.1:0->80/tcp");
+        assert_eq!(p("0.0.0.0:8080:80/tcp").unwrap(), "0.0.0.0:8080->80/tcp");
+        assert_eq!(p("127.0.0.1::80").unwrap(), "127.0.0.1:0->80/tcp");
+        assert_eq!(p("[::1]:8080:80").unwrap(), "[::1]:8080->80/tcp");
+        for bad in [
+            "",
+            "0",
+            "80/udp",
+            "x:80",
+            "1.2.3.4:80:0",
+            "::1:80:80",
+            "70000:80",
+            "a:b:c:d",
+            "[::1:80",
+        ] {
+            assert!(p(bad).is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn sandbox_names_follow_docker() {

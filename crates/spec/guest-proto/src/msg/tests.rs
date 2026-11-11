@@ -74,6 +74,7 @@ fn host_samples() -> Vec<HostMsg> {
         },
         HostMsg::SignalMain(15),
         HostMsg::Usage,
+        HostMsg::Forward { port: 8080 },
         HostMsg::ExecDetached(Exec {
             args: vec!["sleep".into(), "9".into()],
             env: vec![],

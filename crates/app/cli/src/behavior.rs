@@ -336,6 +336,11 @@ pub fn rmi_action(m: &ImageMatch, ref_count: usize, force: bool) -> RmiAction {
 /// Docker와 다른 점: (항목, 이 프로젝트의 동작, 이유).
 pub const DOCKER_DIFFERENCES: &[(&str, &str, &str)] = &[
     (
+        "-p, --publish",
+        "IP를 적지 않으면 127.0.0.1에서 듣는다 (Docker는 모든 주소). TCP만, 게스트 127.0.0.1:PORT로 잇는다. 듣는 것은 VM을 소유한 프로세스(sbx나 sbx-shim)다",
+        "기본 차단 원칙: 같은 기계 밖에 열려면 0.0.0.0:을 적는다. VM에는 네트워크 장치가 없어 게스트 안 루프백으로 잇는다",
+    ),
+    (
         "--network",
         "none(기본, Docker는 bridge)과 allow만 있다. allow는 --allow 목록의 HOST:PORT로 가는 TCP만 게스트 안 HTTP 프록시(HTTP_PROXY 등)를 거쳐 호스트가 연다. VM에는 네트워크 장치가 없다",
         "기획서 원칙: 네트워크는 기본 차단, 허용한 것만 연다. 이름 단위 허용 목록을 실행기 기능 없이 모든 OS에서 강제한다",

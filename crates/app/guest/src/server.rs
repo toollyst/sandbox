@@ -106,6 +106,7 @@ pub fn serve<C: Conn>(conn: C, ctx: &Ctx) {
                 ));
             }
         }
+        Ok(HostMsg::Forward { port }) => crate::egress::forward(port, input, &out),
         Ok(HostMsg::Usage) => match crate::usage::read() {
             Ok(u) => {
                 let _ = out.send(&GuestMsg::Usage(u));

@@ -161,6 +161,20 @@ impl Guest {
         }
     }
 
+    /// `-p`: 게스트 `127.0.0.1:port`로 이어진 연결([`HostMsg::Forward`]). 그 뒤로 Data·End를 주고받는다.
+    pub fn forward(&self, port: u16) -> Result<Box<dyn GuestConn>, RuntimeError> {
+        let mut c = self.open()?;
+        send(&mut *c, &HostMsg::Forward { port })?;
+        match recv(&mut *c)? {
+            GuestMsg::Done => {
+                untimed(&*c)?;
+                Ok(c)
+            }
+            GuestMsg::Error(e) => Err(RuntimeError::Guest(e)),
+            other => Err(proto_err(format!("expected Done, got {other:?}"))),
+        }
+    }
+
     /// 게스트의 자원 사용량([`HostMsg::Usage`]).
     pub fn usage(&self) -> Result<sbx_guest_proto::Usage, RuntimeError> {
         let mut c = self.open()?;

@@ -34,6 +34,7 @@ The MCP server adds no policy of its own. Tool arguments go through the same par
 - Host folders are never mounted, and tools only see sandboxes created through MCP, not the ones you started with
   the CLI (`sbx mcp --all-sandboxes` changes that).
 - Arguments can't be turned into other `sbx` options.
+- Tools don't publish ports (`-p`): nothing an agent starts listens on your machine.
 - Images are pulled with your registry credentials (see [Images](usage.md#images)), so an agent can run private
   images you can pull. It never sees the credentials.
 - `read_file` reads into memory and never follows a link on the host.

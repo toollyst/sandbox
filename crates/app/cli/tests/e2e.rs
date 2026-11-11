@@ -117,6 +117,10 @@ mod unix {
         ),
         ("stats_reports_guest_usage", stats_reports_guest_usage),
         (
+            "published_ports_reach_the_sandbox",
+            published_ports_reach_the_sandbox,
+        ),
+        (
             "login_and_logout_use_dockers_config",
             login_and_logout_use_dockers_config,
         ),
@@ -1705,6 +1709,52 @@ mod unix {
             }
         });
         port
+    }
+
+    fn published_ports_reach_the_sandbox() {
+        use std::io::Read;
+        let e = Env::new();
+        // 가짜 실행기의 게스트는 호스트에서 돈다: 게스트 안 서비스 흉내를 호스트 포트에 띄운다.
+        let service = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let guest_port = service.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for c in service.incoming() {
+                let Ok(mut c) = c else { return };
+                let _ = c.write_all(b"hi from inside\n");
+            }
+        });
+        let o = e.sbx(&[
+            "run",
+            "-d",
+            "--name",
+            "web",
+            "-p",
+            &guest_port.to_string(),
+            IMAGE,
+            "sleep",
+            "30",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = e.sbx(&["--format", "json", "inspect", "web"]);
+        let s: sbx_cli::output::Sandbox = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(s.ports.len(), 1, "{:?}", s.ports);
+        let (host, guest) = s.ports[0].split_once("->").unwrap();
+        assert_eq!(guest, format!("{guest_port}/tcp"));
+        assert!(
+            host.starts_with("127.0.0.1:") && !host.ends_with(":0"),
+            "{host}"
+        );
+        let mut c = std::net::TcpStream::connect(host).unwrap();
+        let mut got = String::new();
+        c.read_to_string(&mut got).unwrap();
+        assert_eq!(got, "hi from inside\n");
+        assert_eq!(e.sbx(&["rm", "-f", "web"]).status.code(), Some(0));
+
+        // 잘못된 매핑과 UDP는 만들기 전에 거부한다.
+        for bad in ["80/udp", "x:80", "8080:0"] {
+            let o = e.sbx(&["create", "-p", bad, IMAGE, "true"]);
+            assert_eq!(o.status.code(), Some(2), "{bad}: {}", text(&o.stderr));
+        }
     }
 
     fn stats_reports_guest_usage() {

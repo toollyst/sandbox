@@ -106,6 +106,7 @@ impl Env {
             tty: false,
             name: None,
             lifetime_secs: None,
+            ports: Vec::new(),
         }
     }
 
@@ -1029,5 +1030,72 @@ fn a_sandbox_stops_when_its_lifetime_runs_out() {
     assert!(started.elapsed() < Duration::from_secs(20));
     let info = e.wait_state(&s, State::Stopped);
     assert_eq!(info.exit_code, Some(143));
+    let _ = std::fs::remove_dir_all(&e.root);
+}
+
+#[cfg(unix)]
+#[test]
+fn published_ports_reach_a_service_inside_and_close_on_stop() {
+    use std::io::{Read, Write};
+    let e = Env::new("ports");
+    e.prepare_image();
+    // 가짜 실행기의 게스트는 호스트에서 돈다: 게스트 안 서비스 흉내를 호스트 포트에 띄운다.
+    let service = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let guest_port = service.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for s in service.incoming() {
+            let Ok(mut s) = s else { return };
+            std::thread::spawn(move || {
+                let mut b = Vec::new();
+                let _ = s.read_to_end(&mut b);
+                let _ = s.write_all(&b.to_ascii_uppercase());
+            });
+        }
+    });
+    let mut spec = e.spec(&["sleep", "30"]);
+    spec.ports = vec![format!("127.0.0.1::{guest_port}").parse().unwrap()];
+    let s = block_on(e.rt.create(spec)).unwrap();
+    let _main = block_on(s.start(IoMode::default())).unwrap();
+    let info = block_on(e.rt.get(s.id())).unwrap().info().clone();
+    assert_eq!(info.published.len(), 1);
+    let (addr, g) = info.published[0];
+    assert_eq!(g, guest_port);
+    assert_ne!(addr.port(), 0, "the picked port is recorded");
+    for _ in 0..2 {
+        let mut c = std::net::TcpStream::connect(addr).unwrap();
+        c.write_all(b"hello").unwrap();
+        c.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut got = Vec::new();
+        c.read_to_end(&mut got).unwrap();
+        assert_eq!(got, b"HELLO");
+    }
+    block_on(
+        block_on(e.rt.get(s.id()))
+            .unwrap()
+            .stop(None, Duration::ZERO),
+    )
+    .unwrap();
+    let info = e.wait_state(&s, State::Stopped);
+    assert!(info.published.is_empty());
+    // 멈추면 듣지 않는다.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while std::net::TcpStream::connect(addr).is_ok() {
+        assert!(Instant::now() < deadline, "{addr} still accepts after stop");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // 이미 쓰는 포트면 VM 없이 시작이 실패한다.
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut spec = e.spec(&["sleep", "30"]);
+    spec.ports = vec![
+        format!("{}:{guest_port}", taken.local_addr().unwrap().port())
+            .parse()
+            .unwrap(),
+    ];
+    let s = block_on(e.rt.create(spec)).unwrap();
+    let err = block_on(s.start(IoMode::default()))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("can't listen"), "{err}");
     let _ = std::fs::remove_dir_all(&e.root);
 }

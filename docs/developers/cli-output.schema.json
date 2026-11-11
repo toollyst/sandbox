@@ -1142,6 +1142,13 @@
           "$ref": "#/$defs/Network",
           "description": "Network access."
         },
+        "ports": {
+          "description": "Published ports (`-p`) as `HOST_IP:HOST_PORT->PORT/tcp`. While it runs, the addresses it listens on (with\nthe port the OS picked for a `-p PORT`); otherwise what was asked for (`:0` = pick one).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "process": {
           "$ref": "#/$defs/Process",
           "description": "The main process."

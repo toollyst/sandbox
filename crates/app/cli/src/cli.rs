@@ -552,6 +552,11 @@ pub struct RunArgs {
     /// the sandbox writes.
     #[arg(long = "storage-opt", value_name = "size=SIZE", value_parser = crate::parse::storage_opt)]
     pub storage_opt: Option<u32>,
+    /// Publish a sandbox TCP port on the host: [IP:][HOST_PORT:]PORT (e.g. 8080:80). IP defaults to 127.0.0.1, so
+    /// only this machine can connect (Docker's default is every address; write 0.0.0.0: for that). Without
+    /// HOST_PORT a free port is picked; `sbx inspect` shows it.
+    #[arg(short = 'p', long = "publish", value_name = "[IP:][HOST_PORT:]PORT", value_parser = crate::parse::port_mapping)]
+    pub publish: Vec<sbx_model::PortMapping>,
     /// Name the sandbox; other commands accept it in place of the ID.
     #[arg(long)]
     pub name: Option<String>,

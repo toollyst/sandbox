@@ -411,6 +411,7 @@ mod tests {
             tty: false,
             name: name.map(Into::into),
             lifetime_secs: None,
+            ports: Vec::new(),
         };
         std::fs::write(dir.join("spec.json"), serde_json::to_vec(&spec).unwrap()).unwrap();
         std::fs::write(dir.join("state.json"), br#"{"state":"stopped"}"#).unwrap();
