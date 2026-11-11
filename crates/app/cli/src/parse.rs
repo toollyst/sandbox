@@ -78,6 +78,41 @@ pub fn memory_mib(value: &str) -> ParseResult<u32> {
     u32::try_from(bytes >> 20).map_err(|_| format!("memory value too large: {value:?}"))
 }
 
+/// 쓰기 디스크(scratch)의 가장 작은 크기(MiB). 게스트가 그 위에 ext 파일 시스템을 만든다.
+pub const MIN_SCRATCH_MIB: u32 = 64;
+
+/// `--storage-opt KEY=VALUE`(Docker와 같은 모양). 지금 키는 `size`(쓰기 디스크 크기: `20g`, `512m`, `1t`)뿐이다.
+/// 디스크는 sparse 파일이라 호스트에서는 게스트가 쓴 만큼만 차지한다. 모르는 키는 오류다.
+pub fn storage_opt(value: &str) -> ParseResult<u32> {
+    let (key, v) = value
+        .split_once('=')
+        .ok_or_else(|| format!("--storage-opt takes KEY=VALUE, not {value:?}"))?;
+    if key.trim() != "size" {
+        return Err(format!(
+            "unknown storage option {key:?} (the only one is size, e.g. size=20g)"
+        ));
+    }
+    let v = v.trim().to_ascii_lowercase();
+    let v = v.strip_suffix('b').filter(|x| x.ends_with(['k', 'm', 'g', 't'])).unwrap_or(&v);
+    let mib = match v.strip_suffix('t') {
+        Some(n) => n
+            .parse::<u32>()
+            .ok()
+            .and_then(|n| n.checked_mul(1 << 20))
+            .ok_or_else(|| format!("invalid size {v:?}"))?,
+        None => memory_mib(v).map_err(|_| format!("invalid size {v:?} (e.g. 512m, 20g, 1t)"))?,
+    };
+    if mib < MIN_SCRATCH_MIB {
+        return Err(format!("size must be at least {MIN_SCRATCH_MIB}m"));
+    }
+    Ok(mib)
+}
+
+/// 디스크 크기 하나(`--storage-opt`의 `size` 값과 같은 모양): `512m`, `20g`, `1t`.
+pub fn disk_mib(value: &str) -> ParseResult<u32> {
+    storage_opt(&format!("size={value}"))
+}
+
 /// `--cpus`. VM의 vCPU 개수라서 1 이상의 정수만 받는다.
 pub fn cpus(value: &str) -> ParseResult<u8> {
     match value.parse::<u8>() {
@@ -507,5 +542,18 @@ mod tests {
         assert_eq!(cp_endpoint("./a:b"), CpEndpoint::Host("./a:b".into()));
         assert_eq!(cp_endpoint("a b:x"), CpEndpoint::Host("a b:x".into()));
         assert_eq!(cp_endpoint("a/b:c"), CpEndpoint::Host("a/b:c".into()));
+    }
+
+    #[test]
+    fn storage_opt_sets_the_writable_disk_size() {
+        assert_eq!(storage_opt("size=20g"), Ok(20 << 10));
+        assert_eq!(storage_opt("size=20G"), Ok(20 << 10));
+        assert_eq!(storage_opt("size=20GB"), Ok(20 << 10));
+        assert_eq!(storage_opt("size=512m"), Ok(512));
+        assert_eq!(storage_opt("size=1t"), Ok(1 << 20));
+        assert!(storage_opt("size=1m").unwrap_err().contains("at least"));
+        assert!(storage_opt("size=x").is_err());
+        assert!(storage_opt("dm.basesize=1g").unwrap_err().contains("unknown"));
+        assert!(storage_opt("20g").is_err());
     }
 }

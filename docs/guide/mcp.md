@@ -35,10 +35,15 @@ The MCP server adds no policy of its own. Tool arguments go through the same par
   the CLI (`sbx mcp --all-sandboxes` changes that).
 - Arguments can't be turned into other `sbx` options.
 - `read_file` reads into memory and never follows a link on the host.
-- Agents get at most 8 sandboxes at once per MCP server, each with at most 4 vCPUs and 4 GiB of memory. MCP
-  sandboxes that other servers on your data directory already made count too, but two servers creating at the same
-  moment can each take the last place. Change these with `--max-sandboxes`, `--max-cpus` and `--max-memory`, for
-  example `sbx mcp --max-sandboxes 2 --max-memory 1g`.
+- Agents get at most 8 sandboxes at once per MCP server, each with at most 4 vCPUs, 4 GiB of memory and a 16 GiB
+  writable disk (`disk`, 1 GiB unless asked). MCP sandboxes that other servers on your data directory already made
+  count too, but two servers creating at the same moment can each take the last place. Change these with
+  `--max-sandboxes`, `--max-cpus`, `--max-memory` and `--max-disk`, for example
+  `sbx mcp --max-sandboxes 2 --max-memory 1g --max-disk 4g`.
+- Every tool declares an `outputSchema` (its `structuredContent`) and annotations: `list` and `read_file` are
+  read-only, `remove` and `write_file` are idempotent, `remove`, `write_file` and `exec` can destroy data in a
+  sandbox, and `run`, `create` and `exec` can reach the network a call allowed. Clients use these to decide what to
+  ask you about.
 
 Every command has a timeout (300 s by default). When it runs out or the client cancels the call, `run` powers the VM
 off and `exec` kills the process; a client that goes away has what it started powered off and removed. Output keeps

@@ -73,12 +73,13 @@ struct Server {
     reserved: std::cell::Cell<u32>,
 }
 
-/// `sbx mcp --max-sandboxes`, `--max-cpus`, `--max-memory`, `--allow-private-network`.
+/// `sbx mcp --max-sandboxes`, `--max-cpus`, `--max-memory`, `--max-disk`, `--allow-private-network`.
 #[derive(Debug, Clone, Copy)]
 struct Limits {
     sandboxes: u32,
     cpus: u8,
     memory_mib: u32,
+    disk_mib: u32,
     /// 허용 목록에 루프백·사설·링크 로컬 IP와 `localhost`를 받는다.
     private_network: bool,
 }
@@ -156,6 +157,14 @@ impl Server {
             )
             .into());
         }
+        let disk = spec.storage_opt.unwrap_or(crate::behavior::DEFAULT_SCRATCH_MIB);
+        if disk > l.disk_mib {
+            return Err(format!(
+                "`disk` {disk} MiB is above this server's limit of {} MiB (sbx mcp --max-disk)",
+                l.disk_mib
+            )
+            .into());
+        }
         // 기다리기(목록 읽기) 전에 자리를 잡는다. 호출은 동시에 돌므로, 읽은 뒤에 잡으면 동시에 온 호출들이 모두
         // 같은 빈자리를 보고 통과한다. 실패하면 자리는 놓인다(Drop).
         self.reserved.set(self.reserved.get() + 1);
@@ -207,6 +216,7 @@ pub async fn serve(cli: &Cli) -> AppResult<u8> {
         max_sandboxes,
         max_cpus,
         max_memory,
+        max_disk,
         allow_private_network,
     } = cli.command
     else {
@@ -219,6 +229,7 @@ pub async fn serve(cli: &Cli) -> AppResult<u8> {
             sandboxes: max_sandboxes,
             cpus: max_cpus,
             memory_mib: max_memory,
+            disk_mib: max_disk,
             private_network: allow_private_network,
         },
         reserved: Default::default(),
@@ -498,6 +509,7 @@ pub fn tools() -> Value {
     let cpus = json!({ "type": "integer", "minimum": 1, "maximum": 255, "description": "vCPUs (default 1)." });
     let memory =
         json!({ "type": "string", "description": "Memory, e.g. 512m or 2g (default 512m)." });
+    let disk = json!({ "type": "string", "description": "Writable disk size, e.g. 4g or 20g (default 1g). Sparse: only what is written uses host disk." });
     let id = json!({ "type": "string", "description": "Sandbox ID (or a unique prefix), or the name given to create." });
     let name = json!({ "type": "string", "description": "Optional unique name (letters, digits, _ . -) to use in place of the ID." });
     let path = json!({ "type": "string", "description": "Absolute path inside the sandbox." });
@@ -505,6 +517,12 @@ pub fn tools() -> Value {
     let output = json!({ "type": "object", "properties": {
         "exit_code": { "type": ["integer", "null"] }, "stdout": { "type": "string" }, "stderr": { "type": "string" },
         "timed_out": { "type": "boolean" }, "truncated": { "type": "boolean" } } });
+    let id_out = json!({ "type": "object", "required": ["id"], "properties": { "id": { "type": "string" } } });
+    // annotations: 클라이언트가 확인을 묻거나 자동 승인을 정할 때 쓰는 힌트(MCP 2025-03-26부터). 결과를 믿게 하는
+    // 것이 아니다. openWorld는 바깥(네트워크)에 닿을 수 있는가: allow를 줄 수 있는 도구만.
+    let annotations = |read_only: bool, destructive: bool, idempotent: bool, open_world: bool| {
+        json!({ "readOnlyHint": read_only, "destructiveHint": destructive, "idempotentHint": idempotent, "openWorldHint": open_world })
+    };
     json!([
         {
             "name": "run",
@@ -512,8 +530,9 @@ pub fn tools() -> Value {
             "description": "Start a fresh microVM from an image, run one command, return its exit code and output, then delete the sandbox.",
             "inputSchema": { "type": "object", "required": ["image"], "properties": {
                 "image": image, "command": command, "env": env, "workdir": workdir, "allow": allow,
-                "stdin": stdin, "timeout_secs": timeout, "cpus": cpus, "memory": memory } },
+                "stdin": stdin, "timeout_secs": timeout, "cpus": cpus, "memory": memory, "disk": disk } },
             "outputSchema": output,
+            "annotations": annotations(false, false, false, true),
         },
         {
             "name": "create",
@@ -521,7 +540,9 @@ pub fn tools() -> Value {
             "description": "Start a microVM that keeps running (by default its main process is `sleep infinity`) for exec, write_file and read_file. It stays until remove, even after this server exits.",
             "inputSchema": { "type": "object", "required": ["image"], "properties": {
                 "image": image, "name": name, "command": command, "env": env, "workdir": workdir, "allow": allow,
-                "cpus": cpus, "memory": memory } },
+                "cpus": cpus, "memory": memory, "disk": disk } },
+            "outputSchema": id_out,
+            "annotations": annotations(false, false, false, true),
         },
         {
             "name": "exec",
@@ -530,6 +551,8 @@ pub fn tools() -> Value {
             "inputSchema": { "type": "object", "required": ["id", "command"], "properties": {
                 "id": id, "command": command, "env": env, "workdir": workdir, "stdin": stdin, "timeout_secs": timeout } },
             "outputSchema": output,
+            // 그 샌드박스가 연 네트워크를 쓸 수 있다.
+            "annotations": annotations(false, true, false, true),
         },
         {
             "name": "write_file",
@@ -537,24 +560,39 @@ pub fn tools() -> Value {
             "description": "Create or replace a file in a running sandbox. Missing parent directories are created.",
             "inputSchema": { "type": "object", "required": ["id", "path", "content"], "properties": {
                 "id": id, "path": path, "content": { "type": "string" }, "encoding": encoding } },
+            "outputSchema": { "type": "object", "required": ["path", "bytes"], "properties": {
+                "path": { "type": "string" }, "bytes": { "type": "integer" } } },
+            "annotations": annotations(false, true, true, false),
         },
         {
             "name": "read_file",
             "title": "Read a file from a sandbox",
             "description": format!("Read a file (up to {} MiB) from a running sandbox. Text comes back as utf-8, anything else as base64.", FILE_LIMIT >> 20),
             "inputSchema": { "type": "object", "required": ["id", "path"], "properties": { "id": id, "path": path } },
+            "outputSchema": { "type": "object", "required": ["path", "encoding", "content"], "properties": {
+                "path": { "type": "string" }, "encoding": { "type": "string", "enum": ["utf-8", "base64"] },
+                "content": { "type": "string" } } },
+            "annotations": annotations(true, false, true, false),
         },
         {
             "name": "list",
             "title": "List sandboxes",
             "description": "List all sandboxes with their name, image, command and state.",
             "inputSchema": { "type": "object", "properties": {} },
+            "outputSchema": { "type": "object", "required": ["sandboxes"], "properties": { "sandboxes": {
+                "type": "array", "items": { "type": "object", "properties": {
+                    "id": { "type": "string" }, "name": { "type": ["string", "null"] }, "image": { "type": ["string", "null"] },
+                    "command": { "type": "array", "items": { "type": "string" } }, "state": { "type": "string" },
+                    "exit_code": { "type": ["integer", "null"] }, "error": { "type": ["string", "null"] } } } } } },
+            "annotations": annotations(true, false, true, false),
         },
         {
             "name": "remove",
             "title": "Remove a sandbox",
             "description": "Stop a sandbox immediately if it is running, and delete it.",
             "inputSchema": { "type": "object", "required": ["id"], "properties": { "id": id } },
+            "outputSchema": { "type": "object", "required": ["removed"], "properties": { "removed": { "type": "string" } } },
+            "annotations": annotations(false, true, true, false),
         },
     ])
 }
@@ -724,6 +762,9 @@ fn run_args(a: &Args, stdin: bool, default_command: &[&str]) -> AppResult<RunArg
     }
     if let Some(m) = a.str("memory")? {
         argv.push(format!("--memory={m}"));
+    }
+    if let Some(d) = a.str("disk")? {
+        argv.push(format!("--storage-opt=size={d}"));
     }
     if let Some(n) = a.str("name")? {
         argv.push(format!("--name={n}"));

@@ -237,6 +237,9 @@ pub enum Command {
         /// The most memory one tool call may ask for (e.g. 2g).
         #[arg(long, default_value = "4g", value_parser = crate::parse::memory_mib)]
         max_memory: u32,
+        /// The largest writable disk one tool call may ask for (e.g. 20g).
+        #[arg(long, default_value = "16g", value_parser = crate::parse::disk_mib)]
+        max_disk: u32,
         /// Let agents allow loopback, private and link-local IP addresses and `localhost` (by default they can
         /// only allow public hosts, so an agent can't reach services on this machine, the LAN or cloud metadata).
         #[arg(long)]
@@ -488,6 +491,10 @@ pub struct RunArgs {
     /// Memory (e.g. 512m, 1g; default 512m).
     #[arg(short = 'm', long)]
     pub memory: Option<String>,
+    /// Writable disk: `size=SIZE` (e.g. size=20g; default 1g, at least 64m). Sparse, so the host only spends what
+    /// the sandbox writes.
+    #[arg(long = "storage-opt", value_name = "size=SIZE", value_parser = crate::parse::storage_opt)]
+    pub storage_opt: Option<u32>,
     /// Name the sandbox; other commands accept it in place of the ID.
     #[arg(long)]
     pub name: Option<String>,

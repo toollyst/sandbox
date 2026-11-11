@@ -937,7 +937,7 @@ impl Ctx {
                 .map(parse::memory_mib)
                 .transpose()?
                 .unwrap_or(behavior::DEFAULT_MEMORY_MIB),
-            scratch_disk_mib: behavior::DEFAULT_SCRATCH_MIB,
+            scratch_disk_mib: a.storage_opt.unwrap_or(behavior::DEFAULT_SCRATCH_MIB),
         };
         let mut mounts = a
             .volumes
