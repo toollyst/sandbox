@@ -209,6 +209,53 @@ fn a_main_version_picks_its_newest_patch() {
 }
 
 #[test]
+fn yanked_versions_are_skipped_unless_named_exactly() {
+    let mut v = sample_v2();
+    for (p, yanked) in [("1.18.0+wick.1", false), ("1.18.0+wick.2", true)] {
+        v["executors"]["wick"]["versions"][p] = json!({
+            "adapter": "firecracker", "yanked": yanked, "advisory": "CVE-1\nupgrade",
+            "artifacts": [artifact("darwin", "arm64", "w.tar.gz")]
+        });
+    }
+    v["executors"]["wick"]["versions"]["1.19.0"]["yanked"] = json!(true);
+    let i = parse(v).unwrap();
+    let w = i.executor("wick").unwrap();
+    let y: Vec<_> = w
+        .versions
+        .iter()
+        .filter(|v| v.yanked)
+        .map(|v| v.version.as_str())
+        .collect();
+    assert_eq!(y, ["1.18.0+wick.2", "1.19.0"]);
+    let idx = vec![("r".to_owned(), i)];
+    let pick = |s: &str| index::pick(&idx, &spec(s), &mac(), 2);
+    // 이름만: 거둔 1.19.0을 건너뛰고 1.18.0의 거두지 않은 가장 새 패치.
+    assert_eq!(pick("wick").unwrap().version, "1.18.0+wick.1");
+    assert_eq!(pick("wick@1.18.0").unwrap().version, "1.18.0+wick.1");
+    // 정확한 버전은 거뒀어도 고르고, 호출자가 알린다.
+    let c = pick("wick@1.18.0+wick.2").unwrap();
+    assert!(c.yanked);
+    assert_eq!(c.advisory.as_deref(), Some("CVE-1 upgrade"));
+    // 주 버전의 모든 패치를 거뒀으면 이유와 정확한 버전을 알린다.
+    let e = pick("wick@1.19").unwrap_err();
+    assert!(e.contains("yanked") && e.contains("wick@1.19.0"), "{e}");
+}
+
+#[test]
+fn advisories_are_made_safe_for_a_terminal() {
+    assert_eq!(
+        index::advisory_text("  a\tb\n\x1b[31mc  "),
+        Some("a b [31mc".into())
+    );
+    assert_eq!(index::advisory_text("x\u{202e}y"), Some("xy".into()));
+    assert_eq!(index::advisory_text(" \n\r "), None);
+    let long = "é".repeat(index::MAX_ADVISORY_CHARS + 10);
+    let t = index::advisory_text(&long).unwrap();
+    assert_eq!(t.chars().count(), index::MAX_ADVISORY_CHARS + 1);
+    assert!(t.ends_with('…'));
+}
+
+#[test]
 fn protocol_ranges_overlap_with_the_client_range() {
     let mut v = sample_v2();
     // 0.2.0은 2부터 3까지 말한다.

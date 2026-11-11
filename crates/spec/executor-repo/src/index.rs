@@ -64,6 +64,9 @@ pub const SCHEMAS: &[u32] = &[1, 2];
 /// 색인의 크기 한도 (바이트).
 pub const MAX_INDEX_BYTES: u64 = 16 << 20;
 
+/// `advisory` 문구의 길이 상한(글자). 넘는 것은 잘라서 보인다. `cargo xtask repo-yank`도 같은 값을 본다.
+pub const MAX_ADVISORY_CHARS: usize = 512;
+
 /// 버전 하나의 압축 파일 수 상한. 플랫폼마다 하나이므로 수십이면 넉넉하다. 색인 하나가 읽는 데 드는 시간을
 /// 크기에 비례하게 둔다(악의적인 저장소가 목록에 있기만 해도 `search`·`install`이 멈추지 않게).
 pub const MAX_ARTIFACTS_PER_VERSION: usize = 64;
@@ -92,8 +95,53 @@ pub struct Version {
     pub min_protocol: Option<u32>,
     /// VMM 묶음이면 그것을 돌리는 어댑터 이름 (schema 2).
     pub adapter: Option<String>,
+    /// 저장소가 거둔 버전(선택, 기본 `false`). 이름이나 주 버전으로 고를 때는 건너뛴다. 정확한 버전을 주면 고른다
+    /// (그 버전에 고정한 곳이 있을 수 있다). 설치한 것은 그대로 돈다.
+    pub yanked: bool,
+    /// 그 버전에 대한 알림 한 줄(선택): 취약점, 고친 버전 등. 제어 문자를 빼고 [`MAX_ADVISORY_CHARS`]로 자른
+    /// 것이다([`advisory_text`]).
+    pub advisory: Option<String>,
     /// 플랫폼별 묶음.
     pub artifacts: Vec<Artifact>,
+}
+
+/// 저장소가 준 알림 문구를 터미널에 보여도 되게 다듬는다. 제어 문자(줄바꿈, ESC 포함)는 공백 하나로 바꾸고,
+/// 공백을 줄이고, [`MAX_ADVISORY_CHARS`]에서 자른다. 남는 것이 없으면 `None`.
+pub fn advisory_text(raw: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut space = false;
+    let mut n = 0;
+    for c in raw.chars() {
+        let c = if c.is_control() || c.is_whitespace() {
+            ' '
+        } else {
+            c
+        };
+        // 양방향 텍스트 제어(U+202A..U+202E, U+2066..U+2069)는 보이는 순서를 바꾼다.
+        if matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') {
+            continue;
+        }
+        if c == ' ' {
+            space = !out.is_empty();
+            continue;
+        }
+        if n == MAX_ADVISORY_CHARS {
+            out.push('…');
+            break;
+        }
+        if space {
+            out.push(' ');
+            n += 1;
+            space = false;
+            if n == MAX_ADVISORY_CHARS {
+                out.push('…');
+                break;
+            }
+        }
+        out.push(c);
+        n += 1;
+    }
+    (!out.is_empty()).then_some(out)
 }
 
 /// 실행기 하나.
@@ -154,6 +202,10 @@ struct RawVersion {
     min_protocol: Option<u32>,
     #[serde(default)]
     adapter: Option<String>,
+    #[serde(default)]
+    yanked: bool,
+    #[serde(default)]
+    advisory: Option<String>,
     #[serde(default)]
     artifacts: Vec<RawArtifact>,
 }
@@ -337,6 +389,8 @@ fn entries(
                 protocol: v.protocol,
                 min_protocol,
                 adapter,
+                yanked: v.yanked,
+                advisory: v.advisory.as_deref().and_then(advisory_text),
                 artifacts,
             });
         }
@@ -373,6 +427,10 @@ pub struct Candidate {
     pub protocol: Option<u32>,
     /// VMM 묶음이면 그것을 돌리는 어댑터 이름.
     pub adapter: Option<String>,
+    /// 저장소가 거둔 버전인가([`Version::yanked`]).
+    pub yanked: bool,
+    /// 그 버전의 알림([`Version::advisory`]).
+    pub advisory: Option<String>,
     /// 이 플랫폼의 묶음.
     pub artifact: Artifact,
 }
@@ -435,6 +493,8 @@ fn candidates(
                         version: v.version.clone(),
                         protocol: v.protocol,
                         adapter: v.adapter.clone(),
+                        yanked: v.yanked,
+                        advisory: v.advisory.clone(),
                         artifact: a.clone(),
                     });
                 }
@@ -451,7 +511,8 @@ fn candidates(
 }
 
 /// 하나를 고른다. 버전을 주면 그 버전, 아니면 가장 높은 버전. 같은 버전이 여러 저장소에 있으면 앞 저장소.
-/// 없으면 왜 없는지(이름이 없다, 버전이 없다, 이 플랫폼 빌드가 없다, 규약 버전이 다르다) 알려 준다.
+/// 거둔(`yanked`) 버전은 건너뛴다. 정확한 버전을 주었을 때만 고른다(호출자가 [`Candidate::yanked`]로 알린다).
+/// 없으면 왜 없는지(이름이 없다, 버전이 없다, 거뒀다, 이 플랫폼 빌드가 없다, 규약 버전이 다르다) 알려 준다.
 pub fn pick(
     indexes: &[(String, Index)],
     spec: &Spec,
@@ -510,15 +571,31 @@ fn pick_from(
         .into_iter()
         .collect();
     let indexes = &owner[..];
-    let found = list(indexes, Some(&spec.name), platform, protocol)
+    let matching: Vec<Candidate> = list(indexes, Some(&spec.name), platform, protocol)
         .into_iter()
-        .find(|c| {
+        .filter(|c| {
             spec.version
                 .as_deref()
                 .is_none_or(|v| version_matches(v, &c.version))
-        });
-    if let Some(c) = found {
-        return Ok(c);
+        })
+        .collect();
+    let exact = |c: &Candidate| spec.version.as_deref() == Some(c.version.as_str());
+    if let Some(c) = matching.iter().find(|c| !c.yanked || exact(c)) {
+        return Ok(c.clone());
+    }
+    if let Some(c) = matching.first() {
+        return Err(format!(
+            "{} is yanked by its repository{}; give its exact version ({}) to install it anyway",
+            match &spec.version {
+                Some(v) => format!("{}@{v}", spec.name),
+                None => format!("every version of {}", spec.name),
+            },
+            c.advisory
+                .as_deref()
+                .map(|a| format!(" ({a})"))
+                .unwrap_or_default(),
+            c.spec()
+        ));
     }
     // 이유를 찾는다.
     let versions: Vec<&Version> = indexes

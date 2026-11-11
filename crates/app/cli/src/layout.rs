@@ -170,7 +170,11 @@ mod tests {
         r.unwrap();
         // root는 모드와 상관없이 쓸 수 있다. 그 밖에는 쓰지 못했어야 한다.
         if !d.path().join(FILE).exists() {
-            assert_eq!(fs::read_dir(d.path()).unwrap().count(), 0, "no temp file left");
+            assert_eq!(
+                fs::read_dir(d.path()).unwrap().count(),
+                0,
+                "no temp file left"
+            );
         }
     }
 }

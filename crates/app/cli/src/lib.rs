@@ -31,6 +31,7 @@ pub mod guest;
 pub mod host;
 pub mod layout;
 pub mod mcp;
+pub mod notices;
 pub mod output;
 pub mod parse;
 pub mod progress;

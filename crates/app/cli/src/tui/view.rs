@@ -297,7 +297,7 @@ fn executors(frame: &mut Frame, model: &mut Model, area: Rect) {
                     }
                     ExecutorRow::Adapter(_) => "",
                 };
-                let (kind, name, version, link, origin, path) = match r {
+                let (kind, name, version, link, origin, path, yanked) = match r {
                     ExecutorRow::Executor(e) => (
                         "executor",
                         &e.name,
@@ -305,6 +305,7 @@ fn executors(frame: &mut Frame, model: &mut Model, area: Rect) {
                         e.adapter.clone().unwrap_or_else(|| "-".into()),
                         &e.origin,
                         &e.path,
+                        e.yanked,
                     ),
                     ExecutorRow::Adapter(a) => (
                         "adapter",
@@ -317,13 +318,20 @@ fn executors(frame: &mut Frame, model: &mut Model, area: Rect) {
                         },
                         &a.origin,
                         &a.path,
+                        a.yanked,
                     ),
+                };
+                // 저장소가 거둔 버전은 빨갛게, 뒤에 표시를 붙인다(알림 문구는 상세 창에).
+                let version = if yanked {
+                    Cell::from(format!("{version} (yanked)")).style(Style::new().fg(Color::Red))
+                } else {
+                    Cell::from(version.clone())
                 };
                 Row::new(vec![
                     Cell::from(mark),
                     Cell::from(kind),
                     Cell::from(name.clone()),
-                    Cell::from(version.clone()),
+                    version,
                     Cell::from(link),
                     Cell::from(origin.clone().unwrap_or_else(|| "-".into())),
                     Cell::from(path.clone()),

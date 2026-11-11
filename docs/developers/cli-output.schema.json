@@ -11,6 +11,13 @@
             "null"
           ]
         },
+        "advisory": {
+          "description": "The repository's advisory for this version, one line, if any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "architecture": {
           "description": "Architecture of the bundle (OCI terms).",
           "type": "string"
@@ -57,6 +64,11 @@
         "version": {
           "description": "Version.",
           "type": "string"
+        },
+        "yanked": {
+          "default": false,
+          "description": "Whether the repository has yanked this version: it is skipped unless asked for by its exact version.",
+          "type": "boolean"
         }
       },
       "required": [
@@ -497,6 +509,13 @@
       "additionalProperties": false,
       "description": "An installed adapter (`executor adapter ls`).",
       "properties": {
+        "advisory": {
+          "description": "The repository's advisory for this version, one line, if any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "name": {
           "description": "Name.",
           "type": "string"
@@ -522,6 +541,11 @@
         "version": {
           "description": "Version.",
           "type": "string"
+        },
+        "yanked": {
+          "default": false,
+          "description": "Whether its repository has yanked this version (from the last `executor search` or `install`; it still runs).",
+          "type": "boolean"
         }
       },
       "required": [
@@ -538,6 +562,13 @@
       "properties": {
         "adapter": {
           "description": "For a VMM package: the adapter that runs it. Null for a self-contained executor.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "advisory": {
+          "description": "The repository's advisory for this version, one line, if any.",
           "type": [
             "string",
             "null"
@@ -565,6 +596,11 @@
         "version": {
           "description": "Version.",
           "type": "string"
+        },
+        "yanked": {
+          "default": false,
+          "description": "Whether its repository has yanked this version (from the last `executor search` or `install`; it still runs).",
+          "type": "boolean"
         }
       },
       "required": [

@@ -386,6 +386,11 @@ pub struct InstalledExecutor {
     /// The repository it was downloaded from, or `local` (installed with `--from`). Null if installed by an sbx that
     /// did not record it.
     pub origin: Option<String>,
+    /// Whether its repository has yanked this version (from the last `executor search` or `install`; it still runs).
+    #[serde(default)]
+    pub yanked: bool,
+    /// The repository's advisory for this version, one line, if any.
+    pub advisory: Option<String>,
 }
 
 /// An installed adapter (`executor adapter ls`).
@@ -403,6 +408,11 @@ pub struct InstalledAdapter {
     pub used_by: Vec<String>,
     /// The repository it was downloaded from, or `local`. Null if not recorded.
     pub origin: Option<String>,
+    /// Whether its repository has yanked this version (from the last `executor search` or `install`; it still runs).
+    #[serde(default)]
+    pub yanked: bool,
+    /// The repository's advisory for this version, one line, if any.
+    pub advisory: Option<String>,
 }
 
 /// The executor sbx would use (`executor current`, `which`).
@@ -478,6 +488,11 @@ pub struct AvailableExecutor {
     pub sha256: String,
     /// Bundle size in bytes.
     pub size: u64,
+    /// Whether the repository has yanked this version: it is skipped unless asked for by its exact version.
+    #[serde(default)]
+    pub yanked: bool,
+    /// The repository's advisory for this version, one line, if any.
+    pub advisory: Option<String>,
 }
 
 /// An executor repository (`executor repo ls`, `add`, `rm`).
