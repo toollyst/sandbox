@@ -191,6 +191,14 @@ pub trait GuestConn: Read + Write + Send {
     /// 연결을 닫는다(양쪽). 다른 핸들에서 막혀 있는 읽기도 끝난다.
     /// 반쯤 닫기는 없다. 반쯤 닫기가 없는 vsock 구현이 있으므로(Firecracker), 끝은 메시지로 알린다.
     fn shutdown(&self) -> io::Result<()>;
+
+    /// 읽기와 쓰기 하나가 기다리는 최대 시간(`None`이면 끝없이). 같은 연결의 다른 핸들에도 적용된다.
+    /// 시간이 지나면 그 읽기나 쓰기가 `WouldBlock`이나 `TimedOut` 오류다. 게스트가 답하지 않아도 호스트가 멈추지
+    /// 않게 요청–응답 단계에서 쓴다. 기본 구현은 아무것도 하지 않는다(시간 제한이 없는 연결).
+    fn set_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        let _ = timeout;
+        Ok(())
+    }
 }
 
 #[cfg(unix)]
@@ -201,6 +209,11 @@ impl GuestConn for std::os::unix::net::UnixStream {
 
     fn shutdown(&self) -> io::Result<()> {
         std::os::unix::net::UnixStream::shutdown(self, std::net::Shutdown::Both)
+    }
+
+    fn set_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        self.set_read_timeout(timeout)?;
+        self.set_write_timeout(timeout)
     }
 }
 
