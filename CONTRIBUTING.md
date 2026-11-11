@@ -51,7 +51,7 @@ Linux.
   executor, not a change to the cores.
 
 Code comments and design notes in `docs/` are written in Korean. Write yours in English or Korean, either is fine;
-user-facing text (CLI help, errors, README) is English.
+user-facing text (CLI help, errors, README, the user guide in `docs/guide/`) is English.
 
 ## Pull requests
 

@@ -1,6 +1,6 @@
 # Developer guide
 
-This is the guide for working on `sbx` itself. If you only want to use it, the [README](../../README.md) is enough.
+This is the guide for working on `sbx` itself. If you only want to use it, the [README](../../README.md) and the [user guide](../guide/) are enough.
 
 | Read | When you want to |
 | --- | --- |
@@ -16,8 +16,8 @@ dependency map in [crates.md](crates.md) is generated, and CI fails when it is s
 [cli-output.md](cli-output.md) and its JSON Schema: `cargo test` fails when they differ from the output types in
 `crates/app/cli/src/output.rs`, and `SBX_BLESS=1 cargo test -p sbx-cli --lib output` rewrites them.
 
-Doc comments and the design notes in [`docs/plan/`](../plan/) are written in Korean. The developer guide, the README and
-everything a user sees (CLI help, errors) are in English.
+Doc comments and the design notes in [`docs/plan/`](../plan/) are written in Korean. The developer guide, the user guide, the README
+and everything a user sees (CLI help, errors) are in English.
 
 ## The repository
 
@@ -34,13 +34,14 @@ xtask/               development tasks: cargo xtask <task>
   kernel/            config fragments for the default guest kernel
 fuzz/                cargo-fuzz targets, seeds and dictionaries (its own workspace, nightly)
 docs/
+  guide/             the user guide (English): install, usage, MCP, executors
   developers/        this guide (English)
   plan/              design notes (Korean)
   roadmap.md         what is done and what is next (Korean)
 assets/demo.svg      the README recording, made by cargo xtask demo
 install.sh           the installer served from GitHub Pages
 .github/workflows/   ci.yml and fuzz.yml (every push), release.yml (tags v*). The official executor repository is published from toollyst/sandbox-executors
-.github/scripts/     shell steps the workflows share (VMM packages, kernel notice, smoke with wick)
+.github/scripts/     shell steps the workflows share (upstream VMM package, kernel notice, local-repository smoke, installer tests)
 ```
 
 Three programs come out of the workspace, plus one that runs inside the VM:

@@ -1,0 +1,122 @@
+# Install
+
+`sbx` is two files, `sbx` and `sbx-shim`. They run nothing by themselves: sandboxes boot through an **executor**, which
+you install next. Nothing runs as root and nothing runs in the background.
+
+- [macOS](#macos)
+- [Linux](#linux)
+- [Windows](#windows)
+- [Installer options](#installer-options)
+- [Build from source](#build-from-source)
+- [Upgrade and uninstall](#upgrade-and-uninstall)
+
+## macOS
+
+You need macOS 15 or later on Apple Silicon. Nothing else: no admin rights, no kernel extension, no setup.
+
+```sh
+curl -fsSL https://toollyst.github.io/sandbox/install.sh | sh
+sbx executor install wick        # the Firecracker VMM for macOS, with its adapter and guest kernel
+sbx info                         # host, virtualization (Hypervisor.framework), executor
+sbx run --rm alpine echo hello
+```
+
+`wick` is a Firecracker build that runs on Hypervisor.framework ([toollyst/wick](https://github.com/toollyst/wick)).
+How wick confines itself on macOS is wick's part; [SECURITY.md](../../SECURITY.md) says what that means for you.
+Intel Macs aren't supported.
+
+## Linux
+
+You need x86_64 or aarch64 with KVM: bare metal, or a VM with nested virtualization. Your user needs read and write
+access to `/dev/kvm`, usually through the `kvm` group:
+
+```sh
+ls -l /dev/kvm                           # missing: turn on virtualization in the firmware, or use nested virtualization
+sudo usermod -aG kvm "$USER"             # then log out and back in
+```
+
+Then:
+
+```sh
+curl -fsSL https://toollyst.github.io/sandbox/install.sh | sh
+sbx executor install wick        # Firecracker for KVM, with the firecracker adapter and guest kernel
+sbx info                         # says what's missing if /dev/kvm isn't usable
+sbx run --rm alpine echo hello
+```
+
+The binaries are static (musl), so any distribution works. `~/.local/bin` must be on your `PATH`; the installer says
+so if it isn't.
+
+## Windows
+
+Not supported yet. There is no Windows build in the releases and no tested executor for Windows. A build from source
+can `pull`, `prepare` and list images, but can't run them.
+
+## Installer options
+
+The installer downloads the release archive for your OS and architecture, checks its SHA-256, checks its Sigstore
+signature when `cosign` is installed, and copies `sbx` and `sbx-shim` into `~/.local/bin`. It writes nothing else and
+doesn't install an executor. [Read it](../../install.sh) before you run it.
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `SBX_VERSION` | the latest release | Install this tag, e.g. `v0.2.0`. The signature must then come from exactly that tag |
+| `SBX_INSTALL_DIR` | `~/.local/bin` | Where `sbx` and `sbx-shim` go |
+| `SBX_VERIFY` | `auto` | `auto` checks the signature when `cosign` is on `PATH`, and then a missing signature is an error; `require` also fails without `cosign`; `off` checks only the SHA-256 |
+
+```sh
+curl -fsSL https://toollyst.github.io/sandbox/install.sh | SBX_VERSION=v0.2.0 SBX_VERIFY=require sh
+```
+
+To check a release by hand instead, see [SECURITY.md](../../SECURITY.md#verifying-what-you-install).
+
+## Build from source
+
+You need Rust (stable) and the `*-unknown-linux-musl` target for your machine's architecture: the guest init is
+built for it and embedded in `sbx`.
+
+```sh
+git clone https://github.com/toollyst/sandbox && cd sandbox
+rustup target add "$(uname -m | sed s/arm64/aarch64/)-unknown-linux-musl"
+cargo xtask dist                  # target/release/sbx and sbx-shim
+export PATH="$PWD/target/release:$PATH"
+sbx executor install wick
+```
+
+To build the executor too, the adapter is a directory with `sbx-executor` (built from `crates/executor/firecracker`)
+and `kernel` (`cargo xtask kernel --arch <x86_64|aarch64>`, built in Docker), and the VMM package is a directory with
+`firecracker`. Install both from those directories, then check them on real VMs:
+
+```sh
+sbx executor adapter install --from ./adapter firecracker@local
+sbx executor install --from ./vmm --adapter firecracker wick@local
+cargo xtask smoke
+```
+
+The official repository builds them the same way, in
+[toollyst/sandbox-executors](https://github.com/toollyst/sandbox-executors).
+
+## Shell completion
+
+```sh
+sbx completion zsh --help         # how to load it; bash, fish and PowerShell work the same way
+```
+
+Completion offers subcommands and flags, and also sandbox names and IDs and image references from your machine.
+
+## Upgrade and uninstall
+
+Run the installer again to upgrade. Sandboxes, images and executors are kept.
+
+From 0.1.x: the installer no longer installs an executor, so run `sbx executor install wick` once. A repository list
+from 0.1.x keeps working; its `official` entry now reads from the new official repository. What else changed is in
+the [CHANGELOG](../../CHANGELOG.md).
+
+To uninstall, remove the binaries, then the data (sandboxes, executors, settings) and the cache (images):
+
+| | Binaries | Data | Cache |
+| --- | --- | --- | --- |
+| macOS | `~/.local/bin/sbx`, `sbx-shim` | `~/Library/Application Support/sbx` | `~/Library/Caches/sbx` |
+| Linux | `~/.local/bin/sbx`, `sbx-shim` | `${XDG_DATA_HOME:-~/.local/share}/sbx` | `${XDG_CACHE_HOME:-~/.cache}/sbx` |
+
+`sbx rm -f $(sbx ps -aq)` first stops and removes any sandbox that is still running.

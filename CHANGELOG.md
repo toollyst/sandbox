@@ -62,6 +62,7 @@ to release a tag without one. Changes land under `## Unreleased` first, and the 
 - Executor versions the nvm way: a default, `--executor NAME@VERSION`, a `.sbx-executor` file, per-sandbox pins,
   main versions and patches, adapters, `--repo`, the FROM column.
 - `cargo xtask repo-keygen` and `repo-sign` for running your own signed repository.
+- A user guide in [docs/guide/](docs/guide/) (install per OS, usage, MCP, executors); the README is now the short version.
 - [COMPATIBILITY.md](COMPATIBILITY.md), [SECURITY.md](SECURITY.md) response times and supported versions,
   governance files, coverage-guided fuzzing of every parser that reads untrusted bytes.
 

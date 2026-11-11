@@ -22,7 +22,7 @@ the old behavior and warns on stderr when it is used, and the release notes name
 | Executor protocol | [`sbx-executor-proto`](crates/spec/executor-proto/src/lib.rs) | Versioned. An executor reports the range of versions it speaks, `sbx` speaks a range too, and they use the highest common one. A new `sbx` keeps speaking the previous protocol version for at least one minor release (and at least 12 months), so installed adapters and executors keep working while their authors catch up. |
 | Executor repository index | [`sbx-executor-repo`](crates/spec/executor-repo/src/lib.rs) | Versioned by `schema`. Within a schema, fields are only added and clients ignore unknown ones. A new schema is published next to the old one (`v2/index.json` next to `index.json`), and the old one keeps being served for the releases that read it. |
 | Data and cache directories | [how it works](docs/developers/how-it-works.md) | A newer `sbx` reads what an older one wrote, migrating it in place if needed. An older `sbx` refuses a directory a newer one changed instead of guessing. Neither silently drops sandboxes, images or installed executors. |
-| `.sbx-executor` files, image and sandbox labels (`io.github.toollyst.sandbox.*`) | [`choose.rs`](crates/app/cli/src/choose.rs), README | Same rules as the CLI. |
+| `.sbx-executor` files, image and sandbox labels (`io.github.toollyst.sandbox.*`) | [`choose.rs`](crates/app/cli/src/choose.rs), [executors guide](docs/guide/executors.md) | Same rules as the CLI. |
 | Rust crates in this repository | — | Not published and not a contract (`publish = false`). Use the CLI, its JSON output or the protocols. |
 
 The guest protocol between `sbx` and its guest init is internal: the guest init is embedded in each `sbx` build, so

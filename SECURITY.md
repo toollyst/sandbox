@@ -87,7 +87,8 @@ These are known gaps, in rough order of importance. Some are on the [roadmap](do
   but without a jailer, so an escape from the VM lands as your user on the host.
 - **The official repository is not signed yet.** Signed repositories work (see above), but the official
   repository's key hasn't been created, so `official` is still an unsigned repository: TLS is all that protects its
-  index, and whoever controls GitHub Pages for this project controls what `sbx executor install` gets from it.
+  index, and whoever controls [toollyst/sandbox-executors](https://github.com/toollyst/sandbox-executors) (its
+  Pages and Releases) controls what `sbx executor install` gets from it.
 - **A repository you add is trusted for the names it publishes first.** If you add a repository ahead of
   `official` in the list file, or install a name from it with `--repo` before anything else has it, that repository
   owns the name on your machine. Executors installed before origins were recorded (sbx 0.1.x) have no origin and

@@ -91,6 +91,7 @@ CLI는 nvm, gvm처럼 버전을 고른다. 규칙은 `sbx-executor-proto`("어�
 | 36 | 공식 저장소의 `wick`으로 macOS(HVF)와 Linux(KVM)에서 실제 VM smoke | 남음 (34의 첫 실행 뒤) |
 | 37 | sbx는 특정 VMM이나 저장소에 묶이지 않는다: 실행기가 없을 때의 안내(`run`, `executor current`, tui)와 설치 스크립트가 특정 실행기를 권하지 않고(`choose::NO_EXECUTOR`), tui `i`는 이름을 비워 둔다. README와 개발자 문서는 공개 규격(실행기 규약, 어댑터와 VMM 묶음, 저장소 형식)을 앞에 두고 wick은 예시 하나로 둔다. 저장소에 닿지 않아도 `executor search`·`install` 말고는 그대로 된다 | 완료 |
 | 38 | 공식 실행기 저장소를 sbx 저장소에서 떼기: 게시(`executors.yml`, `executors-resign.yml`, `wick-vmm.sh`)와 색인(Pages)을 [toollyst/sandbox-executors](https://github.com/toollyst/sandbox-executors)로 옮긴다. 그 저장소가 sandbox의 한 커밋(입력 `sandbox`, SHA로 고정)에서 어댑터·커널·저장소 도구를 만들고 이 저장소의 `upstream-vmm.sh`·`kernel-notice.sh`·`smoke-local.sh`를 쓴다(의존은 그쪽 → 여기 한 방향). 어댑터(`crates/executor/firecracker`)와 커널 빌드는 여기 남는다(ci·release의 실제 VM 시험이 바깥 저장소 없이 돈다). `official`은 <https://toollyst.github.io/sandbox-executors/>, 0.1.x가 쓴 목록의 옛 `official` 줄은 새 공식 저장소로 읽고, 옛 URL의 schema 1 색인은 0.1.x를 위해 남긴다 | 완료 |
+| 39 | README는 이 프로젝트를 처음 보는 사람용으로: 추구하는 바, OS별(macOS·Linux·Windows) 설치와 처음 쓰는 법, 플랫폼. 자세한 것은 사용자 안내서 `docs/guide/`(영어: install, usage, mcp, executors)로 옮긴다. 상대 링크와 앵커를 모두 확인 | 완료 |
 
 ## M6. CLI 계약과 TUI (2026-11-10~)
 
