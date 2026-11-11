@@ -62,6 +62,12 @@ maintainer's approval (the `release` environment), and release tags and `main` a
 Dependencies are checked on every push against the RustSec advisory database, an allow list of licenses and
 crates.io as the only source ([`deny.toml`](deny.toml)), and GitHub Actions are pinned to commit SHAs.
 
+**Findings.** An advisory or license violation fails CI, so it is dealt with before the change merges: upgrade or
+replace the crate, or, if `sbx` can't reach the affected code, ignore that advisory in `deny.toml` with the reason and
+a tracking issue. No release ships with an open one that affects `sbx`. CodeQL (the Rust code and the workflows) and
+Scorecard report to code scanning: high and critical alerts are fixed, or dismissed with a written reason, before the
+next release; others within 90 days. Secret scanning with push protection is on for the repository.
+
 ## Threat model
 
 **Assumed hostile:** everything inside a sandbox. That includes root in the guest, the image's contents, and a

@@ -9,6 +9,7 @@ This is the guide for working on `sbx` itself. If you only want to use it, the [
 | [how-it-works.md](how-it-works.md) | Follow one `sbx run` from the command line into the VM and back |
 | [testing-and-releasing.md](testing-and-releasing.md) | Know which test catches what, what CI runs, and how a release is made |
 | [cli-output.md](cli-output.md) | Read or change what `--format json` prints (the contract scripts and tools rely on) |
+| [osps-baseline.md](osps-baseline.md) | See how the project meets the OpenSSF OSPS Baseline, control by control, and what is still open |
 
 The rules themselves live in code (doc comments, types, tests and `cargo xtask check-deps`), not in these pages. These
 pages explain the shape and point to the code. When the two disagree, the code is right, and the page is a bug. The

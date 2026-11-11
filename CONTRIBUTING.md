@@ -59,6 +59,15 @@ user-facing text (CLI help, errors, README, the user guide in `docs/guide/`) is 
 - Run the checks above. If you touched the run or exec path, include `cargo xtask bench` before and after.
 - Commits: one logical change each, with a message that says why.
 
+## Dependencies
+
+Prefer the standard library and the crates already in [`Cargo.lock`](Cargo.lock). A new crate must come from crates.io,
+be maintained, carry a license on the allow list in [`deny.toml`](deny.toml), and be worth what it adds to the binary
+and to the supply chain: say why in the pull request. Versions are pinned by the committed `Cargo.lock` and
+[Dependabot](.github/dependabot.yml) proposes updates weekly; `cargo deny check` (CI) rejects advisories, other
+licenses and other sources. Release binaries carry the resolved dependency list (cargo-auditable) and ship with an
+SBOM.
+
 ## Sign-off (DCO)
 
 Every commit needs a `Signed-off-by:` line (`git commit -s`). It certifies the

@@ -7,6 +7,8 @@
 # - ruleset-gh-pages.json: 설치 스크립트를 내는 gh-pages. 삭제·force-push 금지.
 # - ruleset-tags.json: 릴리스 태그 v*. 관리자만 만들고 바꾸고 지운다.
 # - environment-release.json: release.yml의 publish가 기다리는 승인. 승인자와, 태그 v*에서만.
+# - security-and-analysis.json: 비밀 스캔과 push 보호(비밀이 든 커밋은 push가 거부된다), Dependabot 보안 업데이트.
+#   취약점 비공개 신고(private vulnerability reporting)도 켠다.
 set -eu
 repo=${1:-toollyst/sandbox}
 dir=$(dirname "$0")/../settings
@@ -25,3 +27,9 @@ gh api -X PUT "repos/$repo/environments/release" --input "$dir/environment-relea
 if ! gh api "repos/$repo/environments/release/deployment-branch-policies" --jq '.branch_policies[].name' | grep -qx 'v\*'; then
     gh api -X POST "repos/$repo/environments/release/deployment-branch-policies" -f name='v*' -f type=tag --jq '"deployment policy \(.name) (\(.type))"'
 fi
+
+# 보안 업데이트는 Dependabot 경고가 켜져 있어야 한다.
+gh api -X PUT "repos/$repo/vulnerability-alerts" --silent && echo "dependabot alerts enabled"
+gh api -X PATCH "repos/$repo" --input "$dir/security-and-analysis.json" \
+    --jq '"secret scanning \(.security_and_analysis.secret_scanning.status), push protection \(.security_and_analysis.secret_scanning_push_protection.status), dependabot security updates \(.security_and_analysis.dependabot_security_updates.status)"'
+gh api -X PUT "repos/$repo/private-vulnerability-reporting" --silent && echo "private vulnerability reporting enabled"
