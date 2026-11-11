@@ -49,7 +49,8 @@ jobs:
             # 릴리스 노트는 CHANGELOG.md의 그 태그 절이다(Breaking·Security를 사람이 쓴다). 없으면 빌드 전에 멈춘다.
             .github/scripts/release-notes.sh "$GITHUB_REF_NAME" >/dev/null
           else
-            .github/scripts/release-notes.sh Unreleased >/dev/null
+            # 리허설: Unreleased가 있으면 그것, 태그 직전(절 이름을 바꾼 뒤)이면 이 버전의 절.
+            .github/scripts/release-notes.sh Unreleased >/dev/null 2>&1 || .github/scripts/release-notes.sh "v$want" >/dev/null
           fi
           echo "version=$want" >> "$GITHUB_OUTPUT"
 
@@ -128,8 +129,12 @@ jobs:
             cosign sign-blob --yes --bundle "$f.sigstore.json" "$f"
           done
       - name: release notes (CHANGELOG.md)
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
-          if [ "$GITHUB_EVENT_NAME" = push ]; then s=$GITHUB_REF_NAME; else s=Unreleased; fi
+          if [ "$GITHUB_EVENT_NAME" = push ]; then s=$GITHUB_REF_NAME
+          elif .github/scripts/release-notes.sh Unreleased >/dev/null 2>&1; then s=Unreleased
+          else s=v$VERSION; fi
           .github/scripts/release-notes.sh "$s" > artifacts/release-notes.md
       - if: github.event_name != 'push'
         name: rehearsal output (signed archives, bundles, SBOM)

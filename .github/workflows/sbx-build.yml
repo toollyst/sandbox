@@ -97,6 +97,8 @@ jobs:
           pattern: sbx-*
           path: artifacts
       # SBOM: Cargo.lock의 의존성 전부(SPDX JSON). 릴리스에 올리고 각 묶음에 증명으로도 붙인다.
+      # sbom-action은 output-file의 디렉터리를 만들지 않는다.
+      - run: mkdir -p sbom
       - uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           path: .

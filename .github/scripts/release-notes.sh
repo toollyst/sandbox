@@ -1,6 +1,6 @@
 #!/bin/sh
 # CHANGELOG.md에서 한 릴리스의 절(`## <SECTION>`부터 다음 `## ` 앞까지, 제목 줄은 빼고)을 표준 출력에 낸다.
-# 절이 없거나 비었으면 실패한다. release.yml이 태그의 릴리스 노트로 쓴다(리허설은 Unreleased).
+# 절이 없거나 비었으면 실패한다. release.yml이 태그의 릴리스 노트로 쓴다(리허설은 Unreleased, 없으면 그 버전).
 #
 #   .github/scripts/release-notes.sh v0.2.0 [CHANGELOG.md]
 set -eu
