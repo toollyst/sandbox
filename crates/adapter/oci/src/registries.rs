@@ -11,7 +11,7 @@
 //! | 미러 거르기 | `mirror-by-digest-only`면 digest 참조에만 미러를, 미러의 `pull-from-mirror`는 `all`·`digest-only`·`tag-only` |
 //! | 바꾸기 | `location` + 참조에서 prefix 뒤 부분. 와일드카드 prefix에 `location`이 없으면 참조 그대로 |
 //! | `blocked` | 받지 않는다(오류) |
-//! | `insecure` | 그 호스트에 검증하지 않는 TLS, 안 되면 http([`crate::registry::Registry::with_insecure`]) |
+//! | `insecure` | https로 연결할 수 없으면 http([`crate::registry::Registry::with_insecure`]). containers와 달리 인증서 검증은 그대로다(자체 서명 CA는 OS 신뢰 저장소에) |
 //!
 //! 읽지 않는 것: `unqualified-search-registries`, `[aliases]`, `short-name-mode`(sbx는 Docker처럼 짧은 이름을
 //! `docker.io`로 정규화한다), `credential-helpers`(자격 증명은 [`crate::auth`]). 받지 않는 값(모르는

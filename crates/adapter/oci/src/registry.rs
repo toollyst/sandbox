@@ -7,8 +7,9 @@
 //! (레지스트리 자체가 http인 `localhost`는 예외).
 //!
 //! `localhost`와 `127.0.0.1` 레지스트리는 http로, 나머지는 https로 접속한다. Docker와 같은 기본값이다.
-//! `registries.conf`에서 `insecure`인 호스트([`Registry::with_insecure`])는 인증서를 검증하지 않는 https로, 연결이
-//! 안 되면 http로 접속한다(containers/image와 같다). 그 호스트에는 http로도 자격 증명을 보낸다(사용자가 고른 설정).
+//! `registries.conf`에서 `insecure`인 호스트([`Registry::with_insecure`])는 https로 연결할 수 없으면 http로 접속하고,
+//! 그 호스트에는 http로도 자격 증명을 보낸다(사용자가 고른 설정). containers/image와 달리 인증서 검증은 끄지 않는다:
+//! 자체 서명 인증서는 그 CA를 OS 신뢰 저장소에 넣으면 된다(검증은 OS 저장소로 한다).
 //! blob 요청이 다른 호스트(CDN)로 redirect되면 `Authorization` 헤더는 따라가지 않는다(reqwest 기본 동작).
 //!
 //! **레지스트리가 고른 주소는 믿지 않는다.** 사용자가 이미지 이름으로 고른 호스트만 사설·로컬 주소여도 된다
@@ -202,8 +203,8 @@ impl Resolve for Guard {
     }
 }
 
-/// HTTP 클라이언트. `lax`면 인증서를 검증하지 않는다(`insecure` 호스트에만 쓴다).
-fn client(named: &Named, lax: bool) -> Result<reqwest::Client, ImageError> {
+/// HTTP 클라이언트.
+fn client(named: &Named) -> Result<reqwest::Client, ImageError> {
     let for_redirect = named.clone();
     let policy = reqwest::redirect::Policy::custom(move |attempt| {
         if attempt.previous().len() >= MAX_REDIRECTS {
@@ -223,7 +224,6 @@ fn client(named: &Named, lax: bool) -> Result<reqwest::Client, ImageError> {
         .dns_resolver(Arc::new(Guard {
             named: named.clone(),
         }))
-        .danger_accept_invalid_certs(lax)
         .build()
         .map_err(transport)
 }
@@ -247,9 +247,8 @@ pub struct Registry {
     /// 자격 증명을 찾는 파일. 없으면 익명으로만 받는다.
     auth: Option<AuthFiles>,
     named: Named,
-    /// `insecure` 호스트(포트 포함)와 그 호스트에 쓰는, 인증서를 검증하지 않는 클라이언트.
+    /// `insecure` 호스트(포트 포함).
     insecure: BTreeSet<String>,
-    lax: Option<reqwest::Client>,
     /// `insecure` 호스트 중 https가 안 되어 http로 바꾼 것.
     plain_http: Mutex<HashSet<String>>,
 }
@@ -268,22 +267,18 @@ impl Registry {
     pub fn new() -> Result<Self, ImageError> {
         let named: Named = Arc::default();
         Ok(Self {
-            http: client(&named, false)?,
+            http: client(&named)?,
             tokens: Mutex::new(HashMap::new()),
             basic: Mutex::new(HashMap::new()),
             auth: None,
             named,
             insecure: BTreeSet::new(),
-            lax: None,
             plain_http: Mutex::new(HashSet::new()),
         })
     }
 
-    /// 이 호스트들(`registries.conf`의 `insecure`, 포트 포함)은 인증서를 검증하지 않고, https가 안 되면 http로.
+    /// 이 호스트들(`registries.conf`의 `insecure`, 포트 포함)은 https로 연결할 수 없으면 http로.
     pub fn with_insecure(mut self, hosts: BTreeSet<String>) -> Result<Self, ImageError> {
-        if !hosts.is_empty() {
-            self.lax = Some(client(&self.named, true)?);
-        }
         self.insecure = hosts;
         Ok(self)
     }
@@ -362,13 +357,6 @@ impl Registry {
                 };
                 self.insecure.contains(&host)
             })
-    }
-
-    fn http_for(&self, url: &str) -> &reqwest::Client {
-        match &self.lax {
-            Some(lax) if self.is_insecure(url) => lax,
-            _ => &self.http,
-        }
     }
 
     /// 자격 증명은 https로만 보낸다. `localhost`와 `insecure` 호스트는 예외다.
@@ -490,7 +478,7 @@ impl Registry {
     }
 
     async fn send(&self, url: &str, accept: &[&str], auth: &Auth) -> Result<Response, ImageError> {
-        let mut req = self.http_for(url).get(url);
+        let mut req = self.http.get(url);
         if !accept.is_empty() {
             req = req.header(ACCEPT, accept.join(", "));
         }
@@ -536,7 +524,7 @@ impl Registry {
                         q.append_pair("scope", s);
                     }
                 }
-                self.http_for(url.as_str())
+                self.http
                     .post(url)
                     .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
                     .body(form.query().unwrap_or_default().to_owned())
@@ -554,7 +542,7 @@ impl Registry {
                         q.append_pair("scope", s);
                     }
                 }
-                let mut req = self.http_for(url.as_str()).get(url.clone());
+                let mut req = self.http.get(url.clone());
                 if let Some(c) = cred {
                     self.require_https(url.as_str())?;
                     req = req.basic_auth(&c.username, Some(&c.secret));

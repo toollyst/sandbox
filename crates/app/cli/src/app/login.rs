@@ -108,7 +108,7 @@ impl Ctx {
             return Err(msg("the password is empty"));
         }
         let cred = Credential { username, secret };
-        // registries.conf의 `insecure`(http, 자체 서명 인증서)는 podman login처럼 따른다.
+        // registries.conf의 `insecure`(https가 안 되면 http)는 podman login처럼 따른다.
         let insecure = sbx_oci::registries::Registries::load(&crate::dirs::registries_conf())?
             .insecure_hosts();
         match Registry::new()?

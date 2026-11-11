@@ -148,7 +148,8 @@ location = "mirror.gcr.io"
 ```
 
 Mirrors are tried in order, then the registry itself; the image keeps the name you asked for. `prefix`, `blocked`,
-`insecure` (self-signed TLS, falling back to plain HTTP), `mirror-by-digest-only` and `pull-from-mirror` work as
+`insecure` (falls back to plain HTTP; unlike podman, certificates are still checked, so add a self-signed CA to the
+system trust store), `mirror-by-digest-only` and `pull-from-mirror` work as
 the containers documentation describes. `unqualified-search-registries` and short-name aliases are not used: like
 Docker, `sbx` reads a short name as a Docker Hub image. A mistake in the file stops pulls with an error naming it.
 
