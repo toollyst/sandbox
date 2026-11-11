@@ -761,6 +761,43 @@ fn the_seen_file_is_kept_per_name_and_url_and_survives_junk() {
     let _ = fs::remove_dir_all(&root);
 }
 
+/// 이미 본 serial이면 적을 것이 없으니 잠그지도 쓰지도 않는다. 읽기만 되는 데이터 디렉터리(다른 사용자가 만든
+/// 것, 읽기 전용 마운트)에서도 이미 본 색인은 읽히고, 롤백은 그래도 거부된다.
+#[cfg(unix)]
+#[test]
+fn a_read_only_data_directory_still_checks_serials_it_already_saw() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir().join(format!("sbx-exrepo-seen-ro-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let dir = root.join("dir");
+    let seen = Seen::new(dir.join("seen"));
+    let a = Repository::new("a", "https://example.com/a").unwrap();
+    seen.check_and_record(&a, 5, "u").unwrap();
+    fs::remove_file(dir.join(".seen.lock")).unwrap();
+    let ro = |mode| fs::set_permissions(&dir, fs::Permissions::from_mode(mode)).unwrap();
+    ro(0o555);
+    // root는 권한을 무시한다. 그때는 이 검사가 뜻이 없다.
+    if fs::write(dir.join("probe"), "").is_ok() {
+        ro(0o755);
+        let _ = fs::remove_dir_all(&root);
+        return;
+    }
+    let same = seen.check_and_record(&a, 5, "u");
+    let older = seen.check_and_record(&a, 4, "u");
+    let newer = seen.check_and_record(&a, 6, "u");
+    ro(0o755);
+    same.unwrap();
+    assert!(
+        matches!(older, Err(RepoError::Untrusted { ref reason, .. }) if reason.contains("older than 5")),
+        "{older:?}"
+    );
+    // 새 serial은 적어야 하므로 쓰지 못하면 실패한다(적지 못한 채 받아들이면 롤백 창이 열린다).
+    assert!(newer.is_err(), "{newer:?}");
+    assert_eq!(seen.get(&a).unwrap(), Some(5));
+    assert!(!dir.join(".seen.lock").exists());
+    let _ = fs::remove_dir_all(&root);
+}
+
 #[tokio::test]
 async fn a_signed_repository_ignores_a_v1_index_and_unsigned_serials_are_not_tracked() {
     let s = Signed::new("v1-only");

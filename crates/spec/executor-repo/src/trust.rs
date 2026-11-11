@@ -79,15 +79,35 @@ impl Seen {
     }
 
     /// `serial`이 본 것보다 작으면 거부하고, 크면 적는다.
+    ///
+    /// 본 것과 같거나 작으면 적을 것이 없으니 잠그지 않고 판단한다(읽는 쪽은 늘 파일 전체를 본다). 그래서 읽기만
+    /// 되는 데이터 디렉터리에서도 이미 본 색인은 읽힌다. 적어야 할 때만 잠그고 다시 읽는다.
     pub fn check_and_record(
         &self,
         repo: &Repository,
         serial: u64,
         url: &str,
     ) -> Result<(), RepoError> {
+        if let Some(seen) = self.get(repo)?
+            && serial <= seen
+        {
+            return Self::compare(serial, seen, url);
+        }
         crate::file::locked(&self.path, || {
             self.check_and_record_locked(repo, serial, url)
         })
+    }
+
+    fn compare(serial: u64, seen: u64, url: &str) -> Result<(), RepoError> {
+        if serial < seen {
+            return Err(RepoError::Untrusted {
+                url: url.to_owned(),
+                reason: format!(
+                    "serial {serial} is older than {seen}, which this machine already saw (a rollback?)"
+                ),
+            });
+        }
+        Ok(())
     }
 
     fn check_and_record_locked(
@@ -102,16 +122,8 @@ impl Seen {
             .position(|(n, _, u)| *n == repo.name && *u == repo.url.as_str());
         if let Some(i) = i {
             let seen = all[i].1;
-            if serial < seen {
-                return Err(RepoError::Untrusted {
-                    url: url.to_owned(),
-                    reason: format!(
-                        "serial {serial} is older than {seen}, which this machine already saw (a rollback?)"
-                    ),
-                });
-            }
-            if serial == seen {
-                return Ok(());
+            if serial <= seen {
+                return Self::compare(serial, seen, url);
             }
             all[i].1 = serial;
         } else {
