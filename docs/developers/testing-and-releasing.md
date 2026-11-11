@@ -171,7 +171,8 @@ is already up: copy `install.sh` and `install.ps1` to `gh-pages` by hand and fix
 
 **Rehearsal.** `gh workflow run release.yml --ref <branch>` runs the same jobs on any branch without a tag. It builds,
 runs the smoke test, signs with Sigstore and uploads the result as the artifact `rehearsal`, with the notes from
-`## Unreleased`. It creates no GitHub release and no attestations, skips `publish`, and leaves `gh-pages` alone.
+`## Unreleased` (or from the version's section once it has been renamed for the tag). It creates no GitHub release
+and no attestations, skips `publish`, and leaves `gh-pages` alone.
 
 **Actions updates.** Dependabot opens one weekly PR for all GitHub Actions
 ([`dependabot.yml`](../../.github/dependabot.yml)). A pull request runs only `ci.yml`, so before merging one that
