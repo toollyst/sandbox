@@ -89,14 +89,18 @@ impl Meter {
             self.used.fetch_add(n as u64, Ordering::Relaxed);
             return n;
         };
-        let mut granted = 0;
-        let _ = self
-            .used
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |u| {
-                granted = (limit.saturating_sub(u)).min(n as u64);
-                Some(u + granted)
-            });
-        granted as usize
+        // fetch_update는 새 Rust에서 이름이 바뀌어(try_update) MSRV와 함께 쓸 수 있는 compare_exchange로 한다.
+        let mut u = self.used.load(Ordering::SeqCst);
+        loop {
+            let granted = limit.saturating_sub(u).min(n as u64);
+            match self
+                .used
+                .compare_exchange(u, u + granted, Ordering::SeqCst, Ordering::SeqCst)
+            {
+                Ok(_) => return granted as usize,
+                Err(now) => u = now,
+            }
+        }
     }
 
     fn exhausted(&self) -> Option<u64> {
