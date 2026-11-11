@@ -34,3 +34,5 @@ rustix = { version = "1", default-features = false, features = ["fs", "std"] }
 # socket_dir의 소유자 확인 (geteuid).
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", default-features = false, features = ["process", "std"] }
+# 복사해 넣는 파일을 O_NOFOLLOW로 연다 (hostfs).
+libc.workspace = true

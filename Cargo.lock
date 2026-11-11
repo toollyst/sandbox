@@ -2594,6 +2594,7 @@ dependencies = [
 name = "sbx-runtime"
 version = "0.2.0"
 dependencies = [
+ "libc",
  "rustix",
  "sbx-events",
  "sbx-executor",
