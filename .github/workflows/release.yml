@@ -4,15 +4,15 @@
 # 2. smoke: KVM이 있는 Linux x86_64 러너에서, 이 커밋으로 만든 어댑터와 upstream Firecracker VMM 묶음을 로컬 v2
 #    저장소(file://)에 두고 1의 sbx로 `sbx executor install firecracker@<FIRECRACKER>`를 한 뒤 `cargo xtask smoke`를
 #    통과해야 올린다(ci.yml의 vm과 같다). sbx 릴리스는 wick 릴리스에도 공식 저장소의 내용에도 기대지 않는다.
-#    sbx는 VMM 런타임에 묶이지 않고, 실행기는 따로 executors.yml로 올린다.
+#    sbx는 VMM 런타임에 묶이지 않는다.
 # 3. 서명: 각 묶음에 Sigstore 번들(`.sigstore.json`, keyless: 이 워크플로의 GitHub OIDC 신원), GitHub 출처 증명
 #    (SLSA build provenance)과 SBOM(SPDX, Cargo.lock 전체) 증명을 만든다.
 # 4. GitHub Release에 1과 3의 파일을 올리고, `install.sh`를 gh-pages 맨 위에 둔다.
 #    (저장소 설정의 Pages 소스를 gh-pages 브랜치로 해 두어야 https://toollyst.github.io/sandbox/ 로 보인다.)
 #
-# 실행기(wick VMM 묶음, firecracker 어댑터)는 여기서 만들지 않는다. executors.yml(손으로 돌린다)이 만들어
-# gh-pages의 `executors/v2/index.json`에 올린다. sbx 0.1.x가 읽는 schema 1 `executors/index.json`은 그대로 남고
-# 더는 바뀌지 않는다.
+# 실행기(wick VMM 묶음, firecracker 어댑터)는 여기서 만들지 않는다. 공식 실행기 저장소는 따로 있는
+# toollyst/sandbox-executors가 이 저장소의 한 커밋에서 어댑터를 만들어 올린다(의존은 그쪽 → 여기 한 방향).
+# gh-pages에 있는 sbx 0.1.x용 schema 1 `executors/index.json`은 그대로 남고 더는 바뀌지 않는다.
 name: release
 
 on:
@@ -115,7 +115,7 @@ jobs:
           install -m 755 target/release/sbx-executor-firecracker adapter/sbx-executor
           cp "target/kernel/$ARCH/kernel" adapter/kernel
           .github/scripts/kernel-notice.sh adapter/KERNEL-SOURCE.txt
-          WORK=fc .github/scripts/upstream-vmm.sh "$FIRECRACKER" "$ARCH" vmm
+          WORK="fc" .github/scripts/upstream-vmm.sh "$FIRECRACKER" "$ARCH" vmm
       - name: smoke (the released sbx, installing from a local v2 repository)
         run: |
           tar xzf dist/sbx-linux-x86_64.tar.gz -C dist
@@ -130,7 +130,7 @@ jobs:
       # Sigstore 서명(keyless, GitHub OIDC)과 GitHub 출처 증명(attestation)에 쓴다.
       id-token: write
       attestations: write
-    # executors.yml도 gh-pages에 push한다.
+    # gh-pages에 push하는 것은 이 job 하나다.
     concurrency:
       group: gh-pages
       cancel-in-progress: false

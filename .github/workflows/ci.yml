@@ -99,7 +99,8 @@ jobs:
   # 실제 VM: 사용자가 받는 것과 같은 v2 경로. 이 커밋의 어댑터(sbx-executor-firecracker + `cargo xtask kernel`로 만든
   # 커널)와 upstream Firecracker VMM 묶음으로 로컬 v2 저장소(file://)를 만들고, install.sh로 설치한 sbx로
   # `sbx executor install firecracker@<FIRECRACKER>`를 한 뒤 smoke와 bench를 돌린다(.github/scripts/smoke-local.sh,
-  # executors.yml이 올리기 전에, release.yml이 올리기 전에 하는 것과 같다). wick에도 공식 저장소에도 기대지 않는다.
+  # release.yml이 올리기 전에, toollyst/sandbox-executors가 올리기 전에 하는 것과 같다). wick에도 공식 저장소에도
+  # 기대지 않는다.
   # x86_64 러너에는 /dev/kvm이 있어야 한다. arm 러너에 없으면 건너뛰고 알린다.
   vm:
     name: vm (${{ matrix.arch }})
@@ -152,7 +153,7 @@ jobs:
           install -m 755 target/release/sbx-executor-firecracker adapter/sbx-executor
           cp "target/kernel/$ARCH/kernel" adapter/kernel
           .github/scripts/kernel-notice.sh adapter/KERNEL-SOURCE.txt
-          WORK=fc .github/scripts/upstream-vmm.sh "$FIRECRACKER" "$ARCH" vmm
+          WORK="fc" .github/scripts/upstream-vmm.sh "$FIRECRACKER" "$ARCH" vmm
           vmm/firecracker --version
       - if: steps.kvm.outputs.ok == 'true'
         name: install.sh (from a local copy of the release files)

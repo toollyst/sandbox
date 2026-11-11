@@ -39,7 +39,7 @@ docs/
   roadmap.md         what is done and what is next (Korean)
 assets/demo.svg      the README recording, made by cargo xtask demo
 install.sh           the installer served from GitHub Pages
-.github/workflows/   ci.yml and fuzz.yml (every push), release.yml (tags v*), executors.yml (by hand)
+.github/workflows/   ci.yml and fuzz.yml (every push), release.yml (tags v*). The official executor repository is published from toollyst/sandbox-executors
 .github/scripts/     shell steps the workflows share (VMM packages, kernel notice, smoke with wick)
 ```
 

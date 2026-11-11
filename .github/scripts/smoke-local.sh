@@ -2,7 +2,7 @@
 # 어댑터 묶음과 VMM 묶음으로 로컬 v2 저장소(file://)를 REPO에 만들고, 그 저장소 하나만 두고
 # `sbx executor install <VMM_NAME>@<VMM_VERSION>`(예: wick@1.18.0+wick.1, firecracker@1.17.0. 어댑터는 함께
 # 설치된다)과 `executor use`를 한 뒤 `cargo xtask smoke`를 돌린다. 사용자가 공식 저장소에서 받는 것과 같은 경로다.
-# executors.yml(올리기 전에), ci.yml(vm), release.yml(smoke)이 쓴다. 공식 저장소에는 닿지 않는다.
+# ci.yml(vm), release.yml(smoke)과 toollyst/sandbox-executors(올리기 전에)가 쓴다. 공식 저장소에는 닿지 않는다.
 # 저장소 루트에서 돌린다. sbx의 데이터 디렉터리를 바꾼다(`official` 저장소를 빼고 `ci`를 더한다).
 #
 #   .github/scripts/smoke-local.sh SBX REPO ADAPTER_DIR ADAPTER_VERSION VMM_DIR VMM_NAME VMM_VERSION

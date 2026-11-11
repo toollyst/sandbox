@@ -19,6 +19,9 @@ to release a tag without one. Changes land under `## Unreleased` first, and the 
   `Fake` and `fake` (and Windows `fake.` and `fake`) as one directory. An executor installed earlier under such a name
   no longer shows up; remove its directory and install it again under a lowercase name. Index entries with such
   names are skipped, not fatal, and `cargo xtask repo-add` refuses them.
+- The official executor repository moved to <https://toollyst.github.io/sandbox-executors/>, published from
+  [toollyst/sandbox-executors](https://github.com/toollyst/sandbox-executors). An `official` line with the old URL in
+  a repository list written by 0.1.x reads as the new one; the old URL keeps the schema 1 index for 0.1.x.
 - The repository name `local` is reserved for executors installed with `--from`.
 - A VMM package's adapter now comes from the first repository that publishes the adapter's name, not from the
   VMM package's repository first; an adapter installed from another repository is not used for it.

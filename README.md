@@ -87,7 +87,9 @@ The installer puts `sbx` and `sbx-shim` in `~/.local/bin` after checking their S
 its own has no VMM and isn't tied to one. You add an **executor**, from a repository or from a directory of your own.
 Repositories are plain static sites that follow an [open spec](crates/spec/executor-repo/src/lib.rs); `sbx` only
 reads them, and works the same without them once an executor is installed. One comes preconfigured as `official`
-(<https://toollyst.github.io/sandbox/executors/>), and you can remove it or add your own. In it, `wick` is our
+(<https://toollyst.github.io/sandbox-executors/>, published from
+[toollyst/sandbox-executors](https://github.com/toollyst/sandbox-executors)), and you can remove it or add your own.
+In it, `wick` is our
 Firecracker build ([toollyst/wick](https://github.com/toollyst/wick), the one that runs on macOS), run by the
 `firecracker` adapter with its guest kernel. Upstream Firecracker and your own builds run under the same adapter; see
 [Bring your own VMM](#bring-your-own-vmm) and [Executors and versions](#executors-and-versions). Nothing runs as
@@ -122,7 +124,8 @@ export PATH="$PWD/target/release:$PATH"
 sbx executor install wick         # a prebuilt VMM and its adapter from a repository, or build them (below)
 ```
 
-To build them yourself instead, follow [`executors.yml`](.github/workflows/executors.yml). The adapter is a directory
+To build them yourself instead, follow the official repository's
+[`executors.yml`](https://github.com/toollyst/sandbox-executors/blob/main/.github/workflows/executors.yml). The adapter is a directory
 with `sbx-executor` (built from `crates/executor/firecracker`) and `kernel` (`cargo xtask kernel`); the VMM package is
 a directory with `firecracker`. Install both, then check them on real VMs with `cargo xtask smoke`:
 

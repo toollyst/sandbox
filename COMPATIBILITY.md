@@ -33,9 +33,3 @@ both sides always match.
 The supported hosts are listed in the README's [Platforms](README.md#platforms) table. Dropping one is breaking.
 The minimum supported Rust version is `rust-version` in [`Cargo.toml`](Cargo.toml); raising it is allowed in a minor
 release and noted in the release notes.
-
-## The rename
-
-`sbx` will be renamed to `cowl` before 1.0 ([roadmap](docs/roadmap.md) P16). That release will move the data and
-cache directories, environment variables and labels to the new name, read the old ones, and keep an `sbx` command
-name working for at least one minor release.

@@ -336,7 +336,7 @@ fn executor_repo(out: &Path) {
         out,
         "executor_spec",
         "repository",
-        b"1.9\n1.10\n01.9\nhttps://toollyst.github.io/sandbox/executors",
+        b"1.9\n1.10\n01.9\nhttps://toollyst.github.io/sandbox-executors",
     );
     put(
         out,

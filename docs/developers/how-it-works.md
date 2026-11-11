@@ -233,8 +233,10 @@ name or `local`), and a name already installed from one origin is never installe
 Each download is checked against the sha256 and size in the index and unpacked into a staging directory. Before the
 rename into place, `sbx-executor capabilities` (for a VMM package, the adapter given that directory) must report this
 `sbx`'s protocol version and the host's architecture ([`executors.rs`](../../crates/app/cli/src/executors.rs)).
-The official repository is <https://toollyst.github.io/sandbox/executors/>, published by `executors.yml`
-([Releasing](testing-and-releasing.md#executors-executorsyml)).
+The official repository is <https://toollyst.github.io/sandbox-executors/>, published from its own repository,
+[toollyst/sandbox-executors](https://github.com/toollyst/sandbox-executors) ([Releasing](testing-and-releasing.md#executors)).
+A repository list written by `sbx` 0.1.x names it `official` at the old URL (`https://toollyst.github.io/sandbox/executors/`,
+which keeps its schema 1 index for 0.1.x); that line reads as the current official repository.
 
 To support another VMM, either write a program that implements
 [`sbx-executor-proto`](../../crates/spec/executor-proto) and ship it as a self-contained executor or an adapter, or,

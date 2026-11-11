@@ -121,7 +121,8 @@ so on. The result is `target/kernel/<arch>/kernel`. CI caches it by the hash of 
 ## Releasing
 
 `sbx` and its executors are released separately. A tag releases `sbx`; the executors (the `wick` VMM packages and
-the `firecracker` adapter) are published by hand with `executors.yml`, usually after a new wick release.
+the `firecracker` adapter) are published by hand from [toollyst/sandbox-executors](https://github.com/toollyst/sandbox-executors),
+usually after a new wick release.
 
 ### `sbx`
 
@@ -134,7 +135,8 @@ Pushing `v<version>` runs [`release.yml`](../../.github/workflows/release.yml):
    commit, makes a VMM package from upstream Firecracker, puts both in a local `file://` repository, and has the new
    `sbx` install `firecracker@<version>` from there before `cargo xtask smoke`. A `sbx` release depends on neither a
    wick release nor what the official repository holds, so `sbx` and the executors can be released in any order. If
-   the protocol version changes, run `executors.yml` afterwards so the official repository gets a matching adapter.
+   the protocol version changes, publish a matching adapter to the official repository afterwards
+   ([Executors](#executors)).
 4. **`publish`** creates the GitHub release with the `sbx` archives and copies `install.sh` to the top of the
    `gh-pages` branch. GitHub Pages serves that branch at <https://toollyst.github.io/sandbox/>.
 
@@ -155,41 +157,38 @@ To cut a release:
 A tag whose workflow fails publishes nothing, because `publish` only runs when every build succeeded. Fix the cause,
 bump the version and tag again rather than moving a pushed tag.
 
-### Executors (`executors.yml`)
+### Executors
 
-[`executors.yml`](../../.github/workflows/executors.yml) runs only by hand. Give it a
-[toollyst/wick](https://github.com/toollyst/wick/releases) release, or nothing for the latest one:
+The official executor repository lives in its own repository,
+[toollyst/sandbox-executors](https://github.com/toollyst/sandbox-executors), and is served at
+<https://toollyst.github.io/sandbox-executors/>. Nothing here depends on it: CI and releases build their own local
+repository, and `sbx` works without it once an executor is installed.
 
-```sh
-gh workflow run executors.yml                          # the latest wick release
-gh workflow run executors.yml -f wick=v1.18.0+wick.1   # that release, published as wick@1.18.0+wick.1
-```
+Its [`executors.yml`](https://github.com/toollyst/sandbox-executors/blob/main/.github/workflows/executors.yml) (by
+hand) takes a [toollyst/wick](https://github.com/toollyst/wick/releases) release and a commit of this repository
+(`-f sandbox=v0.2.0`, default `main`), builds the `firecracker` adapter and the kernel from that commit, and uses that
+commit's tools:
 
-Versions are wick's release tags without the `v`, registered as wick publishes them: `v1.18.0` becomes
-`wick@1.18.0`, and a fix release `v1.18.0+wick.1` becomes `wick@1.18.0+wick.1`. `sbx executor install wick` (or
-`wick@latest`) picks the highest, and `wick@1.18.0` the newest patch of 1.18.0. The empty input takes the release
-wick marks as latest. The workflow publishes it for every platform the
-official repository doesn't have yet, and never rebuilds or overwrites what is already there. For each platform, the
-VMM package is a directory with `firecracker`, `LICENSE` and `NOTICE`: that wick release's build for the platform, or,
-on Linux when the release has none, upstream Firecracker of the same upstream version (checked by its sha256). macOS
-is skipped with a warning when the release has no macOS build (`-f require_darwin=true` makes that an error). The
-adapter is `sbx-executor-firecracker` plus the default kernel and `KERNEL-SOURCE.txt` (where its GPL-2.0 source
-and config are). An adapter version that is already published is reused
-as is; a new one is built from the commit you run it on. On Linux with KVM it installs both from a local repository
-and runs `cargo xtask smoke`. Then it adds them to `executors/v2/index.json` on `gh-pages` and uploads the archives to
-the GitHub releases `wick-<version>` and `firecracker-adapter-<version>`. The comment at the top of the workflow lists
-its inputs.
+- `cargo xtask repo-add --schema 2` adds the packages to the index.
+- `cargo xtask repo-sign` signs the index with a fresh `serial` and a 90-day `expires`.
+- [`.github/scripts/upstream-vmm.sh`](../../.github/scripts/upstream-vmm.sh) packages upstream Firecracker on a
+  platform the wick release has no build for.
+- [`kernel-notice.sh`](../../.github/scripts/kernel-notice.sh) writes the kernel's `KERNEL-SOURCE.txt`, linking that
+  commit.
+- [`smoke-local.sh`](../../.github/scripts/smoke-local.sh) runs the real-VM check before upload.
 
-The schema 1 `executors/index.json`, which `sbx` 0.1.x reads, stays as it is.
+These scripts are this repository's interface to it, so change them compatibly or update both. Versions are wick's
+release tags without the `v` (`v1.18.0+wick.1` becomes `wick@1.18.0+wick.1`), and a published platform is never
+rebuilt or overwritten.
 
-**Signing.** When the repository secret `EXECUTORS_SIGNING_KEY` (a minisign secret key from
-`cargo xtask repo-keygen`) is set, the workflow runs `cargo xtask repo-sign` before pushing: it raises the index's
-`serial`, sets `expires` 90 days ahead and writes `v2/index.json.minisig`. Without the secret it warns and publishes
-unsigned. The matching public key goes in `OFFICIAL_KEYS` in
-[`executors.rs`](../../crates/app/cli/src/executors.rs); until both exist, `official` is an unsigned repository. A
-signed index has to be re-signed before it expires: [`executors-resign.yml`](../../.github/workflows/executors-resign.yml)
-(by hand) does only that and fails if the contents would change. To rotate the key, add the new public key next to the old one in `OFFICIAL_KEYS`, release, then
+**Signing.** That repository's secret `EXECUTORS_SIGNING_KEY` (a minisign secret key from `cargo xtask repo-keygen`)
+signs its index; the matching public key goes in `OFFICIAL_KEYS` in
+[`executors.rs`](../../crates/app/cli/src/executors.rs). Until both exist, `official` is an unsigned repository, and
+once `OFFICIAL_KEYS` has a key the workflow refuses to publish unsigned. Its `executors-resign.yml` re-signs before
+the index expires. To rotate the key, add the new public key next to the old one in `OFFICIAL_KEYS`, release, then
 switch the secret.
+
+The schema 1 `executors/index.json` on this repository's `gh-pages`, which `sbx` 0.1.x reads, stays as it is.
 
 ### Executor repositories and packages
 

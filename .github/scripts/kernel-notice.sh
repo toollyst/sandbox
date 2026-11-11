@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 어댑터 묶음에 넣는 커널 소스 고지(GPL-2.0)를 OUT에 쓴다. 값은 손으로 적지 않고 xtask/src/kernel.rs에서 읽는다
-# (VERSION, SHA256, 내려받는 URL 틀). 설정 링크는 이 커밋(GITHUB_SHA)의 xtask/kernel/이다. 저장소 루트에서 돌린다.
+# (VERSION, SHA256, 내려받는 URL 틀). 설정 링크는 GITHUB_REPOSITORY의 GITHUB_SHA 커밋의 xtask/kernel/이다(다른
+# 저장소의 워크플로에서 돌리면 둘을 toollyst/sandbox와 그 커밋으로 준다). 이 저장소의 루트에서 돌린다.
 #
 #   .github/scripts/kernel-notice.sh OUT
 set -euo pipefail

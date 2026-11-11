@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # upstream Firecracker 릴리스 v<VERSION>에서 VMM 묶음 디렉터리 OUT을 만든다: firecracker, LICENSE, NOTICE.
 # 압축은 그 릴리스의 .sha256.txt로 확인한다. LICENSE/NOTICE가 압축에 없으면 그 태그의 소스에서 받는다(Apache-2.0
-# 재배포 조건). executors.yml과 ci.yml(vm)이 쓴다. 받은 파일은 WORK(기본: 임시 디렉터리)에 둔다.
+# 재배포 조건). ci.yml(vm), release.yml(smoke)과 toollyst/sandbox-executors가 쓴다. 받은 파일은 WORK(기본: 임시 디렉터리)에 둔다.
 #
 #   .github/scripts/upstream-vmm.sh VERSION ARCH OUT      # 예: 1.18.0 x86_64 vmm
 set -euo pipefail
