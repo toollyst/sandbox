@@ -1,6 +1,6 @@
 # 로드맵
 
-2026년 11월 10일 · 상위 문서: sandbox 기획서, [docs/plan/architecture.md](plan/architecture.md)
+2026년 11월 11일 · 현재 릴리스 `v0.2.0`(유지는 0.2부터, 0.1.x는 거뒀다, 40) · 상위 문서: sandbox 기획서, [docs/plan/architecture.md](plan/architecture.md)
 
 순서는 기획서의 성공 기준 1 "Linux에서 공개 OCI 이미지를 받아 microVM 안에서 명령을 실행하고 결과를 받는다"까지의 최단 경로다. 각 단계는 "어떻게 검증되면 끝인가"를 함께 적는다.
 
@@ -52,7 +52,7 @@ Linux KVM(upstream Firecracker)과 CI 자동 실행은 남았다.
 | 단계 | 내용 | 상태 |
 |---|---|---|
 | 16 | 실행기 저장소 규약과 `sbx executor install NAME[@VERSION]`, `search`, `repo` | 완료 (`sbx-executor-repo`: 정적 호스팅 가능한 `index.json` + `.tar.gz` 묶음, SHA-256 확인. file:// 저장소에서 실제 firecracker 묶음 설치 0.18초) |
-| 17 | 공식 저장소와 릴리스(CI) | 완료, 첫 릴리스 `v0.1.1`(2026-11-10. `v0.1.0`은 macos-14 러너 지원 종료로 릴리스 없이 멈췄다). `install.sh`로 macOS에 설치해 실제 VM smoke 17/17: 공식 저장소는 묶음을 GitHub Releases에, `index.json`을 GitHub Pages(gh-pages 브랜치의 `executors/`)에 둔다. sbx에 `official`로 기본 등록(지우면 남는다). `.github/workflows/release.yml`: 태그 `v<버전>`에서 sbx(Linux musl 정적, macOS arm64), 실행기 묶음(Linux는 upstream Firecracker로 만들고 KVM smoke 통과 뒤, macOS는 저장소 변수 `FC_FORK_TAG`가 있을 때 toollyst/firecracker 릴리스로), `repo-add --url`로 색인. toollyst/firecracker `v1.18.0-fork.1` 릴리스(macOS 15+, hypervisor 권한 서명)를 `FC_FORK_TAG`로 지정, 그 자산으로 macOS 단계를 재현해 실제 VM smoke 17/17(2026-11-10). Pages 소스는 gh-pages. 그 뒤 toollyst/firecracker는 toollyst/wick으로 바뀌었고, 실행기는 sbx 릴리스와 떼어 `executors.yml`로 올린다(34). 지금 `release.yml`은 sbx만 올리고 `FC_FORK_TAG`·`WICK_TAG` 변수는 쓰지 않는다. |
+| 17 | 공식 저장소와 릴리스(CI) | 완료, 첫 릴리스 `v0.1.1`(2026-11-10, v0.2.0 뒤 거뒀다(40). `v0.1.0`은 macos-14 러너 지원 종료로 릴리스 없이 멈췄다). `install.sh`로 macOS에 설치해 실제 VM smoke 17/17: 공식 저장소는 묶음을 GitHub Releases에, `index.json`을 GitHub Pages(gh-pages 브랜치의 `executors/`)에 둔다. sbx에 `official`로 기본 등록(지우면 남는다). `.github/workflows/release.yml`: 태그 `v<버전>`에서 sbx(Linux musl 정적, macOS arm64), 실행기 묶음(Linux는 upstream Firecracker로 만들고 KVM smoke 통과 뒤, macOS는 저장소 변수 `FC_FORK_TAG`가 있을 때 toollyst/firecracker 릴리스로), `repo-add --url`로 색인. toollyst/firecracker `v1.18.0-fork.1` 릴리스(macOS 15+, hypervisor 권한 서명)를 `FC_FORK_TAG`로 지정, 그 자산으로 macOS 단계를 재현해 실제 VM smoke 17/17(2026-11-10). Pages 소스는 gh-pages. 그 뒤 toollyst/firecracker는 toollyst/wick으로 바뀌었고, 실행기는 sbx 릴리스와 떼어 `executors.yml`로 올린다(34). 지금 `release.yml`은 sbx만 올리고 `FC_FORK_TAG`·`WICK_TAG` 변수는 쓰지 않는다. |
 | 18 | 커널 | 완료: 보통 이미지는 실행기 묶음의 기본 리눅스 커널(아키텍처당 하나)로, 라벨 `io.github.toollyst.sandbox.kernel`로 커널을 알린 이미지는 그 커널로(실행기 규약 2의 `custom_kernel`). 실제 VM으로 확인. 기본 커널은 `cargo xtask kernel`(Linux 6.1.155, upstream Firecracker CI 설정 + `xtask/kernel/sbx.config`)로 CI에서 빌드하고, 이 커널로 macOS HVF smoke 17/17 |
 | 19 | README, 데모, 설치 한 줄, 벤치마크 | 벤치마크 완료(macOS arm64 HVF: `run --rm alpine true` p50 121ms, `exec` p50 8ms, 10개 동시 0.50초). 설치 한 줄 완료(`install.sh`: `curl -fsSL https://toollyst.github.io/sandbox/install.sh \| sh`, SHA-256 확인, `~/.local/bin`, 기본 실행기까지. 로컬 file:// 릴리스로 확인. 그 뒤 실행기는 설치하지 않게 바뀌었다(35)). README 영어 완료. 데모 완료(`cargo xtask demo`: 실제 명령을 실제 시각대로 담은 움직이는 SVG `assets/demo.svg`, 바깥 도구 없이 CSS만. 머신이 한가할 때 다시 담는다) |
 | 20 | Linux KVM(upstream Firecracker) 끝-끝과 CI | x86_64 완료: CI `vm` 작업이 GitHub 러너(KVM)에서 upstream Firecracker v1.17.0 + 빌드한 커널로 smoke 17/17과 bench. 32 뒤로는 사용자와 같은 v2 경로다: 이 커밋의 어댑터와 upstream Firecracker VMM 묶음을 로컬 v2 저장소(file://)에 `firecracker@1.17.0`으로 올리고, `install.sh`로 설치한 sbx로 `sbx executor install`한 뒤 smoke(`.github/scripts/smoke-local.sh`). wick에도 공식 저장소에도 기대지 않는다. 남음: aarch64(GitHub arm 러너에 /dev/kvm이 없어 건너뛴다. 묶음은 만든다) |
@@ -93,6 +93,7 @@ CLI는 nvm, gvm처럼 버전을 고른다. 규칙은 `sbx-executor-proto`("어�
 | 38 | 공식 실행기 저장소를 sbx 저장소에서 떼기: 게시(`executors.yml`, `executors-resign.yml`, `wick-vmm.sh`)와 색인(Pages)을 [toollyst/sandbox-executors](https://github.com/toollyst/sandbox-executors)로 옮긴다. 그 저장소가 sandbox의 한 커밋(입력 `sandbox`, SHA로 고정)에서 어댑터·커널·저장소 도구를 만들고 이 저장소의 `upstream-vmm.sh`·`kernel-notice.sh`·`smoke-local.sh`를 쓴다(의존은 그쪽 → 여기 한 방향). 어댑터(`crates/executor/firecracker`)와 커널 빌드는 여기 남는다(ci·release의 실제 VM 시험이 바깥 저장소 없이 돈다). `official`은 <https://toollyst.github.io/sandbox-executors/>, 0.1.x가 쓴 목록의 옛 `official` 줄은 새 공식 저장소로 읽고, 옛 URL의 schema 1 색인은 0.1.x를 위해 남긴다 | 완료 |
 | 39 | README는 이 프로젝트를 처음 보는 사람용으로: 추구하는 바, OS별(macOS·Linux·Windows) 설치와 처음 쓰는 법, 플랫폼. 자세한 것은 사용자 안내서 `docs/guide/`(영어: install, usage, mcp, executors)로 옮긴다. 상대 링크와 앵커를 모두 확인 | 완료 |
 | 40 | v0.2.0 릴리스(2026-11-11). 유지는 0.2부터: 0.1.x는 거둔다(GitHub Release v0.1.1, 태그 v0.1.0·v0.1.1, sandbox gh-pages의 schema 1 `executors/index.json`). 0.1.x만을 위한 코드도 뺀다(목록의 옛 `official` URL 읽기, install.sh의 서명 없는 옛 릴리스 예외, 문서의 0.1.x 안내). 저장소 규격의 schema 1(`index.json`)은 공개 규격이라 남긴다 | 완료 |
+| 41 | OS마다 표준 위치에 설치: Windows x86_64 릴리스(`sbx-windows-x86_64.zip`, 서명·출처 증명)와 `install.ps1`(`%LOCALAPPDATA%\Programs\sbx`, SHA-256과 Sigstore 확인, PATH는 바꾸지 않고 알린다), `cargo xtask install`(소스 빌드도 설치 스크립트와 같은 곳에, 빌드 디렉터리에서 쓰지 않게). `test-install.ps1`이 PowerShell 7과 5.1에서 install.sh와 같은 경우를 본다. 문서의 "알파, 예고 없이 바뀜"을 COMPATIBILITY(0.2부터 지원 중단을 거쳐 minor에서만)에 맞춘다 | 완료(Windows 빌드는 다음 릴리스에서 처음 나온다) |
 
 ## M6. CLI 계약과 TUI (2026-11-10~)
 

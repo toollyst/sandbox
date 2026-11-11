@@ -39,7 +39,8 @@ docs/
   plan/              design notes (Korean)
   roadmap.md         what is done and what is next (Korean)
 assets/demo.svg      the README recording, made by cargo xtask demo
-install.sh           the installer served from GitHub Pages
+install.sh           the macOS and Linux installer served from GitHub Pages
+install.ps1          the Windows installer served from GitHub Pages
 .github/workflows/   ci.yml and fuzz.yml (every push), release.yml (tags v*). The official executor repository is published from toollyst/sandbox-executors
 .github/scripts/     shell steps the workflows share (upstream VMM package, kernel notice, local-repository smoke, installer tests)
 ```
@@ -81,6 +82,7 @@ cargo fmt --all
 cargo xtask check-deps                     # layers, crate rules, module cycles, crates.md
 
 cargo xtask dist                           # release sbx + sbx-shim, guest init embedded
+cargo xtask install                        # dist, then install them where the installers do
 cargo xtask smoke                          # 17 checks on real VMs with the installed executor
 cargo xtask bench                          # timings (add --docker to compare with docker run)
 ```

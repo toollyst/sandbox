@@ -39,7 +39,8 @@ moving to the newest patch of a supported minor. `main` always has the fix.
 
 From v0.2.0, every release archive comes with a Sigstore signature (`.sigstore.json`), a GitHub build provenance
 attestation (SLSA) and an SBOM (SPDX, `sbx-<version>.spdx.json`). `install.sh` checks the signature when `cosign` is
-on `PATH` (`SBX_VERIFY=require` makes that mandatory). Then a missing signature is an error too, since whoever
+on `PATH` (`SBX_VERIFY=require` makes that mandatory), and so does `install.ps1` on Windows
+(`sbx-windows-x86_64.zip`). Then a missing signature is an error too, since whoever
 controls the download can delete it. With
 `SBX_VERSION`, the signature must come from that exact tag, so an older signed release can't be served in its
 place. To check by hand:

@@ -2,7 +2,7 @@
 
 <!-- Generated from crates/app/cli/src/output.rs. Do not edit: run `SBX_BLESS=1 cargo test -p sbx-cli --lib output`. -->
 
-With `--format json`, sbx prints only JSON on stdout. This is a public contract: scripts, agents and `sbx tui` rely on it. sbx is alpha, so it may still change, but only together with this file.
+With `--format json`, sbx prints only JSON on stdout. This is a public contract: scripts, agents and `sbx tui` rely on it. It changes only as [COMPATIBILITY.md](../../COMPATIBILITY.md) allows (before 1.0, in a minor release, after a deprecation), and always together with this file.
 
 - **value**: one JSON value (pretty-printed).
 - **lines**: one JSON object per line (JSON Lines), one per argument. If one argument fails, the others still run. Streams (`events`, `logs`) print one per item.
