@@ -18,6 +18,8 @@ The JSON Schema (draft 2020-12) of every type is in [cli-output.schema.json](cli
 | Command | Output |
 |---|---|
 | `pull` | value: `Pulled` |
+| `login` | value: `Login` |
+| `logout` | value: `Logout` |
 | `prepare` | value: `Prepared` |
 | `images` | value: `[Image]` |
 | `rmi` | lines: `Removed` |

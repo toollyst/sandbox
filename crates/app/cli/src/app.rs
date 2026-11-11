@@ -47,6 +47,7 @@ use crate::parse::{self, CpEndpoint};
 use crate::progress::Status;
 use crate::{choose, dirs, executors, guest, host};
 
+mod login;
 mod system;
 
 /// `logs -f`, `events`가 새 기록을 보러 가는 간격.
@@ -128,6 +129,15 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
     match &cli.command {
         Command::Pull { platform, image } => ctx.pull(platform.as_deref(), image).await,
         Command::Executor { command } => ctx.executor_cmd(command).await,
+        Command::Login {
+            username,
+            password_stdin,
+            server,
+        } => {
+            ctx.login(username.as_deref(), *password_stdin, server.as_deref())
+                .await
+        }
+        Command::Logout { server } => ctx.logout(server.as_deref()),
         Command::System { command } => match command {
             SystemCommand::Df => ctx.system_df().await,
             SystemCommand::Prune { all, force, filter } => {
@@ -345,7 +355,7 @@ impl Ctx {
     fn manager(&self) -> AppResult<Manager> {
         Ok(Manager::new(
             &self.cache_dir,
-            Arc::new(OciImageSource::new()?),
+            Arc::new(OciImageSource::with_auth(crate::dirs::registry_auth())?),
             vec![Arc::new(ErofsBuilder)],
         )?)
     }

@@ -116,6 +116,10 @@ mod unix {
             stop_sends_the_stop_signal_then_powers_off,
         ),
         (
+            "login_and_logout_use_dockers_config",
+            login_and_logout_use_dockers_config,
+        ),
+        (
             "a_detached_sandbox_stops_after_its_timeout",
             a_detached_sandbox_stops_after_its_timeout,
         ),
@@ -265,6 +269,10 @@ mod unix {
                 .env("SBX_GUEST_INIT", self.root.join("initramfs"))
                 .env("SBX_EXECUTOR", std::env::current_exe().unwrap())
                 .env("SBX_SHIM", std::env::current_exe().unwrap())
+                // 레지스트리 자격 증명은 테스트 안의 것만 본다.
+                .env("DOCKER_CONFIG", self.root.join("docker"))
+                .env("XDG_CONFIG_HOME", self.root.join("xdg-config"))
+                .env_remove("REGISTRY_AUTH_FILE")
                 .stdin(Stdio::null());
             c
         }
@@ -1665,6 +1673,97 @@ mod unix {
         let o = e.sbx(&["run", "-d", "--stop-signal", "NOPE", IMAGE, "true"]);
         assert_ne!(o.status.code(), Some(0));
         assert!(text(&o.stderr).contains("signal"), "{}", text(&o.stderr));
+    }
+
+    /// Basic 인증만 받는 레지스트리 흉내. `me:pw`만 통과한다.
+    fn basic_registry() -> u16 {
+        use std::io::{BufRead, BufReader};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for c in l.incoming() {
+                let Ok(mut c) = c else { return };
+                let mut r = BufReader::new(c.try_clone().unwrap());
+                let mut ok = false;
+                loop {
+                    let mut h = String::new();
+                    if r.read_line(&mut h).is_err() || h == "\r\n" || h.is_empty() {
+                        break;
+                    }
+                    // base64("me:pw")
+                    ok |= h
+                        .trim()
+                        .eq_ignore_ascii_case("authorization: basic bWU6cHc=");
+                }
+                let reply = if ok {
+                    "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                } else {
+                    "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"r\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                };
+                let _ = c.write_all(reply.as_bytes());
+            }
+        });
+        port
+    }
+
+    fn login_and_logout_use_dockers_config() {
+        let e = Env::new();
+        let registry = format!("127.0.0.1:{}", basic_registry());
+        let config = e.path("docker/config.json");
+        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+        std::fs::write(&config, r#"{"proxies":{"default":{"noProxy":"x"}}}"#).unwrap();
+
+        // 틀린 비밀번호는 쓰지 않는다.
+        let o = e.sbx_with_stdin(
+            &["login", "-u", "me", "--password-stdin", &registry],
+            b"no\n",
+        );
+        assert_ne!(o.status.code(), Some(0));
+        assert!(text(&o.stderr).contains("refused"), "{}", text(&o.stderr));
+        assert!(!std::fs::read_to_string(&config).unwrap().contains("auths"));
+        // 이름 없이는 표준 입력을 비밀번호로 읽을 수 없다.
+        let o = e.sbx_with_stdin(&["login", "--password-stdin", &registry], b"pw\n");
+        assert_ne!(o.status.code(), Some(0));
+        assert!(text(&o.stderr).contains("-u"), "{}", text(&o.stderr));
+
+        let o = e.sbx_with_stdin(
+            &[
+                "--format",
+                "json",
+                "login",
+                "-u",
+                "me",
+                "--password-stdin",
+                &format!("https://{registry}/"),
+            ],
+            b"pw\n",
+        );
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let l: sbx_cli::output::Login = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(
+            (l.registry.as_str(), l.stored.as_str()),
+            (registry.as_str(), "file")
+        );
+        let v: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+        assert_eq!(v["auths"][&registry]["auth"], "bWU6cHc=");
+        assert_eq!(
+            v["proxies"]["default"]["noProxy"], "x",
+            "other settings stay"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&config).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+
+        let o = e.sbx(&["--format", "json", "logout", &registry]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let l: sbx_cli::output::Logout = serde_json::from_slice(&o.stdout).unwrap();
+        assert!(l.removed);
+        let o = e.sbx(&["logout", &registry]);
+        assert_eq!(text(&o.stdout), format!("Not logged in to {registry}\n"));
     }
 
     fn a_detached_sandbox_stops_after_its_timeout() {

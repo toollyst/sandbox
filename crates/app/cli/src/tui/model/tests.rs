@@ -460,4 +460,6 @@ fn images_tab_prunes_and_shows_disk_usage() {
         press(&mut m, KeyCode::Char('U')),
         Some(Action::Handover(strings(&["system", "df"])))
     );
+    assert_eq!(press(&mut m, KeyCode::Char('L')), None);
+    assert_eq!(m.prompt.take().unwrap().text, "login ");
 }

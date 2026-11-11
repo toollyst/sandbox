@@ -1,7 +1,10 @@
 //! Distribution Spec 클라이언트. pull에 필요한 GET만 한다.
 //!
-//! 인증은 익명과 Bearer 토큰 흐름만 지원한다. 401 응답의 `WWW-Authenticate`에 적힌 곳에서
-//! 토큰을 받아 다시 요청한다. 토큰은 저장소마다 메모리에만 둔다.
+//! 인증: 401 응답의 `WWW-Authenticate`를 따른다. `Bearer`면 거기 적힌 곳(`realm`)에서 토큰을 받아 다시 요청하고,
+//! `Basic`이면 자격 증명을 그대로 보낸다. 자격 증명은 그 레지스트리(사용자가 이미지 이름으로 고른 호스트)의 것만
+//! 찾는다([`crate::auth`]). 있으면 토큰 요청에 Basic으로(identity token이면 OAuth2 refresh token으로 POST) 싣고,
+//! 없으면 익명으로 받는다. 토큰은 저장소마다 메모리에만 둔다. 자격 증명을 실은 요청은 https로만 간다
+//! (레지스트리 자체가 http인 `localhost`는 예외).
 //!
 //! `localhost`와 `127.0.0.1` 레지스트리는 http로, 나머지는 https로 접속한다. Docker와 같은 기본값이다.
 //! blob 요청이 다른 호스트(CDN)로 redirect되면 `Authorization` 헤더는 따라가지 않는다(reqwest 기본 동작).
@@ -24,6 +27,8 @@ use serde::Deserialize;
 
 use sbx_image::ImageError;
 
+use crate::auth::{AuthFiles, Credential};
+
 /// manifest와 config처럼 메모리로 읽는 문서의 최대 크기.
 pub const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
 
@@ -36,6 +41,15 @@ pub struct Challenge {
     pub service: Option<String>,
     /// `scope` 값.
     pub scope: Option<String>,
+}
+
+/// `WWW-Authenticate: Basic realm="..."`인가.
+fn is_basic(header: &str) -> bool {
+    header
+        .trim()
+        .split(|c: char| c.is_whitespace())
+        .next()
+        .is_some_and(|s| s.eq_ignore_ascii_case("basic"))
 }
 
 /// `WWW-Authenticate: Bearer realm="...",service="...",scope="..."`를 해석한다.
@@ -186,12 +200,34 @@ impl Resolve for Guard {
     }
 }
 
+/// 요청에 싣는 인증.
+#[derive(Clone)]
+enum Auth {
+    None,
+    Bearer(String),
+    Basic(Credential),
+}
+
 /// 레지스트리 클라이언트.
 #[derive(Debug)]
 pub struct Registry {
     http: reqwest::Client,
+    /// `호스트/저장소` → 토큰.
     tokens: Mutex<HashMap<String, String>>,
+    /// Basic 인증을 쓰는 호스트 → 자격 증명.
+    basic: Mutex<HashMap<String, Credential>>,
+    /// 자격 증명을 찾는 파일. 없으면 익명으로만 받는다.
+    auth: Option<AuthFiles>,
     named: Named,
+}
+
+/// 로그인 확인의 결과.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginCheck {
+    /// 레지스트리가 받아들였다.
+    Accepted,
+    /// 레지스트리가 인증을 묻지 않았다(확인할 수 없다).
+    NotAsked,
 }
 
 impl Registry {
@@ -222,8 +258,32 @@ impl Registry {
         Ok(Self {
             http,
             tokens: Mutex::new(HashMap::new()),
+            basic: Mutex::new(HashMap::new()),
+            auth: None,
             named,
         })
+    }
+
+    /// 401이면 `files`에서 그 레지스트리의 자격 증명을 찾아 쓴다.
+    pub fn with_auth(mut self, files: AuthFiles) -> Self {
+        self.auth = Some(files);
+        self
+    }
+
+    /// 그 레지스트리의 자격 증명. 파일 읽기와 helper는 블로킹이라 따로 돈다.
+    async fn credential(
+        &self,
+        host: &str,
+        repository: &str,
+    ) -> Result<Option<Credential>, ImageError> {
+        let Some(files) = self.auth.clone() else {
+            return Ok(None);
+        };
+        let (host, repository) = (host.to_owned(), repository.to_owned());
+        tokio::task::spawn_blocking(move || crate::auth::lookup(&files, &host, &repository))
+            .await
+            .map_err(|e| ImageError::Transport(e.to_string()))?
+            .map_err(|e| ImageError::Invalid(format!("registry credentials: {e}")))
     }
 
     fn base(host: &str) -> String {
@@ -234,7 +294,7 @@ impl Registry {
         format!("{}://{host}", if insecure { "http" } else { "https" })
     }
 
-    /// `GET /v2/<repository>/<path>`. 401이면 토큰을 받아 한 번 더 시도한다.
+    /// `GET /v2/<repository>/<path>`. 401이면 인증해서 한 번 더 시도한다.
     pub async fn get(
         &self,
         host: &str,
@@ -247,76 +307,188 @@ impl Registry {
             n.insert(named_key(host));
         }
         let key = format!("{host}/{repository}");
-        let cached = self.tokens.lock().ok().and_then(|t| t.get(&key).cloned());
-        let mut resp = self.send(&url, accept, cached.as_deref()).await?;
+        let cached = match self.basic.lock().ok().and_then(|b| b.get(host).cloned()) {
+            Some(c) => Auth::Basic(c),
+            None => self
+                .tokens
+                .lock()
+                .ok()
+                .and_then(|t| t.get(&key).cloned())
+                .map_or(Auth::None, Auth::Bearer),
+        };
+        let mut resp = self.send(&url, accept, &cached).await?;
+        let mut cred = None;
         if resp.status() == StatusCode::UNAUTHORIZED {
-            let challenge = resp
+            let header = resp
                 .headers()
                 .get(WWW_AUTHENTICATE)
                 .and_then(|v| v.to_str().ok())
-                .and_then(parse_challenge)
-                .ok_or_else(|| {
-                    ImageError::Transport(format!("{url}: 401 without a Bearer challenge"))
+                .unwrap_or_default()
+                .to_owned();
+            cred = self.credential(host, repository).await?;
+            let auth = if is_basic(&header) {
+                let c = cred.clone().ok_or_else(|| denied(&url, host, false))?;
+                if let Ok(mut b) = self.basic.lock() {
+                    b.insert(host.to_owned(), c.clone());
+                }
+                Auth::Basic(c)
+            } else {
+                let challenge = parse_challenge(&header).ok_or_else(|| {
+                    ImageError::Transport(format!("{url}: 401 without a Bearer or Basic challenge"))
                 })?;
-            let token = self
-                .token(&challenge, repository, url.starts_with("http:"))
-                .await?;
-            if let Ok(mut t) = self.tokens.lock() {
-                t.insert(key, token.clone());
-            }
-            resp = self.send(&url, accept, Some(&token)).await?;
+                let token = self
+                    .token(
+                        &challenge,
+                        Some(repository),
+                        url.starts_with("http:"),
+                        cred.as_ref(),
+                    )
+                    .await?;
+                if let Ok(mut t) = self.tokens.lock() {
+                    t.insert(key, token.clone());
+                }
+                Auth::Bearer(token)
+            };
+            resp = self.send(&url, accept, &auth).await?;
         }
         match resp.status() {
             s if s.is_success() => Ok(resp),
             StatusCode::NOT_FOUND => Err(ImageError::NotFound(url)),
-            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Err(ImageError::Transport(
-                format!("{url}: access denied (private image or wrong name)"),
-            )),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
+                Err(denied(&url, host, cred.is_some()))
+            }
             s => Err(ImageError::Transport(format!("{url}: HTTP {s}"))),
         }
     }
 
-    async fn send(
+    /// `sbx login`: 이 자격 증명을 레지스트리가 받아들이는지 본다(`GET /v2/`, Docker와 같다).
+    pub async fn check_login(
         &self,
-        url: &str,
-        accept: &[&str],
-        token: Option<&str>,
-    ) -> Result<Response, ImageError> {
+        host: &str,
+        cred: &Credential,
+    ) -> Result<LoginCheck, ImageError> {
+        let url = format!("{}/v2/", Self::base(host));
+        if let Ok(mut n) = self.named.lock() {
+            n.insert(named_key(host));
+        }
+        let resp = self.send(&url, &[], &Auth::None).await?;
+        if resp.status() != StatusCode::UNAUTHORIZED {
+            return if resp.status().is_success() {
+                Ok(LoginCheck::NotAsked)
+            } else {
+                Err(ImageError::Transport(format!(
+                    "{url}: HTTP {}",
+                    resp.status()
+                )))
+            };
+        }
+        let header = resp
+            .headers()
+            .get(WWW_AUTHENTICATE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
+        if is_basic(&header) {
+            let resp = self.send(&url, &[], &Auth::Basic(cred.clone())).await?;
+            return match resp.status() {
+                s if s.is_success() => Ok(LoginCheck::Accepted),
+                StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Err(refused(host)),
+                s => Err(ImageError::Transport(format!("{url}: HTTP {s}"))),
+            };
+        }
+        let challenge = parse_challenge(&header).ok_or_else(|| {
+            ImageError::Transport(format!("{url}: 401 without a Bearer or Basic challenge"))
+        })?;
+        self.token(&challenge, None, url.starts_with("http:"), Some(cred))
+            .await?;
+        Ok(LoginCheck::Accepted)
+    }
+
+    async fn send(&self, url: &str, accept: &[&str], auth: &Auth) -> Result<Response, ImageError> {
         let mut req = self.http.get(url);
         if !accept.is_empty() {
             req = req.header(ACCEPT, accept.join(", "));
         }
-        if let Some(t) = token {
-            req = req.bearer_auth(t);
-        }
+        req = match auth {
+            Auth::None => req,
+            Auth::Bearer(t) => req.bearer_auth(t),
+            Auth::Basic(c) => {
+                require_https(url)?;
+                req.basic_auth(&c.username, Some(&c.secret))
+            }
+        };
         req.send().await.map_err(transport)
     }
 
+    /// 토큰을 받는다. `repository`가 없으면(로그인 확인) 챌린지의 scope만 쓴다.
     async fn token(
         &self,
         ch: &Challenge,
-        repository: &str,
+        repository: Option<&str>,
         from_http: bool,
+        cred: Option<&Credential>,
     ) -> Result<String, ImageError> {
         let mut url = Url::parse(&ch.realm).map_err(transport)?;
         check_target(&url, from_http, &self.named).map_err(ImageError::Transport)?;
-        {
-            let mut q = url.query_pairs_mut();
-            if let Some(s) = &ch.service {
-                q.append_pair("service", s);
+        let scope = ch
+            .scope
+            .clone()
+            .or_else(|| repository.map(|r| format!("repository:{r}:pull")));
+        let resp = match cred {
+            // OAuth2 refresh token (Docker의 identity token).
+            Some(c) if c.identity_token().is_some() => {
+                require_https(url.as_str())?;
+                let mut form = Url::parse("x:/").map_err(transport)?;
+                {
+                    let mut q = form.query_pairs_mut();
+                    q.append_pair("grant_type", "refresh_token")
+                        .append_pair("refresh_token", &c.secret)
+                        .append_pair("client_id", "sbx");
+                    if let Some(s) = &ch.service {
+                        q.append_pair("service", s);
+                    }
+                    if let Some(s) = &scope {
+                        q.append_pair("scope", s);
+                    }
+                }
+                self.http
+                    .post(url)
+                    .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(form.query().unwrap_or_default().to_owned())
+                    .send()
+                    .await
+                    .map_err(transport)?
             }
-            let scope = ch
-                .scope
-                .clone()
-                .unwrap_or_else(|| format!("repository:{repository}:pull"));
-            q.append_pair("scope", &scope);
-        }
-        let resp = self.http.get(url).send().await.map_err(transport)?;
-        if !resp.status().is_success() {
+            _ => {
+                {
+                    let mut q = url.query_pairs_mut();
+                    if let Some(s) = &ch.service {
+                        q.append_pair("service", s);
+                    }
+                    if let Some(s) = &scope {
+                        q.append_pair("scope", s);
+                    }
+                }
+                let mut req = self.http.get(url.clone());
+                if let Some(c) = cred {
+                    require_https(url.as_str())?;
+                    req = req.basic_auth(&c.username, Some(&c.secret));
+                }
+                req.send().await.map_err(transport)?
+            }
+        };
+        let status = resp.status();
+        if !status.is_success() {
+            if cred.is_some() && matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
+            {
+                return Err(ImageError::Transport(format!(
+                    "token endpoint {}: the registry refused the credentials (HTTP {status}); check `sbx login`",
+                    ch.realm
+                )));
+            }
             return Err(ImageError::Transport(format!(
-                "token endpoint {}: HTTP {}",
-                ch.realm,
-                resp.status()
+                "token endpoint {}: HTTP {status}",
+                ch.realm
             )));
         }
         let bytes = read_limited(resp, MAX_DOCUMENT_BYTES).await?.0;
@@ -326,6 +498,38 @@ impl Registry {
             .or(t.access_token)
             .ok_or_else(|| ImageError::Invalid("token response without token".into()))
     }
+}
+
+/// 자격 증명은 https로만 보낸다. 레지스트리 자체가 http인 `localhost`·`127.0.0.1`만 예외다.
+fn require_https(url: &str) -> Result<(), ImageError> {
+    let u = Url::parse(url).map_err(transport)?;
+    let local = matches!(u.host_str(), Some("localhost" | "127.0.0.1"));
+    if u.scheme() == "https" || local {
+        Ok(())
+    } else {
+        Err(ImageError::Transport(format!(
+            "{url}: refusing to send registry credentials over http"
+        )))
+    }
+}
+
+fn denied(url: &str, host: &str, had_credentials: bool) -> ImageError {
+    let login = crate::auth::registry_host(host);
+    ImageError::Transport(if had_credentials {
+        format!(
+            "{url}: access denied with the stored credentials for {login} (`sbx login {login}` to replace them)"
+        )
+    } else {
+        format!(
+            "{url}: access denied (private image or wrong name; `sbx login {login}` if it is private)"
+        )
+    })
+}
+
+fn refused(host: &str) -> ImageError {
+    ImageError::Transport(format!(
+        "{host}: the registry refused the username or password"
+    ))
 }
 
 /// 응답 본문을 최대 `limit` 바이트까지 읽는다. 넘으면 오류. `Content-Type`도 돌려준다.
@@ -515,5 +719,224 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(seen.lock().unwrap().len(), 2);
+    }
+
+    /// 받은 요청(경로와 본문, `Authorization`).
+    type Seen = Arc<Mutex<Vec<(String, Option<String>)>>>;
+
+    /// `serve`와 같고, `Authorization` 헤더도 넘긴다. 본문을 줄 수 있다.
+    fn serve_auth(
+        respond: impl Fn(&str, Option<&str>) -> String + Send + 'static,
+    ) -> (u16, Seen) {
+        use std::io::{BufRead, BufReader, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let seen: Seen = Arc::default();
+        let log = seen.clone();
+        std::thread::spawn(move || {
+            for c in l.incoming() {
+                let Ok(mut c) = c else { return };
+                let mut r = BufReader::new(c.try_clone().unwrap());
+                let mut first = String::new();
+                if r.read_line(&mut first).is_err() {
+                    continue;
+                }
+                let mut auth = None;
+                let mut len = 0usize;
+                loop {
+                    let mut h = String::new();
+                    if r.read_line(&mut h).is_err() || h == "\r\n" || h.is_empty() {
+                        break;
+                    }
+                    if let Some((k, v)) = h.split_once(':') {
+                        if k.eq_ignore_ascii_case("authorization") {
+                            auth = Some(v.trim().to_owned());
+                        } else if k.eq_ignore_ascii_case("content-length") {
+                            len = v.trim().parse().unwrap_or(0);
+                        }
+                    }
+                }
+                let mut body = vec![0; len];
+                let _ = std::io::Read::read_exact(&mut r, &mut body);
+                let path = first.split(' ').nth(1).unwrap_or("").to_owned();
+                let shown = if body.is_empty() {
+                    path.clone()
+                } else {
+                    format!("{path} {}", String::from_utf8_lossy(&body))
+                };
+                log.lock().unwrap().push((shown, auth.clone()));
+                let _ = c.write_all(respond(&path, auth.as_deref()).as_bytes());
+            }
+        });
+        (port, seen)
+    }
+
+    fn json_reply(body: &str) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    fn files_with(host: &str, user: &str, pass: &str) -> AuthFiles {
+        let d = std::env::temp_dir().join(format!(
+            "sbx-registry-auth-{}-{}",
+            std::process::id(),
+            host.replace(':', "_")
+        ));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("config.json");
+        let auth = crate::auth::base64_encode(format!("{user}:{pass}").as_bytes());
+        std::fs::write(
+            &p,
+            format!(r#"{{"auths":{{"{host}":{{"auth":"{auth}"}}}}}}"#),
+        )
+        .unwrap();
+        AuthFiles {
+            read: vec![p],
+            write: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn basic_registries_get_the_stored_credentials() {
+        let good = format!("Basic {}", crate::auth::base64_encode(b"me:pw"));
+        let (p, seen) = serve_auth(move |_, auth| {
+            if auth == Some(good.as_str()) {
+                reply("200 OK", "")
+            } else {
+                reply(
+                    "401 Unauthorized",
+                    "WWW-Authenticate: Basic realm=\"r\"\r\n",
+                )
+            }
+        });
+        let host = format!("127.0.0.1:{p}");
+        let e = Registry::new()
+            .unwrap()
+            .get(&host, "x/y", "manifests/a", &[])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains(&format!("sbx login {host}")), "{e}");
+
+        let r = Registry::new()
+            .unwrap()
+            .with_auth(files_with(&host, "me", "pw"));
+        r.get(&host, "x/y", "manifests/a", &[]).await.unwrap();
+        // 다음 요청은 처음부터 Basic으로 간다.
+        let before = seen.lock().unwrap().len();
+        r.get(&host, "x/y", "manifests/b", &[]).await.unwrap();
+        assert_eq!(seen.lock().unwrap().len(), before + 1);
+
+        assert_eq!(
+            r.check_login(
+                &host,
+                &Credential {
+                    username: "me".into(),
+                    secret: "pw".into()
+                }
+            )
+            .await
+            .unwrap(),
+            LoginCheck::Accepted
+        );
+        let e = r
+            .check_login(
+                &host,
+                &Credential {
+                    username: "me".into(),
+                    secret: "no".into(),
+                },
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("refused"), "{e}");
+    }
+
+    #[tokio::test]
+    async fn token_requests_carry_the_credentials_or_the_identity_token() {
+        let port = Arc::new(std::sync::atomic::AtomicU16::new(0));
+        let me = port.clone();
+        let basic = format!("Basic {}", crate::auth::base64_encode(b"me:pw"));
+        let (p, seen) = serve_auth(move |path, auth| {
+            let port = me.load(std::sync::atomic::Ordering::SeqCst);
+            if path.starts_with("/token") {
+                // GET은 Basic, POST(identity token)는 본문으로 온다.
+                if auth == Some(basic.as_str()) || auth.is_none() && path == "/token" {
+                    json_reply(r#"{"token":"t1"}"#)
+                } else {
+                    reply("401 Unauthorized", "")
+                }
+            } else if auth == Some("Bearer t1") {
+                reply("200 OK", "")
+            } else {
+                reply(
+                    "401 Unauthorized",
+                    &format!(
+                        "WWW-Authenticate: Bearer realm=\"http://127.0.0.1:{port}/token\",service=\"reg\"\r\n"
+                    ),
+                )
+            }
+        });
+        port.store(p, std::sync::atomic::Ordering::SeqCst);
+        let host = format!("127.0.0.1:{p}");
+        let r = Registry::new()
+            .unwrap()
+            .with_auth(files_with(&host, "me", "pw"));
+        r.get(&host, "x/y", "manifests/a", &[]).await.unwrap();
+        let log = seen.lock().unwrap().clone();
+        let token = log.iter().find(|(p, _)| p.starts_with("/token")).unwrap();
+        assert!(
+            token.0.contains("scope=repository%3Ax%2Fy%3Apull"),
+            "{token:?}"
+        );
+        assert_eq!(
+            token.1.as_deref(),
+            Some(format!("Basic {}", crate::auth::base64_encode(b"me:pw")).as_str())
+        );
+
+        // identity token: POST로 refresh_token을 보낸다.
+        seen.lock().unwrap().clear();
+        let r = Registry::new().unwrap();
+        let rt = Credential {
+            username: "<token>".into(),
+            secret: "refresh-1".into(),
+        };
+        assert_eq!(
+            r.check_login(&host, &rt).await.unwrap(),
+            LoginCheck::Accepted
+        );
+        let log = seen.lock().unwrap().clone();
+        let post = log.iter().find(|(p, _)| p.starts_with("/token")).unwrap();
+        assert!(post.0.contains("grant_type=refresh_token"), "{post:?}");
+        assert!(post.0.contains("refresh_token=refresh-1"), "{post:?}");
+        assert!(post.0.contains("service=reg"), "{post:?}");
+
+        // 틀린 비밀번호는 토큰 단계에서 거부된다.
+        let e = r
+            .check_login(
+                &host,
+                &Credential {
+                    username: "me".into(),
+                    secret: "no".into(),
+                },
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("refused the credentials"), "{e}");
+    }
+
+    #[test]
+    fn credentials_never_go_over_plain_http_to_other_hosts() {
+        assert!(require_https("https://ghcr.io/v2/").is_ok());
+        assert!(require_https("http://localhost:5000/v2/").is_ok());
+        assert!(require_https("http://127.0.0.1:5000/token").is_ok());
+        assert!(require_https("http://registry.lan/v2/").is_err());
+        assert!(is_basic("Basic realm=\"x\""));
+        assert!(is_basic("basic"));
+        assert!(!is_basic("Bearer realm=\"x\""));
     }
 }

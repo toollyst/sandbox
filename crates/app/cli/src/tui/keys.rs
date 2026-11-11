@@ -45,6 +45,11 @@ pub const KEYS: &[KeyHelp] = &[
         "images",
         "system df: disk usage (hands over the terminal)",
     ),
+    k(
+        "L",
+        "images",
+        "login: save registry credentials (fills in the command line to finish)",
+    ),
     k("e", "sandboxes", "exec -it ID sh (hands over the terminal)"),
     k(
         "E",

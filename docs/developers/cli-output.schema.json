@@ -684,6 +684,49 @@
       ],
       "type": "object"
     },
+    "Login": {
+      "additionalProperties": false,
+      "description": "Where `login` saved a registry's credentials.",
+      "properties": {
+        "location": {
+          "description": "The file's path, or the helper program's name.",
+          "type": "string"
+        },
+        "registry": {
+          "description": "Registry host (`docker.io` for Docker Hub).",
+          "type": "string"
+        },
+        "stored": {
+          "description": "`file` (the `auths` of a Docker or containers credentials file) or `helper` (a `docker-credential-*` program).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "registry",
+        "stored",
+        "location"
+      ],
+      "type": "object"
+    },
+    "Logout": {
+      "additionalProperties": false,
+      "description": "What `logout` removed.",
+      "properties": {
+        "registry": {
+          "description": "Registry host.",
+          "type": "string"
+        },
+        "removed": {
+          "description": "Whether there were credentials to remove.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "registry",
+        "removed"
+      ],
+      "type": "object"
+    },
     "Mount": {
       "additionalProperties": false,
       "description": "A folder shared with the host.",

@@ -52,6 +52,16 @@ const fn cmd(name: &'static str, group: Group, summary: &'static str) -> Command
 pub const COMMANDS: &[Command] = &[
     cmd("pull", Group::Manage, "Download an image (only downloads)"),
     cmd(
+        "login",
+        Group::Manage,
+        "Save credentials for a registry (Docker's config.json or its credential helper)",
+    ),
+    cmd(
+        "logout",
+        Group::Manage,
+        "Remove saved credentials for a registry",
+    ),
+    cmd(
         "prepare",
         Group::Manage,
         "Build the root filesystem disk for an image (no-op if it exists)",

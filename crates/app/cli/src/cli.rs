@@ -77,6 +77,22 @@ pub enum Command {
         #[arg(add = complete::image())]
         image: String,
     },
+    #[command(about = about("login"))]
+    Login {
+        /// User name. Asked for when it is missing and stdin is a terminal.
+        #[arg(short = 'u', long)]
+        username: Option<String>,
+        /// Read the password or access token from stdin (one line). Without it, sbx asks on the terminal.
+        #[arg(long)]
+        password_stdin: bool,
+        /// Registry, e.g. ghcr.io or localhost:5000. Defaults to Docker Hub.
+        server: Option<String>,
+    },
+    #[command(about = about("logout"))]
+    Logout {
+        /// Registry, e.g. ghcr.io. Defaults to Docker Hub.
+        server: Option<String>,
+    },
     #[command(about = about("prepare"))]
     Prepare {
         /// Root filesystem format.

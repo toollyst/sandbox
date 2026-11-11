@@ -7,6 +7,7 @@
 //! - 이미지 참조 해석: [`reference`](mod@reference)
 //! - 문서 해석: [`manifest`]
 //! - 레지스트리 통신: [`registry`]
+//! - 레지스트리 자격 증명(Docker config.json, containers-auth.json, credential helper): [`auth`]
 //!
 //! 해석 순서 ([`ImageSource::resolve`]):
 //!
@@ -26,6 +27,7 @@ use sha2::{Digest as _, Sha256};
 use sbx_image::{ImageError, ImageSource, Platform, ResolvedImage};
 use sbx_model::{BoxFuture, Digest, ImageId, Layer};
 
+pub mod auth;
 pub mod manifest;
 pub mod reference;
 pub mod registry;
@@ -66,6 +68,13 @@ impl OciImageSource {
     pub fn new() -> Result<Self, ImageError> {
         Ok(Self {
             registry: Registry::new()?,
+        })
+    }
+
+    /// 401이면 `files`에서 레지스트리 자격 증명을 찾는다.
+    pub fn with_auth(files: auth::AuthFiles) -> Result<Self, ImageError> {
+        Ok(Self {
+            registry: Registry::new()?.with_auth(files),
         })
     }
 

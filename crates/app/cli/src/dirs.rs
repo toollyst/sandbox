@@ -49,6 +49,34 @@ pub fn cache_dir() -> Option<PathBuf> {
     }
 }
 
+/// 레지스트리 자격 증명 파일(공개 형식, [`sbx_oci::auth`]). 읽는 순서대로:
+///
+/// 1. `REGISTRY_AUTH_FILE`(containers-auth.json). 있으면 `sbx login`도 여기에 쓴다(podman과 같다).
+/// 2. Docker: `$DOCKER_CONFIG/config.json`, 없으면 `~/.docker/config.json`(Windows는 `%USERPROFILE%`). login의 기본.
+/// 3. containers: `$XDG_RUNTIME_DIR/containers/auth.json`(Linux), `$XDG_CONFIG_HOME/containers/auth.json` 또는
+///    `~/.config/containers/auth.json`.
+pub fn registry_auth() -> sbx_oci::auth::AuthFiles {
+    let var = |k: &str| env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let user_home = home().or_else(|| var("USERPROFILE"));
+    let docker = var("DOCKER_CONFIG")
+        .or_else(|| user_home.as_ref().map(|h| h.join(".docker")))
+        .map(|d| d.join("config.json"));
+    let explicit = var("REGISTRY_AUTH_FILE");
+    let mut read: Vec<PathBuf> = explicit.iter().chain(docker.iter()).cloned().collect();
+    if cfg!(target_os = "linux")
+        && let Some(run) = var("XDG_RUNTIME_DIR")
+    {
+        read.push(run.join("containers/auth.json"));
+    }
+    if let Some(c) = var("XDG_CONFIG_HOME").or_else(|| user_home.map(|h| h.join(".config"))) {
+        read.push(c.join("containers/auth.json"));
+    }
+    sbx_oci::auth::AuthFiles {
+        read,
+        write: explicit.or(docker),
+    }
+}
+
 /// 기본 socket_dir.
 pub fn socket_dir() -> Option<PathBuf> {
     if cfg!(windows) {

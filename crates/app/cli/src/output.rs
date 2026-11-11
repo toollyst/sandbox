@@ -52,6 +52,8 @@ const PROCESS_BYTES: &str = "its output is the process's own bytes";
 /// 명령(하위 명령은 공백으로 잇는다)마다 `--format json`의 모양.
 pub const JSON_OUTPUT: &[(&str, Form)] = &[
     ("pull", Form::Value("Pulled")),
+    ("login", Form::Value("Login")),
+    ("logout", Form::Value("Logout")),
     ("prepare", Form::Value("Prepared")),
     ("images", Form::Value("[Image]")),
     ("rmi", Form::Lines("Removed")),
@@ -467,6 +469,30 @@ pub struct DiskUsage {
     pub size: u64,
     /// Bytes `system prune -a` would free: unused images with the layers only they use, stopped sandboxes.
     pub reclaimable: u64,
+}
+
+/// Where `login` saved a registry's credentials.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct Login {
+    /// Registry host (`docker.io` for Docker Hub).
+    pub registry: String,
+    /// `file` (the `auths` of a Docker or containers credentials file) or `helper` (a `docker-credential-*` program).
+    pub stored: String,
+    /// The file's path, or the helper program's name.
+    pub location: String,
+}
+
+/// What `logout` removed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct Logout {
+    /// Registry host.
+    pub registry: String,
+    /// Whether there were credentials to remove.
+    pub removed: bool,
 }
 
 /// What `system prune` removed.
@@ -1063,6 +1089,8 @@ mod tests {
         g.subschema_for::<Info>();
         g.subschema_for::<DiskUsage>();
         g.subschema_for::<PruneReport>();
+        g.subschema_for::<Login>();
+        g.subschema_for::<Logout>();
         g.subschema_for::<SandboxRef>();
         g.subschema_for::<Done>();
         g.subschema_for::<Exited>();

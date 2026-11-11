@@ -77,6 +77,20 @@ pulls and prepares on first use (`--pull=missing|always|never`). Images come fro
 registry, unmodified. Each is converted once into a read-only EROFS disk image and cached, so after the first run,
 starting a sandbox is just booting a VM.
 
+Private images use the credentials you already have: `sbx` reads Docker's `config.json` (`$DOCKER_CONFIG` or
+`~/.docker`), including its `credHelpers` and `credsStore` (`docker-credential-*`), then `REGISTRY_AUTH_FILE` and
+the containers `auth.json` that podman and skopeo use. It has no credential store of its own, so `docker login` is
+enough. `sbx login` and `sbx logout` write and remove the same entries:
+
+```sh
+echo "$GHCR_TOKEN" | sbx login -u me --password-stdin ghcr.io
+sbx login                                      # Docker Hub; asks for the user name and password
+sbx logout ghcr.io
+```
+
+`login` checks the credentials with the registry before it saves them. Without a credential helper they are saved
+base64-encoded in `config.json`, like Docker does, readable only by you.
+
 The guest kernel comes with the executor. An image can bring its own instead, with the label
 `io.github.toollyst.sandbox.kernel=/path/in/image`; other labels under `io.github.toollyst.sandbox.` are reserved
 for `sbx` and an image can't set them.
