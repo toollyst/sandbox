@@ -64,11 +64,20 @@ impl Sink<'_> {
     }
 }
 
+/// 연결을 맺는 데 기다리는 최대 시간.
+pub const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// 응답 바이트 사이를 기다리는 최대 시간.
+pub const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 impl Fetcher {
     /// 시스템 설정(프록시 환경 변수 포함)을 쓰는 클라이언트를 만든다.
     pub fn new() -> Result<Self, RepoError> {
         let http = reqwest::Client::builder()
             .user_agent(concat!("sbx-executor-repo/", env!("CARGO_PKG_VERSION")))
+            // 멈춘 미러나 중간자가 search·install을 끝없이 붙잡지 못하게. 읽기 제한은 읽기 하나마다라서
+            // 큰 묶음도 받는다.
+            .connect_timeout(CONNECT_TIMEOUT)
+            .read_timeout(READ_TIMEOUT)
             .redirect(reqwest::redirect::Policy::custom(
                 |attempt| match location::check_redirect(attempt.previous(), attempt.url()) {
                     Ok(()) => attempt.follow(),
