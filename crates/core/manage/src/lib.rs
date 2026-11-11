@@ -42,6 +42,7 @@ use sbx_store::{ImageRecord, LeaseError, Store};
 
 mod error;
 mod layer;
+mod tarlimit;
 mod zstd;
 pub use error::ManageError;
 

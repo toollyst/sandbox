@@ -8,6 +8,9 @@
 //! - xattr은 PAX `SCHILY.xattr.*`에서 읽는다.
 //! - 지원하는 항목 종류: 일반 파일, 디렉터리, 심볼릭 링크, 하드 링크, 문자·블록 장치, FIFO.
 //!   PAX 전역 헤더는 무시하고, 그 밖의 종류(GNU sparse 등)는 오류다.
+//! - 악의적인 레이어가 메모리를 채우지 못하게 상한을 둔다: 확장 헤더 하나 [`tarlimit::MAX_EXTENSION`](읽기 전에
+//!   본다), 경로·링크 대상 [`MAX_PATH`], xattr 이름 [`MAX_XATTR_NAME`]·값 [`MAX_XATTR_VALUE`](Linux의 한도),
+//!   레이어 하나의 경로·링크·xattr 합계 [`MAX_METADATA`]. 파일 내용은 메모리가 아니라 작업 공간에 쓴다.
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -19,6 +22,16 @@ use tar::EntryType;
 use sbx_rootfs::{ContentRef, ContentSource, EntryKind, LayerEntry, Meta};
 
 use crate::error::ManageError;
+use crate::tarlimit;
+
+/// 경로와 링크 대상의 길이 상한(바이트). Linux `PATH_MAX`.
+pub const MAX_PATH: usize = 4096;
+/// xattr 이름의 길이 상한(바이트). Linux `XATTR_NAME_MAX`.
+pub const MAX_XATTR_NAME: usize = 255;
+/// xattr 값의 길이 상한(바이트). Linux `XATTR_SIZE_MAX`.
+pub const MAX_XATTR_VALUE: usize = 64 << 10;
+/// 레이어 하나에서 메모리에 두는 경로·링크 대상·xattr의 합계 상한(바이트).
+pub const MAX_METADATA: usize = 256 << 20;
 
 fn spool_name(layer: usize, index: usize) -> String {
     format!("{layer}-{index}")
@@ -43,8 +56,18 @@ fn utf8(layer: usize, what: &str, bytes: &[u8]) -> Result<String, ManageError> {
 /// 레이어 하나를 읽는다. 일반 파일 내용은 `spool`에 저장한다.
 pub fn read(layer: usize, reader: impl Read, spool: &Path) -> Result<Vec<LayerEntry>, ManageError> {
     let io = |e: io::Error| err(layer, e.to_string());
-    let mut archive = tar::Archive::new(reader);
+    let mut archive = tar::Archive::new(tarlimit::Limited::new(reader));
     let mut out = Vec::new();
+    let mut budget = MAX_METADATA;
+    let mut spend = |n: usize, path: &str| -> Result<(), ManageError> {
+        budget = budget.checked_sub(n).ok_or_else(|| {
+            err(
+                layer,
+                format!("more than {MAX_METADATA} bytes of names and xattrs (at {path})"),
+            )
+        })?;
+        Ok(())
+    };
     for (index, entry) in archive.entries().map_err(io)?.enumerate() {
         let mut entry = entry.map_err(io)?;
         let header = entry.header();
@@ -52,7 +75,15 @@ pub fn read(layer: usize, reader: impl Read, spool: &Path) -> Result<Vec<LayerEn
         if entry_type == EntryType::XGlobalHeader {
             continue;
         }
-        let path = utf8(layer, "path", &entry.path_bytes())?;
+        let path_bytes = entry.path_bytes();
+        if path_bytes.len() > MAX_PATH {
+            return Err(err(
+                layer,
+                format!("a path of {} bytes; at most {MAX_PATH}", path_bytes.len()),
+            ));
+        }
+        let path = utf8(layer, "path", &path_bytes)?;
+        spend(path.len(), &path)?;
         let mut meta = Meta {
             mode: header.mode().map_err(io)? & 0o7777,
             uid: u32::try_from(header.uid().map_err(io)?)
@@ -72,6 +103,15 @@ pub fn read(layer: usize, reader: impl Read, spool: &Path) -> Result<Vec<LayerEn
             let name = e
                 .link_name_bytes()
                 .ok_or_else(|| err(layer, format!("link without target at {path}")))?;
+            if name.len() > MAX_PATH {
+                return Err(err(
+                    layer,
+                    format!(
+                        "a link target of {} bytes at {path}; at most {MAX_PATH}",
+                        name.len()
+                    ),
+                ));
+            }
             utf8(layer, "link target", &name)
         };
         let kind = match entry_type {
@@ -83,8 +123,16 @@ pub fn read(layer: usize, reader: impl Read, spool: &Path) -> Result<Vec<LayerEn
                 EntryKind::File(ContentRef { layer, index, size })
             }
             EntryType::Directory => EntryKind::Dir,
-            EntryType::Symlink => EntryKind::Symlink(link(&entry)?),
-            EntryType::Link => EntryKind::Hardlink(link(&entry)?),
+            EntryType::Symlink => {
+                let t = link(&entry)?;
+                spend(t.len(), &path)?;
+                EntryKind::Symlink(t)
+            }
+            EntryType::Link => {
+                let t = link(&entry)?;
+                spend(t.len(), &path)?;
+                EntryKind::Hardlink(t)
+            }
             EntryType::Char => {
                 let (major, minor) = device(entry.header())?;
                 EntryKind::CharDevice { major, minor }
@@ -105,8 +153,19 @@ pub fn read(layer: usize, reader: impl Read, spool: &Path) -> Result<Vec<LayerEn
             for ext in exts {
                 let ext = ext.map_err(io)?;
                 if let Some(name) = ext.key().ok().and_then(|k| k.strip_prefix("SCHILY.xattr.")) {
-                    meta.xattrs
-                        .insert(name.to_owned(), ext.value_bytes().to_vec());
+                    let value = ext.value_bytes();
+                    if name.len() > MAX_XATTR_NAME || value.len() > MAX_XATTR_VALUE {
+                        return Err(err(
+                            layer,
+                            format!(
+                                "an xattr at {path} is too large ({} byte name, {} byte value; at most {MAX_XATTR_NAME} and {MAX_XATTR_VALUE})",
+                                name.len(),
+                                value.len()
+                            ),
+                        ));
+                    }
+                    spend(name.len() + value.len(), &path)?;
+                    meta.xattrs.insert(name.to_owned(), value.to_vec());
                 }
             }
         }
