@@ -107,6 +107,14 @@ pub fn registries_conf() -> sbx_oci::registries::ConfFiles {
     sbx_oci::registries::ConfFiles { main, dropin_dirs }
 }
 
+/// 서명 정책 `policy.json`: `~/.config/containers/policy.json`(있으면), 없으면 `/etc/containers/policy.json`
+/// (containers/image와 같은 자리). 둘 다 없으면 `None`이고 Docker처럼 모두 받는다.
+pub fn signature_policy() -> Option<PathBuf> {
+    let user = home().map(|h| h.join(".config/containers/policy.json"));
+    let system = (!cfg!(windows)).then(|| PathBuf::from("/etc/containers/policy.json"));
+    user.into_iter().chain(system).find(|p| p.is_file())
+}
+
 /// 기본 socket_dir.
 pub fn socket_dir() -> Option<PathBuf> {
     if cfg!(windows) {

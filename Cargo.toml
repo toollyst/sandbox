@@ -55,6 +55,8 @@ flate2 = "1"
 # zstd 레이어 풀기. 순수 Rust (C 라이브러리를 묶지 않는다).
 ruzstd = "0.9"
 tar = "0.4"
+# 이미지 서명 검증. rustls가 이미 쓰는 것(aws-lc-sys)을 같이 쓴다.
+aws-lc-rs = { version = "1.19", default-features = false, features = ["aws-lc-sys"] }
 toml = { version = "0.9", default-features = false, features = ["std", "parse", "serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 reqwest = "0.13"

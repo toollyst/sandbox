@@ -22,4 +22,6 @@ tar.workspace = true
 flate2.workspace = true
 # registries.conf(미러, 이름 바꾸기, 차단).
 toml.workspace = true
+# policy.json의 sigstoreSigned(cosign 키 서명).
+aws-lc-rs.workspace = true
 tokio = { workspace = true, features = ["net", "rt"] }

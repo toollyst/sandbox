@@ -53,7 +53,16 @@ impl Ctx {
             Some(p) => parse::platform(p)?,
             None => host_arch()?,
         };
-        let store_layout = self.manager()?.store().layout().clone();
+        // containers policy.json의 oci·oci-archive 전송(기본은 모두 받는다).
+        let transport = if input.is_some_and(Path::is_dir) {
+            "oci"
+        } else {
+            "oci-archive"
+        };
+        let absolute = input.map(std::path::absolute).transpose()?;
+        sbx_oci::policy::Policy::load(crate::dirs::signature_policy().as_deref())?
+            .check_archive(transport, absolute.as_deref())?;
+        let store_layout = sbx_store::CacheLayout::new(&self.cache_dir);
         let mut _scratch = None;
         let dir = match input {
             Some(p) if p.is_dir() => p.to_owned(),

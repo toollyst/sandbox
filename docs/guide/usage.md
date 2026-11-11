@@ -141,6 +141,33 @@ Mirrors are tried in order, then the registry itself; the image keeps the name y
 the containers documentation describes. `unqualified-search-registries` and short-name aliases are not used: like
 Docker, `sbx` reads a short name as a Docker Hub image. A mistake in the file stops pulls with an error naming it.
 
+Signature checks follow the containers
+[`policy.json`](https://github.com/containers/image/blob/main/docs/containers-policy.json.5.md)
+(`~/.config/containers/policy.json`, else `/etc/containers/policy.json`; without either, everything is accepted, as
+with Docker). `sbx` checks cosign signatures made with a key (`cosign sign --key`): with this policy, images under
+`ghcr.io/my-org` must carry a signature by `cosign.pub`, and everything else is pulled as before:
+
+```json
+{
+  "default": [{ "type": "insecureAcceptAnything" }],
+  "transports": {
+    "docker": {
+      "ghcr.io/my-org": [{
+        "type": "sigstoreSigned",
+        "keyPath": "/home/me/cosign.pub",
+        "signedIdentity": { "type": "matchRepository" }
+      }]
+    }
+  }
+}
+```
+
+The check runs before any layer is downloaded, and a `reject` before `sbx` contacts the registry at all. cosign
+signs a repository without a tag, so a tag pull needs `matchRepository` (or `exactRepository`, `remapIdentity`), as
+with podman. Requirements `sbx` can't check (`signedBy` GPG signatures, keyless `fulcio`/`pki` and `rekorPublicKey*`)
+make the images they cover fail to pull, never pass. `sbx load` follows the `oci-archive` (tar) or `oci` (directory)
+transport and refuses an archive whose policy asks for signatures.
+
 The guest kernel comes with the executor. An image can bring its own instead, with the label
 `io.github.toollyst.sandbox.kernel=/path/in/image`; other labels under `io.github.toollyst.sandbox.` are reserved
 for `sbx` and an image can't set them.

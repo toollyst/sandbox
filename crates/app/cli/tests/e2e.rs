@@ -128,6 +128,7 @@ mod unix {
             "load_and_save_round_trip_an_oci_archive",
             load_and_save_round_trip_an_oci_archive,
         ),
+        ("policy_json_is_followed", policy_json_is_followed),
         (
             "registries_conf_is_read_for_pulls",
             registries_conf_is_read_for_pulls,
@@ -1951,6 +1952,44 @@ mod unix {
             "{:?}",
             std::fs::read_dir(&tmp).map(|d| d.collect::<Vec<_>>())
         );
+    }
+
+    fn policy_json_is_followed() {
+        let e = Env::new();
+        let (archive, _) = oci_archive("example.com/team/tool:1");
+        std::fs::write(e.path("in.tar"), &archive).unwrap();
+        let policy = e.path("home/.config/containers/policy.json");
+        std::fs::create_dir_all(policy.parent().unwrap()).unwrap();
+        std::fs::write(&policy, r#"{"default":[{"type":"reject"}]}"#).unwrap();
+        // 거절은 레지스트리에 가기 전에(닫힌 포트라 가면 다른 오류다).
+        let o = e.sbx(&["pull", "127.0.0.1:9/a:1"]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("rejected by"),
+            "{}",
+            text(&o.stderr)
+        );
+        let o = e.sbx(&["load", "-i", e.path("in.tar").to_str().unwrap()]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("rejected by"),
+            "{}",
+            text(&o.stderr)
+        );
+        let o = e.sbx(&["images", "-q"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        // archive만 받는 정책. 서명을 요구하는 레지스트리 정책은 서명이 없으면 거절이다.
+        std::fs::write(
+            &policy,
+            r#"{"default":[{"type":"reject"}],"transports":{
+                "oci-archive":{"":[{"type":"insecureAcceptAnything"}]},
+                "docker":{"127.0.0.1:9":[{"type":"signedBy","keyType":"GPGKeys","keyPath":"/k"}]}}}"#,
+        )
+        .unwrap();
+        let o = e.sbx(&["load", "-i", e.path("in.tar").to_str().unwrap()]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = e.sbx(&["pull", "127.0.0.1:9/a:1"]);
+        assert!(text(&o.stderr).contains("GPG"), "{}", text(&o.stderr));
     }
 
     fn registries_conf_is_read_for_pulls() {

@@ -2575,6 +2575,7 @@ dependencies = [
 name = "sbx-oci"
 version = "0.2.0"
 dependencies = [
+ "aws-lc-rs",
  "flate2",
  "reqwest",
  "sbx-image",

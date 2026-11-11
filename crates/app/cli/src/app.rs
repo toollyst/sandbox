@@ -369,7 +369,8 @@ impl Ctx {
             &self.cache_dir,
             Arc::new(
                 OciImageSource::with_auth(crate::dirs::registry_auth())?
-                    .with_registries(crate::dirs::registries_conf()),
+                    .with_registries(crate::dirs::registries_conf())
+                    .with_policy(crate::dirs::signature_policy()),
             ),
             vec![Arc::new(ErofsBuilder)],
         )?)
