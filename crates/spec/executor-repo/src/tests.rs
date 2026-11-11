@@ -639,6 +639,13 @@ fn a_remote_index_cannot_point_at_this_machine() {
     ] {
         let e = at(https, bad).unwrap_err();
         assert!(e.contains(bad.split(':').next().unwrap()), "{bad}: {e}");
+        // ftp와 밖의 평문 http는 URL 검사부터 받지 않는다. 나머지(이 기계를 가리키는 것)는 이 규칙에 걸린다.
+        if !bad.starts_with("ftp") && !bad.contains("example.com") {
+            assert!(
+                e.contains("an index at a https: URL may point only to https: archives"),
+                "{bad}: {e}"
+            );
+        }
     }
     // file 색인: file과 https. loopback http 색인: 그 http와 https.
     let file = "file:///srv/repo/index.json";
@@ -646,7 +653,11 @@ fn a_remote_index_cannot_point_at_this_machine() {
     assert!(at(file, "http://127.0.0.1/x").is_err());
     let local = "http://127.0.0.1:9000/repo/index.json";
     assert!(at(local, "x.tar.gz").is_ok() && at(local, "https://example.com/x").is_ok());
-    assert!(at(local, "file:///etc/passwd").is_err());
+    let e = at(local, "file:///etc/passwd").unwrap_err();
+    assert!(
+        e.contains("an index at a http: URL may point only to http: or https: archives"),
+        "{e}"
+    );
 }
 
 #[test]

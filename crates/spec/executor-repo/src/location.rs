@@ -32,9 +32,13 @@ pub fn check_artifact(index: &Url, artifact: &Url) -> Result<(), String> {
     if artifact.scheme() == index.scheme() || artifact.scheme() == "https" {
         Ok(())
     } else {
+        let allowed = if index.scheme() == "https" {
+            "https:".to_owned()
+        } else {
+            format!("{}: or https:", index.scheme())
+        };
         Err(format!(
-            "{artifact}: an index at a {}: URL may point only to {}: or https: archives",
-            index.scheme(),
+            "{artifact}: an index at a {}: URL may point only to {allowed} archives",
             index.scheme()
         ))
     }

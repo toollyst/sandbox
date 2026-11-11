@@ -39,7 +39,7 @@
               "os": "linux",
               "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
               "size": 1,
-              "url": "http://localhost:8000/solo.tar.gz"
+              "url": "https://mirror.example/solo.tar.gz"
             }
           ],
           "protocol": 2
@@ -68,7 +68,7 @@
               "os": "linux",
               "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
               "size": 1,
-              "url": "file:///srv/wick.tar.gz"
+              "url": "https://mirror.example/wick.tar.gz"
             }
           ]
         }

@@ -296,9 +296,9 @@ fn executor_repo(out: &Path) {
         "executors": {
             "wick": {"versions": {
                 "1.18.0": {"adapter": "firecracker", "artifacts": [artifact("darwin", "arm64", "wick/1.18.0.tar.gz")]},
-                "1.18.0+wick.1": {"adapter": "firecracker", "artifacts": [artifact("linux", "amd64", "file:///srv/wick.tar.gz")]},
+                "1.18.0+wick.1": {"adapter": "firecracker", "artifacts": [artifact("linux", "amd64", "https://mirror.example/wick.tar.gz")]},
             }},
-            "solo": {"versions": {"1": {"protocol": 2, "artifacts": [artifact("linux", "arm64", "http://localhost:8000/solo.tar.gz")]}}}
+            "solo": {"versions": {"1": {"protocol": 2, "artifacts": [artifact("linux", "arm64", "https://mirror.example/solo.tar.gz")]}}}
         },
         "adapters": {
             "firecracker": {"versions": {
