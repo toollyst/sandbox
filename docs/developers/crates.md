@@ -365,14 +365,14 @@ cores in order, and prints.
 | Module | Job |
 | --- | --- |
 | `cli`, `parse` | clap definitions, parsing of `-e`, `--env-file`, `--mount`, `--allow`, `cp` endpoints… |
-| `commands` | the command list and groups that `sbx help` prints |
+| `commands` | the command list, its help sections and their order, and the `sbx --help` template that prints them by section |
 | `app` | one function per command: wires `sbx-manage`, `sbx-runtime`, `sbx-oci` and the executor together |
 | `attach` | attached runs: stdin, TTY raw mode, resize, signals |
 | `executors` | `sbx executor …`: install, use, current, which, rm, prune, adapters, repositories (`sbx-executor-install`, `sbx-executor-repo`) |
 | `choose` | which executor a command runs: `--executor`, the sandbox's pin, `.sbx-executor`, the default, `PATH` |
 | `output` | the public `--format json` types, `--jq` (built-in jaq), JSON errors, and the generated [cli-output.md](cli-output.md) |
 | `filter` | `--filter KEY=VALUE` for `ps`, `images` and `events` (Docker's rules), no I/O |
-| `tui` | `sbx tui`: `keys` (the key list), `model` (keys to `sbx` command lines, no I/O), `view` (drawing), and `mod` (runs `sbx` children, hands over the terminal) |
+| `tui` | `sbx tui`: `keys` (the key list), `model` (keys to `sbx` command lines, no I/O), `view` (drawing), `detail` (a row as readable `name  value` lines), and `mod` (runs `sbx` children, hands over the terminal) |
 | `mcp` | `sbx mcp`: the same operations as MCP tools over stdio, with progress notifications |
 | `complete` | `sbx completion` and `COMPLETE=<shell> sbx`: sandbox names and IDs, image references and installed executors as tab candidates, read-only |
 | `behavior` | exit codes, `--pull`, `rmi` protection, time formatting, and `DOCKER_DIFFERENCES` |

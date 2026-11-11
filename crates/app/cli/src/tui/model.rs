@@ -14,6 +14,9 @@ use crate::output::{
     ChosenExecutor, Event, Image, InstalledAdapter, InstalledExecutor, Sandbox, SandboxState,
 };
 
+/// 이벤트를 얼마나 거슬러 받는지(`events --since`). 화면을 열 때 최근 일을 보여 준다.
+pub const EVENTS_SINCE: &str = "1h";
+
 /// 이벤트 탭에 남기는 개수. 넘으면 오래된 것부터 버린다.
 pub const EVENTS_KEPT: usize = 10_000;
 
@@ -593,7 +596,7 @@ impl Model {
                 (
                     format!("Event {} {}", e.kind, e.action),
                     readable(e),
-                    words(&["events", "--since", super::EVENTS_SINCE, "--format", "json"]),
+                    words(&["events", "--since", EVENTS_SINCE, "--format", "json"]),
                 )
             }
         };
