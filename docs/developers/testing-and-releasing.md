@@ -140,8 +140,11 @@ Pushing `v<version>` runs [`release.yml`](../../.github/workflows/release.yml):
 
 To cut a release:
 
-1. Bump `version` under `[workspace.package]` in `Cargo.toml` (this updates `Cargo.lock` on the next build) and
-   merge it to `main` with CI green.
+1. Bump `version` under `[workspace.package]` in `Cargo.toml` (this updates `Cargo.lock` on the next build), rename
+   `## Unreleased` in [`CHANGELOG.md`](../../CHANGELOG.md) to `## v0.2.0` (and start a new empty `## Unreleased`),
+   and merge it to `main` with CI green. The release notes are that section
+   ([`release-notes.sh`](../../.github/scripts/release-notes.sh)), followed by GitHub's generated list; a tag without
+   a section fails before anything is built.
 2. Optionally, on a Mac with a macOS VMM installed (for example `wick`), run `cargo xtask dist && cargo xtask smoke`.
    CI has no macOS VM run, so this is the only check there; it does not gate the release.
 3. Tag and push: `git tag -a v0.2.0 -m "sbx 0.2.0" && git push origin v0.2.0`.

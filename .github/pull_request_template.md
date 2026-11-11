@@ -10,3 +10,4 @@
 - [ ] If it changes CLI behavior vs Docker: listed in `behavior.rs`
 - [ ] Every commit is signed off (`git commit -s`, DCO)
 - [ ] If it changes a public contract (CLI, JSON output, MCP, protocols, index, on-disk layout): an issue and a roadmap note
+- [ ] If users or scripts will notice it: a line under `## Unreleased` in `CHANGELOG.md` (Breaking, Security, Added or Fixed)

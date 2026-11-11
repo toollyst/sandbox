@@ -7,7 +7,7 @@ What you can rely on across `sbx` releases, and what may change. Security suppor
 
 `sbx` follows [semantic versioning](https://semver.org/). Before 1.0, a **minor** release (0.2, 0.3, …) may break a
 contract below, and a **patch** release (0.2.1) never does. From 1.0, only a major release breaks one. Every break is
-listed under **Breaking** in the release notes, with what to do.
+listed under **Breaking** in the release notes ([CHANGELOG.md](CHANGELOG.md)), with what to do.
 
 A contract is removed or changed only after it has been **deprecated** for at least one minor release: `sbx` keeps
 the old behavior and warns on stderr when it is used, and the release notes name the replacement.

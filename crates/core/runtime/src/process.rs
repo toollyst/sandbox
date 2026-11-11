@@ -9,7 +9,7 @@
 //! | cwd | 호출자 값 > `WorkingDir` > `/` |
 //! | user | 호출자 값 > `User` > root |
 //! | 멈출 때 시그널 ([`stop_signal`]) | 호출자 값 > `StopSignal` > SIGTERM |
-//! | 라벨 ([`labels`]) | 이미지 `Labels`에 호출자 값을 덮어쓴다. 같은 키는 호출자 값이 이긴다. 이미지의 라벨 중 [`RESERVED_LABEL_PREFIX`]로 시작하는 것은 버린다(sbx가 쓰는 라벨이다. 이미지가 그것으로 샌드박스의 주인이나 실행기를 정하지 못하게) |
+//! | 라벨 ([`labels`]) | 이미지 `Labels`에 호출자 값을 덮어쓴다. 같은 키는 호출자 값이 이긴다. 이미지의 라벨 중 [`RESERVED_LABEL_PREFIX`]로 시작하는 것은 샌드박스 라벨이 되지 않는다(sbx가 붙이는 라벨이다. 이미지가 그것으로 샌드박스의 주인이나 실행기를 정하지 못하게). 이미지가 커널을 알리는 `ImageConfig::KERNEL_LABEL`은 이미지 config에서 읽으므로 상관없다 |
 //!
 //! argv가 비면 [`RuntimeError::NoCommand`]다.
 //!

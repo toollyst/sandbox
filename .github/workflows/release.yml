@@ -44,6 +44,10 @@ jobs:
           want=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "sbx-cli") | .version')
           if [ "$GITHUB_EVENT_NAME" = push ]; then
             [ "${GITHUB_REF_NAME}" = "v$want" ] || { echo "::error::tag ${GITHUB_REF_NAME} does not match the workspace version $want"; exit 1; }
+            # 릴리스 노트는 CHANGELOG.md의 그 태그 절이다(Breaking·Security를 사람이 쓴다). 없으면 빌드 전에 멈춘다.
+            .github/scripts/release-notes.sh "$GITHUB_REF_NAME" >/dev/null
+          else
+            .github/scripts/release-notes.sh Unreleased >/dev/null
           fi
           echo "version=$want" >> "$GITHUB_OUTPUT"
 
@@ -164,6 +168,10 @@ jobs:
           for f in artifacts/sbx-*/sbx-*.tar.gz; do
             cosign sign-blob --yes --bundle "$f.sigstore.json" "$f"
           done
+      - name: release notes (CHANGELOG.md)
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = push ]; then s=$GITHUB_REF_NAME; else s=Unreleased; fi
+          .github/scripts/release-notes.sh "$s" > artifacts/release-notes.md
       - if: github.event_name != 'push'
         name: rehearsal output (signed archives, bundles, SBOM)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -173,7 +181,7 @@ jobs:
       - if: github.event_name == 'push'
         name: release
         run: |
-          gh release create "$GITHUB_REF_NAME" --title "sbx $VERSION" --generate-notes \
+          gh release create "$GITHUB_REF_NAME" --title "sbx $VERSION" --notes-file artifacts/release-notes.md --generate-notes \
             artifacts/sbx-*/sbx-*.tar.gz artifacts/sbx-*/sbx-*.tar.gz.sha256 artifacts/sbx-*/sbx-*.tar.gz.sigstore.json \
             "artifacts/sbx-$VERSION.spdx.json"
       - if: github.event_name == 'push'
