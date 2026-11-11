@@ -958,3 +958,25 @@ fn test_environment_names_are_unique() {
     names.dedup();
     assert_eq!(before, names.len(), "an Env::new name is used twice");
 }
+
+#[cfg(unix)]
+#[test]
+fn sandbox_records_are_private_to_their_user() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = Env::new("perm");
+    let s = env.sandbox(&["true"]);
+    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    let dir = env.root.join("d/sandboxes").join(s.id().as_str());
+    assert_eq!(mode(&env.root.join("d/sandboxes")), 0o700);
+    assert_eq!(mode(&dir), 0o700);
+    for f in ["spec.json", "state.json", "scratch.img", "owner.lock"] {
+        assert_eq!(mode(&dir.join(f)), 0o600, "{f}");
+    }
+    // 0.2.0이 만든 열린 디렉터리는 좁힌다.
+    let old = env.root.join("old");
+    std::fs::create_dir(&old).unwrap();
+    std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o755)).unwrap();
+    records::private_dir(&old).unwrap();
+    assert_eq!(mode(&old), 0o700);
+    let _ = std::fs::remove_dir_all(&env.root);
+}

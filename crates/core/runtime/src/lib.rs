@@ -192,7 +192,7 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 impl Runtime {
     /// 만든다. data_dir이 없으면 만든다. cache_dir은 만들지 않는다(관리 쪽의 일).
     pub fn new(config: RuntimeConfig, executor: Arc<dyn Executor>) -> Result<Self, RuntimeError> {
-        std::fs::create_dir_all(config.data_dir.join("sandboxes"))?;
+        records::private_dir(&config.data_dir.join("sandboxes"))?;
         let store = Store::open(&config.cache_dir);
         Ok(Self {
             inner: Arc::new(Inner {
