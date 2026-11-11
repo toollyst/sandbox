@@ -2583,6 +2583,8 @@ mod unix {
         };
         m.request("initialize", serde_json::json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "e2e", "version": "0"}}));
         // 응답을 기다리지 않고 create 다섯 개를 한꺼번에 보낸다. 서버는 이것들을 동시에 처리한다.
+        // 지금의 Runtime::list는 기다리는 곳이 없어 자리 예약이 없어도 통과할 수 있다. 이 시험은 admit과 만들기
+        // 사이에 await가 끼어들어도(list가 실행기에 묻게 되는 등) 한도가 지켜지는지를 지킨다.
         for id in 100..105 {
             let msg = serde_json::json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
                 "params": {"name": "create", "arguments": {"image": IMAGE}}});
