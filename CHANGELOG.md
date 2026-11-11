@@ -15,6 +15,14 @@ to release a tag without one. Changes land under `## Unreleased` first, and the 
   reads what they wrote. An `official` line with the 0.1.x URL in a repository list is no longer read as the
   official repository, and `install.sh` has no exception for unsigned releases.
 
+### Added
+
+- Windows x86_64 releases (`sbx-windows-x86_64.zip`, signed like the others) and `install.ps1`
+  (`irm https://toollyst.github.io/sandbox/install.ps1 | iex`), into `%LOCALAPPDATA%\Programs\sbx`. `pull`, `prepare`
+  and `images` work on Windows; there is no tested executor for it yet.
+- `cargo xtask install`: build and install `sbx` where the installers put it, instead of running it from the build
+  directory.
+
 ## v0.2.0
 
 ### Breaking

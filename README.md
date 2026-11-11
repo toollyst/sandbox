@@ -9,16 +9,17 @@
   <a href="https://github.com/toollyst/sandbox/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/toollyst/sandbox?color=2ea44f"></a>
   <a href="https://github.com/toollyst/sandbox/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/toollyst/sandbox/actions/workflows/ci.yml/badge.svg"></a>
   <a href="#license"><img alt="License: Apache-2.0 OR MIT" src="https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue"></a>
-  <img alt="Platforms: macOS (Apple Silicon) and Linux" src="https://img.shields.io/badge/runs%20on-macOS%20%C2%B7%20Linux-lightgrey">
-  <img alt="Status: alpha" src="https://img.shields.io/badge/status-alpha-orange">
+  <img alt="Runs sandboxes on macOS (Apple Silicon) and Linux" src="https://img.shields.io/badge/runs%20on-macOS%20%C2%B7%20Linux-lightgrey">
+  <img alt="Status: 0.x" src="https://img.shields.io/badge/status-0.x-orange">
   <a href="https://scorecard.dev/viewer/?uri=github.com/toollyst/sandbox"><img alt="OpenSSF Scorecard" src="https://api.scorecard.dev/projects/github.com/toollyst/sandbox/badge"></a>
 </p>
 
 > [!WARNING]
-> **`sbx` is alpha.** It works end to end on real VMs, but commands, flags, the on-disk layout and the executor
-> protocol may still change without notice, and it has not had an outside security audit. Read
-> [SECURITY.md](SECURITY.md) for what it does and doesn't defend against before you trust it with anything that
-> matters.
+> **`sbx` is 0.x.** It works end to end on real VMs and is maintained from 0.2 on, but it has not had an outside
+> security audit. Until 1.0, a minor release (0.3, 0.4, …) may change commands, flags, the on-disk layout or the
+> executor protocol, only after a deprecation and always listed in the [CHANGELOG](CHANGELOG.md)
+> ([COMPATIBILITY.md](COMPATIBILITY.md)). Read [SECURITY.md](SECURITY.md) for what it does and doesn't defend
+> against before you trust it with anything that matters.
 
 ```sh
 curl -fsSL https://toollyst.github.io/sandbox/install.sh | sh
@@ -79,8 +80,9 @@ finish in **0.50 s**. Try it on your machine ([source](xtask/src/bench.rs)).
 > `no executor named "wick" in any repository` for now. You can install an executor from a directory meanwhile
 > ([install guide](docs/guide/install.md#build-from-source)), or add another repository.
 
-The installer puts `sbx` and `sbx-shim` in `~/.local/bin` after checking their SHA-256 (and their Sigstore signature
-when `cosign` is installed), and nothing else. Then you pick an executor.
+The installer puts `sbx` and `sbx-shim` in your OS's place for user programs (`~/.local/bin`, or
+`%LOCALAPPDATA%\Programs\sbx` on Windows), never in the directory you run it from, after checking their SHA-256
+(and their Sigstore signature when `cosign` is installed). Then you pick an executor.
 
 ### macOS
 
@@ -107,9 +109,17 @@ The binaries are static, so any distribution works.
 
 ### Windows
 
-Not supported yet: there is no Windows release and no tested executor for Windows.
+Windows 10 or later on x86_64, in PowerShell. No administrator rights needed:
 
-Installer options (`SBX_VERSION`, `SBX_INSTALL_DIR`, `SBX_VERIFY`), building from source, upgrading and
+```powershell
+irm https://toollyst.github.io/sandbox/install.ps1 | iex     # sbx.exe into %LOCALAPPDATA%\Programs\sbx
+sbx info
+```
+
+`sbx` on Windows can `pull`, `prepare` and list images, but there is no tested executor for Windows yet, so it can't
+run sandboxes.
+
+Installer options (`SBX_VERSION`, `SBX_INSTALL_DIR`, `SBX_VERIFY`, the same for both installers), building from source, upgrading and
 uninstalling are in the [install guide](docs/guide/install.md).
 
 ## Use it
@@ -150,7 +160,7 @@ Any executor that speaks the protocol runs anywhere it can start a VM. These are
 | macOS 15+, Apple Silicon | Firecracker on Hypervisor.framework ([wick](https://github.com/toollyst/wick)) under the `firecracker` adapter | Works. Real-VM checks run on a Mac, since CI's macOS runners can't start guests |
 | Linux x86_64 | Upstream Firecracker on KVM under the `firecracker` adapter | Works. Real VMs boot in CI on every push and before every release |
 | Linux aarch64 | Upstream Firecracker on KVM under the `firecracker` adapter | Released and unit-tested on arm; CI's arm runners have no KVM, so there is no real-VM run in CI yet |
-| Windows | – | Not yet. A build from source can `pull`, `prepare` and list images |
+| Windows 10+, x86_64 | – | Installs (`install.ps1`); `pull`, `prepare` and `images` work. No tested executor yet, so no sandboxes |
 
 ## How it works
 

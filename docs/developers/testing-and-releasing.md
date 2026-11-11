@@ -93,7 +93,7 @@ GitHub's runners are Linux, so CI fuzzes on Linux only. On macOS, `cargo fuzz` w
 
 | Job | Runs on | Does |
 | --- | --- | --- |
-| `test` | Linux x86_64 and arm64, macOS, Windows | `fmt --check`, `clippy -D warnings`, `test --no-fail-fast`, `doc -D warnings`, `check-deps`. On Linux also `shellcheck` on `install.sh` and `.github/scripts/*.sh`, both guest initramfs builds, the e2e tests again with the init embedded, and `cargo xtask dist` |
+| `test` | Linux x86_64 and arm64, macOS, Windows | `fmt --check`, `clippy -D warnings`, `test --no-fail-fast`, `doc -D warnings`, `check-deps`. On Windows also the `install.ps1` checks (`.github/scripts/test-install.ps1`: a fake release and a fake `cosign`, with the real `sbx.exe`). On Linux also `shellcheck` on `install.sh` and `.github/scripts/*.sh`, both guest initramfs builds, the e2e tests again with the init embedded, and `cargo xtask dist` |
 | `privileged` | Linux, in a `--privileged` container | the guest tests that need root and loop devices |
 | `vm` | Linux x86_64 with KVM (arm64 runs when the runner has KVM) | builds `sbx`, the adapter and the kernel (cached by its config), and makes a VMM package from upstream Firecracker (checked by its sha256). It installs `sbx` with `install.sh`, puts the adapter and the VMM package (as `firecracker@1.17.0`) in a local schema 2 `file://` repository, and installs from there the way a user does (`.github/scripts/smoke-local.sh`). It uses neither wick nor the official repository. Then it runs `smoke` and `bench` (the numbers go to the job summary) |
 
@@ -130,26 +130,27 @@ Pushing `v<version>` runs [`release.yml`](../../.github/workflows/release.yml):
 
 1. **`version`** fails unless the tag matches the workspace version in `Cargo.toml`.
 2. **`sbx`** builds `sbx-<os>-<arch>.tar.gz` (+ `.sha256`) for Linux x86_64 and aarch64 (static musl) and macOS
-   arm64, each with the guest init embedded.
+   arm64, and `sbx-windows-x86_64.zip` (+ `.sha256`) for Windows, each with the guest init embedded.
 3. **`smoke`** runs on Linux x86_64 with KVM, the same way as the CI `vm` job: it builds the adapter from this
    commit, makes a VMM package from upstream Firecracker, puts both in a local `file://` repository, and has the new
    `sbx` install `firecracker@<version>` from there before `cargo xtask smoke`. A `sbx` release depends on neither a
    wick release nor what the official repository holds, so `sbx` and the executors can be released in any order. If
    the protocol version changes, publish a matching adapter to the official repository afterwards
    ([Executors](#executors)).
-4. **`publish`** creates the GitHub release with the `sbx` archives and copies `install.sh` to the top of the
+4. **`publish`** creates the GitHub release with the `sbx` archives and copies `install.sh` and `install.ps1` to the top of the
    `gh-pages` branch. GitHub Pages serves that branch at <https://toollyst.github.io/sandbox/>.
 
 To cut a release:
 
-1. Bump `version` under `[workspace.package]` in `Cargo.toml` (this updates `Cargo.lock` on the next build), rename
-   `## Unreleased` in [`CHANGELOG.md`](../../CHANGELOG.md) to `## v0.2.0` (and start a new empty `## Unreleased`),
+1. Bump `version` under `[workspace.package]` in `Cargo.toml` (this updates `Cargo.lock` on the next build, and
+   `cargo check` in `fuzz/` updates `fuzz/Cargo.lock`), rename
+   `## Unreleased` in [`CHANGELOG.md`](../../CHANGELOG.md) to `## v0.3.0` (and start a new empty `## Unreleased`),
    and merge it to `main` with CI green. The release notes are that section
    ([`release-notes.sh`](../../.github/scripts/release-notes.sh)), followed by GitHub's generated list; a tag without
    a section fails before anything is built.
 2. Optionally, on a Mac with a macOS VMM installed (for example `wick`), run `cargo xtask dist && cargo xtask smoke`.
    CI has no macOS VM run, so this is the only check there; it does not gate the release.
-3. Tag and push: `git tag -a v0.2.0 -m "sbx 0.2.0" && git push origin v0.2.0`.
+3. Tag and push: `git tag -a v0.3.0 -m "sbx 0.3.0" && git push origin v0.3.0`.
 4. Check the result the way a user would: `curl -fsSL https://toollyst.github.io/sandbox/install.sh | sh` into a
    scratch `SBX_INSTALL_DIR`, then `sbx info`, and with an executor installed (`sbx executor install wick` once the official repository has
    it), `cargo xtask smoke --sbx <that sbx>`.

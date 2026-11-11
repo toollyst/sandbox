@@ -73,6 +73,13 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
       - run: cargo xtask check-deps
+      # install.ps1의 확인 분기: 가짜 릴리스(진짜 sbx.exe를 담은 zip)와 가짜 cosign으로.
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo build -p sbx-cli -p sbx-shim
+          ./.github/scripts/test-install.ps1
+          ./.github/scripts/test-install.ps1 -Shell powershell.exe
       - if: runner.os == 'Linux'
         run: shellcheck install.sh .github/scripts/*.sh
       # 게스트 init initramfs. 두 아키텍처 모두 어느 호스트에서나 rust-lld로 링크된다.
