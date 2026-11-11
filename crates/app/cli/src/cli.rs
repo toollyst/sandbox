@@ -245,6 +245,10 @@ pub enum Command {
         /// The largest writable disk one tool call may ask for (e.g. 20g).
         #[arg(long, default_value = "16g", value_parser = crate::parse::disk_mib)]
         max_disk: u32,
+        /// Stop every sandbox created through MCP at most this long after it starts (e.g. 1h); agents may ask for
+        /// less with `lifetime`. By default they run until stopped or removed.
+        #[arg(long, value_name = "DURATION", value_parser = crate::parse::lifetime_secs)]
+        max_lifetime: Option<u64>,
         /// Let agents allow loopback, private and link-local IP addresses and `localhost` (by default they can
         /// only allow public hosts, so an agent can't reach services on this machine, the LAN or cloud metadata).
         #[arg(long)]
@@ -515,6 +519,10 @@ pub struct RunArgs {
     /// Memory (e.g. 512m, 1g; default 512m).
     #[arg(short = 'm', long)]
     pub memory: Option<String>,
+    /// Stop the sandbox this long after each start (e.g. 30m, 1h; like podman --timeout): stop signal, then power off
+    /// after the stop timeout. Without it a sandbox runs until its main process ends or it is stopped.
+    #[arg(long, value_name = "DURATION", value_parser = crate::parse::lifetime_secs)]
+    pub timeout: Option<u64>,
     /// Writable disk: `size=SIZE` (e.g. size=20g; default 1g, at least 64m). Sparse, so the host only spends what
     /// the sandbox writes.
     #[arg(long = "storage-opt", value_name = "size=SIZE", value_parser = crate::parse::storage_opt)]

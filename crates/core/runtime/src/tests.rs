@@ -105,6 +105,7 @@ impl Env {
             open_stdin: false,
             tty: false,
             name: None,
+            lifetime_secs: None,
         }
     }
 
@@ -979,4 +980,24 @@ fn sandbox_records_are_private_to_their_user() {
     records::private_dir(&old).unwrap();
     assert_eq!(mode(&old), 0o700);
     let _ = std::fs::remove_dir_all(&env.root);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_sandbox_stops_when_its_lifetime_runs_out() {
+    let e = Env::new("life");
+    e.prepare_image();
+    let mut spec = e.spec(&["sleep", "30"]);
+    spec.lifetime_secs = Some(1);
+    spec.stop.timeout_secs = Some(1);
+    let s = block_on(e.rt.create(spec)).unwrap();
+    let started = std::time::Instant::now();
+    let main = block_on(s.start(IoMode::default())).unwrap();
+    // sleep은 TERM으로 끝난다(128+15).
+    let code = block_on(main.wait()).unwrap();
+    assert_eq!(code, 143);
+    assert!(started.elapsed() < Duration::from_secs(20));
+    let info = e.wait_state(&s, State::Stopped);
+    assert_eq!(info.exit_code, Some(143));
+    let _ = std::fs::remove_dir_all(&e.root);
 }

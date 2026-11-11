@@ -1027,6 +1027,7 @@ impl Ctx {
                         open_stdin: a.interactive,
                         tty: a.tty,
                         name: a.name.clone(),
+                        lifetime_secs: a.timeout,
                     };
                     let sandbox = self.launcher_with(&chosen)?.create(spec).await?;
                     return Ok(sandbox.id().clone());

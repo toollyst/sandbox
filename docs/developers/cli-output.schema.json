@@ -1103,6 +1103,15 @@
           "$ref": "#/$defs/Stop",
           "description": "How `stop` stops it."
         },
+        "timeout_secs": {
+          "description": "Seconds after each start when sbx stops it (`--timeout`); absent when it runs until stopped.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "tty": {
           "description": "Whether the main process has a terminal (`-t`).",
           "type": "boolean"

@@ -126,6 +126,21 @@ pub fn cpus(value: &str) -> ParseResult<u8> {
     }
 }
 
+/// `--timeout`(샌드박스 수명): Go 표기의 시간(`90s`, `30m`, `1h30m`) 또는 초(`600`). 1초 이상, 초 단위로 내린다.
+pub fn lifetime_secs(value: &str) -> ParseResult<u64> {
+    let v = value.trim();
+    let secs = match v.parse::<u64>() {
+        Ok(n) => Some(n),
+        Err(_) => duration_ns(v).map(|ns| ns / 1_000_000_000),
+    };
+    match secs {
+        Some(n) if n >= 1 => Ok(n),
+        _ => Err(format!(
+            "invalid timeout {value:?}: use seconds (600) or a duration like 30m or 1h30m, at least 1s"
+        )),
+    }
+}
+
 /// `--since`, `--until`의 시각. 유닉스 시각(나노초)을 돌려준다. 받는 것:
 ///
 /// - RFC 3339: `2026-11-10T13:20:14Z`, 소수 초(`.5`), 시간대 차(`+09:00`).
@@ -562,5 +577,16 @@ mod tests {
                 .contains("unknown")
         );
         assert!(storage_opt("20g").is_err());
+    }
+
+    #[test]
+    fn lifetimes_read_like_durations() {
+        assert_eq!(lifetime_secs("600"), Ok(600));
+        assert_eq!(lifetime_secs("30m"), Ok(1800));
+        assert_eq!(lifetime_secs("1h30m"), Ok(5400));
+        assert_eq!(lifetime_secs("1.5s"), Ok(1));
+        assert!(lifetime_secs("0").is_err());
+        assert!(lifetime_secs("500ms").is_err());
+        assert!(lifetime_secs("soon").is_err());
     }
 }

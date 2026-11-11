@@ -808,6 +808,10 @@ pub struct SandboxSpec {
     /// 이름(Docker `--name`). 모든 샌드박스 사이에서 하나뿐이고, ID 대신 쓸 수 있다. 규칙은 [`check_sandbox_name`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// 시작할 때마다 이 시간(초)이 지나면 멈춘다(`--timeout`, podman과 같다): 기본 프로세스에 멈춤 시그널, 멈춤
+    /// 기다림 뒤 전원 끄기. VM을 소유한 프로세스(붙어 실행하는 sbx나 `sbx-shim`)가 잰다. 없으면 끝없이.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifetime_secs: Option<u64>,
 }
 
 /// 샌드박스 이름 규칙(Docker와 같다): 영문자나 숫자로 시작하고, 영문자, 숫자, `_`, `.`, `-`로 이어지는

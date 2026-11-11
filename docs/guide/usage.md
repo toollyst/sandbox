@@ -80,7 +80,11 @@ for `sbx` and an image can't set them.
 ## Resources
 
 `--cpus` and `-m` set a sandbox's vCPUs and memory, and `--storage-opt size=20g` its writable disk (1 GiB by
-default; the file is sparse, so the host only spends what the sandbox writes). A sandbox's output can't fill the host's memory or disk. Which executor a sandbox runs on is covered in
+default; the file is sparse, so the host only spends what the sandbox writes). A sandbox's output can't fill the host's memory or disk.
+
+`--timeout 2h` stops a sandbox that long after each start (a plain number is seconds; `30m`, `1h30m` work too).
+It gets its stop signal, then is powered off after its stop timeout, and `sbx inspect` shows `timeout_secs` and the
+reason it stopped. `sbx start` starts the clock again. Which executor a sandbox runs on is covered in
 [Executors](executors.md).
 
 ## Disk usage and cleanup

@@ -97,6 +97,7 @@ mod tests {
             open_stdin: false,
             tty: false,
             name: None,
+            lifetime_secs: None,
         }
     }
 

@@ -87,6 +87,9 @@ pub const START_TIMEOUT: Duration = Duration::from_secs(30);
 pub const OWN_WAIT: Duration = Duration::from_secs(1);
 /// 기본 프로세스가 끝난 뒤 VM이 스스로 꺼지기를 기다리는 시간. 넘으면 강제로 끝낸다.
 pub const VM_EXIT_GRACE: Duration = Duration::from_secs(10);
+
+/// 수명이 다 되어 멈출 때 멈춤 시그널 뒤 기다리는 시간. 샌드박스가 정하지 않았을 때(CLI `stop -t`의 기본과 같다).
+pub const DEFAULT_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 /// VM이 먼저 끝났을 때 기본 프로세스의 종료 코드 (SIGKILL로 끝난 것과 같다).
 pub const EXIT_VM_ENDED: i32 = 137;
 /// Unix 소켓 경로의 최대 바이트 수 (macOS 기준, 가장 짧다).
@@ -109,6 +112,10 @@ pub struct RuntimeConfig {
 struct Owned {
     vm: Box<dyn VmHandle>,
     control: PathBuf,
+    /// 이번 시작을 가리킨다. 수명 타이머가 다시 시작한 다음 실행을 멈추지 않게 한다.
+    started: std::time::Instant,
+    /// 기본 프로세스가 아닌 쪽이 VM을 끈 까닭(수명). 끝을 기록할 때 오류로 쓴다.
+    ended_by: Option<String>,
     _lease: RootfsLease,
     _lock: OwnerLock,
 }
@@ -389,6 +396,43 @@ impl Runtime {
         }
     }
 
+    /// 수명(`lifetime_secs`)이 다 되었다. 그 시작이 아직 돌고 있으면 `stop`처럼 멈춘다: 멈춤 시그널, 멈춤 기다림
+    /// (없으면 [`DEFAULT_STOP_TIMEOUT`]), 그래도 돌면 전원을 끈다. 블로킹이다.
+    fn expire(
+        &self,
+        id: &SandboxId,
+        started: std::time::Instant,
+        stop: &sbx_model::StopSpec,
+        secs: u64,
+    ) {
+        let same = |rt: &Self| {
+            lock(&rt.inner.owned)
+                .get(id)
+                .is_some_and(|o| o.started == started)
+        };
+        if !same(self) {
+            return;
+        }
+        let Some(control) = lock(&self.inner.owned).get(id).map(|o| o.control.clone()) else {
+            return;
+        };
+        let wait = stop
+            .timeout_secs
+            .map_or(DEFAULT_STOP_TIMEOUT, |s| Duration::from_secs(u64::from(s)));
+        let _ = self.guest(&control).signal_main(stop.signal.number());
+        if !wait.is_zero() && self.wait_not_running(id, wait).unwrap_or(false) {
+            return;
+        }
+        // 끝의 기록은 기본 프로세스 쪽(`on_end` → [`Runtime::finish`])에 맡긴다. 여기서 기록하면 그 쪽이 먼저
+        // 끝을 알려, 끝을 받은 소유 프로세스(shim)가 기록 전에 나갈 수 있다.
+        if let Some(o) = lock(&self.inner.owned).get_mut(id)
+            && o.started == started
+        {
+            o.ended_by = Some(format!("stopped after its --timeout of {secs}s"));
+            let _ = o.vm.kill();
+        }
+    }
+
     /// 소유한 VM을 정리하고 `stopped`를 쓴다. 이미 정리했으면 아무것도 하지 않는다.
     /// 블로킹이다(작업 스레드에서 부른다).
     fn finish(
@@ -401,6 +445,7 @@ impl Runtime {
         let Some(mut owned) = lock(&self.inner.owned).remove(id) else {
             return;
         };
+        let error = owned.ended_by.take().or(error);
         let _ = self.guest(&owned.control).shutdown();
         if !chan::block_on(owned.vm.wait(grace)).unwrap_or(false) {
             let _ = owned.vm.kill();
@@ -727,15 +772,25 @@ impl Sandbox {
         };
         records::write_state(&paths, &state)?;
         rt.emit("start", &id, Some(&spec), &[]);
+        let started = std::time::Instant::now();
         lock(&rt.inner.owned).insert(
             id.clone(),
             Owned {
                 vm,
                 control,
+                started,
+                ended_by: None,
                 _lease: lease,
                 _lock: owner,
             },
         );
+        if let Some(secs) = spec.lifetime_secs {
+            let (rt, id, stop) = (rt.clone(), id.clone(), spec.stop);
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_secs(secs));
+                rt.expire(&id, started, &stop, secs);
+            });
+        }
         let rt2 = rt.clone();
         Ok(Process::spawn(
             conn,

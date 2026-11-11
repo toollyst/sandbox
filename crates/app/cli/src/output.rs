@@ -768,6 +768,9 @@ pub struct Sandbox {
     pub interactive: bool,
     /// Whether the main process has a terminal (`-t`).
     pub tty: bool,
+    /// Seconds after each start when sbx stops it (`--timeout`); absent when it runs until stopped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
 }
 
 /// Sandbox lifecycle state (OCI names).
@@ -944,6 +947,7 @@ impl Sandbox {
             },
             interactive: spec.open_stdin,
             tty: spec.tty,
+            timeout_secs: spec.lifetime_secs,
         }
     }
 }

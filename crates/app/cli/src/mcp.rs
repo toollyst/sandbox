@@ -73,13 +73,15 @@ struct Server {
     reserved: std::cell::Cell<u32>,
 }
 
-/// `sbx mcp --max-sandboxes`, `--max-cpus`, `--max-memory`, `--max-disk`, `--allow-private-network`.
+/// `sbx mcp --max-sandboxes`, `--max-cpus`, `--max-memory`, `--max-disk`, `--max-lifetime`, `--allow-private-network`.
 #[derive(Debug, Clone, Copy)]
 struct Limits {
     sandboxes: u32,
     cpus: u8,
     memory_mib: u32,
     disk_mib: u32,
+    /// 샌드박스 하나가 시작마다 돌 수 있는 가장 긴 시간(초). 있으면 `lifetime`을 주지 않은 샌드박스도 이만큼 뒤에 멈춘다.
+    lifetime_secs: Option<u64>,
     /// 허용 목록에 루프백·사설·링크 로컬 IP와 `localhost`를 받는다.
     private_network: bool,
 }
@@ -123,8 +125,20 @@ impl Server {
 
     /// 만들 샌드박스가 상한 안인지 보고 자리를 잡는다. vCPU와 메모리는 호출 하나의 상한, 개수는 MCP로 만든
     /// 샌드박스(지우기 전까지, 만드는 중인 것 포함)의 상한이다.
-    async fn admit(&self, spec: &RunArgs) -> AppResult<Seat<'_>> {
+    async fn admit(&self, spec: &mut RunArgs) -> AppResult<Seat<'_>> {
         let l = self.limits;
+        if let Some(max) = l.lifetime_secs {
+            match spec.timeout {
+                Some(t) if t > max => {
+                    return Err(format!(
+                        "`lifetime` {t}s is above this server's limit of {max}s (sbx mcp --max-lifetime)"
+                    )
+                    .into());
+                }
+                Some(_) => {}
+                None => spec.timeout = Some(max),
+            }
+        }
         if !l.private_network
             && let Some(r) = spec.allow.iter().find(|r| opens_private_network(r))
         {
@@ -219,6 +233,7 @@ pub async fn serve(cli: &Cli) -> AppResult<u8> {
         max_cpus,
         max_memory,
         max_disk,
+        max_lifetime,
         allow_private_network,
     } = cli.command
     else {
@@ -232,6 +247,7 @@ pub async fn serve(cli: &Cli) -> AppResult<u8> {
             cpus: max_cpus,
             memory_mib: max_memory,
             disk_mib: max_disk,
+            lifetime_secs: max_lifetime,
             private_network: allow_private_network,
         },
         reserved: Default::default(),
@@ -512,6 +528,7 @@ pub fn tools() -> Value {
     let memory =
         json!({ "type": "string", "description": "Memory, e.g. 512m or 2g (default 512m)." });
     let disk = json!({ "type": "string", "description": "Writable disk size, e.g. 4g or 20g (default 1g). Sparse: only what is written uses host disk." });
+    let lifetime = json!({ "type": "string", "description": "Stop the sandbox this long after it starts, e.g. 30m or 2h (seconds if a plain number). Without it, it runs until stopped or removed, unless the server sets --max-lifetime." });
     let id = json!({ "type": "string", "description": "Sandbox ID (or a unique prefix), or the name given to create." });
     let name = json!({ "type": "string", "description": "Optional unique name (letters, digits, _ . -) to use in place of the ID." });
     let path = json!({ "type": "string", "description": "Absolute path inside the sandbox." });
@@ -540,7 +557,7 @@ pub fn tools() -> Value {
             "description": "Start a microVM that keeps running (by default its main process is `sleep infinity`) for exec, write_file and read_file. It stays until remove, even after this server exits.",
             "inputSchema": { "type": "object", "required": ["image"], "properties": {
                 "image": image, "name": name, "command": command, "env": env, "workdir": workdir, "allow": allow,
-                "cpus": cpus, "memory": memory, "disk": disk } },
+                "cpus": cpus, "memory": memory, "disk": disk, "lifetime": lifetime } },
             "outputSchema": id_out,
             "annotations": annotations(false, false, false, true),
         },
@@ -766,6 +783,9 @@ fn run_args(a: &Args, stdin: bool, default_command: &[&str]) -> AppResult<RunArg
     if let Some(d) = a.str("disk")? {
         argv.push(format!("--storage-opt=size={d}"));
     }
+    if let Some(t) = a.str("lifetime")? {
+        argv.push(format!("--timeout={t}"));
+    }
     if let Some(n) = a.str("name")? {
         argv.push(format!("--name={n}"));
     }
@@ -857,8 +877,8 @@ fn feed(p: &Process, stdin: Option<&str>) {
 async fn run(ctx: &Server, a: &Args<'_>, progress: &Progress, cancel: &Cancel) -> AppResult<Value> {
     let stdin = a.str("stdin")?;
     let timeout = a.timeout()?;
-    let spec = run_args(a, stdin.is_some(), &[])?;
-    let seat = ctx.admit(&spec).await?;
+    let mut spec = run_args(a, stdin.is_some(), &[])?;
+    let seat = ctx.admit(&mut spec).await?;
     let report = |p| progress.pull(spec.image(), p);
     let id = tokio::select! {
         id = ctx.create_with(&spec, &report) => id?,
@@ -899,8 +919,8 @@ async fn run(ctx: &Server, a: &Args<'_>, progress: &Progress, cancel: &Cancel) -
 }
 
 async fn create(ctx: &Server, a: &Args<'_>, progress: &Progress) -> AppResult<Value> {
-    let spec = run_args(a, false, KEEP_ALIVE)?;
-    let seat = ctx.admit(&spec).await?;
+    let mut spec = run_args(a, false, KEEP_ALIVE)?;
+    let seat = ctx.admit(&mut spec).await?;
     let id = ctx
         .create_with(&spec, &|p| progress.pull(spec.image(), p))
         .await?;
@@ -1135,10 +1155,13 @@ mod tests {
                 "allow": ["pypi.org:443"],
                 "cpus": 2,
                 "memory": "1g",
+                "disk": "4g",
+                "lifetime": "1h30m",
             }),
             true,
         )
         .unwrap();
+        assert_eq!((r.storage_opt, r.timeout), (Some(4096), Some(5400)));
         assert_eq!(r.image(), "python:3.12-alpine");
         assert_eq!(r.command(), ["python", "-c", "print(1)"]);
         assert_eq!(r.env, ["A=1=2"]);

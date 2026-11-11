@@ -115,6 +115,10 @@ mod unix {
             "stop_sends_the_stop_signal_then_powers_off",
             stop_sends_the_stop_signal_then_powers_off,
         ),
+        (
+            "a_detached_sandbox_stops_after_its_timeout",
+            a_detached_sandbox_stops_after_its_timeout,
+        ),
         ("kill_wait_and_restart", kill_wait_and_restart),
         ("attach_to_a_detached_sandbox", attach_to_a_detached_sandbox),
         (
@@ -363,7 +367,7 @@ mod unix {
         ]);
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
         let r: PruneReport = serde_json::from_slice(&o.stdout).unwrap();
-        assert_eq!(r.sandboxes, [kept.clone()]);
+        assert_eq!(r.sandboxes, std::slice::from_ref(&kept));
         assert!(r.leftovers.iter().any(|l| l.ends_with(".gone-1")), "{r:?}");
         assert!(!half.exists() && fresh.exists());
         // -a: 멈춘 것을 모두, 쓰는 샌드박스가 없는 이미지도. 실행 중인 것과 그 이미지는 남는다.
@@ -379,7 +383,7 @@ mod unix {
             .iter()
             .map(|s| s["id"].as_str().unwrap().to_owned())
             .collect();
-        assert_eq!(ids, [running.clone()]);
+        assert_eq!(ids, std::slice::from_ref(&running));
         e.sbx(&["rm", "-f", &running]);
         let o = e.sbx(&["--format", "json", "system", "prune", "-a", "-f"]);
         let r: PruneReport = serde_json::from_slice(&o.stdout).unwrap();
@@ -1621,6 +1625,28 @@ mod unix {
         let o = e.sbx(&["run", "-d", "--stop-signal", "NOPE", IMAGE, "true"]);
         assert_ne!(o.status.code(), Some(0));
         assert!(text(&o.stderr).contains("signal"), "{}", text(&o.stderr));
+    }
+
+    fn a_detached_sandbox_stops_after_its_timeout() {
+        let e = Env::new();
+        // 수명이 다 되면 멈춤 시그널을 받는다. 그 시그널로 끝나면 그 종료 코드.
+        let id = run_trapping(&e, &["--timeout", "1", "--stop-signal", "USR1"], "USR1", 5);
+        let s = state_of(&e, &id).unwrap();
+        assert_eq!(s["timeout_secs"], 1, "{s}");
+        let s = wait_state(&e, &id, "stopped");
+        assert_eq!(s["exit_code"], 5, "{s}");
+
+        // 시그널을 무시하면 멈춤 기다림 뒤에 전원을 끈다: 137과 그 까닭.
+        let id = run_trapping(&e, &["--timeout", "1", "--stop-timeout", "1"], "USR2", 4);
+        let s = wait_state(&e, &id, "stopped");
+        assert_eq!(s["exit_code"], 137, "{s}");
+        assert!(
+            s["error"].as_str().unwrap_or("").contains("--timeout"),
+            "{s}"
+        );
+
+        let o = e.sbx(&["run", "-d", "--timeout", "0", IMAGE, "true"]);
+        assert_ne!(o.status.code(), Some(0));
     }
 
     fn kill_wait_and_restart() {
