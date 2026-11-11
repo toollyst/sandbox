@@ -74,6 +74,8 @@ pub const JSON_OUTPUT: &[(&str, Form)] = &[
     ("executor repo add", Form::Value("Repository")),
     ("executor repo rm", Form::Value("Repository")),
     ("info", Form::Value("Info")),
+    ("system df", Form::Value("[DiskUsage]")),
+    ("system prune", Form::Value("PruneReport")),
     ("run", Form::Detached("SandboxRef")),
     ("create", Form::Value("SandboxRef")),
     ("start", Form::Detached("SandboxRef")),
@@ -447,6 +449,41 @@ pub struct Pruned {
     pub version: String,
     /// Whether it was removed (false with `--dry-run`).
     pub removed: bool,
+}
+
+/// One row of `system df`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct DiskUsage {
+    /// `images`, `sandboxes` or `executors`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// How many there are (executors count installed executors and adapters).
+    pub total: u64,
+    /// Images some sandbox uses; sandboxes that are running. Always 0 for executors.
+    pub active: u64,
+    /// Bytes they take on disk (a sandbox's writable disk counts what it wrote, not its size).
+    pub size: u64,
+    /// Bytes `system prune -a` would free: unused images with the layers only they use, stopped sandboxes.
+    pub reclaimable: u64,
+}
+
+/// What `system prune` removed.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct PruneReport {
+    /// IDs of removed sandboxes.
+    pub sandboxes: Vec<String>,
+    /// IDs of removed images (`-a`).
+    pub images: Vec<String>,
+    /// Digests of removed layer blobs.
+    pub layers: Vec<String>,
+    /// Paths of removed leftovers (unfinished pulls and builds, half-removed sandboxes).
+    pub leftovers: Vec<String>,
+    /// Bytes freed on disk.
+    pub reclaimed: u64,
 }
 
 /// An executor or adapter by name and version (`executor install`, `use`, `rm`, `adapter install`, `adapter rm`).
@@ -1020,6 +1057,8 @@ mod tests {
         g.subschema_for::<AvailableExecutor>();
         g.subschema_for::<Repository>();
         g.subschema_for::<Info>();
+        g.subschema_for::<DiskUsage>();
+        g.subschema_for::<PruneReport>();
         g.subschema_for::<SandboxRef>();
         g.subschema_for::<Done>();
         g.subschema_for::<Exited>();

@@ -37,6 +37,8 @@ The JSON Schema (draft 2020-12) of every type is in [cli-output.schema.json](cli
 | `executor repo add` | value: `Repository` |
 | `executor repo rm` | value: `Repository` |
 | `info` | value: `Info` |
+| `system df` | value: `[DiskUsage]` |
+| `system prune` | value: `PruneReport` |
 | `run` | value: `SandboxRef` when detached; not supported when attached |
 | `create` | value: `SandboxRef` |
 | `start` | value: `SandboxRef` when detached; not supported when attached |

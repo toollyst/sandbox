@@ -83,6 +83,19 @@ for `sbx` and an image can't set them.
 default; the file is sparse, so the host only spends what the sandbox writes). A sandbox's output can't fill the host's memory or disk. Which executor a sandbox runs on is covered in
 [Executors](executors.md).
 
+## Disk usage and cleanup
+
+```sh
+sbx system df                  # images, sandboxes and executors: count, in use, size, reclaimable
+sbx system prune               # stopped sandboxes, unused layers, leftovers of interrupted pulls (asks first)
+sbx system prune -a -f         # also every image no sandbox uses; -f doesn't ask
+sbx system prune --filter until=24h --filter label=ci=1
+```
+
+Sizes are what is actually on disk: a sandbox's writable disk counts what it wrote. `prune` never touches running
+sandboxes or the images they use, and only removes leftovers older than an hour (another `sbx` may still be writing
+them). Without a terminal it needs `-f`. In `sbx tui`, `U` and `P` on the Images tab do the same.
+
 ## Scripting
 
 - `--format json` prints only JSON on stdout, with errors as one JSON line on stderr. Commands that report something

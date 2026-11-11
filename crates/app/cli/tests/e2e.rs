@@ -78,6 +78,10 @@ mod unix {
             completion_offers_sandboxes_and_images,
         ),
         ("json_output_contract", json_output_contract),
+        (
+            "system_df_and_prune_free_what_nothing_uses",
+            system_df_and_prune_free_what_nothing_uses,
+        ),
         ("events_replay_and_follow", events_replay_and_follow),
         ("filters", filters),
         ("jq_shapes_json_output", jq_shapes_json_output),
@@ -311,6 +315,77 @@ mod unix {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.root);
         }
+    }
+
+    fn system_df_and_prune_free_what_nothing_uses() {
+        use sbx_cli::output::{DiskUsage, PruneReport};
+        let e = Env::new();
+        let o = e.sbx(&["create", "--label", "keep=1", IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let kept = text(&o.stdout).trim().to_owned();
+        let o = e.sbx(&["run", "-d", IMAGE, "sleep", "30"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let running = text(&o.stdout).trim().to_owned();
+        let o = e.sbx(&["create", IMAGE, "true"]);
+        let stopped = text(&o.stdout).trim().to_owned();
+
+        let o = e.sbx(&["--format", "json", "system", "df"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let rows: Vec<DiskUsage> = serde_json::from_slice(&o.stdout).unwrap();
+        let sb = rows.iter().find(|r| r.kind == "sandboxes").unwrap();
+        assert_eq!((sb.total, sb.active), (3, 1));
+        let im = rows.iter().find(|r| r.kind == "images").unwrap();
+        assert_eq!((im.total, im.active), (1, 1));
+
+        // 터미널이 아니면 -f가 있어야 한다.
+        let o = e.sbx(&["system", "prune"]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(text(&o.stderr).contains("-f"), "{}", text(&o.stderr));
+        // 하나를 지우다 멈춘 샌드박스 디렉터리(오래된 것만 지운다).
+        let half = e.path("data/sandboxes/.gone-1");
+        std::fs::create_dir_all(&half).unwrap();
+        let fresh = e.path("data/sandboxes/.busy-1");
+        std::fs::create_dir_all(&fresh).unwrap();
+        let old = std::time::SystemTime::now() - Duration::from_secs(7200);
+        std::fs::File::open(&half)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+
+        let o = e.sbx(&[
+            "--format",
+            "json",
+            "system",
+            "prune",
+            "-f",
+            "--filter",
+            "label=keep",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let r: PruneReport = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(r.sandboxes, [kept.clone()]);
+        assert!(r.leftovers.iter().any(|l| l.ends_with(".gone-1")), "{r:?}");
+        assert!(!half.exists() && fresh.exists());
+        // -a: 멈춘 것을 모두, 쓰는 샌드박스가 없는 이미지도. 실행 중인 것과 그 이미지는 남는다.
+        let o = e.sbx(&["--format", "json", "system", "prune", "-a", "-f"]);
+        let r: PruneReport = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(r.sandboxes, [stopped]);
+        assert!(
+            r.images.is_empty(),
+            "the running sandbox uses the image: {r:?}"
+        );
+        let ids: Vec<String> = e
+            .ps()
+            .iter()
+            .map(|s| s["id"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(ids, [running.clone()]);
+        e.sbx(&["rm", "-f", &running]);
+        let o = e.sbx(&["--format", "json", "system", "prune", "-a", "-f"]);
+        let r: PruneReport = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(r.images.len(), 1, "{r:?}");
+        let o = e.sbx(&["images", "-q"]);
+        assert!(text(&o.stdout).trim().is_empty());
     }
 
     fn text(b: &[u8]) -> String {
@@ -1466,7 +1541,11 @@ mod unix {
         std::fs::write(&log, [1, 0, 0, 0, 4, b'o', b'l', b'd', b'\n']).unwrap();
         let o = e.sbx(&["logs", &id]);
         assert_ne!(o.status.code(), Some(0));
-        assert!(text(&o.stderr).contains("not an sbx log"), "{}", text(&o.stderr));
+        assert!(
+            text(&o.stderr).contains("not an sbx log"),
+            "{}",
+            text(&o.stderr)
+        );
 
         // -f --until: 그 시각이 지나면 따라가기를 끝낸다. stdout이 닫혀도 조용히 끝난다.
         let o = e.sbx(&[

@@ -98,6 +98,16 @@ pub const EVENTS: &[Key] = &[
     ),
 ];
 
+/// `system prune --filter`(Docker와 같은 키). 샌드박스에 적용한다.
+pub const PRUNE: &[Key] = &[
+    key(
+        "until",
+        Value::Any,
+        "created before VALUE (RFC 3339 time or a duration ago like 24h, as for events --since)",
+    ),
+    key("label", Value::Any, "has label KEY, or KEY=VALUE exactly"),
+];
+
 /// 해석한 필터. 키마다 받은 값들.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Filters {
@@ -137,6 +147,15 @@ impl Filters {
             values.entry(spec.name).or_default().push(v.to_owned());
         }
         Ok(Self { values })
+    }
+
+    /// 그 키의 값들(없으면 비어 있다).
+    pub fn values(&self, key: &str) -> impl Iterator<Item = &str> {
+        self.values
+            .get(key)
+            .into_iter()
+            .flatten()
+            .map(String::as_str)
     }
 
     /// 그 키가 있는지.

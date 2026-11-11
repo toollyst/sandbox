@@ -335,4 +335,3 @@ struct NoInterruptHandler;
 fn interrupt_handler() -> io::Result<NoInterruptHandler> {
     Ok(NoInterruptHandler)
 }
-

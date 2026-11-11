@@ -93,7 +93,10 @@ pub fn storage_opt(value: &str) -> ParseResult<u32> {
         ));
     }
     let v = v.trim().to_ascii_lowercase();
-    let v = v.strip_suffix('b').filter(|x| x.ends_with(['k', 'm', 'g', 't'])).unwrap_or(&v);
+    let v = v
+        .strip_suffix('b')
+        .filter(|x| x.ends_with(['k', 'm', 'g', 't']))
+        .unwrap_or(&v);
     let mib = match v.strip_suffix('t') {
         Some(n) => n
             .parse::<u32>()
@@ -553,7 +556,11 @@ mod tests {
         assert_eq!(storage_opt("size=1t"), Ok(1 << 20));
         assert!(storage_opt("size=1m").unwrap_err().contains("at least"));
         assert!(storage_opt("size=x").is_err());
-        assert!(storage_opt("dm.basesize=1g").unwrap_err().contains("unknown"));
+        assert!(
+            storage_opt("dm.basesize=1g")
+                .unwrap_err()
+                .contains("unknown")
+        );
         assert!(storage_opt("20g").is_err());
     }
 }

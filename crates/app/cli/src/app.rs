@@ -39,12 +39,15 @@ use crate::attach::{self, attach};
 use crate::behavior::{self, ImageMatch, LookupError, RmiAction, RmiDecision, Step};
 use crate::cli::{
     AttachArgs, Cli, Command, ExecArgs, ExecutorCommand, Format, LogsArgs, RunArgs, StopArgs,
+    SystemCommand,
 };
 use crate::filter::{self, Filters};
 use crate::output;
 use crate::parse::{self, CpEndpoint};
 use crate::progress::Status;
 use crate::{choose, dirs, executors, guest, host};
+
+mod system;
 
 /// `logs -f`, `events`가 새 기록을 보러 가는 간격.
 const FOLLOW_POLL: Duration = Duration::from_millis(100);
@@ -125,6 +128,12 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
     match &cli.command {
         Command::Pull { platform, image } => ctx.pull(platform.as_deref(), image).await,
         Command::Executor { command } => ctx.executor_cmd(command).await,
+        Command::System { command } => match command {
+            SystemCommand::Df => ctx.system_df().await,
+            SystemCommand::Prune { all, force, filter } => {
+                ctx.system_prune(*all, *force, filter).await
+            }
+        },
         Command::Prepare {
             rootfs_format,
             image,

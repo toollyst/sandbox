@@ -437,3 +437,23 @@ fn executors_tab_lists_executors_then_adapters_and_runs_executor_commands() {
     press(&mut m, KeyCode::Enter);
     assert!(matches!(&m.popup, Some(Popup::Detail { title, .. }) if title == "wick@1.18.0"));
 }
+
+#[test]
+fn images_tab_prunes_and_shows_disk_usage() {
+    let mut m = Model::default();
+    press(&mut m, KeyCode::Tab);
+    assert_eq!(m.tab(), Tab::Images);
+    // 고른 이미지가 없어도 된다.
+    press(&mut m, KeyCode::Char('P'));
+    assert_eq!(
+        m.popup,
+        Some(Popup::Confirm {
+            args: strings(&["system", "prune", "-a", "-f"])
+        })
+    );
+    m.popup = None;
+    assert_eq!(
+        press(&mut m, KeyCode::Char('U')),
+        Some(Action::Handover(strings(&["system", "df"])))
+    );
+}

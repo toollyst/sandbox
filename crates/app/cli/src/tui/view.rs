@@ -427,7 +427,7 @@ fn footer(frame: &mut Frame, model: &Model, area: Rect) {
     }
     let hints = Line::from(match model.tab() {
         Tab::Sandboxes => "s start  x stop  e shell  l logs  D rm  ? help  q quit ",
-        Tab::Images => "D rmi  : command  ? help  q quit ",
+        Tab::Images => "D rmi  P prune  U usage  ? help  q quit ",
         Tab::Events => "/ filter  ? help  q quit ",
         Tab::Executors => "u use  i install  S search  D rm  P prune  ? help  q quit ",
     })

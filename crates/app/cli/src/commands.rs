@@ -77,6 +77,11 @@ pub const COMMANDS: &[Command] = &[
         "Show the host, executor and storage sbx uses (include it in bug reports)",
     ),
     cmd(
+        "system",
+        Group::Manage,
+        "Show disk usage and remove what nothing uses (df, prune)",
+    ),
+    cmd(
         "run",
         Group::Run,
         "Create and start a sandbox (pulls missing images by default)",

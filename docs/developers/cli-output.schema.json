@@ -168,6 +168,48 @@
       ],
       "type": "object"
     },
+    "DiskUsage": {
+      "additionalProperties": false,
+      "description": "One row of `system df`.",
+      "properties": {
+        "active": {
+          "description": "Images some sandbox uses; sandboxes that are running. Always 0 for executors.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reclaimable": {
+          "description": "Bytes `system prune -a` would free: unused images with the layers only they use, stopped sandboxes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "size": {
+          "description": "Bytes they take on disk (a sandbox's writable disk counts what it wrote, not its size).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "total": {
+          "description": "How many there are (executors count installed executors and adapters).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "type": {
+          "description": "`images`, `sandboxes` or `executors`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "total",
+        "active",
+        "size",
+        "reclaimable"
+      ],
+      "type": "object"
+    },
     "Done": {
       "additionalProperties": false,
       "description": "One sandbox that `stop`, `restart`, `kill` or `rm` acted on.",
@@ -779,6 +821,54 @@
         "env",
         "cwd",
         "user"
+      ],
+      "type": "object"
+    },
+    "PruneReport": {
+      "additionalProperties": false,
+      "description": "What `system prune` removed.",
+      "properties": {
+        "images": {
+          "description": "IDs of removed images (`-a`).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "layers": {
+          "description": "Digests of removed layer blobs.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "leftovers": {
+          "description": "Paths of removed leftovers (unfinished pulls and builds, half-removed sandboxes).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "reclaimed": {
+          "description": "Bytes freed on disk.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sandboxes": {
+          "description": "IDs of removed sandboxes.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "sandboxes",
+        "images",
+        "layers",
+        "leftovers",
+        "reclaimed"
       ],
       "type": "object"
     },

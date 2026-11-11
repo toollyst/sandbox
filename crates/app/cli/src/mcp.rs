@@ -157,7 +157,9 @@ impl Server {
             )
             .into());
         }
-        let disk = spec.storage_opt.unwrap_or(crate::behavior::DEFAULT_SCRATCH_MIB);
+        let disk = spec
+            .storage_opt
+            .unwrap_or(crate::behavior::DEFAULT_SCRATCH_MIB);
         if disk > l.disk_mib {
             return Err(format!(
                 "`disk` {disk} MiB is above this server's limit of {} MiB (sbx mcp --max-disk)",
@@ -520,9 +522,7 @@ pub fn tools() -> Value {
     let id_out = json!({ "type": "object", "required": ["id"], "properties": { "id": { "type": "string" } } });
     // annotations: 클라이언트가 확인을 묻거나 자동 승인을 정할 때 쓰는 힌트(MCP 2025-03-26부터). 결과를 믿게 하는
     // 것이 아니다. openWorld는 바깥(네트워크)에 닿을 수 있는가: allow를 줄 수 있는 도구만.
-    let annotations = |read_only: bool, destructive: bool, idempotent: bool, open_world: bool| {
-        json!({ "readOnlyHint": read_only, "destructiveHint": destructive, "idempotentHint": idempotent, "openWorldHint": open_world })
-    };
+    let annotations = |read_only: bool, destructive: bool, idempotent: bool, open_world: bool| json!({ "readOnlyHint": read_only, "destructiveHint": destructive, "idempotentHint": idempotent, "openWorldHint": open_world });
     json!([
         {
             "name": "run",

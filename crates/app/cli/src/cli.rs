@@ -111,6 +111,11 @@ pub enum Command {
     },
     #[command(about = about("info"))]
     Info,
+    #[command(about = about("system"))]
+    System {
+        #[command(subcommand)]
+        command: SystemCommand,
+    },
     #[command(about = about("run"), override_usage = "sbx run [OPTIONS] IMAGE [COMMAND] [ARG...]")]
     Run {
         #[command(flatten)]
@@ -258,6 +263,25 @@ so it always matches the installed sbx.",
     Completion {
         /// Shell to enable completion for.
         shell: clap_complete::Shell,
+    },
+}
+
+/// `system` 아래 명령.
+#[derive(Debug, Subcommand)]
+pub enum SystemCommand {
+    /// Show how much disk images, sandboxes and executors take, and how much prune could free.
+    Df,
+    /// Remove stopped sandboxes, unused layers and leftovers (-a: also images no sandbox uses).
+    Prune {
+        /// Also remove every image no remaining sandbox uses.
+        #[arg(short = 'a', long)]
+        all: bool,
+        /// Don't ask for confirmation.
+        #[arg(short = 'f', long)]
+        force: bool,
+        /// Only sandboxes matching: until=TIME (created before), label=KEY[=VALUE].
+        #[arg(long = "filter", value_name = "KEY=VALUE")]
+        filter: Vec<String>,
     },
 }
 

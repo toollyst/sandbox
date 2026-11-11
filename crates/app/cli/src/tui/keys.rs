@@ -35,6 +35,12 @@ pub const KEYS: &[KeyHelp] = &[
     k("K", "sandboxes", "kill (asks first)"),
     k("D", "sandboxes", "rm -f (asks first)"),
     k("D", "images", "rmi (asks first)"),
+    k(
+        "P",
+        "images",
+        "system prune -a: stopped sandboxes, unused images and layers (asks first)",
+    ),
+    k("U", "images", "system df: disk usage (hands over the terminal)"),
     k("e", "sandboxes", "exec -it ID sh (hands over the terminal)"),
     k("a", "sandboxes", "attach (hands over the terminal)"),
     k(

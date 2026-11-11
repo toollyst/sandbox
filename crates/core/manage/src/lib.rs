@@ -436,6 +436,11 @@ impl Manager {
         Ok(path)
     }
 
+    /// 어느 이미지도 쓰지 않는 레이어 blob을 지운다(`system prune`). 지운 digest.
+    pub fn collect_blobs(&self) -> Result<Vec<sbx_model::Digest>, ManageError> {
+        Ok(write::collect_blobs(self.store.layout())?)
+    }
+
     /// 이미지와 그 이미지를 가리키는 참조를 모두 지우고, 더 쓰이지 않는 레이어 blob도 지운다.
     /// 실행 중인 샌드박스가 쓰고 있으면 [`ManageError::InUse`]다.
     ///

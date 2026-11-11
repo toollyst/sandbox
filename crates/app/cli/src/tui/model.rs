@@ -479,6 +479,14 @@ impl Model {
                     _ => None,
                 }
             }
+            // 고른 줄이 없어도 된다.
+            Tab::Images if c == 'P' => self.confirm(
+                ["system", "prune", "-a", "-f"]
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+            ),
+            Tab::Images if c == 'U' => Some(Action::Handover(vec!["system".into(), "df".into()])),
             Tab::Images => {
                 let image = self.selected_image()?;
                 let target = image
