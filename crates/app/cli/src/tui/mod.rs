@@ -17,8 +17,10 @@
 //!   - 이벤트 자식은 TUI가 끝날 때(패닉 포함) 죽인다. `Run` 자식은 사용자가 시킨 일이라 끝까지 둔다.
 //! - 전역 옵션(`--data-dir` 등)은 받은 그대로 자식에 넘긴다. 상태 줄에는 적지 않는다.
 //!
-//! 키 목록은 [`keys`], 화면과 키 처리는 [`model`] (입출력이 없다)과 [`view`] (그리기만 한다)에 있다. 이 모듈은 둘을 프로세스와 터미널에 잇는다.
+//! 키 목록은 [`keys`], 화면과 키 처리는 [`model`] (입출력이 없다)과 [`view`] (그리기만 한다), 상세 창의 내용은
+//! [`detail`]에 있다. 이 모듈은 둘을 프로세스와 터미널에 잇는다.
 
+pub mod detail;
 pub mod keys;
 pub mod model;
 pub mod view;
@@ -36,11 +38,8 @@ use ratatui::crossterm::event::{self, Event as TermEvent, KeyEventKind};
 
 use crate::app::AppResult;
 use crate::cli::Cli;
-use crate::output::{Event, Image, Sandbox};
-use model::{Action, Model, Msg};
-
-/// 이벤트를 얼마나 거슬러 받는지(`events --since`). 화면을 열 때 최근 일을 보여 준다.
-pub const EVENTS_SINCE: &str = "1h";
+use crate::output::{ErrorLine, Event, Image, Sandbox};
+use model::{Action, EVENTS_SINCE, Model, Msg};
 
 /// 키를 기다리는 최대 시간. 그동안 온 소식은 다음 장에 그린다.
 const TICK: Duration = Duration::from_millis(100);
@@ -252,7 +251,7 @@ impl Follower {
                 .trim()
                 .lines()
                 .last()
-                .map(str::to_owned);
+                .map(reason);
             let _ = tx.send(Msg::EventsEnded(format!(
                 "events stopped{}",
                 why.map(|w| format!(": {w}")).unwrap_or_default()
@@ -318,8 +317,21 @@ fn first_line(stderr: &[u8], status: &ExitStatus) -> String {
         .lines()
         .map(str::trim)
         .find(|l| !l.is_empty())
-        .map(str::to_owned)
+        .map(reason)
         .unwrap_or_else(|| describe(status))
+}
+
+/// stderr 한 줄에서 사람이 읽을 까닭. `--format json`의 오류는 JSON 한 줄([`ErrorLine`])이라 그 `message`를 꺼내고,
+/// 글 모드의 앞머리 `sbx: `는 뗀다(상태 줄이 이미 `sbx …`로 시작한다).
+pub fn reason(line: &str) -> String {
+    let line = line.trim();
+    if let Ok(e) = serde_json::from_str::<ErrorLine>(line) {
+        return match e.error.target {
+            Some(t) => format!("{t}: {}", e.error.message),
+            None => e.error.message,
+        };
+    }
+    line.strip_prefix("sbx: ").unwrap_or(line).to_owned()
 }
 
 #[cfg(unix)]
@@ -341,4 +353,20 @@ fn now_ns() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reason;
+
+    #[test]
+    fn reasons_come_out_of_json_error_lines_and_lose_the_sbx_prefix() {
+        let json =
+            r#"{"error":{"message":"no executor is installed","target":null,"exit_code":1}}"#;
+        assert_eq!(reason(json), "no executor is installed");
+        let one = r#"{"error":{"message":"is running","target":"web","exit_code":null}}"#;
+        assert_eq!(reason(one), "web: is running");
+        assert_eq!(reason("sbx: no such sandbox: web"), "no such sandbox: web");
+        assert_eq!(reason("  plain words "), "plain words");
+    }
 }

@@ -11,11 +11,13 @@ use crate::commands::about;
 use crate::complete;
 
 /// 출력 형식.
+///
+/// 값마다 문서 주석을 달지 않는다: 달면 clap의 긴 도움말(`--help`)이 모든 옵션을 두 줄씩 띄워 찍는다.
+/// 무엇인지는 `--format`의 설명에 적는다.
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Format {
-    /// Human-readable table.
     Text,
-    /// JSON for scripts.
     Json,
 }
 
@@ -25,36 +27,39 @@ pub enum Format {
     name = "sbx",
     version,
     about = "Docker-style sandboxes, each in its own microVM",
+    // 명령을 절마다 묶어 찍는다(clap은 한 목록으로만 찍는다).
+    help_template = crate::commands::root_help_template(),
     // 모든 명령에 붙는 옵션은 명령마다의 옵션과 섞이지 않게 따로 모은다(Docker의 Global Options와 같다).
     next_help_heading = "Global Options"
 )]
 pub struct Cli {
     /// Directory for sandbox state.
-    #[arg(long, global = true, env = "SBX_DATA_DIR")]
+    #[arg(long, global = true, env = "SBX_DATA_DIR", hide_env_values = true)]
     pub data_dir: Option<PathBuf>,
     /// Directory for the image cache.
-    #[arg(long, global = true, env = "SBX_CACHE_DIR")]
+    #[arg(long, global = true, env = "SBX_CACHE_DIR", hide_env_values = true)]
     pub cache_dir: Option<PathBuf>,
     /// Directory for guest connection sockets (must be a short path).
-    #[arg(long, global = true, env = "SBX_SOCKET_DIR")]
+    #[arg(long, global = true, env = "SBX_SOCKET_DIR", hide_env_values = true)]
     pub socket_dir: Option<PathBuf>,
     /// Guest init initramfs. Defaults to the one embedded in sbx.
-    #[arg(long, global = true, env = "SBX_GUEST_INIT")]
+    #[arg(long, global = true, env = "SBX_GUEST_INIT", hide_env_values = true)]
     pub guest_init: Option<PathBuf>,
     /// Executor to use: an installed `NAME[@VERSION]`, or a program that speaks the executor protocol (a path, or a
-    /// name looked up on PATH). Without it: the executor a sandbox was created with (for start and restart), then
-    /// `.sbx-executor` in this folder or the nearest one above, then the default (`sbx executor use`), then
-    /// `sbx-executor` on PATH.
-    #[arg(long, global = true, env = "SBX_EXECUTOR")]
+    /// name on PATH). Without it, `sbx executor current` shows which one is used and why.
+    //
+    // 문단을 하나로 둔다: 긴 도움말이 하나라도 있으면 clap이 모든 명령의 `--help`를 두 줄씩 띄워 찍는다.
+    // 고르는 순서(샌드박스의 것, `.sbx-executor`, 기본, PATH)는 `executor current`와 사용자 안내서에 있다.
+    #[arg(long, global = true, env = "SBX_EXECUTOR", hide_env_values = true)]
     pub executor: Option<PathBuf>,
     /// Shim program that owns detached sandboxes. Defaults to `sbx-shim` next to sbx, then on PATH.
-    #[arg(long, global = true, env = "SBX_SHIM")]
+    #[arg(long, global = true, env = "SBX_SHIM", hide_env_values = true)]
     pub shim: Option<PathBuf>,
-    /// Output format.
-    #[arg(long, global = true, value_enum, default_value_t = Format::Text)]
+    /// Output format: text (tables for people) or json (for scripts; see --jq).
+    #[arg(long, global = true, value_enum, default_value_t = Format::Text, hide_possible_values = true)]
     pub format: Format,
-    /// With --format json: run this jq expression on the output and print each result on its own line
-    /// (strings without quotes). Built in (jaq); jq itself is not needed.
+    /// With --format json: filter the output with this jq expression, one result per line (strings without quotes).
+    /// Built in; jq itself is not needed.
     #[arg(long, global = true, value_name = "EXPR")]
     pub jq: Option<String>,
     /// Command.
@@ -68,6 +73,102 @@ pub struct Cli {
 #[allow(missing_docs)]
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    #[command(about = about("run"), override_usage = "sbx run [OPTIONS] IMAGE [COMMAND] [ARG...]")]
+    Run {
+        #[command(flatten)]
+        attach: AttachArgs,
+        #[command(flatten)]
+        args: RunArgs,
+    },
+    #[command(about = about("create"), override_usage = "sbx create [OPTIONS] IMAGE [COMMAND] [ARG...]")]
+    Create(RunArgs),
+    #[command(about = about("start"))]
+    Start {
+        /// Attach: stream output and wait for the main process. Without it, start detached and print the ID.
+        #[arg(short = 'a', long)]
+        attach: bool,
+        /// Attach stdin.
+        #[arg(short = 'i', long)]
+        interactive: bool,
+        /// Sandbox name, ID, or unique ID prefix.
+        #[arg(add = complete::sandbox())]
+        id: String,
+    },
+    #[command(about = about("stop"))]
+    Stop(StopArgs),
+    #[command(about = about("restart"))]
+    Restart(StopArgs),
+    #[command(about = about("kill"))]
+    Kill {
+        /// Signal to send (name or number).
+        #[arg(short = 's', long, default_value = "KILL")]
+        signal: String,
+        /// Sandbox name, ID, or unique ID prefix.
+        #[arg(required = true, add = complete::sandbox())]
+        ids: Vec<String>,
+    },
+    #[command(about = about("wait"))]
+    Wait {
+        /// Sandbox name, ID, or unique ID prefix.
+        #[arg(required = true, add = complete::sandbox())]
+        ids: Vec<String>,
+    },
+    #[command(about = about("rm"))]
+    Rm {
+        /// Stop running sandboxes before removing them.
+        #[arg(short, long)]
+        force: bool,
+        /// Sandbox name, ID, or unique ID prefix.
+        #[arg(required = true, add = complete::sandbox())]
+        ids: Vec<String>,
+    },
+    #[command(about = about("ps"))]
+    Ps {
+        /// Show stopped sandboxes too.
+        #[arg(short, long)]
+        all: bool,
+        /// Only show sandbox IDs (e.g. `sbx rm -f $(sbx ps -aq)`).
+        #[arg(short, long)]
+        quiet: bool,
+        /// Filter: id=PREFIX, name=TEXT, label=KEY[=VALUE], status=STATE, exited=CODE, ancestor=IMAGE.
+        /// Different keys must all match, a repeated key any of its values. status and exited imply -a.
+        #[arg(short = 'f', long = "filter", value_name = "KEY=VALUE")]
+        filter: Vec<String>,
+    },
+    #[command(about = about("inspect"))]
+    Inspect {
+        /// Sandbox name, ID, or unique ID prefix.
+        #[arg(add = complete::sandbox())]
+        id: String,
+    },
+    #[command(about = about("exec"), override_usage = "sbx exec [OPTIONS] SANDBOX COMMAND [ARG...]")]
+    Exec(ExecArgs),
+    #[command(about = about("attach"))]
+    Attach {
+        /// Do not forward stdin.
+        #[arg(long)]
+        no_stdin: bool,
+        /// Forward received signals to the main process (when it has no TTY).
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        sig_proxy: bool,
+        /// Key sequence for detaching (e.g. ctrl-p,ctrl-q).
+        #[arg(long, default_value = crate::attach::DetachKeys::DEFAULT)]
+        detach_keys: String,
+        /// Sandbox name, ID, or unique ID prefix.
+        #[arg(add = complete::sandbox())]
+        id: String,
+    },
+    #[command(about = about("logs"))]
+    Logs(LogsArgs),
+    #[command(about = about("cp"))]
+    Cp {
+        /// Source (host path, or SANDBOX:PATH where SANDBOX is a name or ID).
+        #[arg(add = complete::cp_endpoint_arg())]
+        src: String,
+        /// Destination (host path, or SANDBOX:PATH where SANDBOX is a name or ID).
+        #[arg(add = complete::cp_endpoint_arg())]
+        dst: String,
+    },
     #[command(about = about("pull"))]
     Pull {
         /// linux/amd64 or linux/arm64. Defaults to the host architecture.
@@ -104,109 +205,8 @@ pub enum Command {
         #[arg(required = true, add = complete::image())]
         images: Vec<String>,
     },
-    #[command(about = about("executor"))]
-    Executor {
-        #[command(subcommand)]
-        command: ExecutorCommand,
-    },
-    #[command(about = about("info"))]
-    Info,
-    #[command(about = about("run"), override_usage = "sbx run [OPTIONS] IMAGE [COMMAND] [ARG...]")]
-    Run {
-        #[command(flatten)]
-        attach: AttachArgs,
-        #[command(flatten)]
-        args: RunArgs,
-    },
-    #[command(about = about("create"), override_usage = "sbx create [OPTIONS] IMAGE [COMMAND] [ARG...]")]
-    Create(RunArgs),
-    #[command(about = about("start"))]
-    Start {
-        /// Attach: stream output and wait for the main process. Without it, start detached and print the ID.
-        #[arg(short = 'a', long)]
-        attach: bool,
-        /// Attach stdin.
-        #[arg(short = 'i', long)]
-        interactive: bool,
-        /// Sandbox name, ID, or unique ID prefix.
-        #[arg(add = complete::sandbox())]
-        id: String,
-    },
-    #[command(about = about("exec"), override_usage = "sbx exec [OPTIONS] SANDBOX COMMAND [ARG...]")]
-    Exec(ExecArgs),
-    #[command(about = about("cp"))]
-    Cp {
-        /// Source (host path, or SANDBOX:PATH where SANDBOX is a name or ID).
-        #[arg(add = complete::cp_endpoint_arg())]
-        src: String,
-        /// Destination (host path, or SANDBOX:PATH where SANDBOX is a name or ID).
-        #[arg(add = complete::cp_endpoint_arg())]
-        dst: String,
-    },
-    #[command(about = about("stop"))]
-    Stop(StopArgs),
-    #[command(about = about("restart"))]
-    Restart(StopArgs),
-    #[command(about = about("kill"))]
-    Kill {
-        /// Signal to send (name or number).
-        #[arg(short = 's', long, default_value = "KILL")]
-        signal: String,
-        /// Sandbox name, ID, or unique ID prefix.
-        #[arg(required = true, add = complete::sandbox())]
-        ids: Vec<String>,
-    },
-    #[command(about = about("wait"))]
-    Wait {
-        /// Sandbox name, ID, or unique ID prefix.
-        #[arg(required = true, add = complete::sandbox())]
-        ids: Vec<String>,
-    },
-    #[command(about = about("rm"))]
-    Rm {
-        /// Stop running sandboxes before removing them.
-        #[arg(short, long)]
-        force: bool,
-        /// Sandbox name, ID, or unique ID prefix.
-        #[arg(required = true, add = complete::sandbox())]
-        ids: Vec<String>,
-    },
-    #[command(about = about("attach"))]
-    Attach {
-        /// Do not forward stdin.
-        #[arg(long)]
-        no_stdin: bool,
-        /// Forward received signals to the main process (when it has no TTY).
-        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
-        sig_proxy: bool,
-        /// Key sequence for detaching (e.g. ctrl-p,ctrl-q).
-        #[arg(long, default_value = crate::attach::DetachKeys::DEFAULT)]
-        detach_keys: String,
-        /// Sandbox name, ID, or unique ID prefix.
-        #[arg(add = complete::sandbox())]
-        id: String,
-    },
-    #[command(about = about("ps"))]
-    Ps {
-        /// Show stopped sandboxes too.
-        #[arg(short, long)]
-        all: bool,
-        /// Only show sandbox IDs (e.g. `sbx rm -f $(sbx ps -aq)`).
-        #[arg(short, long)]
-        quiet: bool,
-        /// Filter: id=PREFIX, name=TEXT, label=KEY[=VALUE], status=STATE, exited=CODE, ancestor=IMAGE.
-        /// Different keys must all match, a repeated key any of its values. status and exited imply -a.
-        #[arg(short = 'f', long = "filter", value_name = "KEY=VALUE")]
-        filter: Vec<String>,
-    },
-    #[command(about = about("inspect"))]
-    Inspect {
-        /// Sandbox name, ID, or unique ID prefix.
-        #[arg(add = complete::sandbox())]
-        id: String,
-    },
-    #[command(about = about("logs"))]
-    Logs(LogsArgs),
+    #[command(about = about("tui"), after_help = crate::tui::keys::help_text())]
+    Tui,
     #[command(about = about("events"))]
     Events {
         /// Replay events since this time first: RFC 3339 (2026-11-10T13:20:14Z), Unix seconds, or a duration ago (10m).
@@ -221,8 +221,6 @@ pub enum Command {
         #[arg(short = 'f', long = "filter", value_name = "KEY=VALUE")]
         filter: Vec<String>,
     },
-    #[command(about = about("tui"), after_help = crate::tui::keys::help_text())]
-    Tui,
     #[command(about = about("mcp"))]
     Mcp {
         /// Let tools use every sandbox in the data directory, not only the ones created through MCP.
@@ -238,6 +236,13 @@ pub enum Command {
         #[arg(long, default_value = "4g", value_parser = crate::parse::memory_mib)]
         max_memory: u32,
     },
+    #[command(about = about("executor"))]
+    Executor {
+        #[command(subcommand)]
+        command: ExecutorCommand,
+    },
+    #[command(about = about("info"))]
+    Info,
     #[command(
         about = about("completion"),
         long_about = "Print the shell script that enables tab completion. Besides commands and options, it completes \
@@ -257,11 +262,12 @@ so it always matches the installed sbx.",
 /// `executor` 아래 명령.
 #[derive(Debug, Subcommand)]
 pub enum ExecutorCommand {
-    /// List installed executors (* marks the default).
+    /// List installed executors (* marks the default)
     Ls,
-    /// Install an executor. Without --from, download it from the executor repositories (latest version unless given).
-    /// If it is a VMM package, the adapter it needs is installed first. The protocol version and architecture are
-    /// checked before installing.
+    /// Install an executor (latest version unless given)
+    ///
+    /// Without --from, download it from the executor repositories. If it is a VMM package, the adapter it needs is
+    /// installed first. The protocol version and architecture are checked before installing.
     Install {
         /// Install this instead of downloading: a bundle directory (sbx-executor at the top), a .tar.gz bundle,
         /// or a single executable. Requires NAME@VERSION.
@@ -279,7 +285,9 @@ pub enum ExecutorCommand {
         #[arg(value_name = "EXECUTOR")]
         spec: String,
     },
-    /// List executors in the repositories that can be installed on this host: the newest patch of each main version.
+    /// List executors you can install from the repositories
+    ///
+    /// Only those that run on this host: the newest patch of each main version (--all for every patch).
     #[command(visible_alias = "ls-remote")]
     Search {
         /// Every patch, not just the newest of each main version.
@@ -289,21 +297,25 @@ pub enum ExecutorCommand {
         #[arg(value_name = "NAME")]
         name: Option<String>,
     },
-    /// Set the default executor (latest installed version unless given).
+    /// Set the default executor for new sandboxes (latest installed version unless given)
     Use {
         /// `NAME[@VERSION]`.
         #[arg(value_name = "EXECUTOR", add = complete::executor())]
         spec: String,
     },
-    /// Show the executor a new sandbox would use here, and why (--executor, .sbx-executor, default, or PATH).
+    /// Show the executor a new sandbox would use here, and why
+    ///
+    /// The first that applies: --executor (or SBX_EXECUTOR), the executor a sandbox was created with (for start and
+    /// restart), `.sbx-executor` in this folder or the nearest one above, the default (`sbx executor use`), then
+    /// `sbx-executor` on PATH.
     Current,
-    /// Print the program that runs an installed executor (for a VMM package, its adapter).
+    /// Print the program that runs an installed executor (for a VMM package, its adapter)
     Which {
         /// `NAME[@VERSION]`. Defaults to the current executor.
         #[arg(value_name = "EXECUTOR", add = complete::executor())]
         spec: Option<String>,
     },
-    /// Remove an installed executor. Refused while a sandbox is pinned to it, unless --force.
+    /// Remove an installed executor (refused while a sandbox is pinned to it, unless --force)
     Rm {
         /// Remove even if sandboxes are pinned to it (they will not start until it is installed again).
         #[arg(short, long)]
@@ -312,20 +324,22 @@ pub enum ExecutorCommand {
         #[arg(value_name = "EXECUTOR", add = complete::executor())]
         spec: String,
     },
-    /// Remove versions nothing uses: executors that are not the default, not the highest version of their name, and
-    /// not pinned by a sandbox; adapters that are not the highest version of their name.
+    /// Remove executor and adapter versions nothing uses
+    ///
+    /// Executors that are not the default, not the highest version of their name, and not pinned by a sandbox;
+    /// adapters that are not the highest version of their name.
     Prune {
         /// Only print what would be removed.
         #[arg(short = 'n', long)]
         dry_run: bool,
     },
-    /// Manage adapters: programs that speak the executor protocol and run a VMM package.
+    /// Manage adapters: programs that speak the executor protocol and run a VMM package
     Adapter {
         /// Subcommand.
         #[command(subcommand)]
         command: AdapterCommand,
     },
-    /// Manage executor repositories (earlier ones take precedence). The list starts with `official`.
+    /// Manage executor repositories (earlier ones take precedence; the list starts with `official`)
     Repo {
         /// Subcommand.
         #[command(subcommand)]
@@ -336,9 +350,11 @@ pub enum ExecutorCommand {
 /// `executor adapter` 아래 명령.
 #[derive(Debug, Subcommand)]
 pub enum AdapterCommand {
-    /// List installed adapters and the VMM packages that use them.
+    /// List installed adapters and the VMM packages that use them
     Ls,
-    /// Install an adapter (latest version unless given). Without --from, download it from the repositories.
+    /// Install an adapter (latest version unless given)
+    ///
+    /// Without --from, download it from the repositories.
     Install {
         /// Install this instead of downloading: a bundle directory, a .tar.gz bundle, or a single executable.
         /// Requires NAME@VERSION.
@@ -351,7 +367,9 @@ pub enum AdapterCommand {
         #[arg(value_name = "ADAPTER")]
         spec: String,
     },
-    /// List adapters in the repositories that can be installed on this host: the newest patch of each main version.
+    /// List adapters you can install from the repositories
+    ///
+    /// Only those that run on this host: the newest patch of each main version (--all for every patch).
     #[command(visible_alias = "ls-remote")]
     Search {
         /// Every patch, not just the newest of each main version.
@@ -361,7 +379,7 @@ pub enum AdapterCommand {
         #[arg(value_name = "NAME")]
         name: Option<String>,
     },
-    /// Remove an installed adapter. Refused if it is the last version an installed VMM package needs, unless --force.
+    /// Remove an installed adapter (refused if an installed VMM package needs this last version, unless --force)
     Rm {
         /// Remove even if VMM packages need it.
         #[arg(short, long)]
@@ -375,10 +393,12 @@ pub enum AdapterCommand {
 /// `executor repo` 아래 명령.
 #[derive(Debug, Subcommand)]
 pub enum RepoCommand {
-    /// List repositories in priority order.
+    /// List repositories in priority order
     Ls,
-    /// Add a repository at the end of the list. Its index is fetched when used. Give the repository's minisign
-    /// public key with --key (its index must then be signed and fresh), or --unsigned to rely on TLS alone.
+    /// Add a repository at the end of the list
+    ///
+    /// Its index is fetched when used. Give the repository's minisign public key with --key (its index must then be
+    /// signed and fresh), or --unsigned to rely on TLS alone.
     Add {
         /// Repository name.
         name: String,
@@ -393,7 +413,7 @@ pub enum RepoCommand {
         #[arg(long, conflicts_with = "keys")]
         unsigned: bool,
     },
-    /// Remove a repository from the list (including `official`; the removal is kept).
+    /// Remove a repository from the list (including `official`; the removal is kept)
     Rm {
         /// Repository name.
         name: String,
@@ -458,31 +478,31 @@ pub struct RunArgs {
     #[arg(long)]
     pub rm: bool,
     /// Keep stdin open for the main process (kept in the sandbox's settings for every start).
-    #[arg(short = 'i', long)]
+    #[arg(short = 'i', long, help_heading = "Process")]
     pub interactive: bool,
     /// Allocate a TTY for the main process (kept in the sandbox's settings).
-    #[arg(short = 't', long)]
+    #[arg(short = 't', long, help_heading = "Process")]
     pub tty: bool,
     /// Environment variable K=V (K alone takes the host's value).
-    #[arg(short = 'e', long = "env")]
+    #[arg(short = 'e', long = "env", help_heading = "Process")]
     pub env: Vec<String>,
     /// Read environment variables from a file (K=V or K per line, # comments). -e wins.
-    #[arg(long)]
+    #[arg(long, help_heading = "Process")]
     pub env_file: Vec<PathBuf>,
     /// Working directory.
-    #[arg(short = 'w', long = "workdir")]
+    #[arg(short = 'w', long = "workdir", help_heading = "Process")]
     pub workdir: Option<String>,
     /// User (name, uid, name:group, uid:gid).
-    #[arg(short = 'u', long)]
+    #[arg(short = 'u', long, help_heading = "Process")]
     pub user: Option<String>,
     /// Override the image's ENTRYPOINT (an empty string clears it).
-    #[arg(long)]
+    #[arg(long, help_heading = "Process")]
     pub entrypoint: Option<String>,
     /// Number of vCPUs (default 1).
-    #[arg(long)]
+    #[arg(long, help_heading = "Resources")]
     pub cpus: Option<String>,
     /// Memory (e.g. 512m, 1g; default 512m).
-    #[arg(short = 'm', long)]
+    #[arg(short = 'm', long, help_heading = "Resources")]
     pub memory: Option<String>,
     /// Name the sandbox; other commands accept it in place of the ID.
     #[arg(long)]
@@ -494,27 +514,27 @@ pub struct RunArgs {
     #[arg(short = 'l', long = "label")]
     pub labels: Vec<String>,
     /// Live-share a host directory: `SRC:DST[:ro]` (short for --mount type=bind; needs executor support).
-    #[arg(short = 'v', long = "volume")]
+    #[arg(short = 'v', long = "volume", help_heading = "Files")]
     pub volumes: Vec<String>,
     /// `type=bind|copy,source=...,target=...[,readonly]` (copy: copied in at start).
-    #[arg(long = "mount")]
+    #[arg(long = "mount", help_heading = "Files")]
     pub mounts: Vec<String>,
     /// Network: none (no access) or allow (only --allow destinations, through a proxy).
-    #[arg(long, default_value = "none")]
+    #[arg(long, default_value = "none", help_heading = "Network")]
     pub network: String,
     /// Signal sent to the main process on stop. Defaults to the image's StopSignal, then SIGTERM.
-    #[arg(long)]
+    #[arg(long, help_heading = "Stopping")]
     pub stop_signal: Option<String>,
     /// Seconds to wait after the stop signal before powering off (default 10).
-    #[arg(long)]
+    #[arg(long, help_heading = "Stopping")]
     pub stop_timeout: Option<u32>,
     /// Destination allowed with --network allow: `HOST:PORT` (`*.example.com:443`, `10.0.0.5:*`, `[::1]:80`). Repeatable.
-    #[arg(long = "allow")]
+    #[arg(long = "allow", help_heading = "Network")]
     pub allow: Vec<String>,
     /// Image reference or ID, then the command and its arguments. Everything after the image belongs to the
     /// command, even values that look like sbx options.
     #[arg(
-        value_name = "IMAGE [COMMAND [ARG...]]",
+        value_names = ["IMAGE", "COMMAND"],
         required = true,
         num_args = 1..,
         trailing_var_arg = true,
@@ -560,7 +580,7 @@ pub struct ExecArgs {
     /// Sandbox name, ID, or unique ID prefix, then the command and its arguments. Everything after the sandbox belongs to
     /// the command.
     #[arg(
-        value_name = "SANDBOX COMMAND [ARG...]",
+        value_names = ["SANDBOX", "COMMAND"],
         required = true,
         num_args = 2..,
         trailing_var_arg = true,

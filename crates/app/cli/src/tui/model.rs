@@ -8,9 +8,14 @@ use std::ops::Range;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use super::detail::{DetailLine, readable};
+use crate::behavior::familiar;
 use crate::output::{
     ChosenExecutor, Event, Image, InstalledAdapter, InstalledExecutor, Sandbox, SandboxState,
 };
+
+/// 이벤트를 얼마나 거슬러 받는지(`events --since`). 화면을 열 때 최근 일을 보여 준다.
+pub const EVENTS_SINCE: &str = "1h";
 
 /// 이벤트 탭에 남기는 개수. 넘으면 오래된 것부터 버린다.
 pub const EVENTS_KEPT: usize = 10_000;
@@ -169,14 +174,19 @@ impl Cursor {
 /// 위에 덮는 창.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Popup {
-    /// 키 목록.
-    Help,
-    /// 고른 줄의 JSON.
+    /// 키 목록. 화면보다 길면 내린다.
+    Help {
+        /// 내린 줄 수.
+        scroll: u16,
+    },
+    /// 고른 줄을 사람이 읽게 편 것([`readable`]).
     Detail {
         /// 제목.
         title: String,
         /// 내용.
-        body: String,
+        lines: Vec<DetailLine>,
+        /// 같은 것을 JSON으로 내는 `sbx` 명령 줄(스크립트로 옮길 때).
+        source: String,
         /// 내린 줄 수.
         scroll: u16,
     },
@@ -429,7 +439,7 @@ impl Model {
     /// 움직이는 키가 아닌 것.
     fn other_key(&mut self, tab: Tab, key: KeyEvent) -> Option<Action> {
         match key.code {
-            KeyCode::Char('?') => self.popup = Some(Popup::Help),
+            KeyCode::Char('?') => self.popup = Some(Popup::Help { scroll: 0 }),
             KeyCode::Char('/') => {
                 // 새로 친다(lazygit, less와 같다). 치는 대로 거른다.
                 self.filter.clear();
@@ -545,43 +555,66 @@ impl Model {
     }
 
     fn detail(&self) -> Option<Popup> {
-        let (title, body) = match self.tab() {
+        let words = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let (title, lines, source) = match self.tab() {
             Tab::Sandboxes => {
                 let s = self.selected_sandbox()?;
-                (target(s), serde_json::to_string_pretty(s).ok()?)
+                let t = target(s);
+                (
+                    format!("Sandbox {t}"),
+                    readable(s),
+                    words(&["inspect", &t, "--format", "json"]),
+                )
             }
             Tab::Images => {
                 let i = self.selected_image()?;
-                let title = i.references.first().unwrap_or(&i.id).clone();
-                (title, serde_json::to_string_pretty(i).ok()?)
+                let r = i.references.first().map_or(i.id.as_str(), |r| familiar(r));
+                (
+                    format!("Image {r}"),
+                    readable(i),
+                    words(&["images", "--format", "json"]),
+                )
             }
             Tab::Executors => {
                 let r = self.selected_executor_row()?;
-                let body = match r {
-                    ExecutorRow::Executor(e) => serde_json::to_string_pretty(e).ok()?,
-                    ExecutorRow::Adapter(a) => serde_json::to_string_pretty(a).ok()?,
-                };
-                (r.spec(), body)
+                match r {
+                    ExecutorRow::Executor(e) => (
+                        format!("Executor {}", r.spec()),
+                        readable(e),
+                        words(&["executor", "ls", "--format", "json"]),
+                    ),
+                    ExecutorRow::Adapter(a) => (
+                        format!("Adapter {}", r.spec()),
+                        readable(a),
+                        words(&["executor", "adapter", "ls", "--format", "json"]),
+                    ),
+                }
             }
             Tab::Events => {
                 let i = self.cursors[Tab::Events.index()].selected;
                 let e = *self.visible_events().get(i)?;
                 (
-                    format!("{} {}", e.kind, e.action),
-                    serde_json::to_string_pretty(e).ok()?,
+                    format!("Event {} {}", e.kind, e.action),
+                    readable(e),
+                    words(&["events", "--since", EVENTS_SINCE, "--format", "json"]),
                 )
             }
         };
         Some(Popup::Detail {
             title,
-            body,
+            lines,
+            source: display(&source),
             scroll: 0,
         })
     }
 
     fn popup_key(&mut self, key: KeyEvent) -> Option<Action> {
+        if let Some(Popup::Help { scroll } | Popup::Detail { scroll, .. }) = &mut self.popup
+            && scroll_key(key, scroll)
+        {
+            return None;
+        }
         match self.popup.as_mut()? {
-            Popup::Help => self.popup = None,
             Popup::Confirm { args } => {
                 let args = args.clone();
                 self.popup = None;
@@ -589,14 +622,7 @@ impl Model {
                     return Some(self.run(args));
                 }
             }
-            Popup::Detail { scroll, .. } => match key.code {
-                KeyCode::Down | KeyCode::Char('j') => *scroll = scroll.saturating_add(1),
-                KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
-                KeyCode::PageDown => *scroll = scroll.saturating_add(10),
-                KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
-                KeyCode::Home | KeyCode::Char('g') => *scroll = 0,
-                _ => self.popup = None,
-            },
+            Popup::Help { .. } | Popup::Detail { .. } => self.popup = None,
         }
         None
     }
@@ -639,6 +665,19 @@ impl Model {
         }
         None
     }
+}
+
+/// 창을 내리는 키면 내리고 `true`. 끝을 넘지 않게 하는 것은 그리는 쪽이다(높이를 안다).
+fn scroll_key(key: KeyEvent, scroll: &mut u16) -> bool {
+    match key.code {
+        KeyCode::Down | KeyCode::Char('j') => *scroll = scroll.saturating_add(1),
+        KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
+        KeyCode::PageDown => *scroll = scroll.saturating_add(10),
+        KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
+        KeyCode::Home | KeyCode::Char('g') => *scroll = 0,
+        _ => return false,
+    }
+    true
 }
 
 /// 명령에 넘기는 샌드박스: 이름이 있으면 이름, 없으면 전체 ID.
@@ -719,18 +758,7 @@ pub fn display(args: &[String]) -> String {
     let mut s = String::from("sbx");
     for a in args {
         s.push(' ');
-        let plain = !a.is_empty()
-            && a.chars().all(|c| {
-                c.is_ascii_alphanumeric()
-                    || matches!(c, '-' | '_' | '.' | '/' | ':' | '=' | '@' | ',')
-            });
-        if plain {
-            s.push_str(a);
-        } else {
-            s.push('\'');
-            s.push_str(&a.replace('\'', r"'\''"));
-            s.push('\'');
-        }
+        s.push_str(&super::detail::quote(a));
     }
     s
 }
