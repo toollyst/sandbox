@@ -48,6 +48,7 @@ use crate::progress::Status;
 use crate::{choose, dirs, executors, guest, host};
 
 mod login;
+mod stats;
 mod system;
 
 /// `logs -f`, `events`가 새 기록을 보러 가는 간격.
@@ -138,6 +139,7 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
                 .await
         }
         Command::Logout { server } => ctx.logout(server.as_deref()),
+        Command::Stats { no_stream, ids } => ctx.stats(*no_stream, ids).await,
         Command::System { command } => match command {
             SystemCommand::Df => ctx.system_df().await,
             SystemCommand::Prune { all, force, filter } => {

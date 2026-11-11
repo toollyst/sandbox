@@ -161,6 +161,22 @@ impl Guest {
         }
     }
 
+    /// 게스트의 자원 사용량([`HostMsg::Usage`]).
+    pub fn usage(&self) -> Result<sbx_guest_proto::Usage, RuntimeError> {
+        let mut c = self.open()?;
+        send(&mut *c, &HostMsg::Usage)?;
+        match recv(&mut *c) {
+            Ok(GuestMsg::Usage(u)) => Ok(u),
+            Ok(GuestMsg::Error(e)) => Err(RuntimeError::Guest(e)),
+            Ok(other) => Err(proto_err(format!("expected Usage, got {other:?}"))),
+            Err(RuntimeError::Lost(e)) => Err(RuntimeError::Lost(format!(
+                "{e}; the guest may be older than this sbx (the sandbox was started before an upgrade): \
+                 restart the sandbox to see its usage"
+            ))),
+            Err(e) => Err(e),
+        }
+    }
+
     /// 경로 정보 (링크를 따라간다).
     pub fn stat(&self, path: &str) -> Result<Option<Entry>, RuntimeError> {
         let mut c = self.open()?;

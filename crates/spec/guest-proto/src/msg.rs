@@ -224,6 +224,8 @@ pub enum HostMsg {
     /// 흐름: 게스트가 [`GuestMsg::Started`]를 보내고 닫는다. 연결이 닫혀도 프로세스는 계속 돈다.
     /// 시작하지 못하면 [`GuestMsg::Error`]. 이 메시지를 모르는 게스트(0.2.0)는 `Protocol` 오류를 보낸다.
     ExecDetached(Exec),
+    /// 자원 사용량을 묻는다(`sbx stats`). 흐름: 게스트가 [`GuestMsg::Usage`]. 모르는 게스트(0.2.0)는 답 없이 닫는다.
+    Usage,
 }
 
 /// 게스트 → 호스트.
@@ -269,6 +271,29 @@ pub enum GuestMsg {
         /// 포트.
         port: u16,
     },
+    /// [`HostMsg::Usage`]의 답.
+    Usage(Usage),
+}
+
+/// 게스트 전체의 자원 사용량. 게스트가 보고하는 값이라 호스트는 표시에만 쓴다(믿고 결정하지 않는다).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Usage {
+    /// 켜진 CPU 수.
+    pub cpus: u32,
+    /// 부팅 뒤 모든 CPU가 일한 시간(USER_HZ 틱, `/proc/stat`의 idle·iowait 밖).
+    pub cpu_busy: u64,
+    /// 부팅 뒤 모든 CPU의 전체 시간(같은 단위).
+    pub cpu_total: u64,
+    /// 메모리 전체(바이트, `MemTotal`).
+    pub memory_total: u64,
+    /// 쓰는 메모리(바이트, `MemTotal - MemAvailable`).
+    pub memory_used: u64,
+    /// 쓰기 디스크 전체(바이트, `/`의 statvfs).
+    pub disk_total: u64,
+    /// 쓰기 디스크에서 쓴 것(바이트).
+    pub disk_used: u64,
+    /// 프로세스 수.
+    pub pids: u32,
 }
 
 /// 복사 항목의 경로가 안전한 상대 경로인지 본다.
@@ -317,6 +342,7 @@ mod tag {
     pub const REFUSED: u8 = 0x12;
     pub const SIGNAL_MAIN: u8 = 0x13;
     pub const EXEC_DETACHED: u8 = 0x14;
+    pub const USAGE: u8 = 0x15;
 
     pub const HELLO_ACK: u8 = 0x81;
     pub const STARTED: u8 = 0x82;
@@ -331,6 +357,7 @@ mod tag {
     pub const G_STAT: u8 = 0x8B;
     pub const LISTENING: u8 = 0x8C;
     pub const CONNECT: u8 = 0x8D;
+    pub const G_USAGE: u8 = 0x8E;
 }
 
 fn bad<T>(m: impl Into<String>) -> DecodeResult<T> {
@@ -533,6 +560,7 @@ impl HostMsg {
                 e = Encoder::new(tag::SIGNAL_MAIN);
                 e.i32(*n);
             }
+            HostMsg::Usage => e = Encoder::new(tag::USAGE),
         }
         e.finish()
     }
@@ -589,6 +617,7 @@ impl HostMsg {
                 reason: d.string()?,
             },
             tag::SIGNAL_MAIN => HostMsg::SignalMain(d.i32()?),
+            tag::USAGE => HostMsg::Usage,
             t => return bad(format!("unknown host message {t:#04x}")),
         };
         d.end()?;
@@ -660,6 +689,17 @@ impl GuestMsg {
                 e = Encoder::new(tag::CONNECT);
                 e.str(host).u16(*port);
             }
+            GuestMsg::Usage(u) => {
+                e = Encoder::new(tag::G_USAGE);
+                e.u32(u.cpus)
+                    .u64(u.cpu_busy)
+                    .u64(u.cpu_total)
+                    .u64(u.memory_total)
+                    .u64(u.memory_used)
+                    .u64(u.disk_total)
+                    .u64(u.disk_used)
+                    .u32(u.pids);
+            }
         }
         e.finish()
     }
@@ -691,6 +731,16 @@ impl GuestMsg {
                 host: d.string()?,
                 port: d.u16()?,
             },
+            tag::G_USAGE => GuestMsg::Usage(Usage {
+                cpus: d.u32()?,
+                cpu_busy: d.u64()?,
+                cpu_total: d.u64()?,
+                memory_total: d.u64()?,
+                memory_used: d.u64()?,
+                disk_total: d.u64()?,
+                disk_used: d.u64()?,
+                pids: d.u32()?,
+            }),
             t => return bad(format!("unknown guest message {t:#04x}")),
         };
         d.end()?;

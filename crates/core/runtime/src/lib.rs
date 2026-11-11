@@ -845,6 +845,12 @@ impl Sandbox {
         Ok(Process::spawn(conn, pid, None, Some(on_exit)))
     }
 
+    /// 게스트가 보고하는 자원 사용량(`sbx stats`). `running`에서만.
+    pub async fn usage(&self) -> Result<sbx_guest_proto::Usage, RuntimeError> {
+        let (_, guest) = self.require_running("stats")?;
+        blocking(move || guest.usage()).await
+    }
+
     /// 떼어 놓고 실행한다(`exec -d`, Docker와 같다): 입출력 없이 시작만 하고 게스트 안의 PID를 돌려준다.
     /// 그 프로세스는 이 호출 뒤에도, 이 호스트 프로세스가 끝나도 샌드박스가 멈출 때까지 돈다. 터미널은 열 수 없다.
     pub async fn exec_detached(&self, spec: ExecSpec) -> Result<u32, RuntimeError> {

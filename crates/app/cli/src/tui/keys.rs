@@ -58,6 +58,11 @@ pub const KEYS: &[KeyHelp] = &[
     ),
     k("a", "sandboxes", "attach (hands over the terminal)"),
     k(
+        "T",
+        "sandboxes",
+        "stats: CPU, memory, disk, processes (hands over the terminal; Ctrl+C stops)",
+    ),
+    k(
         "l",
         "sandboxes",
         "logs -f (hands over the terminal; Ctrl+C stops following)",

@@ -115,6 +115,7 @@ mod unix {
             "stop_sends_the_stop_signal_then_powers_off",
             stop_sends_the_stop_signal_then_powers_off,
         ),
+        ("stats_reports_guest_usage", stats_reports_guest_usage),
         (
             "login_and_logout_use_dockers_config",
             login_and_logout_use_dockers_config,
@@ -1704,6 +1705,41 @@ mod unix {
             }
         });
         port
+    }
+
+    fn stats_reports_guest_usage() {
+        let e = Env::new();
+        // 실행 중인 것이 없으면 머리줄만.
+        let o = e.sbx(&["stats", "--no-stream"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout).lines().count(), 1);
+        let o = e.sbx(&["run", "-d", "--name", "st", IMAGE, "sleep", "30"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = e.sbx(&["--format", "json", "stats", "st"]);
+        // 가짜 실행기의 게스트는 호스트에서 돈다: Linux면 호스트의 /proc를 읽고, 아니면 /proc가 없다.
+        if cfg!(target_os = "linux") {
+            assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+            let rows: Vec<sbx_cli::output::Stats> = serde_json::from_slice(&o.stdout).unwrap();
+            assert_eq!(rows.len(), 1);
+            let r = &rows[0];
+            assert_eq!(r.name.as_deref(), Some("st"));
+            assert!(
+                r.cpus >= 1 && r.memory_total > 0 && r.memory_used <= r.memory_total,
+                "{r:?}"
+            );
+            assert!(r.pids > 0 && r.cpu_percent >= 0.0, "{r:?}");
+        } else {
+            assert_ne!(o.status.code(), Some(0));
+            assert!(text(&o.stderr).contains("usage"), "{}", text(&o.stderr));
+        }
+        assert_eq!(e.sbx(&["rm", "-f", "st"]).status.code(), Some(0));
+        // 멈춘 샌드박스를 고르면 오류다.
+        let o = e.sbx(&["create", "--name", "idle", IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_ne!(
+            e.sbx(&["stats", "--no-stream", "idle"]).status.code(),
+            Some(0)
+        );
     }
 
     fn login_and_logout_use_dockers_config() {

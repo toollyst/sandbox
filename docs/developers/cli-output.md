@@ -53,6 +53,7 @@ The JSON Schema (draft 2020-12) of every type is in [cli-output.schema.json](cli
 | `rm` | lines: `Done` |
 | `attach` | not supported: its output is the process's own bytes |
 | `ps` | value: `[Sandbox]` |
+| `stats` | value: `[Stats]` |
 | `inspect` | value: `Sandbox` |
 | `logs` | lines: `LogLine` |
 | `events` | lines: `Event` |

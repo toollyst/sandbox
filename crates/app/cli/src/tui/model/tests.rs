@@ -130,6 +130,10 @@ fn keys_become_sbx_command_lines_for_the_selected_sandbox() {
         press(&mut m, KeyCode::Char('l')),
         Some(Action::Handover(strings(&["logs", "-f", "web"])))
     );
+    assert_eq!(
+        press(&mut m, KeyCode::Char('T')),
+        Some(Action::Handover(strings(&["stats", "web"])))
+    );
     // E는 명령을 칠 수 있게 명령 줄을 채운다.
     assert_eq!(press(&mut m, KeyCode::Char('E')), None);
     assert_eq!(m.prompt.take().unwrap().text, "exec -d web ");

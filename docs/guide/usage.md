@@ -30,6 +30,10 @@ sbx stop dev && sbx rm dev
 sbx rm -f $(sbx ps -aq)                              # clean up everything
 ```
 
+`sbx stats` shows each running sandbox's CPU, memory, writable disk and process count as its guest reports them,
+refreshing every second on a terminal (`--no-stream` for one sample; one sample without a terminal and with
+`--format json`).
+
 The lifecycle commands are `create`, `start [-a] [-i]`, `stop [-s SIG] [-t SECS]`, `restart`, `kill [-s SIG]`,
 `wait`, `attach` (detach with Ctrl-P Ctrl-Q) and `rm [-f]`. A stopped sandbox keeps its disk, so `start` picks up
 where it left off. `-e`, `--env-file`, `-w`, `-u`, `--name`, `--label` and `--entrypoint` work as in Docker.

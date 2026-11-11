@@ -1243,6 +1243,75 @@
         }
       ]
     },
+    "Stats": {
+      "additionalProperties": false,
+      "description": "One running sandbox's resource use (`stats`), as its guest reports it.",
+      "properties": {
+        "cpu_percent": {
+          "description": "CPU use over the last second; 100 is one vCPU fully busy (like Docker).",
+          "format": "double",
+          "type": "number"
+        },
+        "cpus": {
+          "description": "vCPUs.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "disk_total": {
+          "description": "Writable disk size, in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "disk_used": {
+          "description": "Bytes used on the writable disk.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "id": {
+          "description": "Sandbox ID.",
+          "type": "string"
+        },
+        "memory_total": {
+          "description": "Memory size, in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "memory_used": {
+          "description": "Memory in use, in bytes (total minus available).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "description": "Name, if it has one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pids": {
+          "description": "Processes running in the sandbox.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "cpu_percent",
+        "cpus",
+        "memory_used",
+        "memory_total",
+        "disk_used",
+        "disk_total",
+        "pids"
+      ],
+      "type": "object"
+    },
     "Stop": {
       "additionalProperties": false,
       "description": "How `stop` stops a sandbox.",

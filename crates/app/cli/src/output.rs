@@ -90,6 +90,7 @@ pub const JSON_OUTPUT: &[(&str, Form)] = &[
     ("rm", Form::Lines("Done")),
     ("attach", Form::Unsupported(PROCESS_BYTES)),
     ("ps", Form::Value("[Sandbox]")),
+    ("stats", Form::Value("[Stats]")),
     ("inspect", Form::Value("Sandbox")),
     ("logs", Form::Lines("LogLine")),
     ("events", Form::Lines("Event")),
@@ -469,6 +470,31 @@ pub struct DiskUsage {
     pub size: u64,
     /// Bytes `system prune -a` would free: unused images with the layers only they use, stopped sandboxes.
     pub reclaimable: u64,
+}
+
+/// One running sandbox's resource use (`stats`), as its guest reports it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct Stats {
+    /// Sandbox ID.
+    pub id: String,
+    /// Name, if it has one.
+    pub name: Option<String>,
+    /// CPU use over the last second; 100 is one vCPU fully busy (like Docker).
+    pub cpu_percent: f64,
+    /// vCPUs.
+    pub cpus: u32,
+    /// Memory in use, in bytes (total minus available).
+    pub memory_used: u64,
+    /// Memory size, in bytes.
+    pub memory_total: u64,
+    /// Bytes used on the writable disk.
+    pub disk_used: u64,
+    /// Writable disk size, in bytes.
+    pub disk_total: u64,
+    /// Processes running in the sandbox.
+    pub pids: u32,
 }
 
 /// Where `login` saved a registry's credentials.
@@ -1089,6 +1115,7 @@ mod tests {
         g.subschema_for::<Info>();
         g.subschema_for::<DiskUsage>();
         g.subschema_for::<PruneReport>();
+        g.subschema_for::<Stats>();
         g.subschema_for::<Login>();
         g.subschema_for::<Logout>();
         g.subschema_for::<SandboxRef>();

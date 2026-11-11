@@ -31,6 +31,7 @@ pub mod mkfs;
 pub mod passwd;
 pub mod server;
 mod sys;
+pub mod usage;
 pub mod wire;
 
 #[cfg(test)]

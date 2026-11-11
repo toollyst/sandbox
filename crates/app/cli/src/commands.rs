@@ -135,6 +135,11 @@ pub const COMMANDS: &[Command] = &[
         "Attach to the main process of a detached sandbox (detach with Ctrl-P Ctrl-Q)",
     ),
     cmd("ps", Group::Run, "List sandboxes"),
+    cmd(
+        "stats",
+        Group::Run,
+        "Show running sandboxes' CPU, memory, disk and process count",
+    ),
     cmd("inspect", Group::Run, "Show a sandbox's settings and state"),
     cmd(
         "logs",

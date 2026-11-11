@@ -106,6 +106,12 @@ pub fn serve<C: Conn>(conn: C, ctx: &Ctx) {
                 ));
             }
         }
+        Ok(HostMsg::Usage) => match crate::usage::read() {
+            Ok(u) => {
+                let _ = out.send(&GuestMsg::Usage(u));
+            }
+            Err(e) => out.error(crate::wire::io_error("usage", &e)),
+        },
         Ok(HostMsg::Shutdown) => {
             sys::sync();
             let _ = out.send(&GuestMsg::Done);

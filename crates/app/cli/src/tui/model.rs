@@ -484,6 +484,7 @@ impl Model {
                     }
                     'a' => Some(Action::Handover(args(&["attach"], target))),
                     'l' => Some(Action::Handover(args(&["logs", "-f"], target))),
+                    'T' => Some(Action::Handover(args(&["stats"], target))),
                     _ => None,
                 }
             }

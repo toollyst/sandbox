@@ -73,6 +73,7 @@ fn host_samples() -> Vec<HostMsg> {
             reason: "not allowed".into(),
         },
         HostMsg::SignalMain(15),
+        HostMsg::Usage,
         HostMsg::ExecDetached(Exec {
             args: vec!["sleep".into(), "9".into()],
             env: vec![],
@@ -93,6 +94,16 @@ fn guest_samples() -> Vec<GuestMsg> {
     vec![
         GuestMsg::HelloAck { version: 1 },
         GuestMsg::Started { pid: 42 },
+        GuestMsg::Usage(Usage {
+            cpus: 2,
+            cpu_busy: 10,
+            cpu_total: 400,
+            memory_total: 512 << 20,
+            memory_used: 100 << 20,
+            disk_total: 1 << 30,
+            disk_used: 3 << 20,
+            pids: 7,
+        }),
         GuestMsg::Stdout(b"hi\n".to_vec()),
         GuestMsg::Stderr(vec![0xFF]),
         GuestMsg::Exited(ExitStatus::Code(-1)),

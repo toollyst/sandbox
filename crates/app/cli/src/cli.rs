@@ -220,6 +220,15 @@ pub enum Command {
         #[arg(short = 'f', long = "filter", value_name = "KEY=VALUE")]
         filter: Vec<String>,
     },
+    #[command(about = about("stats"))]
+    Stats {
+        /// Print one sample and exit. Without a terminal, and with --format json, there is always one sample.
+        #[arg(long)]
+        no_stream: bool,
+        /// Sandbox names, IDs or ID prefixes (default: every running sandbox).
+        #[arg(add = complete::sandbox())]
+        ids: Vec<String>,
+    },
     #[command(about = about("inspect"))]
     Inspect {
         /// Sandbox name, ID, or unique ID prefix.
