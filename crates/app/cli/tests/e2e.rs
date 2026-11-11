@@ -2166,7 +2166,7 @@ mod unix {
         ok(&sbx(&["executor", "install", "fake@2.0"]));
 
         // 저장소가 바뀌어도 설치한 것으로 하는 일은 그대로다: 목록, 고르기, 실행, 지우기.
-        let still_works = |what: &str| {
+        let still_works = |what: &str, why: &str| {
             let o = sbx(&["executor", "ls"]);
             ok(&o);
             assert!(
@@ -2183,25 +2183,38 @@ mod unix {
             // 저장소에 닿는 명령은 실패를 알리되 죽지 않는다.
             let o = sbx(&["executor", "search"]);
             not_a_crash(&o);
-            assert!(text(&o.stderr).contains("r"), "{what}: {}", text(&o.stderr));
-            not_a_crash(&sbx(&["executor", "install", "fake@3.0"]));
+            assert!(
+                text(&o.stderr).contains(why),
+                "{what}: wanted {why:?} in {}",
+                text(&o.stderr)
+            );
+            let o = sbx(&["executor", "install", "fake@3.0"]);
+            not_a_crash(&o);
+            assert!(
+                text(&o.stderr).contains(why),
+                "{what} (install): wanted {why:?} in {}",
+                text(&o.stderr)
+            );
         };
         // 1. 서명이 다른 내용(누군가 색인을 고쳤다).
         let mut tampered = index(6);
         tampered.push(' ');
         std::fs::write(dir.join("v2/index.json"), &tampered).unwrap();
-        still_works("tampered");
+        still_works(
+            "tampered",
+            "the signature matches none of the repository's keys",
+        );
         // 2. 서명된 옛 색인(롤백).
         publish(&index(1));
-        still_works("rollback");
+        still_works("rollback", "older than 5");
         // 3. JSON이 아닌 것, 아주 큰 것.
         publish("<html>not found</html>");
-        still_works("garbage");
+        still_works("garbage", "not a repository index");
         std::fs::write(dir.join("v2/index.json"), vec![b' '; 17 << 20]).unwrap();
-        still_works("huge");
+        still_works("huge", "larger than the 16777216 bytes");
         // 4. 저장소가 통째로 사라졌다.
         std::fs::remove_dir_all(&dir).unwrap();
-        still_works("gone");
+        still_works("gone", "a signed repository needs v2/index.json");
         // 지우기도 저장소 없이 된다.
         ok(&sbx(&["executor", "rm", "fake@1.0"]));
         ok(&sbx(&["executor", "repo", "rm", "r"]));
@@ -2287,10 +2300,9 @@ mod unix {
             "{}",
             text(&o.stderr)
         );
-        assert!(
-            without(&["executor", "ls"]).stdout.is_empty()
-                || !text(&without(&["executor", "ls"]).stdout).contains("fake")
-        );
+        let o = without(&["executor", "ls"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(!text(&o.stdout).contains("fake"), "{}", text(&o.stdout));
         let o = without(&["executor", "repo", "rm", "broken"]);
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
 

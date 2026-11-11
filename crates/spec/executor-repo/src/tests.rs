@@ -1087,7 +1087,7 @@ async fn redirects_are_checked_at_every_hop() {
     )
     .unwrap();
     let e = f.index(&at("out/")).await.unwrap_err().to_string();
-    assert!(e.contains("plain http") || e.contains("redirect"), "{e}");
+    assert!(e.contains("redirected: http://example.invalid/index.json: plain http is allowed only for localhost"), "{e}");
     // 끝없는 redirect도 멈춘다.
     fs::create_dir_all(repo.root.join("repo/loop")).unwrap();
     fs::write(
@@ -1096,7 +1096,7 @@ async fn redirects_are_checked_at_every_hop() {
     )
     .unwrap();
     let e = f.index(&at("loop/")).await.unwrap_err().to_string();
-    assert!(e.contains("redirects"), "{e}");
+    assert!(e.contains("more than 10 redirects"), "{e}");
 }
 
 #[tokio::test]
