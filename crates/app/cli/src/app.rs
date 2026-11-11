@@ -314,6 +314,8 @@ pub(crate) struct Ctx {
     format: Format,
     /// 고른 실행기마다 실행 코어를 한 번만 만든다(실행기 `capabilities`와 게스트 init 확인을 되풀이하지 않는다).
     launchers: std::sync::Mutex<Vec<(choose::Chosen, Runtime)>>,
+    /// 받을 이미지의 크기 상한(`sbx mcp --max-image-size`).
+    pub(crate) max_image_bytes: Option<u64>,
 }
 
 impl Ctx {
@@ -344,6 +346,7 @@ impl Ctx {
             shim: cli.shim.clone(),
             format: cli.format,
             launchers: std::sync::Mutex::new(Vec::new()),
+            max_image_bytes: None,
         })
     }
 
@@ -373,7 +376,8 @@ impl Ctx {
                     .with_policy(crate::dirs::signature_policy()),
             ),
             vec![Arc::new(ErofsBuilder)],
-        )?)
+        )?
+        .with_max_image_bytes(self.max_image_bytes))
     }
 
     /// 게스트 init. 순서: `--guest-init` > sbx에 내장된 것([`guest::embedded`], VM을 띄울 때 관리 코어가 캐시에 꺼낸다)

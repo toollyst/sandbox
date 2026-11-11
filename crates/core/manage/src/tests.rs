@@ -217,6 +217,26 @@ fn pull_stores_verified_blobs_then_record_and_ref() {
 }
 
 #[test]
+fn pull_refuses_an_image_above_the_size_limit_before_downloading() {
+    let root = temp_root("toolarge");
+    let l = layer(&[T::File("a", b"12345")]);
+    let size = l.1.size;
+    let m = manager(&root, FakeSource::new(vec![l])).with_max_image_bytes(Some(size - 1));
+    let e = ready(m.pull("test", Platform { arch: Arch::X86_64 })).unwrap_err();
+    assert!(
+        matches!(e, ManageError::TooLarge { max, .. } if max == size - 1),
+        "{e}"
+    );
+    assert_eq!(
+        std::fs::read_dir(root.join("blobs/sha256")).map_or(0, |d| d.count()),
+        0
+    );
+    let m = m.with_max_image_bytes(Some(size));
+    ready(m.pull("test", Platform { arch: Arch::X86_64 })).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn pull_reports_progress_for_missing_layers_only() {
     let root = temp_root("progress");
     let a = layer(&[T::File("a", b"1")]);

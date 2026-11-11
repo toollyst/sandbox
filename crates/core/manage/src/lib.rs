@@ -82,6 +82,8 @@ pub struct Manager {
     store: Store,
     source: Arc<dyn ImageSource>,
     builders: Vec<Arc<dyn RootfsBuilder>>,
+    /// 받을 이미지의 레이어 합계(압축된 크기) 상한. 받기 전에 본다.
+    max_image_bytes: Option<u64>,
 }
 
 impl fmt::Debug for Manager {
@@ -164,7 +166,15 @@ impl Manager {
             store: Store::open(cache_dir),
             source,
             builders,
+            max_image_bytes: None,
         })
+    }
+
+    /// 레이어 합계(압축된 크기, 같은 레이어는 한 번)가 `max`를 넘는 이미지는 받지 않는다([`ManageError::TooLarge`]).
+    /// 레이어를 받기 전에 manifest로 판단한다. 이미 받은 레이어도 센다(이미지의 크기다).
+    pub fn with_max_image_bytes(mut self, max: Option<u64>) -> Self {
+        self.max_image_bytes = max;
+        self
     }
 
     /// 읽기용 저장소.
@@ -194,6 +204,22 @@ impl Manager {
             .resolve(reference, platform)
             .await
             .map_err(ManageError::Source)?;
+        if let Some(max) = self.max_image_bytes {
+            let mut seen = std::collections::HashSet::new();
+            let size: u64 = resolved
+                .layers
+                .iter()
+                .filter(|l| seen.insert(&l.digest))
+                .map(|l| l.size)
+                .sum();
+            if size > max {
+                return Err(ManageError::TooLarge {
+                    reference: resolved.reference.clone(),
+                    size,
+                    max,
+                });
+            }
+        }
         let layout = self.store.layout();
         let digests: Vec<Digest> = resolved.layers.iter().map(|l| l.digest.clone()).collect();
         // 이미지 기록을 쓸 때까지 쥔다. 그동안 rmi의 blob 정리가 이 레이어들을 지우지 않는다.

@@ -300,6 +300,10 @@ pub enum Command {
         /// it as their limit. By default there is none.
         #[arg(long, value_name = "SIZE", value_parser = crate::parse::transfer_bytes)]
         max_egress: Option<u64>,
+        /// Refuse to pull an image for an agent when its layers add up to more than SIZE compressed (e.g. 2g), so an
+        /// agent can't fill the image cache. Checked before downloading. By default there is none.
+        #[arg(long, value_name = "SIZE", value_parser = crate::parse::transfer_bytes)]
+        max_image_size: Option<u64>,
         /// Let agents allow loopback, private and link-local IP addresses and `localhost` (by default they can
         /// only allow public hosts, so an agent can't reach services on this machine, the LAN or cloud metadata).
         #[arg(long)]

@@ -74,7 +74,7 @@ struct Server {
 }
 
 /// `sbx mcp --max-sandboxes`, `--max-cpus`, `--max-memory`, `--max-disk`, `--max-lifetime`, `--max-egress`,
-/// `--allow-private-network`.
+/// `--allow-private-network`. `--max-image-size`는 [`Ctx`]의 관리 코어가 본다.
 #[derive(Debug, Clone, Copy)]
 struct Limits {
     sandboxes: u32,
@@ -241,13 +241,18 @@ pub async fn serve(cli: &Cli) -> AppResult<u8> {
         max_disk,
         max_lifetime,
         max_egress,
+        max_image_size,
         allow_private_network,
     } = cli.command
     else {
         return Err("internal: not the mcp command".into());
     };
     let ctx = Rc::new(Server {
-        ctx: Ctx::new(cli)?,
+        ctx: {
+            let mut c = Ctx::new(cli)?;
+            c.max_image_bytes = max_image_size;
+            c
+        },
         all_sandboxes,
         limits: Limits {
             sandboxes: max_sandboxes,

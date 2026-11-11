@@ -47,6 +47,8 @@ The MCP server adds no policy of its own. Tool arguments go through the same par
   caps it and gives the cap to sandboxes that don't ask, so a forgotten sandbox doesn't run for ever.
 - `sbx mcp --max-egress 1g` gives every MCP sandbox that has network access an egress limit (`--egress-limit`), so an
   agent can't download or upload without bound. `sbx events --filter type=network` shows what each one connected to.
+- `sbx mcp --max-image-size 2g` refuses images whose layers add up to more than that (compressed), before any
+  download, so an agent can't fill your image cache.
 - Every tool declares an `outputSchema` (its `structuredContent`) and annotations: `list` and `read_file` are
   read-only, `remove` and `write_file` are idempotent, `remove`, `write_file` and `exec` can destroy data in a
   sandbox, and `run`, `create` and `exec` can reach the network a call allowed. Clients use these to decide what to

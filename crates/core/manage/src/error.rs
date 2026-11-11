@@ -41,6 +41,15 @@ pub enum ManageError {
     Rootfs(RootfsError),
     /// 0.2.1 전에 받아 원래 문서가 없는 이미지(`sbx save`). 다시 받으면 된다.
     NoDocuments(ImageId),
+    /// 레이어 합계가 상한([`crate::Manager::with_max_image_bytes`])을 넘는다.
+    TooLarge {
+        /// 참조.
+        reference: String,
+        /// 레이어 합계(압축된 크기).
+        size: u64,
+        /// 상한.
+        max: u64,
+    },
     /// 저장소 오류.
     Store(StoreError),
     /// 입출력 오류.
@@ -59,6 +68,14 @@ impl fmt::Display for ManageError {
             ManageError::Layer { index, reason } => write!(f, "layer {index}: {reason}"),
             ManageError::Kernel { path, reason } => write!(f, "image kernel {path}: {reason}"),
             ManageError::Rootfs(e) => e.fmt(f),
+            ManageError::TooLarge {
+                reference,
+                size,
+                max,
+            } => write!(
+                f,
+                "{reference}: its layers are {size} bytes (compressed), above the limit of {max} bytes"
+            ),
             ManageError::NoDocuments(id) => write!(
                 f,
                 "image {id} was pulled by an sbx older than 0.2.1, which didn't keep its manifest; pull it again to save it"
