@@ -90,10 +90,11 @@ jobs:
         run: |
           set -euo pipefail
           # wick이 낸 태그를 그대로 등록한다(구분자를 가리지 않는다). 앞의 X.Y.Z는 같은 upstream 버전이다.
-          re='^v([0-9]+\.[0-9]+\.[0-9]+)([-+][0-9A-Za-z.+-]*)?$'
+          # 실행기 이름·버전은 소문자다(sbx가 대문자 버전을 건너뛴다). 대문자 태그는 여기서 알린다.
+          re='^v([0-9]+\.[0-9]+\.[0-9]+)([-+][0-9a-z.+-]*[0-9a-z+-])?$'
           crate=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "sbx-executor-firecracker") | .version')
           av=${ADAPTER_VERSION:-$crate}
-          [[ "$av" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]*$ ]] || { echo "::error::invalid adapter_version '$av'"; exit 1; }
+          [[ "$av" =~ ^[0-9a-z]([0-9a-z._+-]*[0-9a-z_+-])?$ ]] || { echo "::error::invalid adapter_version '$av' (lowercase, not ending in '.')"; exit 1; }
 
           # wick 릴리스.
           if [ -z "$WICK" ] || [ "$WICK" = latest ]; then

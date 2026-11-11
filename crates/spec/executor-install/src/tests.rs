@@ -309,7 +309,14 @@ fn an_unreadable_origin_record_counts_as_no_origin() {
 #[test]
 fn names_and_versions_are_lowercase_so_case_cannot_alias_a_directory() {
     // 대소문자를 가리지 않는 파일 시스템(macOS, Windows)에서 `Fake`는 `fake` 디렉터리다.
-    for bad in ["Fake", "fake@1.0-RC1", "FAKE@1", "fake@V1"] {
+    for bad in [
+        "Fake",
+        "fake@1.0-RC1",
+        "FAKE@1",
+        "fake@V1",
+        "fake.",
+        "fake@1.0.",
+    ] {
         assert!(bad.parse::<Spec>().is_err(), "{bad}");
     }
     assert!("fake@1.18.0+wick.1".parse::<Spec>().is_ok());

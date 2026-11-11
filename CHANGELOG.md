@@ -15,8 +15,10 @@ to release a tag without one. Changes land under `## Unreleased` first, and the 
 - Executors are split into VMM packages and the adapters that run them, in a version 2 repository index
   (`v2/index.json`). The official repository publishes `wick` (VMM packages) and the `firecracker` adapter.
 - `sbx executor repo add` needs `--key KEY` (a signed repository) or `--unsigned`.
-- Executor and adapter names and versions are lowercase: macOS and Windows file systems treat `Fake` and `fake` as
-  one directory.
+- Executor and adapter names and versions are lowercase and don't end in `.`: macOS and Windows file systems treat
+  `Fake` and `fake` (and Windows `fake.` and `fake`) as one directory. An executor installed earlier under such a name
+  no longer shows up; remove its directory and install it again under a lowercase name. Index entries with such
+  names are skipped, not fatal, and `cargo xtask repo-add` refuses them.
 - The repository name `local` is reserved for executors installed with `--from`.
 - A VMM package's adapter now comes from the first repository that publishes the adapter's name, not from the
   VMM package's repository first; an adapter installed from another repository is not used for it.

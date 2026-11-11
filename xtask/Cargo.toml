@@ -15,6 +15,8 @@ flate2.workspace = true
 tar.workspace = true
 # repo-keygen, repo-sign: 저장소 색인에 서명한다.
 minisign.workspace = true
+# repo-add: 이름·버전을 클라이언트와 같은 규칙으로 본다.
+sbx-executor-install.workspace = true
 
 [dev-dependencies]
 # repo-add가 만든 저장소를 클라이언트로 읽어 본다.

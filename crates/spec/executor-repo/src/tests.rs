@@ -103,9 +103,11 @@ fn bad_indexes_are_refused() {
             .push(artifact("darwin", "arm64", "dup.tar.gz")))
         .contains("two artifacts")
     );
+    // 이름이 잘못된 항목은 건너뛴다(entries_this_client_cannot_name_are_skipped_not_fatal). 그 안의 다른 잘못은 여전히
+    // 색인을 거부한다.
     assert!(
-        with(&|v| v["executors"]["../x"] = json!({"versions": {"1": {"protocol": 1}}}))
-            .contains("invalid")
+        with(&|v| v["executors"]["fc"]["versions"]["1.9"]["artifacts"][0]["sha256"] = json!("x"))
+            .contains("sha256")
     );
     assert!(Index::parse(b"not json", &base()).is_err());
 }
@@ -276,10 +278,10 @@ fn schema_2_versions_are_checked() {
         })
         .contains("missing")
     );
-    assert!(
-        with(&|v| v["adapters"]["../x"] = json!({"versions": {"1": {"protocol": 2}}}))
-            .contains("invalid adapter name")
-    );
+    // 이름이 잘못된 어댑터는 건너뛴다.
+    let mut v = sample_v2();
+    v["adapters"]["../x"] = json!({"versions": {"1": {"protocol": 2}}});
+    assert!(parse(v).unwrap().adapter("../x").is_none());
 }
 
 /// 퍼징 대상 executor_index를 만들며 찾았다(대상의 불변식이 손으로 넣은 입력에서 걸렸다): 색인이 버전
@@ -295,8 +297,41 @@ fn a_version_named_latest_is_refused() {
         };
         v[kind][first]["versions"]["latest"] =
             json!({"protocol": 2, "artifacts": [artifact("darwin", "arm64", "l.tar.gz")]});
-        assert!(parse(v).unwrap_err().contains("invalid"), "{kind}");
+        // 그 버전만 빠지고 색인은 읽힌다(나머지 버전과 다른 이름은 그대로).
+        let i = parse(v).unwrap();
+        let e = if kind == "executors" {
+            i.executor(first)
+        } else {
+            i.adapter(first)
+        }
+        .unwrap();
+        assert!(e.versions.iter().all(|x| x.version != "latest"), "{kind}");
+        assert!(!e.versions.is_empty(), "{kind}");
     }
+}
+
+#[test]
+fn entries_this_client_cannot_name_are_skipped_not_fatal() {
+    // 대문자, 경로, 끝의 점(Windows에서 `fake.`는 `fake`다): 그 항목만 빠지고 색인과 다른 항목은 쓸 수 있다.
+    let mut v = sample();
+    let good = v["executors"]["fc"].clone();
+    for bad in ["Fc", "../x", "fc.", "a b"] {
+        v["executors"][bad] = good.clone();
+    }
+    v["executors"]["fc"]["versions"]["2.0-RC1"] = v["executors"]["fc"]["versions"]["1.9"].clone();
+    v["executors"]["fc"]["versions"]["3.0."] = v["executors"]["fc"]["versions"]["1.9"].clone();
+    let i = parse(v).unwrap();
+    let names: Vec<&str> = i.executors.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(names, ["fc"]);
+    let versions: Vec<&str> = i.executors[0]
+        .versions
+        .iter()
+        .map(|x| x.version.as_str())
+        .collect();
+    assert!(
+        !versions.contains(&"2.0-RC1") && !versions.contains(&"3.0."),
+        "{versions:?}"
+    );
 }
 
 #[test]

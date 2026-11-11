@@ -87,22 +87,26 @@ fn parse(args: &[String]) -> Result<Options, String> {
             other => return Err(format!("unknown argument {other}")),
         }
     }
-    let ok = |s: &str| {
-        !s.is_empty()
-            && !s.starts_with('.')
-            && s.bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'+' | b'-'))
-    };
     let name = name.ok_or("--name is required")?;
     let version = version.ok_or("--version is required")?;
-    if !ok(&name) || !ok(&version) {
-        return Err(format!("invalid name or version {name}@{version}"));
+    // 클라이언트와 같은 규칙(소문자, 끝이 `.`이 아님, `latest`가 아님). 맞지 않는 항목은 클라이언트가 건너뛰므로
+    // 올려도 아무도 설치할 수 없다. 올리기 전에 막는다.
+    let same = format!("{name}@{version}")
+        .parse::<sbx_executor_install::Spec>()
+        .is_ok_and(|s| s.name == name && s.version.as_deref() == Some(version.as_str()));
+    if !same {
+        return Err(format!(
+            "invalid name or version {name}@{version} (lowercase letters, digits, . _ + -; not ending in '.'; not 'latest')"
+        ));
     }
     let kind = match (adapter_package, vmm_for, arch) {
         (false, None, None) => Kind::Executor,
         (true, None, None) => Kind::Adapter,
         (false, Some(adapter), Some(arch)) => {
-            if !ok(&adapter) {
+            if !adapter
+                .parse::<sbx_executor_install::Spec>()
+                .is_ok_and(|s| s.name == adapter && s.version.is_none())
+            {
                 return Err(format!("invalid adapter name {adapter:?}"));
             }
             if arch != "amd64" && arch != "arm64" {
@@ -316,6 +320,66 @@ pub fn add(args: &[String]) -> Result<PathBuf, String> {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    /// 클라이언트가 건너뛸 이름·버전은 올리기 전에 막는다(올려도 아무도 설치하지 못한다).
+    #[test]
+    fn names_the_client_would_skip_are_refused() {
+        let args = |name: &str, version: &str, extra: &[&str]| -> Vec<String> {
+            let mut a: Vec<String> = [
+                "--repo",
+                "r",
+                "--bundle",
+                "b",
+                "--schema",
+                "2",
+                "--name",
+                name,
+                "--version",
+                version,
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+            a.extend(extra.iter().map(|s| s.to_string()));
+            a
+        };
+        assert!(parse(&args("fake", "1.0", &[])).is_ok());
+        assert!(
+            parse(&args(
+                "wick",
+                "1.0",
+                &["--vmm-for", "firecracker", "--arch", "amd64"]
+            ))
+            .is_ok()
+        );
+        for (name, version) in [
+            ("Fake", "1.0"),
+            ("fake", "1.0-RC"),
+            ("fake.", "1.0"),
+            ("fake", "1.0."),
+            ("fake", "latest"),
+            ("../x", "1.0"),
+            ("fake@1", "1.0"),
+        ] {
+            let e = parse(&args(name, version, &[]))
+                .err()
+                .unwrap_or_else(|| panic!("{name}@{version} accepted"));
+            assert!(
+                e.contains("invalid name or version"),
+                "{name}@{version}: {e}"
+            );
+        }
+        for adapter in ["Firecracker", "firecracker.", "fc@1", "../fc", ""] {
+            let e = parse(&args(
+                "wick",
+                "1.0",
+                &["--vmm-for", adapter, "--arch", "amd64"],
+            ))
+            .err()
+            .unwrap_or_else(|| panic!("adapter {adapter:?} accepted"));
+            assert!(e.contains("invalid adapter name"), "{adapter:?}: {e}");
+        }
+    }
 
     #[test]
     fn published_bundle_is_a_valid_repository() {

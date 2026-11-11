@@ -240,23 +240,20 @@ fn entries(
     let mut out = Vec::new();
     for (name, e) in raw {
         let mut versions = Vec::new();
+        let mut skipped = false;
         for (version, v) in e.versions {
             let spec = format!("{name}@{version}");
-            // 다시 읽어 같은 이름과 그 버전이어야 한다. `latest`는 규칙에 맞는 글자지만 "가장 높은 버전"으로
-            // 읽히므로(LATEST) 버전이 될 수 없다. 받으면 설치는 되고 이름으로 가리킬 수 없는 버전이 생긴다.
-            spec.parse::<Spec>()
+            // 다시 읽어 같은 이름과 그 버전이어야 한다(소문자, 경로가 아닌 이름). `latest`는 규칙에 맞는 글자지만
+            // "가장 높은 버전"으로 읽히므로(LATEST) 버전이 될 수 없다. 맞지 않는 것은 이 클라이언트가 설치할 수 없으니
+            // 그 항목만 건너뛴다. 색인 전체를 거부하면 그 저장소를 읽지 못한 것이 되어 뒤 저장소의 설치까지 막힌다.
+            let ok = spec
+                .parse::<Spec>()
                 .ok()
-                .filter(|s| s.name == name && s.version.as_deref() == Some(version.as_str()))
-                .ok_or_else(|| {
-                    format!(
-                        "invalid {} name or version {spec:?}",
-                        if kind == Kind::Adapter {
-                            "adapter"
-                        } else {
-                            "executor"
-                        }
-                    )
-                })?;
+                .is_some_and(|s| s.name == name && s.version.as_deref() == Some(version.as_str()));
+            if !ok {
+                skipped = true;
+                continue;
+            }
             let adapter = if kind == Kind::ExecutorV1 {
                 None
             } else {
@@ -342,6 +339,9 @@ fn entries(
                 adapter,
                 artifacts,
             });
+        }
+        if skipped && versions.is_empty() {
+            continue;
         }
         versions.sort_by(|a, b| version_cmp(&a.version, &b.version));
         out.push(Executor {

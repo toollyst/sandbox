@@ -72,8 +72,10 @@ fn valid_part(s: &str) -> bool {
 /// 실행기·어댑터 이름과 버전: [`valid_part`]이고 대문자가 없다. 이름과 버전은 디렉터리 이름이 되는데, macOS와
 /// Windows의 파일 시스템은 대소문자를 가리지 않으므로 `Fake`와 `fake`가 같은 디렉터리가 된다. 대문자를 허락하면
 /// 다른 저장소가 대소문자만 바꾼 이름으로 출처 고정을 피해 남의 이름에 섞을 수 있다.
+///
+/// 끝이 `.`인 것도 받지 않는다: Windows는 경로 조각 끝의 `.`을 지우므로 `fake.`가 `fake` 디렉터리가 된다.
 fn valid_name(s: &str) -> bool {
-    valid_part(s) && !s.bytes().any(|b| b.is_ascii_uppercase())
+    valid_part(s) && !s.bytes().any(|b| b.is_ascii_uppercase()) && !s.ends_with('.')
 }
 
 impl FromStr for Spec {
