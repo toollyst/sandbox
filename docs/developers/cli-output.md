@@ -17,10 +17,27 @@ The JSON Schema (draft 2020-12) of every type is in [cli-output.schema.json](cli
 
 | Command | Output |
 |---|---|
+| `run` | value: `SandboxRef` when detached; not supported when attached |
+| `create` | value: `SandboxRef` |
+| `start` | value: `SandboxRef` when detached; not supported when attached |
+| `stop` | lines: `Done` |
+| `restart` | lines: `Done` |
+| `kill` | lines: `Done` |
+| `wait` | lines: `Exited` |
+| `rm` | lines: `Done` |
+| `ps` | value: `[Sandbox]` |
+| `inspect` | value: `Sandbox` |
+| `exec` | not supported: its output is the process's own bytes |
+| `attach` | not supported: its output is the process's own bytes |
+| `logs` | lines: `LogLine` |
+| `cp` | empty |
 | `pull` | value: `Pulled` |
 | `prepare` | value: `Prepared` |
 | `images` | value: `[Image]` |
 | `rmi` | lines: `Removed` |
+| `tui` | not supported: it is an interactive screen |
+| `events` | lines: `Event` |
+| `mcp` | not supported: it speaks the Model Context Protocol (JSON-RPC) on stdio |
 | `executor ls` | value: `[InstalledExecutor]` |
 | `executor install` | value: `ExecutorRef` |
 | `executor search` | value: `[AvailableExecutor]` |
@@ -37,21 +54,4 @@ The JSON Schema (draft 2020-12) of every type is in [cli-output.schema.json](cli
 | `executor repo add` | value: `Repository` |
 | `executor repo rm` | value: `Repository` |
 | `info` | value: `Info` |
-| `run` | value: `SandboxRef` when detached; not supported when attached |
-| `create` | value: `SandboxRef` |
-| `start` | value: `SandboxRef` when detached; not supported when attached |
-| `exec` | not supported: its output is the process's own bytes |
-| `cp` | empty |
-| `stop` | lines: `Done` |
-| `restart` | lines: `Done` |
-| `kill` | lines: `Done` |
-| `wait` | lines: `Exited` |
-| `rm` | lines: `Done` |
-| `attach` | not supported: its output is the process's own bytes |
-| `ps` | value: `[Sandbox]` |
-| `inspect` | value: `Sandbox` |
-| `logs` | lines: `LogLine` |
-| `events` | lines: `Event` |
-| `tui` | not supported: it is an interactive screen |
-| `mcp` | not supported: it speaks the Model Context Protocol (JSON-RPC) on stdio |
 | `completion` | not supported: its output is a shell script |
