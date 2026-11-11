@@ -1,17 +1,21 @@
 #!/bin/sh
-# Install sbx and the default executor.
+# Install sbx.
 #
 #   curl -fsSL https://toollyst.github.io/sandbox/install.sh | sh
 #
 # Environment:
 #   SBX_VERSION       release tag to install (default: the latest release), e.g. v0.1.0
 #   SBX_INSTALL_DIR   where sbx and sbx-shim go (default: ~/.local/bin)
-#   SBX_NO_EXECUTOR   set to 1 to skip `sbx executor install firecracker`
 #   SBX_DOWNLOAD_URL  where the release files are (default: GitHub Releases of toollyst/sandbox)
+#   SBX_VERIFY        auto (default), require or off: check the release's Sigstore signature with cosign.
+#                     auto checks it when cosign is on PATH (and then a missing signature is an error, except for
+#                     an SBX_VERSION before v0.2.0, which were unsigned); require also fails without cosign.
+#                     With SBX_VERSION, the signature must come from that exact tag.
 #
-# What it does: downloads sbx-<os>-<arch>.tar.gz and its .sha256, checks the checksum, copies sbx and sbx-shim into
-# SBX_INSTALL_DIR, then installs the firecracker executor (VMM + adapter + guest kernel) from the official executor
-# repository. Nothing is written outside SBX_INSTALL_DIR and sbx's own data directory, and nothing runs as root.
+# What it does: downloads sbx-<os>-<arch>.tar.gz and its .sha256, checks the checksum and (see SBX_VERIFY) the
+# Sigstore signature that release.yml made for it, and copies sbx and sbx-shim into
+# SBX_INSTALL_DIR. It does not install an executor (the VMM that runs sandboxes); choosing one is the next step it
+# prints. Nothing is written outside SBX_INSTALL_DIR, and nothing runs as root.
 
 set -eu
 
@@ -41,6 +45,13 @@ if [ "$os" = darwin ]; then
     fi
 fi
 
+if [ -n "${SBX_VERSION:-}" ]; then
+    case "$SBX_VERSION" in
+        v[0-9]*) ;;
+        *) die "SBX_VERSION must be a release tag like v0.2.0 (got $SBX_VERSION)" ;;
+    esac
+    case "$SBX_VERSION" in *[!0-9A-Za-z.+-]*) die "SBX_VERSION must be a release tag like v0.2.0 (got $SBX_VERSION)" ;; esac
+fi
 if [ -n "${SBX_DOWNLOAD_URL:-}" ]; then
     base=${SBX_DOWNLOAD_URL%/}
 elif [ -n "${SBX_VERSION:-}" ]; then
@@ -70,6 +81,40 @@ want=$(cut -d' ' -f1 <"$tmp/$asset.sha256")
 got=$(sha256 "$tmp/$asset")
 [ "$want" = "$got" ] || die "checksum mismatch for $asset (expected $want, got $got)"
 
+# The signature says the archive was built by this repository's release workflow from a v* tag. The checksum above
+# only says the download is complete; whoever controls the download URL controls both files.
+verify=${SBX_VERIFY:-auto}
+case "$verify" in auto | require | off) ;; *) die "SBX_VERIFY must be auto, require or off (got $verify)" ;; esac
+# Which tag the signature must come from: SBX_VERSION exactly (so an older signed release can't be served in its
+# place), or any v* tag for the latest release.
+tag_re='v'
+unsigned_ok=false
+if [ -n "${SBX_VERSION:-}" ]; then
+    tag_re="$(printf '%s' "$SBX_VERSION" | sed 's/[.]/[.]/g; s/[+]/[+]/g')\$"
+    case "$SBX_VERSION" in v0.0.* | v0.1.*) unsigned_ok=true ;; esac
+fi
+if [ "$verify" != off ]; then
+    if ! command -v cosign >/dev/null 2>&1; then
+        [ "$verify" = auto ] || die "SBX_VERIFY=require needs cosign (https://docs.sigstore.dev/cosign/system_config/installation/)"
+        say "note: cosign is not on PATH, so only the SHA-256 was checked. To check the signature too, install cosign, or"
+        say "      run: gh attestation verify $asset -R $REPO"
+    elif ! curl -fsSL --retry 3 -o "$tmp/$asset.sigstore.json" "$base/$asset.sigstore.json"; then
+        # Whoever controls the download URL can delete the signature, so with cosign at hand a missing one is an
+        # error. Only releases before v0.2.0, asked for by name, were published without one.
+        if [ "$verify" = auto ] && $unsigned_ok; then
+            say "note: $SBX_VERSION has no signature (releases before v0.2.0 are unsigned); only the SHA-256 was checked"
+        else
+            die "no signature for $asset at $base (set SBX_VERIFY=off to install without checking it)"
+        fi
+    else
+        cosign verify-blob --bundle "$tmp/$asset.sigstore.json" \
+            --certificate-identity-regexp "^https://github[.]com/$REPO/[.]github/workflows/release[.]yml@refs/tags/$tag_re" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$tmp/$asset" >/dev/null 2>&1 || die "the Sigstore signature of $asset does not verify"
+        say "verified the Sigstore signature (built by $REPO release.yml from a v* tag)"
+    fi
+fi
+
 mkdir -p "$tmp/x"
 tar -xzf "$tmp/$asset" -C "$tmp/x"
 src="$tmp/x/sbx-$os-$arch"
@@ -83,10 +128,6 @@ for f in sbx sbx-shim; do
 done
 say "installed $("$dir/sbx" --version) to $dir"
 
-if [ "${SBX_NO_EXECUTOR:-}" != 1 ]; then
-    "$dir/sbx" executor install firecracker || die "installing the executor failed (retry with: $dir/sbx executor install firecracker)"
-fi
-
 if [ "$os" = linux ]; then
     if [ ! -e /dev/kvm ]; then
         say "note: /dev/kvm is missing. sbx needs KVM (bare metal, or a VM with nested virtualization)."
@@ -94,8 +135,15 @@ if [ "$os" = linux ]; then
         say "note: you cannot open /dev/kvm. Add yourself to its group: sudo usermod -aG $(stat -c %G /dev/kvm) \"\$USER\" (then log in again)"
     fi
 fi
+sbx=sbx
 case ":$PATH:" in
     *":$dir:"*) ;;
-    *) say "note: $dir is not on your PATH. Add it: export PATH=\"$dir:\$PATH\"" ;;
+    *)
+        say "note: $dir is not on your PATH. Add it: export PATH=\"$dir:\$PATH\""
+        sbx="$dir/sbx"
+        ;;
 esac
-say "done. Check with: sbx info   Then try: sbx run --rm alpine echo hello"
+say "done. Next, pick an executor (the VMM that runs sandboxes) from your repositories and install it:"
+say "    $sbx executor search"
+say "    $sbx executor install NAME"
+say "then check with: $sbx info   and try: $sbx run --rm alpine echo hello"
