@@ -21,13 +21,13 @@ const fn k(keys: &'static str, tabs: &'static str, does: &'static str) -> KeyHel
 /// 키 목록. 정본이다.
 pub const KEYS: &[KeyHelp] = &[
     k("Tab, 1 2 3 4", "all", "switch tab"),
-    k("Up Down j k, PgUp PgDn, g G", "all", "move"),
+    k("↑↓ j k  PgUp PgDn  g G", "all", "move"),
     k("Enter", "all", "details of the selected row"),
     k("/", "all", "filter rows by text (Esc clears)"),
     k(
         ":",
         "all",
-        "run any sbx command, e.g. `:run -it alpine sh` (hands over the terminal)",
+        "any sbx command, e.g. `:run -it alpine sh` (takes the terminal)",
     ),
     k("s", "sandboxes", "start"),
     k("x", "sandboxes", "stop"),
@@ -35,12 +35,12 @@ pub const KEYS: &[KeyHelp] = &[
     k("K", "sandboxes", "kill (asks first)"),
     k("D", "sandboxes", "rm -f (asks first)"),
     k("D", "images", "rmi (asks first)"),
-    k("e", "sandboxes", "exec -it ID sh (hands over the terminal)"),
-    k("a", "sandboxes", "attach (hands over the terminal)"),
+    k("e", "sandboxes", "exec -it ID sh (takes the terminal)"),
+    k("a", "sandboxes", "attach (takes the terminal)"),
     k(
         "l",
         "sandboxes",
-        "logs -f (hands over the terminal; Ctrl+C stops following)",
+        "logs -f (takes the terminal; Ctrl+C stops following)",
     ),
     k(
         "u",
@@ -50,13 +50,9 @@ pub const KEYS: &[KeyHelp] = &[
     k(
         "i",
         "executors",
-        "executor install (fills in the command to edit; hands over the terminal)",
+        "executor install (fills in the command; takes the terminal)",
     ),
-    k(
-        "S",
-        "executors",
-        "executor search (hands over the terminal)",
-    ),
+    k("S", "executors", "executor search (takes the terminal)"),
     k(
         "D",
         "executors",
@@ -85,7 +81,10 @@ pub fn grouped() -> impl Iterator<Item = (&'static str, Vec<&'static KeyHelp>)> 
 
 /// 키 칸의 너비(가장 긴 키).
 pub fn keys_width() -> usize {
-    KEYS.iter().map(|h| h.keys.len()).max().unwrap_or(0)
+    KEYS.iter()
+        .map(|h| h.keys.chars().count())
+        .max()
+        .unwrap_or(0)
 }
 
 /// `sbx tui --help`에 붙는 키 목록.
