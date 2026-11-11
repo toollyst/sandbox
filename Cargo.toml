@@ -55,6 +55,7 @@ flate2 = "1"
 # zstd 레이어 풀기. 순수 Rust (C 라이브러리를 묶지 않는다).
 ruzstd = "0.9"
 tar = "0.4"
+toml = { version = "0.9", default-features = false, features = ["std", "parse", "serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 reqwest = "0.13"
 clap = { version = "4", features = ["derive", "env"] }

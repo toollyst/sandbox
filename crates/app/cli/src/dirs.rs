@@ -77,6 +77,36 @@ pub fn registry_auth() -> sbx_oci::auth::AuthFiles {
     }
 }
 
+/// `registries.conf`(미러, 이름 바꾸기, 차단). containers/image와 같은 자리와 순서다:
+///
+/// - 주 파일: `CONTAINERS_REGISTRIES_CONF`, 없으면 `~/.config/containers/registries.conf`(있으면), 없으면
+///   `/etc/containers/registries.conf`.
+/// - drop-in(`registries.conf.d`): 사용자 주 파일을 골랐으면 사용자 것만, 아니면 `/etc` 것 다음 사용자 것.
+/// - Windows에는 `/etc` 자리가 없다.
+pub fn registries_conf() -> sbx_oci::registries::ConfFiles {
+    let var = |k: &str| env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let user = home().map(|h| h.join(".config/containers"));
+    let system = (!cfg!(windows)).then(|| PathBuf::from("/etc/containers"));
+    let user_main = user.as_ref().map(|u| u.join("registries.conf"));
+    let explicit = var("CONTAINERS_REGISTRIES_CONF");
+    let use_user = explicit.is_none() && user_main.as_ref().is_some_and(|p| p.is_file());
+    let main = explicit.or_else(|| {
+        if use_user {
+            user_main.clone()
+        } else {
+            system.as_ref().map(|s| s.join("registries.conf"))
+        }
+    });
+    let mut dropin_dirs = Vec::new();
+    if !use_user && let Some(s) = &system {
+        dropin_dirs.push(s.join("registries.conf.d"));
+    }
+    if let Some(u) = &user {
+        dropin_dirs.push(u.join("registries.conf.d"));
+    }
+    sbx_oci::registries::ConfFiles { main, dropin_dirs }
+}
+
 /// 기본 socket_dir.
 pub fn socket_dir() -> Option<PathBuf> {
     if cfg!(windows) {

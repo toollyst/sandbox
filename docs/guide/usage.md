@@ -123,6 +123,24 @@ sbx logout ghcr.io
 `login` checks the credentials with the registry before it saves them. Without a credential helper they are saved
 base64-encoded in `config.json`, like Docker does, readable only by you.
 
+Mirrors, rewritten locations and blocked registries come from the containers
+[`registries.conf`](https://github.com/containers/image/blob/main/docs/containers-registries.conf.5.md) that podman,
+skopeo and buildah read: `$CONTAINERS_REGISTRIES_CONF`, else `~/.config/containers/registries.conf`, else
+`/etc/containers/registries.conf`, plus `registries.conf.d/*.conf`. For example, to pull Docker Hub images through
+a mirror first:
+
+```toml
+[[registry]]
+location = "docker.io"
+[[registry.mirror]]
+location = "mirror.gcr.io"
+```
+
+Mirrors are tried in order, then the registry itself; the image keeps the name you asked for. `prefix`, `blocked`,
+`insecure` (self-signed TLS, falling back to plain HTTP), `mirror-by-digest-only` and `pull-from-mirror` work as
+the containers documentation describes. `unqualified-search-registries` and short-name aliases are not used: like
+Docker, `sbx` reads a short name as a Docker Hub image. A mistake in the file stops pulls with an error naming it.
+
 The guest kernel comes with the executor. An image can bring its own instead, with the label
 `io.github.toollyst.sandbox.kernel=/path/in/image`; other labels under `io.github.toollyst.sandbox.` are reserved
 for `sbx` and an image can't set them.

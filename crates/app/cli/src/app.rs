@@ -367,7 +367,10 @@ impl Ctx {
     fn manager(&self) -> AppResult<Manager> {
         Ok(Manager::new(
             &self.cache_dir,
-            Arc::new(OciImageSource::with_auth(crate::dirs::registry_auth())?),
+            Arc::new(
+                OciImageSource::with_auth(crate::dirs::registry_auth())?
+                    .with_registries(crate::dirs::registries_conf()),
+            ),
             vec![Arc::new(ErofsBuilder)],
         )?)
     }

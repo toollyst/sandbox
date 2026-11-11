@@ -108,7 +108,14 @@ impl Ctx {
             return Err(msg("the password is empty"));
         }
         let cred = Credential { username, secret };
-        match Registry::new()?.check_login(api_host(&host), &cred).await? {
+        // registries.conf의 `insecure`(http, 자체 서명 인증서)는 podman login처럼 따른다.
+        let insecure = sbx_oci::registries::Registries::load(&crate::dirs::registries_conf())?
+            .insecure_hosts();
+        match Registry::new()?
+            .with_insecure(insecure)?
+            .check_login(api_host(&host), &cred)
+            .await?
+        {
             LoginCheck::Accepted => {}
             LoginCheck::NotAsked => {
                 eprintln!("sbx: {host} doesn't ask for credentials; saving them anyway");

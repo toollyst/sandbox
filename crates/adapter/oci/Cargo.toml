@@ -20,4 +20,6 @@ sha2.workspace = true
 # OCI layout tar(`sbx load`): 풀기와 gzip.
 tar.workspace = true
 flate2.workspace = true
+# registries.conf(미러, 이름 바꾸기, 차단).
+toml.workspace = true
 tokio = { workspace = true, features = ["net", "rt"] }

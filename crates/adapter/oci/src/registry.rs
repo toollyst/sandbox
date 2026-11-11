@@ -7,6 +7,8 @@
 //! (레지스트리 자체가 http인 `localhost`는 예외).
 //!
 //! `localhost`와 `127.0.0.1` 레지스트리는 http로, 나머지는 https로 접속한다. Docker와 같은 기본값이다.
+//! `registries.conf`에서 `insecure`인 호스트([`Registry::with_insecure`])는 인증서를 검증하지 않는 https로, 연결이
+//! 안 되면 http로 접속한다(containers/image와 같다). 그 호스트에는 http로도 자격 증명을 보낸다(사용자가 고른 설정).
 //! blob 요청이 다른 호스트(CDN)로 redirect되면 `Authorization` 헤더는 따라가지 않는다(reqwest 기본 동작).
 //!
 //! **레지스트리가 고른 주소는 믿지 않는다.** 사용자가 이미지 이름으로 고른 호스트만 사설·로컬 주소여도 된다
@@ -15,7 +17,7 @@
 //! 토큰 주소와 redirect는 https만 따른다(레지스트리 자체가 http인 `localhost`일 때만 http도 된다).
 //! 응답이 멈추면 [`READ_TIMEOUT`] 뒤 끊는다.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -200,6 +202,32 @@ impl Resolve for Guard {
     }
 }
 
+/// HTTP 클라이언트. `lax`면 인증서를 검증하지 않는다(`insecure` 호스트에만 쓴다).
+fn client(named: &Named, lax: bool) -> Result<reqwest::Client, ImageError> {
+    let for_redirect = named.clone();
+    let policy = reqwest::redirect::Policy::custom(move |attempt| {
+        if attempt.previous().len() >= MAX_REDIRECTS {
+            return attempt.error(format!("more than {MAX_REDIRECTS} redirects"));
+        }
+        let from_http = attempt.previous().iter().all(|u| u.scheme() == "http");
+        match check_target(attempt.url(), from_http, &for_redirect) {
+            Ok(()) => attempt.follow(),
+            Err(e) => attempt.error(e),
+        }
+    });
+    reqwest::Client::builder()
+        .user_agent(concat!("sbx/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(Duration::from_secs(30))
+        .read_timeout(READ_TIMEOUT)
+        .redirect(policy)
+        .dns_resolver(Arc::new(Guard {
+            named: named.clone(),
+        }))
+        .danger_accept_invalid_certs(lax)
+        .build()
+        .map_err(transport)
+}
+
 /// 요청에 싣는 인증.
 #[derive(Clone)]
 enum Auth {
@@ -219,6 +247,11 @@ pub struct Registry {
     /// 자격 증명을 찾는 파일. 없으면 익명으로만 받는다.
     auth: Option<AuthFiles>,
     named: Named,
+    /// `insecure` 호스트(포트 포함)와 그 호스트에 쓰는, 인증서를 검증하지 않는 클라이언트.
+    insecure: BTreeSet<String>,
+    lax: Option<reqwest::Client>,
+    /// `insecure` 호스트 중 https가 안 되어 http로 바꾼 것.
+    plain_http: Mutex<HashSet<String>>,
 }
 
 /// 로그인 확인의 결과.
@@ -234,34 +267,25 @@ impl Registry {
     /// 만든다.
     pub fn new() -> Result<Self, ImageError> {
         let named: Named = Arc::default();
-        let for_redirect = named.clone();
-        let policy = reqwest::redirect::Policy::custom(move |attempt| {
-            if attempt.previous().len() >= MAX_REDIRECTS {
-                return attempt.error(format!("more than {MAX_REDIRECTS} redirects"));
-            }
-            let from_http = attempt.previous().iter().all(|u| u.scheme() == "http");
-            match check_target(attempt.url(), from_http, &for_redirect) {
-                Ok(()) => attempt.follow(),
-                Err(e) => attempt.error(e),
-            }
-        });
-        let http = reqwest::Client::builder()
-            .user_agent(concat!("sbx/", env!("CARGO_PKG_VERSION")))
-            .connect_timeout(Duration::from_secs(30))
-            .read_timeout(READ_TIMEOUT)
-            .redirect(policy)
-            .dns_resolver(Arc::new(Guard {
-                named: named.clone(),
-            }))
-            .build()
-            .map_err(transport)?;
         Ok(Self {
-            http,
+            http: client(&named, false)?,
             tokens: Mutex::new(HashMap::new()),
             basic: Mutex::new(HashMap::new()),
             auth: None,
             named,
+            insecure: BTreeSet::new(),
+            lax: None,
+            plain_http: Mutex::new(HashSet::new()),
         })
+    }
+
+    /// 이 호스트들(`registries.conf`의 `insecure`, 포트 포함)은 인증서를 검증하지 않고, https가 안 되면 http로.
+    pub fn with_insecure(mut self, hosts: BTreeSet<String>) -> Result<Self, ImageError> {
+        if !hosts.is_empty() {
+            self.lax = Some(client(&self.named, true)?);
+        }
+        self.insecure = hosts;
+        Ok(self)
     }
 
     /// 401이면 `files`에서 그 레지스트리의 자격 증명을 찾아 쓴다.
@@ -287,11 +311,73 @@ impl Registry {
     }
 
     fn base(host: &str) -> String {
-        let insecure = host == "localhost"
+        let local = host == "localhost"
             || host.starts_with("localhost:")
             || host == "127.0.0.1"
             || host.starts_with("127.0.0.1:");
-        format!("{}://{host}", if insecure { "http" } else { "https" })
+        format!("{}://{host}", if local { "http" } else { "https" })
+    }
+
+    /// 그 호스트의 주소 앞부분. `insecure`이고 https가 안 됐던 호스트는 http.
+    fn base_for(&self, host: &str) -> String {
+        if self.plain_http.lock().is_ok_and(|p| p.contains(host)) {
+            format!("http://{host}")
+        } else {
+            Self::base(host)
+        }
+    }
+
+    /// `GET <base>/v2/<rest>`. `insecure` 호스트에 https 연결이 안 되면 http로 한 번 더 하고 기억한다.
+    async fn send_to(
+        &self,
+        host: &str,
+        rest: &str,
+        accept: &[&str],
+        auth: &Auth,
+    ) -> Result<(String, Response), ImageError> {
+        let url = format!("{}/v2/{rest}", self.base_for(host));
+        match self.send(&url, accept, auth).await {
+            Err(ImageError::Transport(_))
+                if self.insecure.contains(host) && url.starts_with("https:") =>
+            {
+                if let Ok(mut p) = self.plain_http.lock() {
+                    p.insert(host.to_owned());
+                }
+                let url = format!("{}/v2/{rest}", self.base_for(host));
+                let resp = self.send(&url, accept, auth).await?;
+                Ok((url, resp))
+            }
+            r => Ok((url, r?)),
+        }
+    }
+
+    /// URL의 호스트(포트 포함)가 `insecure`인가.
+    fn is_insecure(&self, url: &str) -> bool {
+        !self.insecure.is_empty()
+            && Url::parse(url).is_ok_and(|u| {
+                let host = match (u.host_str(), u.port()) {
+                    (Some(h), Some(p)) => format!("{h}:{p}"),
+                    (Some(h), None) => h.to_owned(),
+                    _ => return false,
+                };
+                self.insecure.contains(&host)
+            })
+    }
+
+    fn http_for(&self, url: &str) -> &reqwest::Client {
+        match &self.lax {
+            Some(lax) if self.is_insecure(url) => lax,
+            _ => &self.http,
+        }
+    }
+
+    /// 자격 증명은 https로만 보낸다. `localhost`와 `insecure` 호스트는 예외다.
+    fn require_https(&self, url: &str) -> Result<(), ImageError> {
+        if self.is_insecure(url) {
+            Ok(())
+        } else {
+            require_https(url)
+        }
     }
 
     /// `GET /v2/<repository>/<path>`. 401이면 인증해서 한 번 더 시도한다.
@@ -302,10 +388,10 @@ impl Registry {
         path: &str,
         accept: &[&str],
     ) -> Result<Response, ImageError> {
-        let url = format!("{}/v2/{repository}/{path}", Self::base(host));
         if let Ok(mut n) = self.named.lock() {
             n.insert(named_key(host));
         }
+        let rest = format!("{repository}/{path}");
         let key = format!("{host}/{repository}");
         let cached = match self.basic.lock().ok().and_then(|b| b.get(host).cloned()) {
             Some(c) => Auth::Basic(c),
@@ -316,7 +402,7 @@ impl Registry {
                 .and_then(|t| t.get(&key).cloned())
                 .map_or(Auth::None, Auth::Bearer),
         };
-        let mut resp = self.send(&url, accept, &cached).await?;
+        let (url, mut resp) = self.send_to(host, &rest, accept, &cached).await?;
         let mut cred = None;
         if resp.status() == StatusCode::UNAUTHORIZED {
             let header = resp
@@ -367,11 +453,10 @@ impl Registry {
         host: &str,
         cred: &Credential,
     ) -> Result<LoginCheck, ImageError> {
-        let url = format!("{}/v2/", Self::base(host));
         if let Ok(mut n) = self.named.lock() {
             n.insert(named_key(host));
         }
-        let resp = self.send(&url, &[], &Auth::None).await?;
+        let (url, resp) = self.send_to(host, "", &[], &Auth::None).await?;
         if resp.status() != StatusCode::UNAUTHORIZED {
             return if resp.status().is_success() {
                 Ok(LoginCheck::NotAsked)
@@ -405,7 +490,7 @@ impl Registry {
     }
 
     async fn send(&self, url: &str, accept: &[&str], auth: &Auth) -> Result<Response, ImageError> {
-        let mut req = self.http.get(url);
+        let mut req = self.http_for(url).get(url);
         if !accept.is_empty() {
             req = req.header(ACCEPT, accept.join(", "));
         }
@@ -413,7 +498,7 @@ impl Registry {
             Auth::None => req,
             Auth::Bearer(t) => req.bearer_auth(t),
             Auth::Basic(c) => {
-                require_https(url)?;
+                self.require_https(url)?;
                 req.basic_auth(&c.username, Some(&c.secret))
             }
         };
@@ -437,7 +522,7 @@ impl Registry {
         let resp = match cred {
             // OAuth2 refresh token (Docker의 identity token).
             Some(c) if c.identity_token().is_some() => {
-                require_https(url.as_str())?;
+                self.require_https(url.as_str())?;
                 let mut form = Url::parse("x:/").map_err(transport)?;
                 {
                     let mut q = form.query_pairs_mut();
@@ -451,7 +536,7 @@ impl Registry {
                         q.append_pair("scope", s);
                     }
                 }
-                self.http
+                self.http_for(url.as_str())
                     .post(url)
                     .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
                     .body(form.query().unwrap_or_default().to_owned())
@@ -469,9 +554,9 @@ impl Registry {
                         q.append_pair("scope", s);
                     }
                 }
-                let mut req = self.http.get(url.clone());
+                let mut req = self.http_for(url.as_str()).get(url.clone());
                 if let Some(c) = cred {
-                    require_https(url.as_str())?;
+                    self.require_https(url.as_str())?;
                     req = req.basic_auth(&c.username, Some(&c.secret));
                 }
                 req.send().await.map_err(transport)?
@@ -649,6 +734,54 @@ mod tests {
 
     fn reply(status: &str, headers: &str) -> String {
         format!("HTTP/1.1 {status}\r\n{headers}Content-Length: 0\r\nConnection: close\r\n\r\n")
+    }
+
+    #[tokio::test]
+    async fn insecure_hosts_fall_back_to_http() {
+        // `[::1]`은 localhost가 아니라 기본은 https다. 받는 쪽은 평문 http.
+        let Ok(l) = std::net::TcpListener::bind("[::1]:0") else {
+            return; // IPv6 루프백이 없는 환경.
+        };
+        let port = l.local_addr().unwrap().port();
+        drop(l);
+        let (p, seen) = {
+            use std::io::{BufRead, BufReader, Write};
+            let l = std::net::TcpListener::bind(format!("[::1]:{port}")).unwrap();
+            let seen: Arc<Mutex<Vec<String>>> = Arc::default();
+            let log = seen.clone();
+            std::thread::spawn(move || {
+                for c in l.incoming() {
+                    let Ok(mut c) = c else { return };
+                    let mut r = BufReader::new(c.try_clone().unwrap());
+                    let mut first = String::new();
+                    if r.read_line(&mut first).is_err() || !first.starts_with("GET ") {
+                        continue; // TLS ClientHello
+                    }
+                    loop {
+                        let mut h = String::new();
+                        if r.read_line(&mut h).is_err() || h == "\r\n" || h.is_empty() {
+                            break;
+                        }
+                    }
+                    log.lock().unwrap().push(first.clone());
+                    let _ = c.write_all(reply("200 OK", "").as_bytes());
+                }
+            });
+            (port, seen)
+        };
+        let host = format!("[::1]:{p}");
+        let plain = Registry::new().unwrap();
+        assert!(plain.get(&host, "a/b", "manifests/1", &[]).await.is_err());
+        assert!(seen.lock().unwrap().is_empty());
+        let r = Registry::new()
+            .unwrap()
+            .with_insecure([host.clone()].into())
+            .unwrap();
+        r.get(&host, "a/b", "manifests/1", &[]).await.unwrap();
+        r.get(&host, "a/b", "manifests/2", &[]).await.unwrap();
+        assert_eq!(seen.lock().unwrap().len(), 2);
+        assert!(r.require_https(&format!("http://{host}/v2/")).is_ok());
+        assert!(plain.require_https(&format!("http://{host}/v2/")).is_err());
     }
 
     #[tokio::test]

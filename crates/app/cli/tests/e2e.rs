@@ -129,6 +129,10 @@ mod unix {
             load_and_save_round_trip_an_oci_archive,
         ),
         (
+            "registries_conf_is_read_for_pulls",
+            registries_conf_is_read_for_pulls,
+        ),
+        (
             "a_detached_sandbox_stops_after_its_timeout",
             a_detached_sandbox_stops_after_its_timeout,
         ),
@@ -282,6 +286,12 @@ mod unix {
                 .env("DOCKER_CONFIG", self.root.join("docker"))
                 .env("XDG_CONFIG_HOME", self.root.join("xdg-config"))
                 .env_remove("REGISTRY_AUTH_FILE")
+                // registries.conf도(사용자 drop-in은 HOME 아래).
+                .env(
+                    "CONTAINERS_REGISTRIES_CONF",
+                    self.root.join("registries.conf"),
+                )
+                .env("HOME", self.root.join("home"))
                 .stdin(Stdio::null());
             c
         }
@@ -1941,6 +1951,45 @@ mod unix {
             "{:?}",
             std::fs::read_dir(&tmp).map(|d| d.collect::<Vec<_>>())
         );
+    }
+
+    fn registries_conf_is_read_for_pulls() {
+        let e = Env::new();
+        let (archive, _) = oci_archive("example.com/team/tool:1");
+        // 미러가 없고 주 위치는 닫힌 포트: 차단이 먼저, 그다음 바꾼 곳으로 간다.
+        std::fs::write(
+            e.path("registries.conf"),
+            "[[registry]]\nlocation = \"blocked.invalid\"\nblocked = true\n\
+             [[registry]]\nprefix = \"example.invalid\"\nlocation = \"127.0.0.1:9/elsewhere\"\n",
+        )
+        .unwrap();
+        let o = e.sbx(&["pull", "blocked.invalid/a:1"]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("blocked by registries.conf"),
+            "{}",
+            text(&o.stderr)
+        );
+        let o = e.sbx(&["pull", "example.invalid/a:1"]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("127.0.0.1:9/v2/elsewhere/a"),
+            "{}",
+            text(&o.stderr)
+        );
+        // 사용자 drop-in도 읽는다. 틀린 설정은 넘기지 않고 오류다.
+        let d = e.path("home/.config/containers/registries.conf.d");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("x.conf"), "[[registry]]\nprefix = \"a.example\"\n").unwrap();
+        let o = e.sbx(&["pull", "alpine"]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(text(&o.stderr).contains("x.conf"), "{}", text(&o.stderr));
+        let o = e.sbx(&["images", "-q"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        // load는 레지스트리를 쓰지 않는다.
+        std::fs::write(e.path("in.tar"), &archive).unwrap();
+        let o = e.sbx(&["load", "-i", e.path("in.tar").to_str().unwrap()]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
     }
 
     fn login_and_logout_use_dockers_config() {
