@@ -95,6 +95,20 @@ registry, unmodified. Each is converted once into a read-only EROFS disk image a
 starting a sandbox is just booting a VM. `images --format json` also lists the ports and volumes an image declares
 (`exposed_ports`, `volumes`); `sbx` doesn't open ports or create volumes, and those paths stay on the sandbox's disk.
 
+Without a registry, `load` and `save` move images as OCI image layout archives, the format that `docker save` (Docker
+25 or later), `podman save --format oci-archive` and `skopeo copy … oci-archive:` write:
+
+```sh
+docker save alpine:3.20 | sbx load            # or: sbx load -i alpine.tar (a .tar.gz or an unpacked directory too)
+sbx load -i tool.tar --tag local/tool:dev     # name an archive that holds one image
+sbx save -o alpine.tar alpine:3.20            # docker load, podman load and sbx load all read it back
+```
+
+`load` checks every digest just like `pull`, and reads only the layout files out of a tar (no links, nothing outside
+it). `save` writes the manifest, config and layers exactly as they were pulled, so loading the archive anywhere
+gives the same image ID. An image pulled by `sbx` older than 0.2.1 has to be pulled again before it can be saved. In
+`sbx tui`, `I` and `O` on the Images tab fill in `load -i` and `save -o`.
+
 Private images use the credentials you already have: `sbx` reads Docker's `config.json` (`$DOCKER_CONFIG` or
 `~/.docker`), including its `credHelpers` and `credsStore` (`docker-credential-*`), then `REGISTRY_AUTH_FILE` and
 the containers `auth.json` that podman and skopeo use. It has no credential store of its own, so `docker login` is

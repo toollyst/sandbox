@@ -125,6 +125,7 @@ impl FakeSource {
                 },
                 layers: descs,
                 ignored_fields: vec![],
+                documents: None,
             },
             blobs,
             tamper: false,

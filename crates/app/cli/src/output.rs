@@ -57,6 +57,8 @@ pub const JSON_OUTPUT: &[(&str, Form)] = &[
     ("prepare", Form::Value("Prepared")),
     ("images", Form::Value("[Image]")),
     ("rmi", Form::Lines("Removed")),
+    ("load", Form::Value("[Pulled]")),
+    ("save", Form::Unsupported("its output is the tar itself")),
     ("executor ls", Form::Value("[InstalledExecutor]")),
     ("executor install", Form::Value("ExecutorRef")),
     ("executor search", Form::Value("[AvailableExecutor]")),

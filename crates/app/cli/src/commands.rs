@@ -77,6 +77,16 @@ pub const COMMANDS: &[Command] = &[
         "Remove image references or images (refused while in use; -f ignores stopped sandboxes)",
     ),
     cmd(
+        "load",
+        Group::Manage,
+        "Add images from an OCI image layout tar or directory (docker save, podman save), without a registry",
+    ),
+    cmd(
+        "save",
+        Group::Manage,
+        "Write an image as an OCI image layout tar that sbx, docker and podman can load",
+    ),
+    cmd(
         "executor",
         Group::Manage,
         "Install, choose and switch executors and adapters (ls, install, search, use, current, which, rm, prune, adapter, repo)",

@@ -50,6 +50,16 @@ pub const KEYS: &[KeyHelp] = &[
         "images",
         "login: save registry credentials (fills in the command line to finish)",
     ),
+    k(
+        "I",
+        "images",
+        "load -i: add images from an OCI archive (fills in the command line)",
+    ),
+    k(
+        "O",
+        "images",
+        "save -o: write the image as an OCI archive (fills in the command line)",
+    ),
     k("e", "sandboxes", "exec -it ID sh (hands over the terminal)"),
     k(
         "E",

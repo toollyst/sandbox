@@ -7,6 +7,7 @@
 //! - 이미지 참조 해석: [`reference`](mod@reference)
 //! - 문서 해석: [`manifest`]
 //! - 레지스트리 통신: [`registry`]
+//! - OCI image layout(`sbx load`, 디렉터리나 tar): [`layout`]
 //! - 레지스트리 자격 증명(Docker config.json, containers-auth.json, credential helper): [`auth`]
 //!
 //! 해석 순서 ([`ImageSource::resolve`]):
@@ -28,6 +29,7 @@ use sbx_image::{ImageError, ImageSource, Platform, ResolvedImage};
 use sbx_model::{BoxFuture, Digest, ImageId, Layer};
 
 pub mod auth;
+pub mod layout;
 pub mod manifest;
 pub mod reference;
 pub mod registry;
@@ -55,6 +57,59 @@ fn verify(what: &str, bytes: &[u8], expected: &Digest) -> Result<(), ImageError>
             "{what}: expected {expected}, got {actual}"
         )))
     }
+}
+
+/// 플랫폼 manifest와 그 config에서 [`ResolvedImage`]를 만든다. config의 digest를 대조하고, OS·아키텍처와
+/// 레이어 수를 확인한다. 레지스트리와 OCI layout(`sbx load`)이 함께 쓴다.
+fn assemble(
+    r: &Reference,
+    source: String,
+    platform: Platform,
+    manifest_bytes: Vec<u8>,
+    manifest: manifest::Manifest,
+    config_bytes: Vec<u8>,
+) -> Result<ResolvedImage, ImageError> {
+    verify("image config", &config_bytes, &manifest.config)?;
+    let parsed = manifest::parse_config(&config_bytes)?;
+    if parsed.os != "linux" || parsed.arch != platform.arch.oci_name() {
+        return Err(ImageError::PlatformNotFound {
+            reference: r.to_string(),
+            arch: platform.arch,
+        });
+    }
+    if parsed.diff_ids.len() != manifest.layers.len() {
+        return Err(ImageError::Invalid(format!(
+            "{} layers but {} diff_ids",
+            manifest.layers.len(),
+            parsed.diff_ids.len()
+        )));
+    }
+    let layers = manifest
+        .layers
+        .into_iter()
+        .zip(parsed.diff_ids)
+        .map(|(l, diff_id)| Layer {
+            digest: l.digest,
+            diff_id,
+            size: l.size,
+            compression: l.compression,
+        })
+        .collect();
+    Ok(ResolvedImage {
+        id: ImageId::new(sha256(&manifest_bytes)),
+        reference: r.to_string(),
+        source,
+        platform,
+        config: parsed.config,
+        layers,
+        ignored_fields: parsed.ignored_fields,
+        documents: Some(sbx_image::Documents {
+            manifest: manifest_bytes,
+            manifest_media_type: manifest.media_type,
+            config: config_bytes,
+            config_digest: manifest.config,
+        }),
+    })
 }
 
 /// OCI 레지스트리 이미지 소스.
@@ -131,8 +186,6 @@ impl OciImageSource {
                     }
                 }
             };
-        let id = ImageId::new(sha256(&manifest_bytes));
-
         if manifest.config_size > MAX_DOCUMENT_BYTES as u64 {
             return Err(ImageError::Invalid("image config too large".into()));
         }
@@ -146,43 +199,14 @@ impl OciImageSource {
             )
             .await?;
         let (config_bytes, _) = read_limited(resp, MAX_DOCUMENT_BYTES).await?;
-        verify("image config", &config_bytes, &manifest.config)?;
-        let parsed = manifest::parse_config(&config_bytes)?;
-
-        if parsed.os != "linux" || parsed.arch != platform.arch.oci_name() {
-            return Err(ImageError::PlatformNotFound {
-                reference: r.to_string(),
-                arch: platform.arch,
-            });
-        }
-        if parsed.diff_ids.len() != manifest.layers.len() {
-            return Err(ImageError::Invalid(format!(
-                "{} layers but {} diff_ids",
-                manifest.layers.len(),
-                parsed.diff_ids.len()
-            )));
-        }
-        let layers = manifest
-            .layers
-            .into_iter()
-            .zip(parsed.diff_ids)
-            .map(|(l, diff_id)| Layer {
-                digest: l.digest,
-                diff_id,
-                size: l.size,
-                compression: l.compression,
-            })
-            .collect();
-
-        Ok(ResolvedImage {
-            id,
-            reference: r.to_string(),
-            source: format!("{}/{}", r.registry, r.repository),
+        assemble(
+            &r,
+            format!("{}/{}", r.registry, r.repository),
             platform,
-            config: parsed.config,
-            layers,
-            ignored_fields: parsed.ignored_fields,
-        })
+            manifest_bytes,
+            manifest,
+            config_bytes,
+        )
     }
 
     async fn fetch_blob_inner(

@@ -47,6 +47,7 @@ use crate::parse::{self, CpEndpoint};
 use crate::progress::Status;
 use crate::{choose, dirs, executors, guest, host};
 
+mod load;
 mod login;
 mod stats;
 mod system;
@@ -153,6 +154,15 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
         Command::Images { quiet, filter } => ctx.images(*quiet, filter),
         Command::Info => ctx.info().await,
         Command::Rmi { force, images } => ctx.rmi(*force, images).await,
+        Command::Load {
+            input,
+            tag,
+            platform,
+        } => {
+            ctx.load(input.as_deref(), tag.as_deref(), platform.as_deref())
+                .await
+        }
+        Command::Save { output, image } => ctx.save(output.as_deref(), image),
         Command::Run { attach, args } => ctx.run_sandbox(attach, args).await,
         Command::Create(a) => {
             if a.rm {

@@ -39,6 +39,8 @@ pub enum ManageError {
     },
     /// rootfs 생성 오류.
     Rootfs(RootfsError),
+    /// 0.2.1 전에 받아 원래 문서가 없는 이미지(`sbx save`). 다시 받으면 된다.
+    NoDocuments(ImageId),
     /// 저장소 오류.
     Store(StoreError),
     /// 입출력 오류.
@@ -57,6 +59,10 @@ impl fmt::Display for ManageError {
             ManageError::Layer { index, reason } => write!(f, "layer {index}: {reason}"),
             ManageError::Kernel { path, reason } => write!(f, "image kernel {path}: {reason}"),
             ManageError::Rootfs(e) => e.fmt(f),
+            ManageError::NoDocuments(id) => write!(
+                f,
+                "image {id} was pulled by an sbx older than 0.2.1, which didn't keep its manifest; pull it again to save it"
+            ),
             ManageError::Store(e) => e.fmt(f),
             ManageError::Io(e) => write!(f, "io: {e}"),
         }

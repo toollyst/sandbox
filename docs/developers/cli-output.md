@@ -23,6 +23,8 @@ The JSON Schema (draft 2020-12) of every type is in [cli-output.schema.json](cli
 | `prepare` | value: `Prepared` |
 | `images` | value: `[Image]` |
 | `rmi` | lines: `Removed` |
+| `load` | value: `[Pulled]` |
+| `save` | not supported: its output is the tar itself |
 | `executor ls` | value: `[InstalledExecutor]` |
 | `executor install` | value: `ExecutorRef` |
 | `executor search` | value: `[AvailableExecutor]` |

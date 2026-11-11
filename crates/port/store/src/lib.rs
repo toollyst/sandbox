@@ -75,6 +75,15 @@ impl ImageRecord {
     }
 }
 
+/// 받은 문서에 대한 것([`CacheLayout::image_documents`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocumentsInfo {
+    /// 플랫폼 manifest의 미디어 형식.
+    pub manifest_media_type: String,
+    /// image config의 digest.
+    pub config_digest: Digest,
+}
+
 /// 저장소 읽기 오류.
 #[derive(Debug)]
 pub enum StoreError {
@@ -149,6 +158,21 @@ impl CacheLayout {
     /// 이미지 기록.
     pub fn image_record(&self, id: &ImageId) -> PathBuf {
         self.image_dir(id).join("image.json")
+    }
+
+    /// 받은 플랫폼 manifest 그대로(`sbx save`). 0.2.1 전에 받은 이미지에는 없다.
+    pub fn image_manifest(&self, id: &ImageId) -> PathBuf {
+        self.image_dir(id).join("manifest.json")
+    }
+
+    /// 받은 image config 그대로(`sbx save`).
+    pub fn image_config(&self, id: &ImageId) -> PathBuf {
+        self.image_dir(id).join("config.json")
+    }
+
+    /// [`Self::image_manifest`]의 미디어 형식과 config의 digest([`DocumentsInfo`]).
+    pub fn image_documents(&self, id: &ImageId) -> PathBuf {
+        self.image_dir(id).join("documents.json")
     }
 
     /// 형식별 rootfs.

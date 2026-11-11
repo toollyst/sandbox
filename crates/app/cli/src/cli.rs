@@ -120,6 +120,28 @@ pub enum Command {
         #[arg(required = true, add = complete::image())]
         images: Vec<String>,
     },
+    #[command(about = about("load"))]
+    Load {
+        /// An OCI image layout: a tar (gzipped or not) from `docker save` (Docker 25 or later),
+        /// `podman save --format oci-archive` or `skopeo copy`, or such a directory. Without it, stdin.
+        #[arg(short = 'i', long = "input", value_name = "FILE")]
+        input: Option<PathBuf>,
+        /// Name the image (only when the archive holds one). Default: the names in the archive.
+        #[arg(long)]
+        tag: Option<String>,
+        /// linux/amd64 or linux/arm64. Defaults to the host architecture.
+        #[arg(long)]
+        platform: Option<String>,
+    },
+    #[command(about = about("save"))]
+    Save {
+        /// Write the tar here. Without it, stdout (refused when stdout is a terminal).
+        #[arg(short = 'o', long = "output", value_name = "FILE")]
+        output: Option<PathBuf>,
+        /// Image reference or ID.
+        #[arg(add = complete::image())]
+        image: String,
+    },
     #[command(about = about("executor"))]
     Executor {
         #[command(subcommand)]
@@ -552,7 +574,7 @@ pub struct RunArgs {
     /// the sandbox writes.
     #[arg(long = "storage-opt", value_name = "size=SIZE", value_parser = crate::parse::storage_opt)]
     pub storage_opt: Option<u32>,
-    /// Publish a sandbox TCP port on the host: [IP:][HOST_PORT:]PORT (e.g. 8080:80). IP defaults to 127.0.0.1, so
+    /// Publish a sandbox TCP port on the host: PORT, HOST_PORT:PORT or IP:HOST_PORT:PORT (e.g. 8080:80). IP defaults to 127.0.0.1, so
     /// only this machine can connect (Docker's default is every address; write 0.0.0.0: for that). Without
     /// HOST_PORT a free port is picked; `sbx inspect` shows it.
     #[arg(short = 'p', long = "publish", value_name = "[IP:][HOST_PORT:]PORT", value_parser = crate::parse::port_mapping)]

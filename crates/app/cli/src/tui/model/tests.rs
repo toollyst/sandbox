@@ -173,6 +173,12 @@ fn destructive_keys_ask_first() {
             "docker.io/library/alpine:3.20"
         ])))
     );
+    // O는 save를 채운다(파일 이름은 사용자가).
+    assert_eq!(press(&mut m, KeyCode::Char('O')), None);
+    assert_eq!(
+        m.prompt.take().unwrap().text,
+        "save docker.io/library/alpine:3.20 -o "
+    );
 }
 
 #[test]
@@ -466,4 +472,6 @@ fn images_tab_prunes_and_shows_disk_usage() {
     );
     assert_eq!(press(&mut m, KeyCode::Char('L')), None);
     assert_eq!(m.prompt.take().unwrap().text, "login ");
+    assert_eq!(press(&mut m, KeyCode::Char('I')), None);
+    assert_eq!(m.prompt.take().unwrap().text, "load -i ");
 }

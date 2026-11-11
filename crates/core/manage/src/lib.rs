@@ -259,6 +259,13 @@ impl Manager {
             layers: resolved.layers,
             ignored_fields: resolved.ignored_fields,
         };
+        if let Some(d) = &resolved.documents {
+            let info = sbx_store::DocumentsInfo {
+                manifest_media_type: d.manifest_media_type.clone(),
+                config_digest: d.config_digest.clone(),
+            };
+            write::write_image_documents(layout, &record.id, &d.manifest, &d.config, &info)?;
+        }
         write::write_image_record(layout, &record)?;
         write::set_ref(layout, &resolved.reference, &resolved.id)?;
         self.emit(
@@ -266,6 +273,96 @@ impl Manager {
                 .with("reference", resolved.reference.clone()),
         );
         self.info(record)
+    }
+
+    /// 이미지를 OCI image layout tar로 `out`에 쓴다(`sbx save`). 받은 문서와 레이어 blob 그대로라 다시 들이면
+    /// (`sbx load`, `docker load`, `podman load`, `skopeo copy oci-archive:`) 같은 이미지 ID다. `reference`가
+    /// 있으면 그 이름을 index에 붙인다(`io.containerd.image.name`, 태그는 `org.opencontainers.image.ref.name`).
+    /// `docker save`처럼 Docker의 `manifest.json`도 함께 쓴다: `docker load`는 그것만 읽는다. 쓰는 동안 이미지를
+    /// 쥔다.
+    pub fn save(
+        &self,
+        image: &ImageId,
+        reference: Option<&str>,
+        out: &mut dyn io::Write,
+    ) -> Result<(), ManageError> {
+        let _guard = self.store.guard(image).map_err(|e| match e {
+            LeaseError::Io(e) => ManageError::Io(e),
+            _ => ManageError::ImageNotFound(image.clone()),
+        })?;
+        let record = self.store.image(image)?;
+        let layout = self.store.layout();
+        let read = |p: PathBuf| match std::fs::read(&p) {
+            Ok(b) => Ok(b),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                Err(ManageError::NoDocuments(image.clone()))
+            }
+            Err(e) => Err(ManageError::Io(e)),
+        };
+        let manifest = read(layout.image_manifest(image))?;
+        let config = read(layout.image_config(image))?;
+        let info: sbx_store::DocumentsInfo =
+            serde_json::from_slice(&read(layout.image_documents(image))?)
+                .map_err(|e| ManageError::Io(io::Error::other(e)))?;
+        let mut annotations = serde_json::Map::new();
+        if let Some(r) = reference {
+            annotations.insert("io.containerd.image.name".into(), r.into());
+            if let Some((_, tag)) = r.rsplit_once(':').filter(|(_, t)| !t.contains('/')) {
+                annotations.insert("org.opencontainers.image.ref.name".into(), tag.into());
+            }
+        }
+        let index = serde_json::json!({
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "manifests": [{
+                "mediaType": info.manifest_media_type,
+                "digest": image.to_string(),
+                "size": manifest.len(),
+                "annotations": annotations,
+            }],
+        });
+        let blob = |d: &Digest| format!("blobs/sha256/{}", d.hex());
+        // `docker load`의 목록. 태그 참조만 RepoTags가 된다(digest 참조는 Docker가 태그로 받지 않는다).
+        let repo_tags: Vec<&str> = reference.filter(|r| !r.contains('@')).into_iter().collect();
+        let docker_manifest = serde_json::json!([{
+            "Config": blob(&info.config_digest),
+            "RepoTags": repo_tags,
+            "Layers": record.layers.iter().map(|l| blob(&l.digest)).collect::<Vec<_>>(),
+        }]);
+        let mut tar = tar::Builder::new(out);
+        let mut put = |path: &str, bytes: &[u8]| -> io::Result<()> {
+            let mut h = tar::Header::new_ustar();
+            h.set_size(bytes.len() as u64);
+            h.set_mode(0o644);
+            h.set_cksum();
+            tar.append_data(&mut h, path, bytes)
+        };
+        put("oci-layout", br#"{"imageLayoutVersion":"1.0.0"}"#)?;
+        put(
+            "index.json",
+            &serde_json::to_vec(&index).map_err(io::Error::other)?,
+        )?;
+        put(
+            "manifest.json",
+            &serde_json::to_vec(&docker_manifest).map_err(io::Error::other)?,
+        )?;
+        put(&blob(image.digest()), &manifest)?;
+        put(&blob(&info.config_digest), &config)?;
+        let mut seen = std::collections::HashSet::new();
+        for l in &record.layers {
+            // 같은 레이어가 두 번이면 한 번만 쓴다.
+            if !seen.insert(&l.digest) {
+                continue;
+            }
+            let mut f = std::fs::File::open(layout.blob(&l.digest))?;
+            let mut h = tar::Header::new_ustar();
+            h.set_size(f.metadata()?.len());
+            h.set_mode(0o644);
+            h.set_cksum();
+            tar.append_data(&mut h, blob(&l.digest), &mut f)?;
+        }
+        tar.finish()?;
+        Ok(())
     }
 
     /// 이미지 이벤트를 덧붙인다. 실패해도 동작은 계속한다(알림이다).

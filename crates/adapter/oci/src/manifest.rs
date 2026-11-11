@@ -81,6 +81,8 @@ pub struct Manifest {
     pub config_size: u64,
     /// 아래부터 순서대로.
     pub layers: Vec<LayerRef>,
+    /// 미디어 형식(OCI 또는 Docker v2 manifest).
+    pub media_type: String,
 }
 
 /// 해석한 문서.
@@ -164,6 +166,7 @@ pub fn parse_document(content_type: Option<&str>, bytes: &[u8]) -> Result<Docume
         config: digest(&config.digest)?,
         config_size: config.size,
         layers,
+        media_type,
     }))
 }
 

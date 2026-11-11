@@ -2559,6 +2559,7 @@ dependencies = [
  "sbx-model",
  "sbx-rootfs",
  "sbx-store",
+ "serde_json",
  "tar",
 ]
 
@@ -2574,12 +2575,14 @@ dependencies = [
 name = "sbx-oci"
 version = "0.2.0"
 dependencies = [
+ "flate2",
  "reqwest",
  "sbx-image",
  "sbx-model",
  "serde",
  "serde_json",
  "sha2 0.11.1",
+ "tar",
  "tokio",
 ]
 

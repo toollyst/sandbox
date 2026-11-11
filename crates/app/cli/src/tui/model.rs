@@ -504,6 +504,14 @@ impl Model {
                 });
                 None
             }
+            Tab::Images if c == 'I' => {
+                // 파일 이름을 쳐서 끝낸다.
+                self.prompt = Some(Prompt {
+                    kind: PromptKind::Command,
+                    text: "load -i ".into(),
+                });
+                None
+            }
             Tab::Images => {
                 let image = self.selected_image()?;
                 let target = image
@@ -513,6 +521,13 @@ impl Model {
                     .unwrap_or_else(|| image.id.clone());
                 match c {
                     'D' => self.confirm(args(&["rmi"], target)),
+                    'O' => {
+                        self.prompt = Some(Prompt {
+                            kind: PromptKind::Command,
+                            text: format!("save {target} -o "),
+                        });
+                        None
+                    }
                     _ => None,
                 }
             }

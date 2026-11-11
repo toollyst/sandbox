@@ -125,6 +125,10 @@ mod unix {
             login_and_logout_use_dockers_config,
         ),
         (
+            "load_and_save_round_trip_an_oci_archive",
+            load_and_save_round_trip_an_oci_archive,
+        ),
+        (
             "a_detached_sandbox_stops_after_its_timeout",
             a_detached_sandbox_stops_after_its_timeout,
         ),
@@ -1789,6 +1793,153 @@ mod unix {
         assert_ne!(
             e.sbx(&["stats", "--no-stream", "idle"]).status.code(),
             Some(0)
+        );
+    }
+
+    /// `docker save`(Docker 25 이후)가 만드는 모양의 OCI layout tar: 레이어 하나, 이름 하나.
+    fn oci_archive(name: &str) -> (Vec<u8>, String) {
+        use sha2::Digest as _;
+        let hex = |b: &[u8]| {
+            sha2::Sha256::digest(b)
+                .iter()
+                .map(|x| format!("{x:02x}"))
+                .collect::<String>()
+        };
+        let mut layer_tar = tar::Builder::new(Vec::new());
+        let mut h = tar::Header::new_gnu();
+        h.set_size(5);
+        h.set_mode(0o644);
+        h.set_cksum();
+        layer_tar
+            .append_data(&mut h, "hello.txt", &b"hello"[..])
+            .unwrap();
+        let layer_tar = layer_tar.into_inner().unwrap();
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gz.write_all(&layer_tar).unwrap();
+        let layer = gz.finish().unwrap();
+        let arch = Arch::host().unwrap().oci_name();
+        let config = format!(
+            r#"{{"architecture":"{arch}","os":"linux","config":{{"Cmd":["sh"]}},"rootfs":{{"type":"layers","diff_ids":["sha256:{}"]}}}}"#,
+            hex(&layer_tar)
+        );
+        let manifest = format!(
+            r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:{}","size":{}}},"layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest":"sha256:{}","size":{}}}]}}"#,
+            hex(config.as_bytes()),
+            config.len(),
+            hex(&layer),
+            layer.len()
+        );
+        let index = format!(
+            r#"{{"schemaVersion":2,"manifests":[{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:{}","size":{},"annotations":{{"io.containerd.image.name":"{name}","org.opencontainers.image.ref.name":"latest"}}}}]}}"#,
+            hex(manifest.as_bytes()),
+            manifest.len()
+        );
+        let mut t = tar::Builder::new(Vec::new());
+        let mut add = |path: String, data: &[u8]| {
+            let mut h = tar::Header::new_gnu();
+            h.set_size(data.len() as u64);
+            h.set_mode(0o644);
+            h.set_cksum();
+            t.append_data(&mut h, path, data).unwrap();
+        };
+        // Docker가 함께 넣는 것(건너뛴다).
+        add("manifest.json".into(), b"[]");
+        add("oci-layout".into(), br#"{"imageLayoutVersion":"1.0.0"}"#);
+        add("index.json".into(), index.as_bytes());
+        for b in [config.as_bytes(), manifest.as_bytes(), &layer[..]] {
+            add(format!("blobs/sha256/{}", hex(b)), b);
+        }
+        (
+            t.into_inner().unwrap(),
+            format!("sha256:{}", hex(manifest.as_bytes())),
+        )
+    }
+
+    fn load_and_save_round_trip_an_oci_archive() {
+        let e = Env::new();
+        let (archive, id) = oci_archive("example.com/team/tool:1");
+        std::fs::write(e.path("in.tar"), &archive).unwrap();
+
+        let o = e.sbx(&[
+            "--format",
+            "json",
+            "load",
+            "-i",
+            e.path("in.tar").to_str().unwrap(),
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(v[0]["reference"], "example.com/team/tool:1");
+        assert_eq!(v[0]["id"], id.as_str());
+
+        // 표준 입력으로도, --tag로 다른 이름을.
+        let o = e.sbx_with_stdin(&["load", "--tag", "local/tool:copy"], &archive);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(
+            text(&o.stdout).contains("docker.io/local/tool:copy: loaded"),
+            "{}",
+            text(&o.stdout)
+        );
+
+        // 내보내고 지우고 다시 들이면 같은 ID다.
+        let out = e.path("out.tar");
+        let o = e.sbx(&[
+            "save",
+            "-o",
+            out.to_str().unwrap(),
+            "example.com/team/tool:1",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(o.stdout.is_empty());
+        // docker load가 읽는 manifest.json도 있다.
+        let mut t = tar::Archive::new(std::fs::File::open(&out).unwrap());
+        let docker: serde_json::Value = t
+            .entries()
+            .unwrap()
+            .map(Result::unwrap)
+            .find(|e| e.path().unwrap().to_str() == Some("manifest.json"))
+            .map(|e| serde_json::from_reader(e).unwrap())
+            .unwrap();
+        assert_eq!(docker[0]["RepoTags"][0], "example.com/team/tool:1");
+        let o = e.sbx(&["rmi", "example.com/team/tool:1", "local/tool:copy"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = e.sbx(&["--format", "json", "load", "-i", out.to_str().unwrap()]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(v[0]["reference"], "example.com/team/tool:1");
+        assert_eq!(v[0]["id"], id.as_str());
+        // 표준 출력으로도(터미널이 아니면).
+        let o = e.sbx(&["save", "example.com/team/tool:1"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(std::fs::read(&out).unwrap(), o.stdout);
+
+        // 받은 문서가 없는 이미지(0.2.1 전에 받은 것)는 다시 받으라고 한다.
+        let o = e.sbx(&["save", "-o", e.path("old.tar").to_str().unwrap(), IMAGE]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("pull it again"),
+            "{}",
+            text(&o.stderr)
+        );
+        assert!(!e.path("old.tar").exists());
+
+        // 망가진 blob은 들이지 않는다.
+        let mut bad = archive.clone();
+        let at = bad.windows(5).position(|w| w == b"Cmd\":").unwrap();
+        bad[at] ^= 1;
+        std::fs::write(e.path("bad.tar"), &bad).unwrap();
+        let o = e.sbx(&["load", "-i", e.path("bad.tar").to_str().unwrap()]);
+        assert_ne!(o.status.code(), Some(0));
+        // tar가 아니면 OCI layout이 아니라고 한다.
+        std::fs::write(e.path("junk.tar"), b"not a tar").unwrap();
+        let o = e.sbx(&["load", "-i", e.path("junk.tar").to_str().unwrap()]);
+        assert_ne!(o.status.code(), Some(0));
+        // 작업 공간에 남은 것이 없다.
+        let tmp = e.path("cache/tmp");
+        assert!(
+            std::fs::read_dir(&tmp).map_or(true, |d| d.count() == 0),
+            "{:?}",
+            std::fs::read_dir(&tmp).map(|d| d.collect::<Vec<_>>())
         );
     }
 
