@@ -1124,7 +1124,7 @@ dependencies = [
 
 [[package]]
 name = "sbx-events"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1132,18 +1132,18 @@ dependencies = [
 
 [[package]]
 name = "sbx-executor"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "sbx-model",
 ]
 
 [[package]]
 name = "sbx-executor-install"
-version = "0.1.1"
+version = "0.2.0"
 
 [[package]]
 name = "sbx-executor-process"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "sbx-executor",
  "sbx-executor-proto",
@@ -1152,7 +1152,7 @@ dependencies = [
 
 [[package]]
 name = "sbx-executor-proto"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1160,7 +1160,7 @@ dependencies = [
 
 [[package]]
 name = "sbx-executor-repo"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "flate2",
  "minisign-verify",
@@ -1197,18 +1197,18 @@ dependencies = [
 
 [[package]]
 name = "sbx-guest-proto"
-version = "0.1.1"
+version = "0.2.0"
 
 [[package]]
 name = "sbx-image"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "sbx-model",
 ]
 
 [[package]]
 name = "sbx-manage"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "flate2",
  "ruzstd",
@@ -1222,14 +1222,14 @@ dependencies = [
 
 [[package]]
 name = "sbx-model"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "sbx-oci"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "reqwest",
  "sbx-image",
@@ -1242,14 +1242,14 @@ dependencies = [
 
 [[package]]
 name = "sbx-rootfs"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "sbx-model",
 ]
 
 [[package]]
 name = "sbx-runtime"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "rustix",
  "sbx-events",
@@ -1263,7 +1263,7 @@ dependencies = [
 
 [[package]]
 name = "sbx-shim"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "sbx-executor",
  "sbx-executor-process",
@@ -1275,7 +1275,7 @@ dependencies = [
 
 [[package]]
 name = "sbx-store"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "sbx-model",
  "serde",

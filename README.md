@@ -75,10 +75,9 @@ finish in **0.50 s**. Try it on your machine ([source](xtask/src/bench.rs)).
 ## Install
 
 > [!NOTE]
-> This README describes `main`. The latest release, v0.1.1, predates separate VMM packages: its installer also
-> installs the `firecracker` executor, and it has no `sbx executor install wick`, `sbx tui` or `executor adapter`.
-> The next release brings them; until the official repository publishes wick, `sbx executor install wick` on a
-> build from `main` reports `no executor named "wick" in any repository`.
+> The official executor repository has nothing published yet, so `sbx executor install wick` reports
+> `no executor named "wick" in any repository` for now. You can install an executor from a directory meanwhile
+> ([install guide](docs/guide/install.md#build-from-source)), or add another repository.
 
 The installer puts `sbx` and `sbx-shim` in `~/.local/bin` after checking their SHA-256 (and their Sigstore signature
 when `cosign` is installed), and nothing else. Then you pick an executor.

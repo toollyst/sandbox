@@ -9,11 +9,13 @@ to release a tag without one. Changes land under `## Unreleased` first, and the 
 
 ## Unreleased
 
+## v0.2.0
+
 ### Breaking
 
 - `install.sh` no longer installs an executor. Pick one with `sbx executor search` and `sbx executor install NAME`.
 - Executors are split into VMM packages and the adapters that run them, in a version 2 repository index
-  (`v2/index.json`). The official repository publishes `wick` (VMM packages) and the `firecracker` adapter.
+  (`v2/index.json`). `wick` (VMM packages) and the `firecracker` adapter are published to the official repository.
 - `sbx executor repo add` needs `--key KEY` (a signed repository) or `--unsigned`.
 - Executor and adapter names and versions are lowercase and don't end in `.`: macOS and Windows file systems treat
   `Fake` and `fake` (and Windows `fake.` and `fake`) as one directory. An executor installed earlier under such a name
