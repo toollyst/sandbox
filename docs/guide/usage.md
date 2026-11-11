@@ -124,8 +124,10 @@ them). Without a terminal it needs `-f`. In `sbx tui`, `U` and `P` on the Images
   print a value or JSON Lines; commands whose output is a process's own bytes (`exec`, attached `run`) refuse it.
 - `--jq EXPR` picks fields with a built-in jq, so you don't need jq installed: `sbx --format json ps --jq '.[].name'`.
 - `ps`, `images` and `events` take `--filter KEY=VALUE` with Docker's rules. `-q` prints IDs only.
-- `sbx events` streams what changes (sandboxes created, started, stopped and removed; images pulled, prepared,
-  untagged and deleted) with no daemon, and `--since 10m` replays the recent past first.
+- `sbx events` streams what changes (sandboxes created, started, stopped and removed; commands run with `exec`, as
+  `exec_start` with their argv and `exec_die` with their exit code; images pulled, prepared, untagged and deleted)
+  with no daemon, and `--since 10m` replays the recent past first. The log lives in the data directory, readable
+  only by you.
 - `sbx logs` takes `-t`, `--since`, `--until` and `--format json`.
 
 The JSON shapes and their JSON Schema are in [cli-output.md](../developers/cli-output.md); what counts as a breaking

@@ -934,6 +934,36 @@ fn state_changes_are_recorded_as_events() {
     assert!(!got[2].attributes.contains_key("error"));
 }
 
+#[cfg(unix)]
+#[test]
+fn exec_is_recorded_with_its_argv_and_exit_code() {
+    let e = Env::new("evexec");
+    e.prepare_image();
+    let s = block_on(e.rt.create(e.spec(&["sleep", "30"]))).unwrap();
+    let _main = block_on(s.start(IoMode::default())).unwrap();
+    let s = block_on(e.rt.get(s.id())).unwrap();
+    let mut r = events_log(&e.root.join("d"))
+        .reader(sbx_events::Start::End)
+        .unwrap();
+    let p = block_on(s.exec(exec(&["sh", "-c", "exit 5"]))).unwrap();
+    assert_eq!(block_on(p.wait()).unwrap(), 5);
+    let pid = block_on(s.exec_detached(exec(&["true"]))).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut got = Vec::new();
+    while got.len() < 3 && Instant::now() < deadline {
+        got.extend(std::iter::from_fn(|| r.next_event().unwrap()));
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    block_on(s.stop(None, Duration::ZERO)).unwrap();
+    let actions: Vec<&str> = got.iter().map(|e| e.action.as_str()).collect();
+    assert_eq!(actions, ["exec_start", "exec_die", "exec_start"]);
+    assert_eq!(got[0].attributes["args"], r#"["sh","-c","exit 5"]"#);
+    assert_eq!(got[1].attributes["exit_code"], "5");
+    assert_eq!(got[0].attributes["pid"], got[1].attributes["pid"]);
+    assert_eq!(got[2].attributes["detached"], "true");
+    assert_eq!(got[2].attributes["pid"], pid.to_string());
+}
+
 #[test]
 fn a_failed_create_records_nothing() {
     let e = Env::new("evfail");

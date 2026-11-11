@@ -477,6 +477,11 @@ impl Runtime {
     }
 }
 
+/// 이벤트의 `args`: argv를 JSON 배열 문자열로(공백이 든 인자도 갈라 읽을 수 있게).
+fn exec_args(args: &[String]) -> String {
+    serde_json::to_string(args).unwrap_or_default()
+}
+
 fn to_proto_user(u: &UserSpec) -> sbx_guest_proto::User {
     let ident = |i: &Ident| match i {
         Ident::Id(n) => sbx_guest_proto::Ident::Id(*n),
@@ -798,6 +803,7 @@ impl Sandbox {
             Some(Box::new(move |code: i32, error: Option<String>| {
                 rt2.finish(&id, Some(code), error, VM_EXIT_GRACE)
             })),
+            None,
         ))
     }
 
@@ -819,8 +825,24 @@ impl Sandbox {
         if let Some(port) = info.egress_port {
             process::add_proxy_env(&mut x.env, port);
         }
+        let args = exec_args(&x.args);
         let (conn, pid) = blocking(move || guest.exec(x)).await?;
-        Ok(Process::spawn(conn, pid, None))
+        let pid_s = pid.to_string();
+        self.rt.emit(
+            "exec_start",
+            &info.id,
+            Some(&info.spec),
+            &[("args", args.clone()), ("pid", pid_s.clone())],
+        );
+        let (rt, id, spec) = (self.rt.clone(), info.id.clone(), info.spec.clone());
+        let on_exit: OnExit = Box::new(move |code| {
+            let mut extra = vec![("args", args), ("pid", pid_s)];
+            if let Some(c) = code {
+                extra.push(("exit_code", c.to_string()));
+            }
+            rt.emit("exec_die", &id, Some(&spec), &extra);
+        });
+        Ok(Process::spawn(conn, pid, None, Some(on_exit)))
     }
 
     /// 떼어 놓고 실행한다(`exec -d`, Docker와 같다): 입출력 없이 시작만 하고 게스트 안의 PID를 돌려준다.
@@ -837,7 +859,19 @@ impl Sandbox {
         if let Some(port) = info.egress_port {
             process::add_proxy_env(&mut x.env, port);
         }
-        blocking(move || guest.exec_detached(x)).await
+        let args = exec_args(&x.args);
+        let pid = blocking(move || guest.exec_detached(x)).await?;
+        self.rt.emit(
+            "exec_start",
+            &info.id,
+            Some(&info.spec),
+            &[
+                ("args", args),
+                ("pid", pid.to_string()),
+                ("detached", "true".into()),
+            ],
+        );
+        Ok(pid)
     }
 
     /// 호스트 파일이나 디렉터리를 게스트로 복사한다. 대상 규칙은 [`cpplan`].
@@ -1095,6 +1129,9 @@ enum Event {
 
 type OnEnd = Box<dyn FnOnce(i32, Option<String>) + Send>;
 
+/// exec 프로세스가 끝나면 부른다(종료 코드, 연결이 끊겼으면 `None`). 이벤트 `exec_die`를 남긴다.
+type OnExit = Box<dyn FnOnce(Option<i32>) + Send>;
+
 /// 샌드박스 안의 프로세스. 버려도 프로세스는 계속 돈다(출력은 버린다).
 ///
 /// 기본 프로세스([`Sandbox::start`])의 끝([`Process::next`]가 `None`)을 받았으면 샌드박스는 이미 `stopped`로 기록되어 있다.
@@ -1145,7 +1182,12 @@ impl fmt::Debug for Process {
 
 impl Process {
     /// `on_end`가 있으면 기본 프로세스다: VM이 먼저 끝나면 [`EXIT_VM_ENDED`]로 끝난 것으로 보고, 끝나면 `on_end`를 부른다.
-    fn spawn(conn: Box<dyn GuestConn>, pid: u32, on_end: Option<OnEnd>) -> Self {
+    fn spawn(
+        conn: Box<dyn GuestConn>,
+        pid: u32,
+        on_end: Option<OnEnd>,
+        on_exit: Option<OnExit>,
+    ) -> Self {
         let (tx, events) = chan::channel(OUTPUT_BUFFER, |e: &Event| match e {
             Event::Out(Output::Stdout(b) | Output::Stderr(b)) => b.len(),
             _ => 0,
@@ -1193,6 +1235,9 @@ impl Process {
                 (None, Some(e)) => Event::Lost(e.clone()),
                 (None, None) => Event::Lost("connection closed".into()),
             };
+            if let Some(f) = on_exit {
+                f(code);
+            }
             // 기본 프로세스는 샌드박스를 멈추고 기록한 뒤에 끝을 알린다.
             // 그래서 끝을 받은 호출자는 곧바로 그 샌드박스를 지울 수 있다.
             if let Some(f) = on_end {

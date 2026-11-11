@@ -41,7 +41,16 @@ const fn key(name: &'static str, value: Value, help: &'static str) -> Key {
 pub const STATES: &[&str] = &["creating", "created", "running", "stopped"];
 /// 이벤트 동작 이름.
 pub const ACTIONS: &[&str] = &[
-    "create", "start", "stop", "remove", "pull", "prepare", "untag", "delete",
+    "create",
+    "start",
+    "stop",
+    "remove",
+    "exec_start",
+    "exec_die",
+    "pull",
+    "prepare",
+    "untag",
+    "delete",
 ];
 
 /// `ps --filter`. `status`나 `exited`가 있으면 `-a`가 없어도 멈춘 것까지 본다(Docker와 같다).

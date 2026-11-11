@@ -725,9 +725,7 @@ mod tests {
     type Seen = Arc<Mutex<Vec<(String, Option<String>)>>>;
 
     /// `serve`와 같고, `Authorization` 헤더도 넘긴다. 본문을 줄 수 있다.
-    fn serve_auth(
-        respond: impl Fn(&str, Option<&str>) -> String + Send + 'static,
-    ) -> (u16, Seen) {
+    fn serve_auth(respond: impl Fn(&str, Option<&str>) -> String + Send + 'static) -> (u16, Seen) {
         use std::io::{BufRead, BufReader, Write};
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = l.local_addr().unwrap().port();
