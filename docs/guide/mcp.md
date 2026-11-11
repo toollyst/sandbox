@@ -27,7 +27,10 @@ Other clients take the same command in their configuration:
 
 The MCP server adds no policy of its own. Tool arguments go through the same parser and rules as the CLI:
 
-- The network stays off unless a call passes `allow: ["host:port", …]`.
+- The network stays off unless a call passes `allow: ["host:port", …]`. An agent can only allow public hosts: an IP
+  address on loopback, a private network or link-local (cloud metadata at `169.254.169.254`) and `localhost` are
+  refused, so it can't reach services on your machine or LAN. `sbx mcp --allow-private-network` lifts that. (A name
+  that resolves to such an address is refused for everyone, CLI included.)
 - Host folders are never mounted, and tools only see sandboxes created through MCP, not the ones you started with
   the CLI (`sbx mcp --all-sandboxes` changes that).
 - Arguments can't be turned into other `sbx` options.

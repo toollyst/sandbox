@@ -237,6 +237,10 @@ pub enum Command {
         /// The most memory one tool call may ask for (e.g. 2g).
         #[arg(long, default_value = "4g", value_parser = crate::parse::memory_mib)]
         max_memory: u32,
+        /// Let agents allow loopback, private and link-local IP addresses and `localhost` (by default they can
+        /// only allow public hosts, so an agent can't reach services on this machine, the LAN or cloud metadata).
+        #[arg(long)]
+        allow_private_network: bool,
     },
     #[command(
         about = about("completion"),

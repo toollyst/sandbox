@@ -73,12 +73,29 @@ struct Server {
     reserved: std::cell::Cell<u32>,
 }
 
-/// `sbx mcp --max-sandboxes`, `--max-cpus`, `--max-memory`.
+/// `sbx mcp --max-sandboxes`, `--max-cpus`, `--max-memory`, `--allow-private-network`.
 #[derive(Debug, Clone, Copy)]
 struct Limits {
     sandboxes: u32,
     cpus: u8,
     memory_mib: u32,
+    /// 허용 목록에 루프백·사설·링크 로컬 IP와 `localhost`를 받는다.
+    private_network: bool,
+}
+
+/// 에이전트가 준 허용 규칙이 이 기계, LAN, 클라우드 메타데이터(169.254.169.254)를 여는가. 이름 규칙은 실행 코어가
+/// 그 이름이 사설 주소로 풀리면 거부하므로, 여기서는 IP를 직접 적은 규칙과 `localhost`만 본다.
+fn opens_private_network(rule: &str) -> bool {
+    match rule.parse::<sbx_model::AllowRule>() {
+        Ok(r) => {
+            r.host == "localhost"
+                || r.host
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|ip| !sbx_model::is_public_ip(ip))
+        }
+        // 해석은 CLI 파서가 다시 하고 거기서 오류를 낸다.
+        Err(_) => false,
+    }
 }
 
 /// 만드는 동안 쥐는 자리. 놓으면 [`Server::reserved`]에서 뺀다.
@@ -107,6 +124,15 @@ impl Server {
     /// 샌드박스(지우기 전까지, 만드는 중인 것 포함)의 상한이다.
     async fn admit(&self, spec: &RunArgs) -> AppResult<Seat<'_>> {
         let l = self.limits;
+        if !l.private_network
+            && let Some(r) = spec.allow.iter().find(|r| opens_private_network(r))
+        {
+            return Err(format!(
+                "`allow` {r:?} opens a loopback, private or link-local address, which this server does not allow \
+                 (sbx mcp --allow-private-network)"
+            )
+            .into());
+        }
         let cpus: u8 = spec
             .cpus
             .as_deref()
@@ -181,6 +207,7 @@ pub async fn serve(cli: &Cli) -> AppResult<u8> {
         max_sandboxes,
         max_cpus,
         max_memory,
+        allow_private_network,
     } = cli.command
     else {
         return Err("internal: not the mcp command".into());
@@ -192,6 +219,7 @@ pub async fn serve(cli: &Cli) -> AppResult<u8> {
             sandboxes: max_sandboxes,
             cpus: max_cpus,
             memory_mib: max_memory,
+            private_network: allow_private_network,
         },
         reserved: Default::default(),
     });
@@ -1203,6 +1231,24 @@ mod tests {
         );
         for t in tools.as_array().unwrap() {
             assert_eq!(t["inputSchema"]["type"], "object", "{}", t["name"]);
+        }
+    }
+
+    #[test]
+    fn agents_cannot_open_this_machine_or_the_lan_by_address() {
+        for r in [
+            "localhost:80",
+            "127.0.0.1:*",
+            "169.254.169.254:80",
+            "10.0.0.1:22",
+            "192.168.1.1:443",
+            "[::1]:8080",
+            "[fd00::1]:80",
+        ] {
+            assert!(opens_private_network(r), "{r}");
+        }
+        for r in ["pypi.org:443", "*.github.com:443", "1.1.1.1:53", "[2606:4700::1111]:443"] {
+            assert!(!opens_private_network(r), "{r}");
         }
     }
 
