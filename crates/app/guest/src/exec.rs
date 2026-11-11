@@ -303,12 +303,13 @@ fn pump(
         let mut buf = vec![0; CHUNK_LEN];
         loop {
             // 막히는 read 대신 기다렸다가 읽는다. 그래야 끝 표시를 볼 수 있다.
+            // 끝 표시는 기다리기 전에 본다. 기다리는 동안 프로세스가 쓰고 끝나면, 기다린 뒤에 본 끝 표시로
+            // 그만두어 이미 파이프에 있는 출력을 버리게 된다.
+            let was_ended = ended.since().is_some();
             match crate::sys::poll_readable(r.as_fd(), DRAIN_IDLE) {
                 Ok(true) => {}
-                Ok(false) => match ended.since() {
-                    Some(_) => break,
-                    None => continue,
-                },
+                Ok(false) if was_ended => break,
+                Ok(false) => continue,
                 Err(_) => break,
             }
             if ended.since().is_some_and(|d| d >= DRAIN_MAX) {

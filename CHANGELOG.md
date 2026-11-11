@@ -92,6 +92,11 @@ skopeo already use; both are listed under **Changed** with what to do.
 - `cargo xtask install`: build and install `sbx` where the installers put it, instead of running it from the build
   directory.
 
+### Fixed
+
+- The output a sandbox's main process writes just before it exits is no longer sometimes lost: the guest could
+  stop reading the pipe after a quiet poll if the process ended during that poll.
+
 ### Notes
 
 - New messages in the guest protocol (`exec -d`, `stats`, `-p`) are additions: a sandbox started by 0.2.0 keeps
