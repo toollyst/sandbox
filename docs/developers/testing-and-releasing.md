@@ -157,7 +157,7 @@ To cut a release:
 
 A tag whose workflow fails publishes nothing, because `publish` only runs when every build succeeded. Fix the cause,
 bump the version and tag again rather than moving a pushed tag. If only the `gh-pages` push fails, the GitHub release
-is already up: copy `install.sh` to `gh-pages` by hand and fix the step on `main`.
+is already up: copy `install.sh` and `install.ps1` to `gh-pages` by hand and fix the step on `main`.
 
 **Rehearsal.** `gh workflow run release.yml --ref <branch>` runs the same jobs on any branch without a tag. It builds,
 runs the smoke test, signs with Sigstore and uploads the result as the artifact `rehearsal`, with the notes from
@@ -174,8 +174,8 @@ gh workflow run fuzz.yml --ref <branch> -f seconds=60
 
 The steps of `publish` that run only on a tag (attestations, the GitHub release, the `gh-pages` push) are first
 exercised by the next real release. After a major update of `actions/checkout` or of an action those steps use, check
-them in that release's log. The `gh-pages` step skips the push when `install.sh` did not change; if its log says
-`install.sh is unchanged`, the push is still unchecked.
+them in that release's log. The `gh-pages` step skips the push when neither installer changed; if its log says
+`install.sh and install.ps1 are unchanged`, the push is still unchecked.
 
 ### Executors
 
