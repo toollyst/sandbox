@@ -47,6 +47,12 @@ skopeo already use; both are listed under **Changed** with what to do.
   official repository, and `install.sh` has no exception for unsigned releases.
 - The data and cache directories get a `layout-version` file; a later `sbx` that changes their layout migrates them,
   and an older one refuses instead of guessing.
+- `sbx --help` groups commands by what you want to do (sandboxes, working inside one, images, watching and
+  automating, setup) and ends with first steps. `--help` is as compact as `-h` and wraps to the terminal. `run` and
+  `create` group their options (process, resources, files, network, stopping).
+- `sbx tui`: errors read as sentences, not JSON; an empty tab says what to do next in its middle instead of a
+  warning; Enter shows a row's fields as `name  value` lines (with the `--format json` command that prints them);
+  the bottom line only lists keys that do something now; `?` groups keys by tab and scrolls.
 - Release builds use fat LTO and are stripped (the macOS arm64 binary went from 16.7 MB to 9.7 MB). `sbx events`
   and `sbx tui` read long event logs in linear time.
 

@@ -17,14 +17,32 @@ The JSON Schema (draft 2020-12) of every type is in [cli-output.schema.json](cli
 
 | Command | Output |
 |---|---|
+| `run` | value: `SandboxRef` when detached; not supported when attached |
+| `create` | value: `SandboxRef` |
+| `start` | value: `SandboxRef` when detached; not supported when attached |
+| `stop` | lines: `Done` |
+| `restart` | lines: `Done` |
+| `kill` | lines: `Done` |
+| `wait` | lines: `Exited` |
+| `rm` | lines: `Done` |
+| `ps` | value: `[Sandbox]` |
+| `inspect` | value: `Sandbox` |
+| `stats` | value: `[Stats]` |
+| `exec` | not supported: its output is the process's own bytes |
+| `attach` | not supported: its output is the process's own bytes |
+| `logs` | lines: `LogLine` |
+| `cp` | empty |
 | `pull` | value: `Pulled` |
-| `login` | value: `Login` |
-| `logout` | value: `Logout` |
 | `prepare` | value: `Prepared` |
 | `images` | value: `[Image]` |
 | `rmi` | lines: `Removed` |
 | `load` | value: `[Pulled]` |
 | `save` | not supported: its output is the tar itself |
+| `login` | value: `Login` |
+| `logout` | value: `Logout` |
+| `tui` | not supported: it is an interactive screen |
+| `events` | lines: `Event` |
+| `mcp` | not supported: it speaks the Model Context Protocol (JSON-RPC) on stdio |
 | `executor ls` | value: `[InstalledExecutor]` |
 | `executor install` | value: `ExecutorRef` |
 | `executor search` | value: `[AvailableExecutor]` |
@@ -43,22 +61,4 @@ The JSON Schema (draft 2020-12) of every type is in [cli-output.schema.json](cli
 | `info` | value: `Info` |
 | `system df` | value: `[DiskUsage]` |
 | `system prune` | value: `PruneReport` |
-| `run` | value: `SandboxRef` when detached; not supported when attached |
-| `create` | value: `SandboxRef` |
-| `start` | value: `SandboxRef` when detached; not supported when attached |
-| `exec` | not supported: its output is the process's own bytes |
-| `cp` | empty |
-| `stop` | lines: `Done` |
-| `restart` | lines: `Done` |
-| `kill` | lines: `Done` |
-| `wait` | lines: `Exited` |
-| `rm` | lines: `Done` |
-| `attach` | not supported: its output is the process's own bytes |
-| `ps` | value: `[Sandbox]` |
-| `stats` | value: `[Stats]` |
-| `inspect` | value: `Sandbox` |
-| `logs` | lines: `LogLine` |
-| `events` | lines: `Event` |
-| `tui` | not supported: it is an interactive screen |
-| `mcp` | not supported: it speaks the Model Context Protocol (JSON-RPC) on stdio |
 | `completion` | not supported: its output is a shell script |

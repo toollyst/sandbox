@@ -602,10 +602,15 @@ mod tests {
             );
             assert!(e.contains("did not finish within 0.5s"), "{name}: {e}");
         }
-        // 끝없이 쓰는 실행기: 상한까지만 읽고 거부한다.
-        let e = ProcessExecutor::with_timeout(script("flood", "exec yes"), Vec::new(), t)
-            .unwrap_err()
-            .to_string();
+        // 끝없이 쓰는 실행기: 상한까지만 읽고 거부한다. 시간 상한이 먼저 걸리지 않게 넉넉히 준다(바쁜 기계에서는
+        // 셸이 뜨고 2 MiB를 쓰는 데 0.5초가 넘을 수 있다).
+        let e = ProcessExecutor::with_timeout(
+            script("flood", "exec yes"),
+            Vec::new(),
+            Duration::from_secs(10),
+        )
+        .unwrap_err()
+        .to_string();
         assert!(e.contains("capabilities printed more than"), "{e}");
         // 답은 했지만 너무 긴 줄: 끝까지 읽지 않고 거부한다.
         let long = format!("printf '%0{}d\\n' 0", proto::MAX_LINE + 10);

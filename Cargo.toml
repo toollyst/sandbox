@@ -60,7 +60,8 @@ aws-lc-rs = { version = "1.19", default-features = false, features = ["aws-lc-sy
 toml = { version = "0.9", default-features = false, features = ["std", "parse", "serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 reqwest = "0.13"
-clap = { version = "4", features = ["derive", "env"] }
+# wrap_help: 도움말을 터미널 너비에 맞춰 접는다(긴 설명이 한 줄로 늘어지지 않게).
+clap = { version = "4", features = ["derive", "env", "wrap_help"] }
 # 셸 자동완성: 셸이 `COMPLETE=<셸> sbx -- <단어들>`로 sbx를 불러 후보(샌드박스 이름·ID, 이미지 참조)를 받는다.
 # `unstable-dynamic`은 semver 밖이라(패치 버전에서도 바뀔 수 있다) 정확한 버전으로 고정한다. 올릴 때는
 # crates/app/cli/src/complete.rs와 e2e의 completion 테스트를 다시 확인한다.

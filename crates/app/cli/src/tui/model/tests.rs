@@ -267,15 +267,26 @@ fn command_prompt_hands_over_any_sbx_command() {
 }
 
 #[test]
-fn detail_shows_the_selected_row_as_json_and_scrolls() {
+fn detail_shows_the_selected_row_readably_and_scrolls() {
     let mut m = loaded();
     press(&mut m, KeyCode::Enter);
-    let Some(Popup::Detail { title, body, .. }) = &m.popup else {
+    let Some(Popup::Detail {
+        title,
+        lines,
+        source,
+        ..
+    }) = &m.popup
+    else {
         panic!("{:?}", m.popup)
     };
-    assert_eq!(title, "web");
-    let back: Sandbox = serde_json::from_str(body).unwrap();
-    assert_eq!(back.name.as_deref(), Some("web"));
+    assert_eq!(title, "Sandbox web");
+    // JSON이 아니라 이름과 값이다. 같은 것을 JSON으로 내는 명령도 알린다.
+    let text = crate::tui::detail::plain(lines);
+    assert!(
+        text.contains("name") && text.contains("web") && !text.contains('{'),
+        "{text}"
+    );
+    assert_eq!(source, "sbx inspect web --format json");
     press(&mut m, KeyCode::Down);
     assert!(matches!(m.popup, Some(Popup::Detail { scroll: 1, .. })));
     press(&mut m, KeyCode::Esc);
@@ -449,7 +460,9 @@ fn executors_tab_lists_executors_then_adapters_and_runs_executor_commands() {
     assert_eq!(m.visible_executor_rows().len(), 1);
     press(&mut m, KeyCode::Char('g'));
     press(&mut m, KeyCode::Enter);
-    assert!(matches!(&m.popup, Some(Popup::Detail { title, .. }) if title == "wick@1.18.0"));
+    assert!(
+        matches!(&m.popup, Some(Popup::Detail { title, .. }) if title == "Executor wick@1.18.0")
+    );
 }
 
 #[test]

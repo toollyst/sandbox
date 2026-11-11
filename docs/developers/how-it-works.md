@@ -188,8 +188,10 @@ those types. `--jq` runs on that output in-process.
 cores. It runs the same `sbx` binary as children: `ps -a`, `images` and the `executor` listings with
 `--format json`, and `events --since 1h` followed in the background. A sandbox event re-reads `ps -a`, an image
 event re-reads `images`. Every key becomes an `sbx` command line, shown in the status bar, and commands that need the
-terminal (`exec -it`, `attach`, `logs -f`, the `:` prompt) get it handed over until they exit. `model` (keys to
-command lines, no I/O) and `view` (drawing) are unit-tested without a terminal.
+terminal (`exec -it`, `attach`, `logs -f`, the `:` prompt) get it handed over until they exit. A child's error is
+its JSON error line; the TUI shows its `message`, never the JSON. Enter shows the selected row's public type as
+`name  value` lines (`detail`), in the JSON's field names and order, with the command that prints the same JSON.
+`model` (keys to command lines, no I/O) and `view` (drawing) are unit-tested without a terminal.
 
 ## The network
 

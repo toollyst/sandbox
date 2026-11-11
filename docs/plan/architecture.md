@@ -17,7 +17,7 @@
 | 레이어 병합 규칙 (whiteout, opaque, 하드 링크) | `crates/port/rootfs/src/lib.rs` |
 | 이미지 참조 해석 | `crates/adapter/oci/src/reference.rs` |
 | OCI 적용 범위 (받는 형식, 적용하는 필드) | `crates/adapter/oci/src/scope.rs` |
-| CLI 명령 목록 | `crates/app/cli/src/commands.rs` (`sbx help`가 그대로 출력) |
+| CLI 명령 목록과 도움말의 절 | `crates/app/cli/src/commands.rs` (`sbx --help`가 절마다 묶어 그대로 출력) |
 | CLI 동작 (`--pull`, `rmi` 보호, Docker와 다른 점) | `crates/app/cli/src/behavior.rs` |
 | 호스트-게스트 메시지 (연결 단위, 순서, 인코딩, 신뢰 경계) | `sbx-guest-proto` |
 | 실행기 저장소 (schema 1 `index.json`, schema 2 `v2/index.json`, 어댑터와 VMM 묶음) | `sbx-executor-repo` |
@@ -27,7 +27,7 @@
 | `--filter` 키와 결합 규칙 | `crates/app/cli/src/filter.rs` |
 | 이벤트 기록 장치 (덧붙이기, 세대, 따라 읽기) | `sbx-events`. 무엇을 기록하는지는 `sbx-runtime`, `sbx-manage` 문서 |
 | 셸 자동완성 후보 | `crates/app/cli/src/complete.rs` |
-| `sbx tui` 키와 동작 | `crates/app/cli/src/tui/keys.rs`(키 목록 정본), `crates/app/cli/src/tui/mod.rs` |
+| `sbx tui` 키와 동작 | `crates/app/cli/src/tui/keys.rs`(키 목록 정본), `crates/app/cli/src/tui/mod.rs`, 상세 창 `crates/app/cli/src/tui/detail.rs` |
 
 ## 1. 원칙
 

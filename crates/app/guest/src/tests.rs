@@ -196,7 +196,7 @@ fn main_does_not_wait_for_children_holding_the_pipe() {
             &[
                 "sh",
                 "-c",
-                "sleep 3 & head -c 200000 /dev/zero | tr '\\0' a; exit 5",
+                "sleep 6 & head -c 200000 /dev/zero | tr '\\0' a; exit 5",
             ],
             false,
         );
@@ -210,11 +210,12 @@ fn main_does_not_wait_for_children_holding_the_pipe() {
     // 이미 쓴 출력(파이프 버퍼보다 큰 것도)은 모두 오고, 남은 자식(sleep)은 기다리지 않는다.
     let (len, status, took) = run(true);
     assert_eq!((len, status), (200000, ExitStatus::Code(5)));
-    assert!(took < std::time::Duration::from_secs(2), "{took:?}");
+    // 여유를 크게 둔다(바쁜 CI). 남은 자식을 기다렸다면 6초가 걸린다.
+    assert!(took < std::time::Duration::from_secs(4), "{took:?}");
     // 기본은 파이프가 닫힐 때까지 기다린다.
     let (len, _, took) = run(false);
     assert_eq!(len, 200000);
-    assert!(took >= std::time::Duration::from_secs(2), "{took:?}");
+    assert!(took >= std::time::Duration::from_secs(4), "{took:?}");
 }
 
 #[test]
