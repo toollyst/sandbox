@@ -515,7 +515,10 @@ async fn signed_repositories_need_a_matching_fresh_signature() {
 
     // 서명된 저장소는 v1로 되돌아가지 않는다.
     fs::remove_dir_all(s.dir()).unwrap();
-    untrusted(f.index(&r).await, "needs v2/index.json");
+    untrusted(
+        f.index(&r).await,
+        "v2/index.json not found (a signed repository is read only from there",
+    );
 }
 
 /// 서명 파일만 바꿔 쓴다.
@@ -808,7 +811,7 @@ async fn a_signed_repository_ignores_a_v1_index_and_unsigned_serials_are_not_tra
     assert!(s.repo.root.join("repo/index.json").is_file());
     untrusted(
         f.index(&s.repository(vec![s.key.clone()])).await,
-        "needs v2/index.json",
+        "v2/index.json not found (a signed repository is read only from there",
     );
     // 서명 없는 저장소의 serial은 믿을 근거가 없으므로 적지도 막지도 않는다.
     let u = Repository::new("u", &s.repo.file_url()).unwrap();

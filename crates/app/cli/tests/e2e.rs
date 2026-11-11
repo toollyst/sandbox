@@ -2214,7 +2214,7 @@ mod unix {
         still_works("huge", "larger than the 16777216 bytes");
         // 4. 저장소가 통째로 사라졌다.
         std::fs::remove_dir_all(&dir).unwrap();
-        still_works("gone", "a signed repository needs v2/index.json");
+        still_works("gone", "v2/index.json not found");
         // 지우기도 저장소 없이 된다.
         ok(&sbx(&["executor", "rm", "fake@1.0"]));
         ok(&sbx(&["executor", "repo", "rm", "r"]));

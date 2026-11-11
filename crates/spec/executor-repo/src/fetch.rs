@@ -163,7 +163,9 @@ impl Fetcher {
             };
             let body = match self.bytes(&v2, MAX_INDEX_BYTES).await {
                 Err(RepoError::Missing { .. }) => {
-                    return Err(untrusted("a signed repository needs v2/index.json".into()));
+                    return Err(untrusted(
+                        "v2/index.json not found (a signed repository is read only from there, never from index.json)".into(),
+                    ));
                 }
                 other => other?,
             };
