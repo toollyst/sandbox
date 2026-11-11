@@ -12,7 +12,6 @@
 #
 # 실행기(wick VMM 묶음, firecracker 어댑터)는 여기서 만들지 않는다. 공식 실행기 저장소는 따로 있는
 # toollyst/sandbox-executors가 이 저장소의 한 커밋에서 어댑터를 만들어 올린다(의존은 그쪽 → 여기 한 방향).
-# gh-pages에 있는 sbx 0.1.x용 schema 1 `executors/index.json`은 그대로 남고 더는 바뀌지 않는다.
 name: release
 
 on:

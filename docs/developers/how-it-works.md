@@ -235,8 +235,6 @@ rename into place, `sbx-executor capabilities` (for a VMM package, the adapter g
 `sbx`'s protocol version and the host's architecture ([`executors.rs`](../../crates/app/cli/src/executors.rs)).
 The official repository is <https://toollyst.github.io/sandbox-executors/>, published from its own repository,
 [toollyst/sandbox-executors](https://github.com/toollyst/sandbox-executors) ([Releasing](testing-and-releasing.md#executors)).
-A repository list written by `sbx` 0.1.x names it `official` at the old URL (`https://toollyst.github.io/sandbox/executors/`,
-which keeps its schema 1 index for 0.1.x); that line reads as the current official repository.
 
 To support another VMM, either write a program that implements
 [`sbx-executor-proto`](../../crates/spec/executor-proto) and ship it as a self-contained executor or an adapter, or,

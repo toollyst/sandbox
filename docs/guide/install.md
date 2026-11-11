@@ -108,9 +108,8 @@ Completion offers subcommands and flags, and also sandbox names and IDs and imag
 
 Run the installer again to upgrade. Sandboxes, images and executors are kept.
 
-From 0.1.x: the installer no longer installs an executor, so run `sbx executor install wick` once. A repository list
-from 0.1.x keeps working; its `official` entry now reads from the new official repository. What else changed is in
-the [CHANGELOG](../../CHANGELOG.md).
+What changed in each release is in the [CHANGELOG](../../CHANGELOG.md). Releases before 0.2 are withdrawn and not
+supported; if you have one, remove it and its data (below) and install again.
 
 To uninstall, remove the binaries, then the data (sandboxes, executors, settings) and the cache (images):
 

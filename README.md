@@ -109,7 +109,7 @@ The binaries are static, so any distribution works.
 
 Not supported yet: there is no Windows release and no tested executor for Windows.
 
-Installer options (`SBX_VERSION`, `SBX_INSTALL_DIR`, `SBX_VERIFY`), building from source, upgrading from 0.1.x and
+Installer options (`SBX_VERSION`, `SBX_INSTALL_DIR`, `SBX_VERIFY`), building from source, upgrading and
 uninstalling are in the [install guide](docs/guide/install.md).
 
 ## Use it

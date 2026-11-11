@@ -53,10 +53,6 @@ pub fn adapters(data_dir: &Path) -> Executors {
 pub const OFFICIAL_REPOSITORY: (&str, &str) =
     ("official", "https://toollyst.github.io/sandbox-executors/");
 
-/// sbx 0.1.x의 공식 저장소 URL. 그때 쓴 목록 파일의 `official` 줄(키 없음)은 지금의 공식 저장소로 읽는다.
-/// 그 URL의 schema 1 색인은 0.1.x를 위해 그대로 남는다.
-pub const LEGACY_OFFICIAL_URL: &str = "https://toollyst.github.io/sandbox/executors/";
-
 /// 공식 저장소의 색인에 서명하는 minisign 공개키들. 비밀키는 toollyst/sandbox-executors만 쓴다(그 저장소의 비밀 값).
 pub const OFFICIAL_KEYS: &[&str] = &[];
 
@@ -72,8 +68,8 @@ pub fn sources(data_dir: &Path) -> Sources {
     Sources::new(crate::dirs::repositories_file(data_dir)).with_defaults(vec![official()])
 }
 
-/// 저장소 목록. 옛 sbx가 쓴 목록의 공식 저장소(이름이 `official`, URL이 지금 것이나 0.1.x의 것, 키 없음)는
-/// 지금의 공식 저장소(URL과 키)로 읽는다. 사용자가 고른 다른 URL이나 키는 건드리지 않는다.
+/// 저장소 목록. 공식 키를 적기 전의 sbx가 쓴 목록의 공식 저장소(이름과 URL이 같고 키가 없다)에는 공식 키를
+/// 붙인다. 사용자가 고른 다른 URL이나 키는 건드리지 않는다.
 fn repositories(data_dir: &Path) -> Result<Vec<Repository>> {
     Ok(upgrade_official(sources(data_dir).list()?))
 }
@@ -82,8 +78,7 @@ fn upgrade_official(list: Vec<Repository>) -> Vec<Repository> {
     let o = official();
     list.into_iter()
         .map(|r| {
-            let ours = r.url == o.url || r.url.as_str() == LEGACY_OFFICIAL_URL;
-            if r.name == o.name && ours && r.keys.is_empty() {
+            if r.name == o.name && r.url == o.url && r.keys.is_empty() {
                 o.clone()
             } else {
                 r
@@ -954,25 +949,23 @@ fn print_repository(cx: &Ctx<'_>, r: &Repository) -> Result<()> {
 mod tests {
     use super::*;
 
-    /// 0.1.x가 쓴 목록의 `official`은 새 공식 저장소로 읽는다. 사용자가 고른 것(다른 이름, 다른 URL, 키)은 그대로다.
+    /// 공식 키를 적기 전에 쓴 목록의 `official`(같은 URL, 키 없음)은 공식 키를 받는다. 사용자가 고른 것(다른 이름,
+    /// 다른 URL, 직접 준 키)은 그대로다.
     #[test]
-    fn an_old_official_entry_reads_as_the_current_official_repository() {
+    fn an_official_entry_without_keys_reads_as_the_official_repository() {
         let r = |n: &str, u: &str| Repository::new(n, u).unwrap();
+        let (_, url) = OFFICIAL_REPOSITORY;
         let got = upgrade_official(vec![
-            r("official", LEGACY_OFFICIAL_URL),
-            r("mirror", LEGACY_OFFICIAL_URL),
+            r("official", url),
+            r("mirror", url),
             r("official", "https://example.com/mine/"),
         ]);
         assert_eq!(got[0], official());
-        assert_eq!(got[0].url.as_str(), OFFICIAL_REPOSITORY.1);
-        assert_eq!(got[1].url.as_str(), LEGACY_OFFICIAL_URL);
+        assert_eq!(got[1].name, "mirror");
         assert_eq!(got[2].url.as_str(), "https://example.com/mine/");
         let k = "RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3".to_owned();
-        let pinned = r("official", LEGACY_OFFICIAL_URL)
-            .with_keys(vec![k.clone()])
-            .unwrap();
+        let pinned = r("official", url).with_keys(vec![k.clone()]).unwrap();
         assert_eq!(upgrade_official(vec![pinned])[0].keys, [k]);
-        assert_ne!(OFFICIAL_REPOSITORY.1, LEGACY_OFFICIAL_URL);
     }
 
     fn index(adapter_version: Option<&str>, with_vmm: bool) -> index::Index {
