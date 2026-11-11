@@ -51,6 +51,8 @@ directory, version order is a total order. The doc comment at the top of each ta
 | --- | --- | --- |
 | `guest_msg` | a message body and a stream of frames from the guest | [`sbx-guest-proto`](../../crates/spec/guest-proto/src/lib.rs) decoders, both directions |
 | `copy_from_guest` | a hostile guest's answer to `sbx cp` | `hostfs::receive`, `receive_bytes` in [`sbx-runtime`](../../crates/core/runtime/src/hostfs.rs), into a temp dir next to a directory that must stay untouched |
+| `copy_into_guest` | the host's side of `sbx cp` into a sandbox | `copy::receive` in [`sbx-guest`](../../crates/app/guest/src/copy.rs), into a temp dir next to a directory that must stay untouched; exactly one `Done` or `Error` |
+| `mcp_args` | an agent's tool arguments (JSON) | `mcp::run_args` in [`sbx-cli`](../../crates/app/cli/src/mcp.rs): accepted input becomes only the options it names, never `-v`, `--mount`, `--env-file`, `--entrypoint` or another label |
 | `egress_rules` | `--network allow=` rules and a guest's `Connect { host, port }` | `AllowRule` in `sbx-model`, [`egress::check`](../../crates/core/runtime/src/egress.rs) (IP hosts only, so no DNS), `is_public_ip` |
 | `shim_log` | a `main.log` file, and guest output written then read back | `LogWriter`, `LogReader` in [`sbx-shim`](../../crates/app/shim/src/log.rs) |
 | `oci_documents` | manifest, index and image config JSON, `WWW-Authenticate`, image references | [`sbx-oci`](../../crates/adapter/oci/src/manifest.rs), and the image's `User`, `StopSignal` and `Env` through [`process`](../../crates/core/runtime/src/process.rs) |
@@ -60,8 +62,9 @@ directory, version order is a total order. The doc comment at the top of each ta
 | `executor_spec` | `NAME@VERSION` (also what `.sbx-executor` holds), versions, repository URLs | `Spec`, `version_cmp`, `version_matches` in [`sbx-executor-install`](../../crates/spec/executor-install/src/lib.rs), `location::repository` |
 | `executor_unpack` | a package archive (the target gzips it) | `unpack::unpack` in [`sbx-executor-repo`](../../crates/spec/executor-repo/src/unpack.rs), into a temp dir next to one that must stay untouched |
 
-`sbx-runtime` and `sbx-manage` open their internal readers to the fuzz crate with a `fuzzing` feature;
-`check-deps` fails if `sbx-cli` or `sbx-shim` ever enables it.
+`sbx-runtime`, `sbx-manage` and `sbx-cli` open their internal readers to the fuzz crate with a `fuzzing` feature;
+`check-deps` fails if `sbx-cli` or `sbx-shim` ever enables it on a library they depend on, and release builds never
+enable `sbx-cli`'s own.
 
 ```sh
 rustup toolchain install nightly
@@ -81,8 +84,8 @@ owns the code (the fixes found so far each have one) and fix it there.
 The checked-in seeds in `fuzz/seeds/` are made by [`fuzz/examples/seeds.rs`](../../fuzz/examples/seeds.rs) with the
 real encoders (`encode`, `tar::Builder`, gzip, zstd, the shapes the unit tests use), which also checks that each seed
 gets past the first parser. Regenerate them with `cargo xtask fuzz --seeds` after changing a format; CI fails when they
-differ from the generator. Targets that take structured input (`copy_from_guest`, `rootfs_merge`, `shim_log`) have no
-seeds; libFuzzer grows them from nothing within seconds. When you add a parser that reads untrusted bytes, add a
+differ from the generator. Targets that take structured input (`copy_from_guest`, `copy_into_guest`, `rootfs_merge`, `shim_log`) and
+`mcp_args` (JSON, guided by its dictionary) have no seeds; libFuzzer grows them from nothing within seconds. When you add a parser that reads untrusted bytes, add a
 target (a file in `fuzz/fuzz_targets/` and a `[[bin]]` in `fuzz/Cargo.toml`); CI picks it up by file name.
 
 GitHub's runners are Linux, so CI fuzzes on Linux only. On macOS, `cargo fuzz` works the same on Apple Silicon.

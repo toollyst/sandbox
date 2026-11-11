@@ -1115,6 +1115,41 @@ async fn remove(ctx: &Server, a: &Args<'_>) -> AppResult<Value> {
     Ok(json!({ "removed": id }))
 }
 
+/// 퍼징(`fuzz/fuzz_targets/mcp_args.rs`): 도구 인자 하나를 `run`·`create`처럼 `sbx create`의 인자로 바꿔 보고,
+/// 바뀌었으면 그 결과가 인자가 말한 것만 담는지 본다(도구 입력이 다른 `sbx` 옵션이 되지 않는다). 어기면 패닉한다.
+#[cfg(feature = "fuzzing")]
+pub fn fuzz_tool_arguments(v: &Value, stdin: bool) {
+    let Ok(r) = run_args(&Args(v), stdin, KEEP_ALIVE) else {
+        return;
+    };
+    let strings = |k: &str| -> Vec<String> {
+        v.get(k)
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect())
+            .unwrap_or_default()
+    };
+    assert_eq!(Some(r.image()), v.get("image").and_then(Value::as_str));
+    let command = strings("command");
+    if command.is_empty() {
+        assert_eq!(r.command(), KEEP_ALIVE);
+    } else {
+        assert_eq!(r.command(), command);
+    }
+    // 호스트에 닿거나 사람이 정하는 옵션은 생기지 않는다.
+    assert!(r.volumes.is_empty() && r.mounts.is_empty() && r.env_file.is_empty());
+    assert!(r.entrypoint.is_none() && r.user.is_none() && r.hostname.is_none());
+    assert!(!r.tty && !r.rm && r.stop_signal.is_none() && r.stop_timeout.is_none());
+    assert_eq!(r.labels, [format!("{OWNER_LABEL}={OWNER_MCP}")]);
+    assert_eq!(r.interactive, stdin);
+    let allow = strings("allow");
+    assert_eq!(r.allow, allow);
+    assert_eq!(r.network, if allow.is_empty() { "none" } else { "allow" });
+    let env = v.get("env").and_then(Value::as_object);
+    assert_eq!(r.env.len(), env.map_or(0, |m| m.len()));
+    assert_eq!(r.name.as_deref(), v.get("name").and_then(Value::as_str));
+    assert_eq!(r.workdir.as_deref(), v.get("workdir").and_then(Value::as_str));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
