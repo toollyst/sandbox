@@ -39,12 +39,18 @@ use crate::attach::{self, attach};
 use crate::behavior::{self, ImageMatch, LookupError, RmiAction, RmiDecision, Step};
 use crate::cli::{
     AttachArgs, Cli, Command, ExecArgs, ExecutorCommand, Format, LogsArgs, RunArgs, StopArgs,
+    SystemCommand,
 };
 use crate::filter::{self, Filters};
 use crate::output;
 use crate::parse::{self, CpEndpoint};
 use crate::progress::Status;
 use crate::{choose, dirs, executors, guest, host};
+
+mod load;
+mod login;
+mod stats;
+mod system;
 
 /// `logs -f`, `events`가 새 기록을 보러 가는 간격.
 const FOLLOW_POLL: Duration = Duration::from_millis(100);
@@ -125,6 +131,22 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
     match &cli.command {
         Command::Pull { platform, image } => ctx.pull(platform.as_deref(), image).await,
         Command::Executor { command } => ctx.executor_cmd(command).await,
+        Command::Login {
+            username,
+            password_stdin,
+            server,
+        } => {
+            ctx.login(username.as_deref(), *password_stdin, server.as_deref())
+                .await
+        }
+        Command::Logout { server } => ctx.logout(server.as_deref()),
+        Command::Stats { no_stream, ids } => ctx.stats(*no_stream, ids).await,
+        Command::System { command } => match command {
+            SystemCommand::Df => ctx.system_df().await,
+            SystemCommand::Prune { all, force, filter } => {
+                ctx.system_prune(*all, *force, filter).await
+            }
+        },
         Command::Prepare {
             rootfs_format,
             image,
@@ -132,6 +154,15 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
         Command::Images { quiet, filter } => ctx.images(*quiet, filter),
         Command::Info => ctx.info().await,
         Command::Rmi { force, images } => ctx.rmi(*force, images).await,
+        Command::Load {
+            input,
+            tag,
+            platform,
+        } => {
+            ctx.load(input.as_deref(), tag.as_deref(), platform.as_deref())
+                .await
+        }
+        Command::Save { output, image } => ctx.save(output.as_deref(), image),
         Command::Run { attach, args } => ctx.run_sandbox(attach, args).await,
         Command::Create(a) => {
             if a.rm {
@@ -197,7 +228,8 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
 }
 
 /// 지금 유닉스 시각(나노초).
-fn now_ns() -> u64 {
+/// 지금 시각(유닉스 시각, 나노초).
+pub(crate) fn now_ns() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
@@ -232,7 +264,7 @@ impl LogSink {
     }
 
     /// 기록(또는 `--tail`의 줄) 하나를 쓴다. stdout이 닫혔으면 `false`.
-    fn write(&mut self, stream: Stream, time_ns: Option<u64>, data: &[u8]) -> AppResult<bool> {
+    fn write(&mut self, stream: Stream, time_ns: u64, data: &[u8]) -> AppResult<bool> {
         if self.json {
             for piece in data.split_inclusive(|&b| b == b'\n') {
                 // `--jq`도 여기서 적용한다(`render_line`).
@@ -249,13 +281,12 @@ impl LogSink {
         }
         let i = usize::from(stream == Stream::Stderr);
         let prefixed;
-        let data = match time_ns {
-            Some(t) if self.prefix => {
-                let prefix = format!("{} ", behavior::rfc3339_ns(t));
-                prefixed = behavior::prefix_lines(data, &prefix, &mut self.at_line_start[i]);
-                &prefixed[..]
-            }
-            _ => data,
+        let data = if self.prefix {
+            let prefix = format!("{} ", behavior::rfc3339_ns(time_ns));
+            prefixed = behavior::prefix_lines(data, &prefix, &mut self.at_line_start[i]);
+            &prefixed[..]
+        } else {
+            data
         };
         Ok(match stream {
             Stream::Stdout => self
@@ -283,6 +314,8 @@ pub(crate) struct Ctx {
     format: Format,
     /// 고른 실행기마다 실행 코어를 한 번만 만든다(실행기 `capabilities`와 게스트 init 확인을 되풀이하지 않는다).
     launchers: std::sync::Mutex<Vec<(choose::Chosen, Runtime)>>,
+    /// 받을 이미지의 크기 상한(`sbx mcp --max-image-size`).
+    pub(crate) max_image_bytes: Option<u64>,
 }
 
 impl Ctx {
@@ -292,6 +325,14 @@ impl Ctx {
             .clone()
             .or_else(dirs::cache_dir)
             .ok_or_else(|| msg("cannot determine a cache directory; use --cache-dir"))?;
+        let data_dir = cli
+            .data_dir
+            .clone()
+            .or_else(dirs::data_dir)
+            .ok_or_else(|| msg("cannot determine a data directory; use --data-dir"))?;
+        // 더 새 sbx가 바꾼 배치는 짐작하지 않고 거부한다(COMPATIBILITY.md).
+        crate::layout::check(&data_dir, "data directory").map_err(msg)?;
+        crate::layout::check(&cache_dir, "cache directory").map_err(msg)?;
         Ok(Self {
             socket_dir: cli
                 .socket_dir
@@ -299,16 +340,13 @@ impl Ctx {
                 .or_else(dirs::socket_dir)
                 .ok_or_else(|| msg("cannot determine a socket directory; use --socket-dir"))?,
             guest_init: cli.guest_init.clone(),
-            data_dir: cli
-                .data_dir
-                .clone()
-                .or_else(dirs::data_dir)
-                .ok_or_else(|| msg("cannot determine a data directory; use --data-dir"))?,
+            data_dir,
             cache_dir,
             executor: cli.executor.clone(),
             shim: cli.shim.clone(),
             format: cli.format,
             launchers: std::sync::Mutex::new(Vec::new()),
+            max_image_bytes: None,
         })
     }
 
@@ -332,9 +370,14 @@ impl Ctx {
     fn manager(&self) -> AppResult<Manager> {
         Ok(Manager::new(
             &self.cache_dir,
-            Arc::new(OciImageSource::new()?),
+            Arc::new(
+                OciImageSource::with_auth(crate::dirs::registry_auth())?
+                    .with_registries(crate::dirs::registries_conf())
+                    .with_policy(crate::dirs::signature_policy()),
+            ),
             vec![Arc::new(ErofsBuilder)],
-        )?)
+        )?
+        .with_max_image_bytes(self.max_image_bytes))
     }
 
     /// 게스트 init. 순서: `--guest-init` > sbx에 내장된 것([`guest::embedded`], VM을 띄울 때 관리 코어가 캐시에 꺼낸다)
@@ -437,7 +480,7 @@ impl Ctx {
         if let (Some(n), Some(r)) = (tail, &mut reader) {
             let mut records = Vec::new();
             while let Some(rec) = r.next_record()? {
-                if times.wants(rec.time_ns).map_err(msg)? {
+                if times.wants(rec.time_ns) {
                     records.push((rec.stream, rec.time_ns, rec.data));
                 }
             }
@@ -457,7 +500,7 @@ impl Ctx {
             }
             if let Some(r) = &mut reader {
                 while let Some(rec) = r.next_record()? {
-                    if times.wants(rec.time_ns).map_err(msg)?
+                    if times.wants(rec.time_ns)
                         && !sink.write(rec.stream, rec.time_ns, &rec.data)?
                     {
                         return Ok(0);
@@ -770,6 +813,8 @@ impl Ctx {
                     prepared: i.prepared.iter().map(|f| f.to_string()).collect(),
                     compressed_size: i.record.compressed_size(),
                     ignored_fields: i.record.ignored_fields.clone(),
+                    exposed_ports: i.record.config.exposed_ports.clone(),
+                    volumes: i.record.config.volumes.clone(),
                 })
                 .collect();
             output::print_value(&list)?;
@@ -933,7 +978,7 @@ impl Ctx {
                 .map(parse::memory_mib)
                 .transpose()?
                 .unwrap_or(behavior::DEFAULT_MEMORY_MIB),
-            scratch_disk_mib: behavior::DEFAULT_SCRATCH_MIB,
+            scratch_disk_mib: a.storage_opt.unwrap_or(behavior::DEFAULT_SCRATCH_MIB),
         };
         let mut mounts = a
             .volumes
@@ -1014,6 +1059,9 @@ impl Ctx {
                         open_stdin: a.interactive,
                         tty: a.tty,
                         name: a.name.clone(),
+                        lifetime_secs: a.timeout,
+                        ports: a.publish.clone(),
+                        egress_limit_bytes: a.egress_limit,
                     };
                     let sandbox = self.launcher_with(&chosen)?.create(spec).await?;
                     return Ok(sandbox.id().clone());
@@ -1130,11 +1178,33 @@ impl Ctx {
             user: a.user.as_deref().map(str::parse::<UserSpec>).transpose()?,
             tty: a.tty,
         };
+        if a.detach {
+            sandbox
+                .exec_detached(spec)
+                .await
+                .map_err(|e| start_failure(e, 1))?;
+            return Ok(0);
+        }
         let p = sandbox
             .exec_with(spec, io)
             .await
             .map_err(|e| start_failure(e, 1))?;
-        Ok(behavior::exit_byte(attach(p, io, a.interactive).await?))
+        let Some(secs) = a.timeout else {
+            return Ok(behavior::exit_byte(attach(p, io, a.interactive).await?));
+        };
+        let input = p.input();
+        let timer = tokio::task::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(secs)).await;
+            input.signal(behavior::SIGKILL);
+        });
+        let code = attach(p, io, a.interactive).await?;
+        let fired = timer.is_finished();
+        timer.abort();
+        if fired && code == behavior::EXIT_KILLED {
+            eprintln!("sbx: the command was killed after its --timeout of {secs}s");
+            return Ok(behavior::EXIT_TIMED_OUT);
+        }
+        Ok(behavior::exit_byte(code))
     }
 
     async fn cp(&self, src: &str, dst: &str) -> AppResult<u8> {
@@ -1336,7 +1406,7 @@ impl Ctx {
             f.allows("type", |v| v == e.kind)
                 && f.allows("event", |v| v == e.action)
                 && f.allows("sandbox", |v| {
-                    e.kind == sbx_runtime::EVENT_KIND
+                    (e.kind == sbx_runtime::EVENT_KIND || e.kind == sbx_runtime::NETWORK_EVENT_KIND)
                         && (e.id.starts_with(v) || attr("name") == Some(v))
                 })
                 && f.allows("image", |v| {
@@ -1368,9 +1438,11 @@ impl Ctx {
         };
         let mut readers = [
             sbx_runtime::events_log(&self.data_dir).reader(start)?,
+            sbx_runtime::network_log(&self.data_dir).reader(start)?,
             sbx_manage::events_log(&self.cache_dir).reader(start)?,
         ];
-        let mut out = std::io::stdout().lock();
+        // 표준 출력은 줄마다 비운다. 묶음마다 한 번 비우게 감싼다.
+        let mut out = std::io::BufWriter::new(std::io::stdout().lock());
         loop {
             // 끝낼 때인지 먼저 정하고 읽는다. 그 시각까지 덧붙은 것은 이번에 모두 읽힌다.
             let done = until.is_some_and(|u| now() > u);
@@ -1410,10 +1482,14 @@ impl Ctx {
                     )]
                 };
                 for line in lines {
-                    if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
+                    if writeln!(out, "{line}").is_err() {
                         return Ok(0);
                     }
                 }
+            }
+            // 묶음마다 한 번(줄마다 하면 많은 기록을 읽을 때 줄마다 쓰기 호출이 된다).
+            if out.flush().is_err() {
+                return Ok(0);
             }
             if done {
                 return Ok(0);

@@ -218,6 +218,21 @@ pub enum HostMsg {
     /// 기본 프로세스([`Exec::main`])에 시그널을 보낸다. 그 프로세스의 연결이 없는 쪽(다른 호스트 프로세스)도 보낼 수 있다.
     /// 번호는 Linux 번호다. 흐름: 게스트가 [`GuestMsg::Done`]. 실행 중인 기본 프로세스가 없으면 `NotFound` 오류.
     SignalMain(i32),
+    /// 프로세스를 떼어 놓고 실행한다(`sbx exec -d`). [`Exec`]의 `tty`, `stdin`, `main`은 거짓이어야 한다.
+    /// 표준 입출력은 `/dev/null`이다.
+    ///
+    /// 흐름: 게스트가 [`GuestMsg::Started`]를 보내고 닫는다. 연결이 닫혀도 프로세스는 계속 돈다.
+    /// 시작하지 못하면 [`GuestMsg::Error`]. 이 메시지를 모르는 게스트(0.2.0)는 `Protocol` 오류를 보낸다.
+    ExecDetached(Exec),
+    /// 자원 사용량을 묻는다(`sbx stats`). 흐름: 게스트가 [`GuestMsg::Usage`]. 모르는 게스트(0.2.0)는 답 없이 닫는다.
+    Usage,
+    /// 호스트에 온 TCP 연결 하나를 게스트 `127.0.0.1:port`로 잇는다(`-p`). 흐름: 게스트가 연결하면 [`GuestMsg::Done`],
+    /// 못 하면 [`GuestMsg::Error`]. `Done` 뒤로는 나가는 연결과 같다: 호스트는 [`HostMsg::Data`]·[`HostMsg::End`],
+    /// 게스트는 [`GuestMsg::Data`]·[`GuestMsg::End`]. 모르는 게스트(0.2.0)는 답 없이 닫는다.
+    Forward {
+        /// 게스트 포트.
+        port: u16,
+    },
 }
 
 /// 게스트 → 호스트.
@@ -263,6 +278,29 @@ pub enum GuestMsg {
         /// 포트.
         port: u16,
     },
+    /// [`HostMsg::Usage`]의 답.
+    Usage(Usage),
+}
+
+/// 게스트 전체의 자원 사용량. 게스트가 보고하는 값이라 호스트는 표시에만 쓴다(믿고 결정하지 않는다).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Usage {
+    /// 켜진 CPU 수.
+    pub cpus: u32,
+    /// 부팅 뒤 모든 CPU가 일한 시간(USER_HZ 틱, `/proc/stat`의 idle·iowait 밖).
+    pub cpu_busy: u64,
+    /// 부팅 뒤 모든 CPU의 전체 시간(같은 단위).
+    pub cpu_total: u64,
+    /// 메모리 전체(바이트, `MemTotal`).
+    pub memory_total: u64,
+    /// 쓰는 메모리(바이트, `MemTotal - MemAvailable`).
+    pub memory_used: u64,
+    /// 쓰기 디스크 전체(바이트, `/`의 statvfs).
+    pub disk_total: u64,
+    /// 쓰기 디스크에서 쓴 것(바이트).
+    pub disk_used: u64,
+    /// 프로세스 수.
+    pub pids: u32,
 }
 
 /// 복사 항목의 경로가 안전한 상대 경로인지 본다.
@@ -310,6 +348,9 @@ mod tag {
     pub const CONNECTED: u8 = 0x11;
     pub const REFUSED: u8 = 0x12;
     pub const SIGNAL_MAIN: u8 = 0x13;
+    pub const EXEC_DETACHED: u8 = 0x14;
+    pub const USAGE: u8 = 0x15;
+    pub const FORWARD: u8 = 0x16;
 
     pub const HELLO_ACK: u8 = 0x81;
     pub const STARTED: u8 = 0x82;
@@ -324,6 +365,7 @@ mod tag {
     pub const G_STAT: u8 = 0x8B;
     pub const LISTENING: u8 = 0x8C;
     pub const CONNECT: u8 = 0x8D;
+    pub const G_USAGE: u8 = 0x8E;
 }
 
 fn bad<T>(m: impl Into<String>) -> DecodeResult<T> {
@@ -452,8 +494,12 @@ impl HostMsg {
                 e = Encoder::new(tag::HELLO);
                 e.u32(*version);
             }
-            HostMsg::Exec(x) => {
-                e = Encoder::new(tag::EXEC);
+            HostMsg::Exec(x) | HostMsg::ExecDetached(x) => {
+                e = Encoder::new(if matches!(self, HostMsg::Exec(_)) {
+                    tag::EXEC
+                } else {
+                    tag::EXEC_DETACHED
+                });
                 e.list(&x.args, |e, a| {
                     e.str(a);
                 })
@@ -522,6 +568,11 @@ impl HostMsg {
                 e = Encoder::new(tag::SIGNAL_MAIN);
                 e.i32(*n);
             }
+            HostMsg::Usage => e = Encoder::new(tag::USAGE),
+            HostMsg::Forward { port } => {
+                e = Encoder::new(tag::FORWARD);
+                e.u16(*port);
+            }
         }
         e.finish()
     }
@@ -531,7 +582,7 @@ impl HostMsg {
         let mut d = Decoder::new(body);
         let msg = match d.u8()? {
             tag::HELLO => HostMsg::Hello { version: d.u32()? },
-            tag::EXEC => {
+            t @ (tag::EXEC | tag::EXEC_DETACHED) => {
                 let args = d.list(|d| d.string())?;
                 let env = d.list(|d| Ok((d.string()?, d.string()?)))?;
                 let cwd = d.string()?;
@@ -539,7 +590,7 @@ impl HostMsg {
                     user: dec_ident(&mut d)?,
                     group: d.opt(dec_ident)?,
                 };
-                HostMsg::Exec(Exec {
+                let x = Exec {
                     args,
                     env,
                     cwd,
@@ -548,7 +599,12 @@ impl HostMsg {
                     stdin: d.bool()?,
                     size: d.opt(dec_size)?,
                     main: d.bool()?,
-                })
+                };
+                if t == tag::EXEC {
+                    HostMsg::Exec(x)
+                } else {
+                    HostMsg::ExecDetached(x)
+                }
             }
             tag::STDIN => HostMsg::Stdin(d.bytes()?.to_vec()),
             tag::STDIN_CLOSE => HostMsg::StdinClose,
@@ -573,6 +629,8 @@ impl HostMsg {
                 reason: d.string()?,
             },
             tag::SIGNAL_MAIN => HostMsg::SignalMain(d.i32()?),
+            tag::USAGE => HostMsg::Usage,
+            tag::FORWARD => HostMsg::Forward { port: d.u16()? },
             t => return bad(format!("unknown host message {t:#04x}")),
         };
         d.end()?;
@@ -644,6 +702,17 @@ impl GuestMsg {
                 e = Encoder::new(tag::CONNECT);
                 e.str(host).u16(*port);
             }
+            GuestMsg::Usage(u) => {
+                e = Encoder::new(tag::G_USAGE);
+                e.u32(u.cpus)
+                    .u64(u.cpu_busy)
+                    .u64(u.cpu_total)
+                    .u64(u.memory_total)
+                    .u64(u.memory_used)
+                    .u64(u.disk_total)
+                    .u64(u.disk_used)
+                    .u32(u.pids);
+            }
         }
         e.finish()
     }
@@ -675,6 +744,16 @@ impl GuestMsg {
                 host: d.string()?,
                 port: d.u16()?,
             },
+            tag::G_USAGE => GuestMsg::Usage(Usage {
+                cpus: d.u32()?,
+                cpu_busy: d.u64()?,
+                cpu_total: d.u64()?,
+                memory_total: d.u64()?,
+                memory_used: d.u64()?,
+                disk_total: d.u64()?,
+                disk_used: d.u64()?,
+                pids: d.u32()?,
+            }),
             t => return bad(format!("unknown guest message {t:#04x}")),
         };
         d.end()?;

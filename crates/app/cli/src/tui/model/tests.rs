@@ -130,6 +130,13 @@ fn keys_become_sbx_command_lines_for_the_selected_sandbox() {
         press(&mut m, KeyCode::Char('l')),
         Some(Action::Handover(strings(&["logs", "-f", "web"])))
     );
+    assert_eq!(
+        press(&mut m, KeyCode::Char('T')),
+        Some(Action::Handover(strings(&["stats", "web"])))
+    );
+    // E는 명령을 칠 수 있게 명령 줄을 채운다.
+    assert_eq!(press(&mut m, KeyCode::Char('E')), None);
+    assert_eq!(m.prompt.take().unwrap().text, "exec -d web ");
     // 이름이 없으면 전체 ID.
     press(&mut m, KeyCode::Down);
     assert_eq!(
@@ -166,6 +173,12 @@ fn destructive_keys_ask_first() {
             "docker.io/library/alpine:3.20"
         ])))
     );
+    // O는 save를 채운다(파일 이름은 사용자가).
+    assert_eq!(press(&mut m, KeyCode::Char('O')), None);
+    assert_eq!(
+        m.prompt.take().unwrap().text,
+        "save docker.io/library/alpine:3.20 -o "
+    );
 }
 
 #[test]
@@ -173,7 +186,8 @@ fn every_listed_letter_key_does_something() {
     for h in KEYS.iter().filter(|h| h.tabs == "sandboxes") {
         let mut m = loaded();
         let c = h.keys.chars().next().unwrap();
-        let acted = press(&mut m, KeyCode::Char(c)).is_some() || m.popup.is_some();
+        let acted =
+            press(&mut m, KeyCode::Char(c)).is_some() || m.popup.is_some() || m.prompt.is_some();
         assert!(acted, "{:?}", h.keys);
     }
     for h in KEYS.iter().filter(|h| h.tabs == "executors") {
@@ -449,4 +463,28 @@ fn executors_tab_lists_executors_then_adapters_and_runs_executor_commands() {
     assert!(
         matches!(&m.popup, Some(Popup::Detail { title, .. }) if title == "Executor wick@1.18.0")
     );
+}
+
+#[test]
+fn images_tab_prunes_and_shows_disk_usage() {
+    let mut m = Model::default();
+    press(&mut m, KeyCode::Tab);
+    assert_eq!(m.tab(), Tab::Images);
+    // 고른 이미지가 없어도 된다.
+    press(&mut m, KeyCode::Char('P'));
+    assert_eq!(
+        m.popup,
+        Some(Popup::Confirm {
+            args: strings(&["system", "prune", "-a", "-f"])
+        })
+    );
+    m.popup = None;
+    assert_eq!(
+        press(&mut m, KeyCode::Char('U')),
+        Some(Action::Handover(strings(&["system", "df"])))
+    );
+    assert_eq!(press(&mut m, KeyCode::Char('L')), None);
+    assert_eq!(m.prompt.take().unwrap().text, "login ");
+    assert_eq!(press(&mut m, KeyCode::Char('I')), None);
+    assert_eq!(m.prompt.take().unwrap().text, "load -i ");
 }

@@ -73,12 +73,35 @@ struct Server {
     reserved: std::cell::Cell<u32>,
 }
 
-/// `sbx mcp --max-sandboxes`, `--max-cpus`, `--max-memory`.
+/// `sbx mcp --max-sandboxes`, `--max-cpus`, `--max-memory`, `--max-disk`, `--max-lifetime`, `--max-egress`,
+/// `--allow-private-network`. `--max-image-size`는 [`Ctx`]의 관리 코어가 본다.
 #[derive(Debug, Clone, Copy)]
 struct Limits {
     sandboxes: u32,
     cpus: u8,
     memory_mib: u32,
+    disk_mib: u32,
+    /// 샌드박스 하나가 시작마다 돌 수 있는 가장 긴 시간(초). 있으면 `lifetime`을 주지 않은 샌드박스도 이만큼 뒤에 멈춘다.
+    lifetime_secs: Option<u64>,
+    /// 나가는 연결이 있는 샌드박스 하나가 시작마다 주고받을 수 있는 바이트. 있으면 그 샌드박스의 상한이 된다.
+    egress_bytes: Option<u64>,
+    /// 허용 목록에 루프백·사설·링크 로컬 IP와 `localhost`를 받는다.
+    private_network: bool,
+}
+
+/// 에이전트가 준 허용 규칙이 이 기계, LAN, 클라우드 메타데이터(169.254.169.254)를 여는가. 이름 규칙은 실행 코어가
+/// 그 이름이 사설 주소로 풀리면 거부하므로, 여기서는 IP를 직접 적은 규칙과 `localhost`만 본다.
+fn opens_private_network(rule: &str) -> bool {
+    match rule.parse::<sbx_model::AllowRule>() {
+        Ok(r) => {
+            r.host == "localhost"
+                || r.host
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|ip| !sbx_model::is_public_ip(ip))
+        }
+        // 해석은 CLI 파서가 다시 하고 거기서 오류를 낸다.
+        Err(_) => false,
+    }
 }
 
 /// 만드는 동안 쥐는 자리. 놓으면 [`Server::reserved`]에서 뺀다.
@@ -105,8 +128,32 @@ impl Server {
 
     /// 만들 샌드박스가 상한 안인지 보고 자리를 잡는다. vCPU와 메모리는 호출 하나의 상한, 개수는 MCP로 만든
     /// 샌드박스(지우기 전까지, 만드는 중인 것 포함)의 상한이다.
-    async fn admit(&self, spec: &RunArgs) -> AppResult<Seat<'_>> {
+    async fn admit(&self, spec: &mut RunArgs) -> AppResult<Seat<'_>> {
         let l = self.limits;
+        if let Some(max) = l.lifetime_secs {
+            match spec.timeout {
+                Some(t) if t > max => {
+                    return Err(format!(
+                        "`lifetime` {t}s is above this server's limit of {max}s (sbx mcp --max-lifetime)"
+                    )
+                    .into());
+                }
+                Some(_) => {}
+                None => spec.timeout = Some(max),
+            }
+        }
+        if !spec.allow.is_empty() && spec.egress_limit.is_none() {
+            spec.egress_limit = l.egress_bytes;
+        }
+        if !l.private_network
+            && let Some(r) = spec.allow.iter().find(|r| opens_private_network(r))
+        {
+            return Err(format!(
+                "`allow` {r:?} opens a loopback, private or link-local address, which this server does not allow \
+                 (sbx mcp --allow-private-network)"
+            )
+            .into());
+        }
         let cpus: u8 = spec
             .cpus
             .as_deref()
@@ -127,6 +174,16 @@ impl Server {
             return Err(format!(
                 "`memory` {memory} MiB is above this server's limit of {} MiB (sbx mcp --max-memory)",
                 l.memory_mib
+            )
+            .into());
+        }
+        let disk = spec
+            .storage_opt
+            .unwrap_or(crate::behavior::DEFAULT_SCRATCH_MIB);
+        if disk > l.disk_mib {
+            return Err(format!(
+                "`disk` {disk} MiB is above this server's limit of {} MiB (sbx mcp --max-disk)",
+                l.disk_mib
             )
             .into());
         }
@@ -181,17 +238,30 @@ pub async fn serve(cli: &Cli) -> AppResult<u8> {
         max_sandboxes,
         max_cpus,
         max_memory,
+        max_disk,
+        max_lifetime,
+        max_egress,
+        max_image_size,
+        allow_private_network,
     } = cli.command
     else {
         return Err("internal: not the mcp command".into());
     };
     let ctx = Rc::new(Server {
-        ctx: Ctx::new(cli)?,
+        ctx: {
+            let mut c = Ctx::new(cli)?;
+            c.max_image_bytes = max_image_size;
+            c
+        },
         all_sandboxes,
         limits: Limits {
             sandboxes: max_sandboxes,
             cpus: max_cpus,
             memory_mib: max_memory,
+            disk_mib: max_disk,
+            lifetime_secs: max_lifetime,
+            egress_bytes: max_egress,
+            private_network: allow_private_network,
         },
         reserved: Default::default(),
     });
@@ -470,6 +540,8 @@ pub fn tools() -> Value {
     let cpus = json!({ "type": "integer", "minimum": 1, "maximum": 255, "description": "vCPUs (default 1)." });
     let memory =
         json!({ "type": "string", "description": "Memory, e.g. 512m or 2g (default 512m)." });
+    let disk = json!({ "type": "string", "description": "Writable disk size, e.g. 4g or 20g (default 1g). Sparse: only what is written uses host disk." });
+    let lifetime = json!({ "type": "string", "description": "Stop the sandbox this long after it starts, e.g. 30m or 2h (seconds if a plain number). Without it, it runs until stopped or removed, unless the server sets --max-lifetime." });
     let id = json!({ "type": "string", "description": "Sandbox ID (or a unique prefix), or the name given to create." });
     let name = json!({ "type": "string", "description": "Optional unique name (letters, digits, _ . -) to use in place of the ID." });
     let path = json!({ "type": "string", "description": "Absolute path inside the sandbox." });
@@ -477,6 +549,10 @@ pub fn tools() -> Value {
     let output = json!({ "type": "object", "properties": {
         "exit_code": { "type": ["integer", "null"] }, "stdout": { "type": "string" }, "stderr": { "type": "string" },
         "timed_out": { "type": "boolean" }, "truncated": { "type": "boolean" } } });
+    let id_out = json!({ "type": "object", "required": ["id"], "properties": { "id": { "type": "string" } } });
+    // annotations: 클라이언트가 확인을 묻거나 자동 승인을 정할 때 쓰는 힌트(MCP 2025-03-26부터). 결과를 믿게 하는
+    // 것이 아니다. openWorld는 바깥(네트워크)에 닿을 수 있는가: allow를 줄 수 있는 도구만.
+    let annotations = |read_only: bool, destructive: bool, idempotent: bool, open_world: bool| json!({ "readOnlyHint": read_only, "destructiveHint": destructive, "idempotentHint": idempotent, "openWorldHint": open_world });
     json!([
         {
             "name": "run",
@@ -484,8 +560,9 @@ pub fn tools() -> Value {
             "description": "Start a fresh microVM from an image, run one command, return its exit code and output, then delete the sandbox.",
             "inputSchema": { "type": "object", "required": ["image"], "properties": {
                 "image": image, "command": command, "env": env, "workdir": workdir, "allow": allow,
-                "stdin": stdin, "timeout_secs": timeout, "cpus": cpus, "memory": memory } },
+                "stdin": stdin, "timeout_secs": timeout, "cpus": cpus, "memory": memory, "disk": disk } },
             "outputSchema": output,
+            "annotations": annotations(false, false, false, true),
         },
         {
             "name": "create",
@@ -493,7 +570,9 @@ pub fn tools() -> Value {
             "description": "Start a microVM that keeps running (by default its main process is `sleep infinity`) for exec, write_file and read_file. It stays until remove, even after this server exits.",
             "inputSchema": { "type": "object", "required": ["image"], "properties": {
                 "image": image, "name": name, "command": command, "env": env, "workdir": workdir, "allow": allow,
-                "cpus": cpus, "memory": memory } },
+                "cpus": cpus, "memory": memory, "disk": disk, "lifetime": lifetime } },
+            "outputSchema": id_out,
+            "annotations": annotations(false, false, false, true),
         },
         {
             "name": "exec",
@@ -502,6 +581,8 @@ pub fn tools() -> Value {
             "inputSchema": { "type": "object", "required": ["id", "command"], "properties": {
                 "id": id, "command": command, "env": env, "workdir": workdir, "stdin": stdin, "timeout_secs": timeout } },
             "outputSchema": output,
+            // 그 샌드박스가 연 네트워크를 쓸 수 있다.
+            "annotations": annotations(false, true, false, true),
         },
         {
             "name": "write_file",
@@ -509,24 +590,39 @@ pub fn tools() -> Value {
             "description": "Create or replace a file in a running sandbox. Missing parent directories are created.",
             "inputSchema": { "type": "object", "required": ["id", "path", "content"], "properties": {
                 "id": id, "path": path, "content": { "type": "string" }, "encoding": encoding } },
+            "outputSchema": { "type": "object", "required": ["path", "bytes"], "properties": {
+                "path": { "type": "string" }, "bytes": { "type": "integer" } } },
+            "annotations": annotations(false, true, true, false),
         },
         {
             "name": "read_file",
             "title": "Read a file from a sandbox",
             "description": format!("Read a file (up to {} MiB) from a running sandbox. Text comes back as utf-8, anything else as base64.", FILE_LIMIT >> 20),
             "inputSchema": { "type": "object", "required": ["id", "path"], "properties": { "id": id, "path": path } },
+            "outputSchema": { "type": "object", "required": ["path", "encoding", "content"], "properties": {
+                "path": { "type": "string" }, "encoding": { "type": "string", "enum": ["utf-8", "base64"] },
+                "content": { "type": "string" } } },
+            "annotations": annotations(true, false, true, false),
         },
         {
             "name": "list",
             "title": "List sandboxes",
             "description": "List all sandboxes with their name, image, command and state.",
             "inputSchema": { "type": "object", "properties": {} },
+            "outputSchema": { "type": "object", "required": ["sandboxes"], "properties": { "sandboxes": {
+                "type": "array", "items": { "type": "object", "properties": {
+                    "id": { "type": "string" }, "name": { "type": ["string", "null"] }, "image": { "type": ["string", "null"] },
+                    "command": { "type": "array", "items": { "type": "string" } }, "state": { "type": "string" },
+                    "exit_code": { "type": ["integer", "null"] }, "error": { "type": ["string", "null"] } } } } } },
+            "annotations": annotations(true, false, true, false),
         },
         {
             "name": "remove",
             "title": "Remove a sandbox",
             "description": "Stop a sandbox immediately if it is running, and delete it.",
             "inputSchema": { "type": "object", "required": ["id"], "properties": { "id": id } },
+            "outputSchema": { "type": "object", "required": ["removed"], "properties": { "removed": { "type": "string" } } },
+            "annotations": annotations(false, true, true, false),
         },
     ])
 }
@@ -697,6 +793,12 @@ fn run_args(a: &Args, stdin: bool, default_command: &[&str]) -> AppResult<RunArg
     if let Some(m) = a.str("memory")? {
         argv.push(format!("--memory={m}"));
     }
+    if let Some(d) = a.str("disk")? {
+        argv.push(format!("--storage-opt=size={d}"));
+    }
+    if let Some(t) = a.str("lifetime")? {
+        argv.push(format!("--timeout={t}"));
+    }
     if let Some(n) = a.str("name")? {
         argv.push(format!("--name={n}"));
     }
@@ -788,8 +890,8 @@ fn feed(p: &Process, stdin: Option<&str>) {
 async fn run(ctx: &Server, a: &Args<'_>, progress: &Progress, cancel: &Cancel) -> AppResult<Value> {
     let stdin = a.str("stdin")?;
     let timeout = a.timeout()?;
-    let spec = run_args(a, stdin.is_some(), &[])?;
-    let seat = ctx.admit(&spec).await?;
+    let mut spec = run_args(a, stdin.is_some(), &[])?;
+    let seat = ctx.admit(&mut spec).await?;
     let report = |p| progress.pull(spec.image(), p);
     let id = tokio::select! {
         id = ctx.create_with(&spec, &report) => id?,
@@ -830,8 +932,8 @@ async fn run(ctx: &Server, a: &Args<'_>, progress: &Progress, cancel: &Cancel) -
 }
 
 async fn create(ctx: &Server, a: &Args<'_>, progress: &Progress) -> AppResult<Value> {
-    let spec = run_args(a, false, KEEP_ALIVE)?;
-    let seat = ctx.admit(&spec).await?;
+    let mut spec = run_args(a, false, KEEP_ALIVE)?;
+    let seat = ctx.admit(&mut spec).await?;
     let id = ctx
         .create_with(&spec, &|p| progress.pull(spec.image(), p))
         .await?;
@@ -1026,6 +1128,48 @@ async fn remove(ctx: &Server, a: &Args<'_>) -> AppResult<Value> {
     Ok(json!({ "removed": id }))
 }
 
+/// 퍼징(`fuzz/fuzz_targets/mcp_args.rs`): 도구 인자 하나를 `run`·`create`처럼 `sbx create`의 인자로 바꿔 보고,
+/// 바뀌었으면 그 결과가 인자가 말한 것만 담는지 본다(도구 입력이 다른 `sbx` 옵션이 되지 않는다). 어기면 패닉한다.
+#[cfg(feature = "fuzzing")]
+pub fn fuzz_tool_arguments(v: &Value, stdin: bool) {
+    let Ok(r) = run_args(&Args(v), stdin, KEEP_ALIVE) else {
+        return;
+    };
+    let strings = |k: &str| -> Vec<String> {
+        v.get(k)
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    assert_eq!(Some(r.image()), v.get("image").and_then(Value::as_str));
+    let command = strings("command");
+    if command.is_empty() {
+        assert_eq!(r.command(), KEEP_ALIVE);
+    } else {
+        assert_eq!(r.command(), command);
+    }
+    // 호스트에 닿거나 사람이 정하는 옵션은 생기지 않는다.
+    assert!(r.volumes.is_empty() && r.mounts.is_empty() && r.env_file.is_empty());
+    assert!(r.entrypoint.is_none() && r.user.is_none() && r.hostname.is_none());
+    assert!(!r.tty && !r.rm && r.stop_signal.is_none() && r.stop_timeout.is_none());
+    assert_eq!(r.labels, [format!("{OWNER_LABEL}={OWNER_MCP}")]);
+    assert_eq!(r.interactive, stdin);
+    let allow = strings("allow");
+    assert_eq!(r.allow, allow);
+    assert_eq!(r.network, if allow.is_empty() { "none" } else { "allow" });
+    let env = v.get("env").and_then(Value::as_object);
+    assert_eq!(r.env.len(), env.map_or(0, |m| m.len()));
+    assert_eq!(r.name.as_deref(), v.get("name").and_then(Value::as_str));
+    assert_eq!(
+        r.workdir.as_deref(),
+        v.get("workdir").and_then(Value::as_str)
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1066,10 +1210,13 @@ mod tests {
                 "allow": ["pypi.org:443"],
                 "cpus": 2,
                 "memory": "1g",
+                "disk": "4g",
+                "lifetime": "1h30m",
             }),
             true,
         )
         .unwrap();
+        assert_eq!((r.storage_opt, r.timeout), (Some(4096), Some(5400)));
         assert_eq!(r.image(), "python:3.12-alpine");
         assert_eq!(r.command(), ["python", "-c", "print(1)"]);
         assert_eq!(r.env, ["A=1=2"]);
@@ -1203,6 +1350,29 @@ mod tests {
         );
         for t in tools.as_array().unwrap() {
             assert_eq!(t["inputSchema"]["type"], "object", "{}", t["name"]);
+        }
+    }
+
+    #[test]
+    fn agents_cannot_open_this_machine_or_the_lan_by_address() {
+        for r in [
+            "localhost:80",
+            "127.0.0.1:*",
+            "169.254.169.254:80",
+            "10.0.0.1:22",
+            "192.168.1.1:443",
+            "[::1]:8080",
+            "[fd00::1]:80",
+        ] {
+            assert!(opens_private_network(r), "{r}");
+        }
+        for r in [
+            "pypi.org:443",
+            "*.github.com:443",
+            "1.1.1.1:53",
+            "[2606:4700::1111]:443",
+        ] {
+            assert!(!opens_private_network(r), "{r}");
         }
     }
 

@@ -112,7 +112,16 @@ fn walk(
     }))?;
     match kind {
         FileKind::File { size } => {
-            let mut r = File::open(p)?.take(size);
+            // 위에서 본 뒤 링크나 FIFO로 바뀌었으면 따라가거나 멈추지 않는다(다른 사용자도 쓰는 디렉터리).
+            let f = open_no_follow(p)?;
+            let now = f.metadata()?;
+            if !now.is_file() || now.len() != size {
+                return Err(RuntimeError::Invalid(format!(
+                    "{} changed while copying",
+                    p.display()
+                )));
+            }
+            let mut r = f.take(size);
             let mut buf = vec![0; CHUNK_LEN];
             let mut sent = 0u64;
             loop {
@@ -222,6 +231,15 @@ fn target(dest: &Path, rel: &str) -> Result<PathBuf, RuntimeError> {
     Ok(p)
 }
 
+/// 보내는 파일을 연다. 마지막 조각이 심볼릭 링크면 따라가지 않고, FIFO여도 열 때 막히지 않는다.
+fn open_no_follow(p: &Path) -> io::Result<File> {
+    let mut o = OpenOptions::new();
+    o.read(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut o, libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    o.open(p)
+}
+
 /// 디렉터리가 아닌 기존 항목을 지운다. 디렉터리가 있으면 `true`.
 fn clear(path: &Path) -> io::Result<bool> {
     match fs::symlink_metadata(path) {
@@ -232,9 +250,10 @@ fn clear(path: &Path) -> io::Result<bool> {
     }
 }
 
-/// 받은 항목에 둘 권한. 게스트가 고른 setuid, setgid, sticky 비트는 버린다.
+/// 받은 항목에 둘 권한. 게스트가 고른 setuid, setgid, sticky 비트와 그룹·다른 사용자의 쓰기 비트는 버린다
+/// (게스트가 호스트에 다른 사용자도 쓸 수 있는 디렉터리를 만들지 못하게).
 #[cfg(unix)]
-const RECEIVED_MODE_MASK: u32 = 0o777;
+const RECEIVED_MODE_MASK: u32 = 0o755;
 
 #[cfg(unix)]
 fn set_mode(p: &Path, mode: u32) -> io::Result<()> {
@@ -567,7 +586,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn setuid_setgid_and_sticky_bits_are_dropped() {
+    fn setuid_setgid_sticky_and_shared_write_bits_are_dropped() {
         use std::os::unix::fs::PermissionsExt;
         let d = dest("mode");
         let mut next = feed(vec![
@@ -577,7 +596,7 @@ mod tests {
         receive(&d, "t", Some("t"), &mut next).unwrap();
         let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o7777;
         assert_eq!(mode(&d.join("t/suid")), 0o755);
-        assert_eq!(mode(&d.join("t")), 0o777);
+        assert_eq!(mode(&d.join("t")), 0o755);
     }
 
     #[test]

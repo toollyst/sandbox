@@ -88,6 +88,6 @@ fuzz_target!(|input: Input| {
         } else {
             assert_eq!(&rec.data, data, "record {i} is not what was written");
         }
-        assert!(rec.time_ns.is_some());
+        assert!(rec.time_ns > 0, "record {i} has no time");
     }
 });

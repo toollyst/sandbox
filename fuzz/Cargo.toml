@@ -35,6 +35,8 @@ sbx-oci = { path = "../crates/adapter/oci" }
 sbx-runtime = { path = "../crates/core/runtime", features = ["fuzzing"] }
 sbx-manage = { path = "../crates/core/manage", features = ["fuzzing"] }
 sbx-shim = { path = "../crates/app/shim" }
+sbx-guest = { path = "../crates/app/guest" }
+sbx-cli = { path = "../crates/app/cli", features = ["fuzzing"] }
 
 [profile.release]
 debug = 1
@@ -105,6 +107,20 @@ bench = false
 [[bin]]
 name = "executor_unpack"
 path = "fuzz_targets/executor_unpack.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "copy_into_guest"
+path = "fuzz_targets/copy_into_guest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mcp_args"
+path = "fuzz_targets/mcp_args.rs"
 test = false
 doc = false
 bench = false

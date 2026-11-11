@@ -58,6 +58,7 @@ pub fn serve<C: Conn>(conn: C, ctx: &Ctx) {
 
     match HostMsg::read_from(&mut input) {
         Ok(HostMsg::Exec(x)) => exec::run(x, &ctx.root, input, out, &ctx.main),
+        Ok(HostMsg::ExecDetached(x)) => exec::run_detached(x, &ctx.root, out),
         Ok(HostMsg::CopyIn { dest }) => copy::receive(&dest, &mut input, &out),
         Ok(HostMsg::CopyOut { path }) => copy::send(&path, &out),
         Ok(HostMsg::Stat { path }) => copy::stat(&path, &out),
@@ -105,6 +106,13 @@ pub fn serve<C: Conn>(conn: C, ctx: &Ctx) {
                 ));
             }
         }
+        Ok(HostMsg::Forward { port }) => crate::egress::forward(port, input, &out),
+        Ok(HostMsg::Usage) => match crate::usage::read() {
+            Ok(u) => {
+                let _ = out.send(&GuestMsg::Usage(u));
+            }
+            Err(e) => out.error(crate::wire::io_error("usage", &e)),
+        },
         Ok(HostMsg::Shutdown) => {
             sys::sync();
             let _ = out.send(&GuestMsg::Done);

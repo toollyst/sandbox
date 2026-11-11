@@ -484,10 +484,43 @@ impl Model {
                         a.push(SHELL.to_owned());
                         Some(Action::Handover(a))
                     }
+                    'E' => {
+                        // 명령은 사용자가 친다. 떼어 놓으므로 터미널을 넘기지 않는다.
+                        self.prompt = Some(Prompt {
+                            kind: PromptKind::Command,
+                            text: format!("exec -d {target} "),
+                        });
+                        None
+                    }
                     'a' => Some(Action::Handover(args(&["attach"], target))),
                     'l' => Some(Action::Handover(args(&["logs", "-f"], target))),
+                    'T' => Some(Action::Handover(args(&["stats"], target))),
                     _ => None,
                 }
+            }
+            // 고른 줄이 없어도 된다.
+            Tab::Images if c == 'P' => self.confirm(
+                ["system", "prune", "-a", "-f"]
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+            ),
+            Tab::Images if c == 'U' => Some(Action::Handover(vec!["system".into(), "df".into()])),
+            Tab::Images if c == 'L' => {
+                // 레지스트리를 쳐서 끝낸다. 터미널을 넘기므로 비밀번호는 sbx login이 보이지 않게 묻는다.
+                self.prompt = Some(Prompt {
+                    kind: PromptKind::Command,
+                    text: "login ".into(),
+                });
+                None
+            }
+            Tab::Images if c == 'I' => {
+                // 파일 이름을 쳐서 끝낸다.
+                self.prompt = Some(Prompt {
+                    kind: PromptKind::Command,
+                    text: "load -i ".into(),
+                });
+                None
             }
             Tab::Images => {
                 let image = self.selected_image()?;
@@ -498,6 +531,13 @@ impl Model {
                     .unwrap_or_else(|| image.id.clone());
                 match c {
                     'D' => self.confirm(args(&["rmi"], target)),
+                    'O' => {
+                        self.prompt = Some(Prompt {
+                            kind: PromptKind::Command,
+                            text: format!("save {target} -o "),
+                        });
+                        None
+                    }
                     _ => None,
                 }
             }

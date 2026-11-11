@@ -444,6 +444,14 @@ fn executors(frame: &mut Frame, model: &mut Model, area: Rect) {
 /// 실행기 탭 한 줄의 칸: 표시(`>` 지금 쓸 것, `*` 기본), 종류, 이름, 버전, 어댑터나 그것을 쓰는 VMM 묶음, 출처, 경로.
 fn executor_cells(r: &ExecutorRow, current: Option<&str>) -> [String; 7] {
     let dash = |v: Option<String>| v.unwrap_or_else(|| "-".into());
+    // 저장소가 거둔 버전은 뒤에 표시를 붙인다(알림 문구는 상세 창에).
+    let version = |v: &str, yanked: bool| {
+        if yanked {
+            format!("{v} (yanked)")
+        } else {
+            v.to_owned()
+        }
+    };
     match r {
         ExecutorRow::Executor(e) => {
             let mark = if current == Some(r.spec().as_str()) {
@@ -457,7 +465,7 @@ fn executor_cells(r: &ExecutorRow, current: Option<&str>) -> [String; 7] {
                 mark.into(),
                 "executor".into(),
                 e.name.clone(),
-                e.version.clone(),
+                version(&e.version, e.yanked),
                 dash(e.adapter.clone()),
                 dash(e.origin.clone()),
                 e.path.clone(),
@@ -467,7 +475,7 @@ fn executor_cells(r: &ExecutorRow, current: Option<&str>) -> [String; 7] {
             String::new(),
             "adapter".into(),
             a.name.clone(),
-            a.version.clone(),
+            version(&a.version, a.yanked),
             dash((!a.used_by.is_empty()).then(|| a.used_by.join(", "))),
             dash(a.origin.clone()),
             a.path.clone(),
@@ -582,8 +590,11 @@ fn hints(model: &Model) -> Vec<(&'static str, &'static str)> {
             ("D", "rm"),
             ("enter", "details"),
         ]),
-        Tab::Images if !model.visible_images().is_empty() => {
-            h.extend([("D", "rmi"), ("enter", "details")])
+        Tab::Images => {
+            if !model.visible_images().is_empty() {
+                h.extend([("D", "rmi"), ("O", "save"), ("enter", "details")]);
+            }
+            h.extend([("I", "load"), ("L", "login"), ("U", "usage")]);
         }
         Tab::Events if !model.visible_events().is_empty() => h.push(("enter", "details")),
         Tab::Executors => {

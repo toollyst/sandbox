@@ -25,6 +25,39 @@ use sbx_guest_proto::{GuestMsg, HostMsg};
 
 use crate::wire::Conn;
 
+/// `-p`(`HostMsg::Forward`): 게스트 안 서비스에 연결하는 시간.
+pub const FORWARD_DIAL: Duration = Duration::from_secs(5);
+
+/// `HostMsg::Forward`: `127.0.0.1:port`에 연결하고 `Done`, 그 뒤로 이 연결을 그 TCP 연결에 잇는다.
+/// 연결하지 못하면 `Error`(듣는 것이 없으면 `NotFound`).
+pub fn forward<C: Conn>(port: u16, conn: C, out: &crate::wire::Out) {
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let tcp = match TcpStream::connect_timeout(&addr, FORWARD_DIAL) {
+        Ok(t) => t,
+        Err(e) => {
+            let kind = if e.kind() == io::ErrorKind::ConnectionRefused {
+                sbx_guest_proto::ErrorKind::NotFound
+            } else {
+                sbx_guest_proto::ErrorKind::Io
+            };
+            out.error(sbx_guest_proto::Error::new(
+                kind,
+                format!("nothing answered on port {port} in the sandbox: {e}"),
+            ));
+            return;
+        }
+    };
+    if out.send(&GuestMsg::Done).is_err() {
+        return;
+    }
+    match Slot::new(conn) {
+        Ok(slot) => splice(tcp, slot, &[]),
+        Err(_) => {
+            let _ = tcp.shutdown(Shutdown::Both);
+        }
+    }
+}
+
 /// 맡겨 둔 연결을 기다리는 시간.
 pub const SLOT_WAIT: Duration = Duration::from_secs(10);
 
@@ -251,7 +284,7 @@ fn reply(client: &mut TcpStream, code: u16, reason: &str) {
 }
 
 /// 양쪽을 잇는다. `first`는 목적지로 먼저 보낼 바이트다. 규칙은 모듈 문서에 있다.
-fn splice(client: TcpStream, slot: Slot, first: &[u8]) {
+pub(crate) fn splice(client: TcpStream, slot: Slot, first: &[u8]) {
     let Slot {
         mut reader,
         mut writer,

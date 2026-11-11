@@ -11,6 +11,13 @@
             "null"
           ]
         },
+        "advisory": {
+          "description": "The repository's advisory for this version, one line, if any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "architecture": {
           "description": "Architecture of the bundle (OCI terms).",
           "type": "string"
@@ -57,6 +64,11 @@
         "version": {
           "description": "Version.",
           "type": "string"
+        },
+        "yanked": {
+          "default": false,
+          "description": "Whether the repository has yanked this version: it is skipped unless asked for by its exact version.",
+          "type": "boolean"
         }
       },
       "required": [
@@ -153,6 +165,48 @@
       "required": [
         "source",
         "program"
+      ],
+      "type": "object"
+    },
+    "DiskUsage": {
+      "additionalProperties": false,
+      "description": "One row of `system df`.",
+      "properties": {
+        "active": {
+          "description": "Images some sandbox uses; sandboxes that are running. Always 0 for executors.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reclaimable": {
+          "description": "Bytes `system prune -a` would free: unused images with the layers only they use, stopped sandboxes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "size": {
+          "description": "Bytes they take on disk (a sandbox's writable disk counts what it wrote, not its size).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "total": {
+          "description": "How many there are (executors count installed executors and adapters).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "type": {
+          "description": "`images`, `sandboxes` or `executors`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "total",
+        "active",
+        "size",
+        "reclaimable"
       ],
       "type": "object"
     },
@@ -387,6 +441,14 @@
           "minimum": 0,
           "type": "integer"
         },
+        "exposed_ports": {
+          "default": [],
+          "description": "Ports the image declares (`ExposedPorts`, e.g. `80/tcp`), for information: sbx opens no ports.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "id": {
           "description": "Image ID.",
           "type": "string"
@@ -407,6 +469,14 @@
         },
         "references": {
           "description": "Normalized references that point to this image. Empty if none does.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "volumes": {
+          "default": [],
+          "description": "Paths the image declares as volumes (`Volumes`), for information: sbx creates no volumes, they stay on the\nsandbox's writable disk.",
           "items": {
             "type": "string"
           },
@@ -497,6 +567,13 @@
       "additionalProperties": false,
       "description": "An installed adapter (`executor adapter ls`).",
       "properties": {
+        "advisory": {
+          "description": "The repository's advisory for this version, one line, if any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "name": {
           "description": "Name.",
           "type": "string"
@@ -522,6 +599,11 @@
         "version": {
           "description": "Version.",
           "type": "string"
+        },
+        "yanked": {
+          "default": false,
+          "description": "Whether its repository has yanked this version (from the last `executor search` or `install`; it still runs).",
+          "type": "boolean"
         }
       },
       "required": [
@@ -538,6 +620,13 @@
       "properties": {
         "adapter": {
           "description": "For a VMM package: the adapter that runs it. Null for a self-contained executor.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "advisory": {
+          "description": "The repository's advisory for this version, one line, if any.",
           "type": [
             "string",
             "null"
@@ -565,6 +654,11 @@
         "version": {
           "description": "Version.",
           "type": "string"
+        },
+        "yanked": {
+          "default": false,
+          "description": "Whether its repository has yanked this version (from the last `executor search` or `install`; it still runs).",
+          "type": "boolean"
         }
       },
       "required": [
@@ -592,7 +686,7 @@
           "type": "string"
         },
         "time": {
-          "description": "When sbx received it (RFC 3339, nanoseconds). Lines that arrived together share a time. Null if the log was\nwritten by an older sbx that did not record times.",
+          "description": "When sbx received it (RFC 3339, nanoseconds). Lines that arrived together share a time. Always set by\nsbx 0.2.1 and later; kept nullable for scripts written against 0.2.0's schema.",
           "type": [
             "string",
             "null"
@@ -603,6 +697,49 @@
         "stream",
         "data",
         "encoding"
+      ],
+      "type": "object"
+    },
+    "Login": {
+      "additionalProperties": false,
+      "description": "Where `login` saved a registry's credentials.",
+      "properties": {
+        "location": {
+          "description": "The file's path, or the helper program's name.",
+          "type": "string"
+        },
+        "registry": {
+          "description": "Registry host (`docker.io` for Docker Hub).",
+          "type": "string"
+        },
+        "stored": {
+          "description": "`file` (the `auths` of a Docker or containers credentials file) or `helper` (a `docker-credential-*` program).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "registry",
+        "stored",
+        "location"
+      ],
+      "type": "object"
+    },
+    "Logout": {
+      "additionalProperties": false,
+      "description": "What `logout` removed.",
+      "properties": {
+        "registry": {
+          "description": "Registry host.",
+          "type": "string"
+        },
+        "removed": {
+          "description": "Whether there were credentials to remove.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "registry",
+        "removed"
       ],
       "type": "object"
     },
@@ -743,6 +880,54 @@
         "env",
         "cwd",
         "user"
+      ],
+      "type": "object"
+    },
+    "PruneReport": {
+      "additionalProperties": false,
+      "description": "What `system prune` removed.",
+      "properties": {
+        "images": {
+          "description": "IDs of removed images (`-a`).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "layers": {
+          "description": "Digests of removed layer blobs.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "leftovers": {
+          "description": "Paths of removed leftovers (unfinished pulls and builds, half-removed sandboxes).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "reclaimed": {
+          "description": "Bytes freed on disk.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sandboxes": {
+          "description": "IDs of removed sandboxes.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "sandboxes",
+        "images",
+        "layers",
+        "leftovers",
+        "reclaimed"
       ],
       "type": "object"
     },
@@ -898,6 +1083,15 @@
             "null"
           ]
         },
+        "egress_limit_bytes": {
+          "description": "Bytes its outgoing connections may move per start (`--egress-limit`); absent when unlimited.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "error": {
           "description": "Why it stopped, if an error stopped it.",
           "type": [
@@ -957,6 +1151,13 @@
           "$ref": "#/$defs/Network",
           "description": "Network access."
         },
+        "ports": {
+          "description": "Published ports (`-p`) as `HOST_IP:HOST_PORT->PORT/tcp`. While it runs, the addresses it listens on (with\nthe port the OS picked for a `-p PORT`); otherwise what was asked for (`:0` = pick one).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "process": {
           "$ref": "#/$defs/Process",
           "description": "The main process."
@@ -976,6 +1177,15 @@
         "stop": {
           "$ref": "#/$defs/Stop",
           "description": "How `stop` stops it."
+        },
+        "timeout_secs": {
+          "description": "Seconds after each start when sbx stops it (`--timeout`); absent when it runs until stopped.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "tty": {
           "description": "Whether the main process has a terminal (`-t`).",
@@ -1064,6 +1274,75 @@
           "type": "string"
         }
       ]
+    },
+    "Stats": {
+      "additionalProperties": false,
+      "description": "One running sandbox's resource use (`stats`), as its guest reports it.",
+      "properties": {
+        "cpu_percent": {
+          "description": "CPU use over the last second; 100 is one vCPU fully busy (like Docker).",
+          "format": "double",
+          "type": "number"
+        },
+        "cpus": {
+          "description": "vCPUs.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "disk_total": {
+          "description": "Writable disk size, in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "disk_used": {
+          "description": "Bytes used on the writable disk.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "id": {
+          "description": "Sandbox ID.",
+          "type": "string"
+        },
+        "memory_total": {
+          "description": "Memory size, in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "memory_used": {
+          "description": "Memory in use, in bytes (total minus available).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "description": "Name, if it has one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pids": {
+          "description": "Processes running in the sandbox.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "cpu_percent",
+        "cpus",
+        "memory_used",
+        "memory_total",
+        "disk_used",
+        "disk_total",
+        "pids"
+      ],
+      "type": "object"
     },
     "Stop": {
       "additionalProperties": false,

@@ -63,6 +63,7 @@ pub mod cpplan;
 pub mod egress;
 mod error;
 mod hostfs;
+mod ports;
 pub mod process;
 mod records;
 pub mod validate;
@@ -87,6 +88,9 @@ pub const START_TIMEOUT: Duration = Duration::from_secs(30);
 pub const OWN_WAIT: Duration = Duration::from_secs(1);
 /// 기본 프로세스가 끝난 뒤 VM이 스스로 꺼지기를 기다리는 시간. 넘으면 강제로 끝낸다.
 pub const VM_EXIT_GRACE: Duration = Duration::from_secs(10);
+
+/// 수명이 다 되어 멈출 때 멈춤 시그널 뒤 기다리는 시간. 샌드박스가 정하지 않았을 때(CLI `stop -t`의 기본과 같다).
+pub const DEFAULT_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 /// VM이 먼저 끝났을 때 기본 프로세스의 종료 코드 (SIGKILL로 끝난 것과 같다).
 pub const EXIT_VM_ENDED: i32 = 137;
 /// Unix 소켓 경로의 최대 바이트 수 (macOS 기준, 가장 짧다).
@@ -109,6 +113,12 @@ pub struct RuntimeConfig {
 struct Owned {
     vm: Box<dyn VmHandle>,
     control: PathBuf,
+    /// 이번 시작을 가리킨다. 수명 타이머가 다시 시작한 다음 실행을 멈추지 않게 한다.
+    started: std::time::Instant,
+    /// 기본 프로세스가 아닌 쪽이 VM을 끈 까닭(수명). 끝을 기록할 때 오류로 쓴다.
+    ended_by: Option<String>,
+    /// `-p`의 듣기. 버리면(정리할 때) 멈춘다.
+    _ports: Option<ports::Forwarding>,
     _lease: RootfsLease,
     _lock: OwnerLock,
 }
@@ -152,6 +162,8 @@ pub struct SandboxInfo {
     pub control: Option<PathBuf>,
     /// 게스트 안 나가는 연결 프록시의 포트 (실행 중이고 네트워크를 허용했을 때).
     pub egress_port: Option<u16>,
+    /// 공개한 포트(`-p`, 실행 중일 때): (듣는 호스트 주소, 게스트 포트). 포트 0을 준 것은 OS가 고른 포트다.
+    pub published: Vec<(std::net::SocketAddr, u16)>,
     /// 만든 시각. 만든 뒤 바뀌지 않는 설정 파일의 수정 시각이다. 파일 시스템이 주지 않으면 `None`.
     pub created: Option<std::time::SystemTime>,
 }
@@ -162,6 +174,14 @@ pub const EVENT_KIND: &str = "sandbox";
 /// `data_dir`의 샌드박스 이벤트 기록.
 pub fn events_log(data_dir: &Path) -> sbx_events::Log {
     sbx_events::Log::new(data_dir.join("events").join("sandboxes"))
+}
+
+pub use egress::NETWORK_EVENT_KIND;
+
+/// `data_dir`의 나가는 연결 기록: 허용(`connect`, 연결한 주소), 거부(`refuse`, 이유), 닫힘(`close`, 보낸·받은
+/// 바이트). 샌드박스 수명 기록과 같은 장치(세대마다 1 MiB, 앞 세대 하나)라서 대략 2 MiB까지 남는다.
+pub fn network_log(data_dir: &Path) -> sbx_events::Log {
+    sbx_events::Log::new(data_dir.join("events").join("network"))
 }
 
 /// `data_dir`의 샌드박스 ID와 이름. ID 순서. 셸 자동완성처럼 빨리 훑어볼 때 쓴다.
@@ -192,7 +212,7 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 impl Runtime {
     /// 만든다. data_dir이 없으면 만든다. cache_dir은 만들지 않는다(관리 쪽의 일).
     pub fn new(config: RuntimeConfig, executor: Arc<dyn Executor>) -> Result<Self, RuntimeError> {
-        std::fs::create_dir_all(config.data_dir.join("sandboxes"))?;
+        records::private_dir(&config.data_dir.join("sandboxes"))?;
         let store = Store::open(&config.cache_dir);
         Ok(Self {
             inner: Arc::new(Inner {
@@ -347,6 +367,7 @@ impl Runtime {
             exit_code: state.exit_code,
             control: state.control,
             egress_port: state.egress_port,
+            published: state.published,
             created: std::fs::metadata(paths.spec())
                 .and_then(|m| m.modified())
                 .ok(),
@@ -389,6 +410,43 @@ impl Runtime {
         }
     }
 
+    /// 수명(`lifetime_secs`)이 다 되었다. 그 시작이 아직 돌고 있으면 `stop`처럼 멈춘다: 멈춤 시그널, 멈춤 기다림
+    /// (없으면 [`DEFAULT_STOP_TIMEOUT`]), 그래도 돌면 전원을 끈다. 블로킹이다.
+    fn expire(
+        &self,
+        id: &SandboxId,
+        started: std::time::Instant,
+        stop: &sbx_model::StopSpec,
+        secs: u64,
+    ) {
+        let same = |rt: &Self| {
+            lock(&rt.inner.owned)
+                .get(id)
+                .is_some_and(|o| o.started == started)
+        };
+        if !same(self) {
+            return;
+        }
+        let Some(control) = lock(&self.inner.owned).get(id).map(|o| o.control.clone()) else {
+            return;
+        };
+        let wait = stop
+            .timeout_secs
+            .map_or(DEFAULT_STOP_TIMEOUT, |s| Duration::from_secs(u64::from(s)));
+        let _ = self.guest(&control).signal_main(stop.signal.number());
+        if !wait.is_zero() && self.wait_not_running(id, wait).unwrap_or(false) {
+            return;
+        }
+        // 끝의 기록은 기본 프로세스 쪽(`on_end` → [`Runtime::finish`])에 맡긴다. 여기서 기록하면 그 쪽이 먼저
+        // 끝을 알려, 끝을 받은 소유 프로세스(shim)가 기록 전에 나갈 수 있다.
+        if let Some(o) = lock(&self.inner.owned).get_mut(id)
+            && o.started == started
+        {
+            o.ended_by = Some(format!("stopped after its --timeout of {secs}s"));
+            let _ = o.vm.kill();
+        }
+    }
+
     /// 소유한 VM을 정리하고 `stopped`를 쓴다. 이미 정리했으면 아무것도 하지 않는다.
     /// 블로킹이다(작업 스레드에서 부른다).
     fn finish(
@@ -401,6 +459,7 @@ impl Runtime {
         let Some(mut owned) = lock(&self.inner.owned).remove(id) else {
             return;
         };
+        let error = owned.ended_by.take().or(error);
         let _ = self.guest(&owned.control).shutdown();
         if !chan::block_on(owned.vm.wait(grace)).unwrap_or(false) {
             let _ = owned.vm.kill();
@@ -412,6 +471,7 @@ impl Runtime {
             exit_code,
             control: None,
             egress_port: None,
+            published: Vec::new(),
         };
         if records::write_state(&self.paths(id), &state).is_ok() {
             let spec = records::read(&self.paths(id))
@@ -430,6 +490,11 @@ impl Runtime {
         // 상태를 쓴 뒤에 잠금을 놓는다. 그래야 다른 프로세스가 "소유자 사라짐"으로 잘못 보지 않는다.
         drop(owned);
     }
+}
+
+/// 이벤트의 `args`: argv를 JSON 배열 문자열로(공백이 든 인자도 갈라 읽을 수 있게).
+fn exec_args(args: &[String]) -> String {
+    serde_json::to_string(args).unwrap_or_default()
 }
 
 fn to_proto_user(u: &UserSpec) -> sbx_guest_proto::User {
@@ -659,6 +724,9 @@ impl Sandbox {
             let _ = records::write_state(&paths, &state);
             e
         };
+        // 포트는 VM을 띄우기 전에 잡는다: 이미 쓰는 포트면 VM 없이 실패한다.
+        let bound = ports::bind(&spec.ports).map_err(record_failure)?;
+        let published = bound.published();
         let vm = rt
             .inner
             .executor
@@ -670,6 +738,9 @@ impl Sandbox {
         let mut main = to_proto_exec(&spec.process, io, true);
         let mounts = spec.mounts.clone();
         let network = spec.network.clone();
+        let egress_limit = spec.egress_limit_bytes;
+        let data_dir = rt.inner.config.data_dir.clone();
+        let id_for_egress = id.as_str().to_owned();
         let (vm, started) = blocking(move || {
             let mut vm = vm;
             let r = (|| {
@@ -702,12 +773,26 @@ impl Sandbox {
                     NetworkPolicy::Disabled => None,
                     NetworkPolicy::Allow(rules) => {
                         let port = guest.egress_listen()?;
-                        egress::start(guest.clone(), rules);
+                        egress::start(
+                            guest.clone(),
+                            rules,
+                            egress::Limits {
+                                bytes: egress_limit,
+                            },
+                            egress::Record {
+                                log: network_log(&data_dir),
+                                sandbox: id_for_egress.clone(),
+                            },
+                        );
                         process::add_proxy_env(&mut main.env, port);
                         Some(port)
                     }
                 };
-                guest.exec(main).map(|(c, pid)| (c, pid, egress_port))
+                let forwarding =
+                    (!bound.listeners_empty()).then(|| ports::serve(bound, guest.clone()));
+                guest
+                    .exec(main)
+                    .map(|(c, pid)| (c, pid, egress_port, forwarding))
             })();
             if r.is_err() {
                 let _ = vm.kill();
@@ -715,7 +800,7 @@ impl Sandbox {
             (vm, r)
         })
         .await;
-        let (conn, pid, egress_port) = started.map_err(record_failure)?;
+        let (conn, pid, egress_port, forwarding) = started.map_err(record_failure)?;
 
         let state = StateRecord {
             state: State::Running,
@@ -724,18 +809,30 @@ impl Sandbox {
             exit_code: None,
             control: Some(control.clone()),
             egress_port,
+            published,
         };
         records::write_state(&paths, &state)?;
         rt.emit("start", &id, Some(&spec), &[]);
+        let started = std::time::Instant::now();
         lock(&rt.inner.owned).insert(
             id.clone(),
             Owned {
                 vm,
                 control,
+                started,
+                ended_by: None,
+                _ports: forwarding,
                 _lease: lease,
                 _lock: owner,
             },
         );
+        if let Some(secs) = spec.lifetime_secs {
+            let (rt, id, stop) = (rt.clone(), id.clone(), spec.stop);
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_secs(secs));
+                rt.expire(&id, started, &stop, secs);
+            });
+        }
         let rt2 = rt.clone();
         Ok(Process::spawn(
             conn,
@@ -743,6 +840,7 @@ impl Sandbox {
             Some(Box::new(move |code: i32, error: Option<String>| {
                 rt2.finish(&id, Some(code), error, VM_EXIT_GRACE)
             })),
+            None,
         ))
     }
 
@@ -764,8 +862,59 @@ impl Sandbox {
         if let Some(port) = info.egress_port {
             process::add_proxy_env(&mut x.env, port);
         }
+        let args = exec_args(&x.args);
         let (conn, pid) = blocking(move || guest.exec(x)).await?;
-        Ok(Process::spawn(conn, pid, None))
+        let pid_s = pid.to_string();
+        self.rt.emit(
+            "exec_start",
+            &info.id,
+            Some(&info.spec),
+            &[("args", args.clone()), ("pid", pid_s.clone())],
+        );
+        let (rt, id, spec) = (self.rt.clone(), info.id.clone(), info.spec.clone());
+        let on_exit: OnExit = Box::new(move |code| {
+            let mut extra = vec![("args", args), ("pid", pid_s)];
+            if let Some(c) = code {
+                extra.push(("exit_code", c.to_string()));
+            }
+            rt.emit("exec_die", &id, Some(&spec), &extra);
+        });
+        Ok(Process::spawn(conn, pid, None, Some(on_exit)))
+    }
+
+    /// 게스트가 보고하는 자원 사용량(`sbx stats`). `running`에서만.
+    pub async fn usage(&self) -> Result<sbx_guest_proto::Usage, RuntimeError> {
+        let (_, guest) = self.require_running("stats")?;
+        blocking(move || guest.usage()).await
+    }
+
+    /// 떼어 놓고 실행한다(`exec -d`, Docker와 같다): 입출력 없이 시작만 하고 게스트 안의 PID를 돌려준다.
+    /// 그 프로세스는 이 호출 뒤에도, 이 호스트 프로세스가 끝나도 샌드박스가 멈출 때까지 돈다. 터미널은 열 수 없다.
+    pub async fn exec_detached(&self, spec: ExecSpec) -> Result<u32, RuntimeError> {
+        let (info, guest) = self.require_running("exec")?;
+        if spec.tty {
+            return Err(RuntimeError::Invalid(
+                "a detached command can't have a terminal".into(),
+            ));
+        }
+        let p = process::for_exec(&info.spec.process, &spec)?;
+        let mut x = to_proto_exec(&p, IoMode::default(), false);
+        if let Some(port) = info.egress_port {
+            process::add_proxy_env(&mut x.env, port);
+        }
+        let args = exec_args(&x.args);
+        let pid = blocking(move || guest.exec_detached(x)).await?;
+        self.rt.emit(
+            "exec_start",
+            &info.id,
+            Some(&info.spec),
+            &[
+                ("args", args),
+                ("pid", pid.to_string()),
+                ("detached", "true".into()),
+            ],
+        );
+        Ok(pid)
     }
 
     /// 호스트 파일이나 디렉터리를 게스트로 복사한다. 대상 규칙은 [`cpplan`].
@@ -1023,6 +1172,9 @@ enum Event {
 
 type OnEnd = Box<dyn FnOnce(i32, Option<String>) + Send>;
 
+/// exec 프로세스가 끝나면 부른다(종료 코드, 연결이 끊겼으면 `None`). 이벤트 `exec_die`를 남긴다.
+type OnExit = Box<dyn FnOnce(Option<i32>) + Send>;
+
 /// 샌드박스 안의 프로세스. 버려도 프로세스는 계속 돈다(출력은 버린다).
 ///
 /// 기본 프로세스([`Sandbox::start`])의 끝([`Process::next`]가 `None`)을 받았으면 샌드박스는 이미 `stopped`로 기록되어 있다.
@@ -1073,7 +1225,12 @@ impl fmt::Debug for Process {
 
 impl Process {
     /// `on_end`가 있으면 기본 프로세스다: VM이 먼저 끝나면 [`EXIT_VM_ENDED`]로 끝난 것으로 보고, 끝나면 `on_end`를 부른다.
-    fn spawn(conn: Box<dyn GuestConn>, pid: u32, on_end: Option<OnEnd>) -> Self {
+    fn spawn(
+        conn: Box<dyn GuestConn>,
+        pid: u32,
+        on_end: Option<OnEnd>,
+        on_exit: Option<OnExit>,
+    ) -> Self {
         let (tx, events) = chan::channel(OUTPUT_BUFFER, |e: &Event| match e {
             Event::Out(Output::Stdout(b) | Output::Stderr(b)) => b.len(),
             _ => 0,
@@ -1121,6 +1278,9 @@ impl Process {
                 (None, Some(e)) => Event::Lost(e.clone()),
                 (None, None) => Event::Lost("connection closed".into()),
             };
+            if let Some(f) = on_exit {
+                f(code);
+            }
             // 기본 프로세스는 샌드박스를 멈추고 기록한 뒤에 끝을 알린다.
             // 그래서 끝을 받은 호출자는 곧바로 그 샌드박스를 지울 수 있다.
             if let Some(f) = on_end {

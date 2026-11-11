@@ -239,6 +239,16 @@ fn pinned_by(cx: &Ctx<'_>, found: &Installed) -> Vec<String> {
 fn ls(cx: &Ctx<'_>, ex: &Executors) -> Result<u8> {
     let default = ex.default()?;
     let list = ex.list()?;
+    let notices = crate::notices::load(cx.cache_dir);
+    let notice = |i: &Installed| {
+        crate::notices::find(
+            &notices,
+            crate::notices::Kind::Executor,
+            &i.name,
+            &i.version,
+            i.origin.as_deref(),
+        )
+    };
     let path = |i: &Installed| match i.adapter {
         Some(_) => i.dir.display().to_string(),
         None => i.executable.display().to_string(),
@@ -253,6 +263,8 @@ fn ls(cx: &Ctx<'_>, ex: &Executors) -> Result<u8> {
                 path: path(i),
                 adapter: i.adapter.clone(),
                 origin: i.origin.clone(),
+                yanked: notice(i).is_some_and(|n| n.yanked),
+                advisory: notice(i).and_then(|n| n.advisory.clone()),
             })
             .collect();
         output::print_value(&v)?;
@@ -272,6 +284,9 @@ fn ls(cx: &Ctx<'_>, ex: &Executors) -> Result<u8> {
             i.origin.as_deref().unwrap_or("-"),
             path(i)
         );
+    }
+    for n in list.iter().filter_map(notice) {
+        eprintln!("warning: {}", crate::notices::describe(n));
     }
     Ok(0)
 }
@@ -424,6 +439,7 @@ async fn indexes(
     for e in &failed {
         eprintln!("warning: {e}");
     }
+    crate::notices::record(cx.cache_dir, &ok);
     if ok.is_empty() {
         return Err("no executor repository could be read".into());
     }
@@ -570,6 +586,23 @@ async fn fetch_and_install(
     check: impl FnOnce(&Installed) -> std::result::Result<(), String>,
 ) -> Result<Installed> {
     let want = c.spec();
+    if c.yanked || c.advisory.is_some() {
+        eprintln!(
+            "warning: {}@{} {} by {}{}",
+            c.name,
+            c.version,
+            if c.yanked {
+                "is yanked"
+            } else {
+                "has an advisory"
+            },
+            c.repository,
+            c.advisory
+                .as_deref()
+                .map(|a| format!(": {a}"))
+                .unwrap_or_default()
+        );
+    }
     if let Some(i) = into.find(&want)? {
         eprintln!("{i} is already installed");
         return Ok(i);
@@ -625,17 +658,22 @@ enum Kind {
     Adapter,
 }
 
-/// 주 버전마다 가장 새 패치만 남긴다. `list`는 이름 순, 같은 이름은 높은 버전부터다.
+/// 주 버전마다 가장 새 패치만 남긴다. `list`는 이름 순, 같은 이름은 높은 버전부터다. 거둔 패치는 그 주 버전에
+/// 거두지 않은 패치가 없을 때만 남긴다(`install 이름@주 버전`이 고르는 것과 같게).
 fn newest_patches(list: Vec<Candidate>) -> Vec<Candidate> {
+    let line = |c: &Candidate| sbx_executor_install::version_line(&c.version).to_owned();
     let mut out: Vec<Candidate> = Vec::new();
-    for c in list {
-        let line = sbx_executor_install::version_line(&c.version);
-        if !out
-            .iter()
-            .any(|o| o.name == c.name && sbx_executor_install::version_line(&o.version) == line)
-        {
-            out.push(c);
+    for c in &list {
+        let same = |o: &Candidate| o.name == c.name && line(o) == line(c);
+        if out.iter().any(same) {
+            continue;
         }
+        let pick = list
+            .iter()
+            .filter(|x| same(x))
+            .find(|x| !x.yanked)
+            .unwrap_or(c);
+        out.push(pick.clone());
     }
     out
 }
@@ -664,6 +702,8 @@ async fn search(cx: &Ctx<'_>, name: Option<&str>, all: bool, kind: Kind) -> Resu
                 url: c.artifact.url.to_string(),
                 sha256: c.artifact.sha256.clone(),
                 size: c.artifact.size,
+                yanked: c.yanked,
+                advisory: c.advisory.clone(),
             })
             .collect();
         output::print_value(&v)?;
@@ -704,11 +744,16 @@ async fn search(cx: &Ctx<'_>, name: Option<&str>, all: bool, kind: Kind) -> Resu
     }
     for c in &list {
         let size = crate::behavior::human_size(c.artifact.size);
+        let version = if c.yanked {
+            format!("{} (yanked)", c.version)
+        } else {
+            c.version.clone()
+        };
         if kind == Kind::Executor {
             println!(
                 "{:<20} {:<14} {:<14} {:<10} {}",
                 c.name,
-                c.version,
+                version,
                 c.adapter.as_deref().unwrap_or("-"),
                 size,
                 c.repository
@@ -716,9 +761,17 @@ async fn search(cx: &Ctx<'_>, name: Option<&str>, all: bool, kind: Kind) -> Resu
         } else {
             println!(
                 "{:<20} {:<14} {:<10} {}",
-                c.name, c.version, size, c.repository
+                c.name, version, size, c.repository
             );
         }
+    }
+    for c in list.iter().filter(|c| c.advisory.is_some()) {
+        eprintln!(
+            "note: {}@{}: {}",
+            c.name,
+            c.version,
+            c.advisory.as_deref().unwrap_or_default()
+        );
     }
     Ok(0)
 }
@@ -737,6 +790,16 @@ async fn adapter(cx: &Ctx<'_>, ex: &Executors, ad: &Executors, c: &AdapterComman
         AdapterCommand::Ls => {
             let users = adapter_users(ex)?;
             let list = ad.list()?;
+            let notices = crate::notices::load(cx.cache_dir);
+            let notice = |i: &Installed| {
+                crate::notices::find(
+                    &notices,
+                    crate::notices::Kind::Adapter,
+                    &i.name,
+                    &i.version,
+                    i.origin.as_deref(),
+                )
+            };
             let used = |i: &Installed| -> Vec<String> {
                 users
                     .iter()
@@ -753,6 +816,8 @@ async fn adapter(cx: &Ctx<'_>, ex: &Executors, ad: &Executors, c: &AdapterComman
                         path: i.executable.display().to_string(),
                         used_by: used(i),
                         origin: i.origin.clone(),
+                        yanked: notice(i).is_some_and(|n| n.yanked),
+                        advisory: notice(i).and_then(|n| n.advisory.clone()),
                     })
                     .collect();
                 output::print_value(&v)?;
@@ -772,6 +837,9 @@ async fn adapter(cx: &Ctx<'_>, ex: &Executors, ad: &Executors, c: &AdapterComman
                     },
                     i.executable.display()
                 );
+            }
+            for n in list.iter().filter_map(notice) {
+                eprintln!("warning: {}", crate::notices::describe(n));
             }
             Ok(0)
         }

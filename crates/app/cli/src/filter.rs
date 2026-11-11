@@ -41,7 +41,19 @@ const fn key(name: &'static str, value: Value, help: &'static str) -> Key {
 pub const STATES: &[&str] = &["creating", "created", "running", "stopped"];
 /// 이벤트 동작 이름.
 pub const ACTIONS: &[&str] = &[
-    "create", "start", "stop", "remove", "pull", "prepare", "untag", "delete",
+    "create",
+    "start",
+    "stop",
+    "remove",
+    "exec_start",
+    "exec_die",
+    "pull",
+    "prepare",
+    "untag",
+    "delete",
+    "connect",
+    "refuse",
+    "close",
 ];
 
 /// `ps --filter`. `status`나 `exited`가 있으면 `-a`가 없어도 멈춘 것까지 본다(Docker와 같다).
@@ -81,7 +93,7 @@ pub const IMAGES: &[Key] = &[
 pub const EVENTS: &[Key] = &[
     key(
         "type",
-        Value::OneOf(&["sandbox", "image"]),
+        Value::OneOf(&["sandbox", "image", "network"]),
         "event type is VALUE",
     ),
     key("event", Value::OneOf(ACTIONS), "action is VALUE"),
@@ -96,6 +108,16 @@ pub const EVENTS: &[Key] = &[
         "image event for image VALUE, or sandbox event whose sandbox runs it (as for ps ancestor; \
          the reference is the event's own, else the one in the cache, so a deleted image matches by ID only)",
     ),
+];
+
+/// `system prune --filter`(Docker와 같은 키). 샌드박스에 적용한다.
+pub const PRUNE: &[Key] = &[
+    key(
+        "until",
+        Value::Any,
+        "created before VALUE (RFC 3339 time or a duration ago like 24h, as for events --since)",
+    ),
+    key("label", Value::Any, "has label KEY, or KEY=VALUE exactly"),
 ];
 
 /// 해석한 필터. 키마다 받은 값들.
@@ -137,6 +159,15 @@ impl Filters {
             values.entry(spec.name).or_default().push(v.to_owned());
         }
         Ok(Self { values })
+    }
+
+    /// 그 키의 값들(없으면 비어 있다).
+    pub fn values(&self, key: &str) -> impl Iterator<Item = &str> {
+        self.values
+            .get(key)
+            .into_iter()
+            .flatten()
+            .map(String::as_str)
     }
 
     /// 그 키가 있는지.

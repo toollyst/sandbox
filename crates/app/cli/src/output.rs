@@ -61,6 +61,7 @@ pub const JSON_OUTPUT: &[(&str, Form)] = &[
     ("rm", Form::Lines("Done")),
     ("ps", Form::Value("[Sandbox]")),
     ("inspect", Form::Value("Sandbox")),
+    ("stats", Form::Value("[Stats]")),
     ("exec", Form::Unsupported(PROCESS_BYTES)),
     ("attach", Form::Unsupported(PROCESS_BYTES)),
     ("logs", Form::Lines("LogLine")),
@@ -69,6 +70,10 @@ pub const JSON_OUTPUT: &[(&str, Form)] = &[
     ("prepare", Form::Value("Prepared")),
     ("images", Form::Value("[Image]")),
     ("rmi", Form::Lines("Removed")),
+    ("load", Form::Value("[Pulled]")),
+    ("save", Form::Unsupported("its output is the tar itself")),
+    ("login", Form::Value("Login")),
+    ("logout", Form::Value("Logout")),
     ("tui", Form::Unsupported("it is an interactive screen")),
     ("events", Form::Lines("Event")),
     (
@@ -94,6 +99,8 @@ pub const JSON_OUTPUT: &[(&str, Form)] = &[
     ("executor repo add", Form::Value("Repository")),
     ("executor repo rm", Form::Value("Repository")),
     ("info", Form::Value("Info")),
+    ("system df", Form::Value("[DiskUsage]")),
+    ("system prune", Form::Value("PruneReport")),
     (
         "completion",
         Form::Unsupported("its output is a shell script"),
@@ -353,6 +360,13 @@ pub struct Image {
     pub compressed_size: u64,
     /// Image config fields sbx does not apply.
     pub ignored_fields: Vec<String>,
+    /// Ports the image declares (`ExposedPorts`, e.g. `80/tcp`), for information: sbx opens no ports.
+    #[serde(default)]
+    pub exposed_ports: Vec<String>,
+    /// Paths the image declares as volumes (`Volumes`), for information: sbx creates no volumes, they stay on the
+    /// sandbox's writable disk.
+    #[serde(default)]
+    pub volumes: Vec<String>,
 }
 
 /// The result for one image given to `rmi`.
@@ -386,6 +400,11 @@ pub struct InstalledExecutor {
     /// The repository it was downloaded from, or `local` (installed with `--from`). Null if installed by an sbx that
     /// did not record it.
     pub origin: Option<String>,
+    /// Whether its repository has yanked this version (from the last `executor search` or `install`; it still runs).
+    #[serde(default)]
+    pub yanked: bool,
+    /// The repository's advisory for this version, one line, if any.
+    pub advisory: Option<String>,
 }
 
 /// An installed adapter (`executor adapter ls`).
@@ -403,6 +422,11 @@ pub struct InstalledAdapter {
     pub used_by: Vec<String>,
     /// The repository it was downloaded from, or `local`. Null if not recorded.
     pub origin: Option<String>,
+    /// Whether its repository has yanked this version (from the last `executor search` or `install`; it still runs).
+    #[serde(default)]
+    pub yanked: bool,
+    /// The repository's advisory for this version, one line, if any.
+    pub advisory: Option<String>,
 }
 
 /// The executor sbx would use (`executor current`, `which`).
@@ -437,6 +461,90 @@ pub struct Pruned {
     pub version: String,
     /// Whether it was removed (false with `--dry-run`).
     pub removed: bool,
+}
+
+/// One row of `system df`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct DiskUsage {
+    /// `images`, `sandboxes` or `executors`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// How many there are (executors count installed executors and adapters).
+    pub total: u64,
+    /// Images some sandbox uses; sandboxes that are running. Always 0 for executors.
+    pub active: u64,
+    /// Bytes they take on disk (a sandbox's writable disk counts what it wrote, not its size).
+    pub size: u64,
+    /// Bytes `system prune -a` would free: unused images with the layers only they use, stopped sandboxes.
+    pub reclaimable: u64,
+}
+
+/// One running sandbox's resource use (`stats`), as its guest reports it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct Stats {
+    /// Sandbox ID.
+    pub id: String,
+    /// Name, if it has one.
+    pub name: Option<String>,
+    /// CPU use over the last second; 100 is one vCPU fully busy (like Docker).
+    pub cpu_percent: f64,
+    /// vCPUs.
+    pub cpus: u32,
+    /// Memory in use, in bytes (total minus available).
+    pub memory_used: u64,
+    /// Memory size, in bytes.
+    pub memory_total: u64,
+    /// Bytes used on the writable disk.
+    pub disk_used: u64,
+    /// Writable disk size, in bytes.
+    pub disk_total: u64,
+    /// Processes running in the sandbox.
+    pub pids: u32,
+}
+
+/// Where `login` saved a registry's credentials.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct Login {
+    /// Registry host (`docker.io` for Docker Hub).
+    pub registry: String,
+    /// `file` (the `auths` of a Docker or containers credentials file) or `helper` (a `docker-credential-*` program).
+    pub stored: String,
+    /// The file's path, or the helper program's name.
+    pub location: String,
+}
+
+/// What `logout` removed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct Logout {
+    /// Registry host.
+    pub registry: String,
+    /// Whether there were credentials to remove.
+    pub removed: bool,
+}
+
+/// What `system prune` removed.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct PruneReport {
+    /// IDs of removed sandboxes.
+    pub sandboxes: Vec<String>,
+    /// IDs of removed images (`-a`).
+    pub images: Vec<String>,
+    /// Digests of removed layer blobs.
+    pub layers: Vec<String>,
+    /// Paths of removed leftovers (unfinished pulls and builds, half-removed sandboxes).
+    pub leftovers: Vec<String>,
+    /// Bytes freed on disk.
+    pub reclaimed: u64,
 }
 
 /// An executor or adapter by name and version (`executor install`, `use`, `rm`, `adapter install`, `adapter rm`).
@@ -478,6 +586,11 @@ pub struct AvailableExecutor {
     pub sha256: String,
     /// Bundle size in bytes.
     pub size: u64,
+    /// Whether the repository has yanked this version: it is skipped unless asked for by its exact version.
+    #[serde(default)]
+    pub yanked: bool,
+    /// The repository's advisory for this version, one line, if any.
+    pub advisory: Option<String>,
 }
 
 /// An executor repository (`executor repo ls`, `add`, `rm`).
@@ -642,8 +755,8 @@ impl Event {
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct LogLine {
-    /// When sbx received it (RFC 3339, nanoseconds). Lines that arrived together share a time. Null if the log was
-    /// written by an older sbx that did not record times.
+    /// When sbx received it (RFC 3339, nanoseconds). Lines that arrived together share a time. Always set by
+    /// sbx 0.2.1 and later; kept nullable for scripts written against 0.2.0's schema.
     pub time: Option<String>,
     /// `stdout` or `stderr`.
     pub stream: String,
@@ -655,7 +768,7 @@ pub struct LogLine {
 
 impl LogLine {
     /// 로그 기록 조각 하나에서. UTF-8이 아니면(조각 경계에서 잘린 문자 포함) base64.
-    pub fn new(stream: sbx_shim::Stream, time_ns: Option<u64>, data: &[u8]) -> Self {
+    pub fn new(stream: sbx_shim::Stream, time_ns: u64, data: &[u8]) -> Self {
         use base64::Engine as _;
         let (data, encoding) = match std::str::from_utf8(data) {
             Ok(s) => (s.to_owned(), "utf-8"),
@@ -665,7 +778,7 @@ impl LogLine {
             ),
         };
         Self {
-            time: time_ns.map(behavior::rfc3339_ns),
+            time: Some(behavior::rfc3339_ns(time_ns)),
             stream: match stream {
                 sbx_shim::Stream::Stdout => "stdout",
                 sbx_shim::Stream::Stderr => "stderr",
@@ -716,6 +829,16 @@ pub struct Sandbox {
     pub interactive: bool,
     /// Whether the main process has a terminal (`-t`).
     pub tty: bool,
+    /// Seconds after each start when sbx stops it (`--timeout`); absent when it runs until stopped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+    /// Published ports (`-p`) as `HOST_IP:HOST_PORT->PORT/tcp`. While it runs, the addresses it listens on (with
+    /// the port the OS picked for a `-p PORT`); otherwise what was asked for (`:0` = pick one).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ports: Vec<String>,
+    /// Bytes its outgoing connections may move per start (`--egress-limit`); absent when unlimited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub egress_limit_bytes: Option<u64>,
 }
 
 /// Sandbox lifecycle state (OCI names).
@@ -892,6 +1015,16 @@ impl Sandbox {
             },
             interactive: spec.open_stdin,
             tty: spec.tty,
+            timeout_secs: spec.lifetime_secs,
+            ports: if s.published.is_empty() {
+                spec.ports.iter().map(ToString::to_string).collect()
+            } else {
+                s.published
+                    .iter()
+                    .map(|(a, g)| format!("{a}->{g}/tcp"))
+                    .collect()
+            },
+            egress_limit_bytes: spec.egress_limit_bytes,
         }
     }
 }
@@ -1005,6 +1138,11 @@ mod tests {
         g.subschema_for::<AvailableExecutor>();
         g.subschema_for::<Repository>();
         g.subschema_for::<Info>();
+        g.subschema_for::<DiskUsage>();
+        g.subschema_for::<PruneReport>();
+        g.subschema_for::<Stats>();
+        g.subschema_for::<Login>();
+        g.subschema_for::<Logout>();
         g.subschema_for::<SandboxRef>();
         g.subschema_for::<Done>();
         g.subschema_for::<Exited>();

@@ -78,12 +78,83 @@ pub fn memory_mib(value: &str) -> ParseResult<u32> {
     u32::try_from(bytes >> 20).map_err(|_| format!("memory value too large: {value:?}"))
 }
 
+/// 쓰기 디스크(scratch)의 가장 작은 크기(MiB). 게스트가 그 위에 ext 파일 시스템을 만든다.
+pub const MIN_SCRATCH_MIB: u32 = 64;
+
+/// `--storage-opt KEY=VALUE`(Docker와 같은 모양). 지금 키는 `size`(쓰기 디스크 크기: `20g`, `512m`, `1t`)뿐이다.
+/// 디스크는 sparse 파일이라 호스트에서는 게스트가 쓴 만큼만 차지한다. 모르는 키는 오류다.
+pub fn storage_opt(value: &str) -> ParseResult<u32> {
+    let (key, v) = value
+        .split_once('=')
+        .ok_or_else(|| format!("--storage-opt takes KEY=VALUE, not {value:?}"))?;
+    if key.trim() != "size" {
+        return Err(format!(
+            "unknown storage option {key:?} (the only one is size, e.g. size=20g)"
+        ));
+    }
+    let v = v.trim().to_ascii_lowercase();
+    let v = v
+        .strip_suffix('b')
+        .filter(|x| x.ends_with(['k', 'm', 'g', 't']))
+        .unwrap_or(&v);
+    let mib = match v.strip_suffix('t') {
+        Some(n) => n
+            .parse::<u32>()
+            .ok()
+            .and_then(|n| n.checked_mul(1 << 20))
+            .ok_or_else(|| format!("invalid size {v:?}"))?,
+        None => memory_mib(v).map_err(|_| format!("invalid size {v:?} (e.g. 512m, 20g, 1t)"))?,
+    };
+    if mib < MIN_SCRATCH_MIB {
+        return Err(format!("size must be at least {MIN_SCRATCH_MIB}m"));
+    }
+    Ok(mib)
+}
+
+/// 디스크 크기 하나(`--storage-opt`의 `size` 값과 같은 모양): `512m`, `20g`, `1t`.
+pub fn disk_mib(value: &str) -> ParseResult<u32> {
+    storage_opt(&format!("size={value}"))
+}
+
+/// 전송량(`--egress-limit`): 바이트 수, 또는 `k`·`m`·`g`·`t`(1024의 거듭제곱, 뒤에 `b`를 붙여도 된다). 1 이상.
+pub fn transfer_bytes(value: &str) -> ParseResult<u64> {
+    let v = value.trim().to_ascii_lowercase();
+    let v = v.strip_suffix('b').unwrap_or(&v);
+    let (num, shift) = match v.chars().last() {
+        Some('k') => (&v[..v.len() - 1], 10),
+        Some('m') => (&v[..v.len() - 1], 20),
+        Some('g') => (&v[..v.len() - 1], 30),
+        Some('t') => (&v[..v.len() - 1], 40),
+        _ => (v, 0),
+    };
+    num.parse::<u64>()
+        .ok()
+        .and_then(|n| n.checked_mul(1 << shift))
+        .filter(|n| *n > 0)
+        .ok_or_else(|| format!("invalid size {value:?} (bytes, or e.g. 500m, 2g)"))
+}
+
 /// `--cpus`. VM의 vCPU 개수라서 1 이상의 정수만 받는다.
 pub fn cpus(value: &str) -> ParseResult<u8> {
     match value.parse::<u8>() {
         Ok(n) if n >= 1 => Ok(n),
         _ => Err(format!(
             "--cpus must be a whole number of vCPUs (1-255): {value:?}"
+        )),
+    }
+}
+
+/// `--timeout`(샌드박스 수명): Go 표기의 시간(`90s`, `30m`, `1h30m`) 또는 초(`600`). 1초 이상, 초 단위로 내린다.
+pub fn lifetime_secs(value: &str) -> ParseResult<u64> {
+    let v = value.trim();
+    let secs = match v.parse::<u64>() {
+        Ok(n) => Some(n),
+        Err(_) => duration_ns(v).map(|ns| ns / 1_000_000_000),
+    };
+    match secs {
+        Some(n) if n >= 1 => Ok(n),
+        _ => Err(format!(
+            "invalid timeout {value:?}: use seconds (600) or a duration like 30m or 1h30m, at least 1s"
         )),
     }
 }
@@ -353,6 +424,11 @@ pub fn cp_endpoint(value: &str) -> CpEndpoint {
     }
 }
 
+/// `-p`의 값([`sbx_model::PortMapping`]).
+pub fn port_mapping(v: &str) -> Result<sbx_model::PortMapping, String> {
+    v.parse()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -507,5 +583,39 @@ mod tests {
         assert_eq!(cp_endpoint("./a:b"), CpEndpoint::Host("./a:b".into()));
         assert_eq!(cp_endpoint("a b:x"), CpEndpoint::Host("a b:x".into()));
         assert_eq!(cp_endpoint("a/b:c"), CpEndpoint::Host("a/b:c".into()));
+    }
+
+    #[test]
+    fn storage_opt_sets_the_writable_disk_size() {
+        assert_eq!(storage_opt("size=20g"), Ok(20 << 10));
+        assert_eq!(storage_opt("size=20G"), Ok(20 << 10));
+        assert_eq!(storage_opt("size=20GB"), Ok(20 << 10));
+        assert_eq!(storage_opt("size=512m"), Ok(512));
+        assert_eq!(storage_opt("size=1t"), Ok(1 << 20));
+        assert!(storage_opt("size=1m").unwrap_err().contains("at least"));
+        assert!(storage_opt("size=x").is_err());
+        assert!(
+            storage_opt("dm.basesize=1g")
+                .unwrap_err()
+                .contains("unknown")
+        );
+        assert!(storage_opt("20g").is_err());
+    }
+
+    #[test]
+    fn lifetimes_read_like_durations() {
+        assert_eq!(transfer_bytes("1000"), Ok(1000));
+        assert_eq!(transfer_bytes("500m"), Ok(500 << 20));
+        assert_eq!(transfer_bytes("2GB"), Ok(2 << 30));
+        for bad in ["0", "", "m", "1.5g", "-1", "99999999999t"] {
+            assert!(transfer_bytes(bad).is_err(), "{bad}");
+        }
+        assert_eq!(lifetime_secs("600"), Ok(600));
+        assert_eq!(lifetime_secs("30m"), Ok(1800));
+        assert_eq!(lifetime_secs("1h30m"), Ok(5400));
+        assert_eq!(lifetime_secs("1.5s"), Ok(1));
+        assert!(lifetime_secs("0").is_err());
+        assert!(lifetime_secs("500ms").is_err());
+        assert!(lifetime_secs("soon").is_err());
     }
 }

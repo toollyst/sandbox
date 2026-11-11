@@ -24,7 +24,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.89"
 publish = false
@@ -55,6 +55,9 @@ flate2 = "1"
 # zstd 레이어 풀기. 순수 Rust (C 라이브러리를 묶지 않는다).
 ruzstd = "0.9"
 tar = "0.4"
+# 이미지 서명 검증. rustls가 이미 쓰는 것(aws-lc-sys)을 같이 쓴다.
+aws-lc-rs = { version = "1.19", default-features = false, features = ["aws-lc-sys"] }
+toml = { version = "0.9", default-features = false, features = ["std", "parse", "serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 reqwest = "0.13"
 # wrap_help: 도움말을 터미널 너비에 맞춰 접는다(긴 설명이 한 줄로 늘어지지 않게).
@@ -86,3 +89,11 @@ sbx-executor-process = { path = "crates/adapter/executor-process" }
 sbx-executor-install = { path = "crates/spec/executor-install" }
 sbx-executor-repo = { path = "crates/spec/executor-repo" }
 sbx-shim = { path = "crates/app/shim" }
+
+# 배포 빌드(`cargo xtask dist`, 게스트 init). fat LTO와 codegen-units 1로 한 덩어리로 최적화하고 기호를 지운다:
+# macOS arm64 sbx가 16.7 MB → 9.7 MB. 대가는 빌드 시간이다(개발은 debug 빌드를 쓴다).
+# panic은 unwind로 둔다: tui가 패닉할 때 Drop으로 자식 프로세스와 터미널을 정리한다.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "symbols"

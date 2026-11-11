@@ -38,6 +38,21 @@ pub struct ResolvedImage {
     pub layers: Vec<Layer>,
     /// 이미지에 있었지만 적용하지 않은 필드. `image inspect`에서 보여준다.
     pub ignored_fields: Vec<String>,
+    /// 받은 문서 그대로(digest를 대조한 것). `sbx save`가 같은 이미지 ID로 다시 내보내는 데 쓴다.
+    pub documents: Option<Documents>,
+}
+
+/// 플랫폼 manifest와 image config의 원래 바이트.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Documents {
+    /// 플랫폼 manifest. 이 바이트의 sha256이 이미지 ID다.
+    pub manifest: Vec<u8>,
+    /// manifest의 미디어 형식(OCI 또는 Docker v2).
+    pub manifest_media_type: String,
+    /// image config.
+    pub config: Vec<u8>,
+    /// image config의 digest(manifest에 적힌 것, 대조함).
+    pub config_digest: Digest,
 }
 
 /// 이미지 소스 오류.
@@ -64,8 +79,6 @@ pub enum ImageError {
     Integrity(String),
     /// 입출력 오류.
     Io(io::Error),
-    /// 아직 구현하지 않은 기능.
-    Unimplemented(&'static str),
 }
 
 impl fmt::Display for ImageError {
@@ -83,7 +96,6 @@ impl fmt::Display for ImageError {
             ImageError::Transport(m) => write!(f, "registry: {m}"),
             ImageError::Integrity(m) => write!(f, "digest mismatch: {m}"),
             ImageError::Io(e) => write!(f, "io: {e}"),
-            ImageError::Unimplemented(what) => write!(f, "not implemented yet: {what}"),
         }
     }
 }

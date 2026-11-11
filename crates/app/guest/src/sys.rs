@@ -196,6 +196,21 @@ pub fn sync() {
     unsafe { libc::sync() }
 }
 
+/// `path`가 있는 파일 시스템의 (전체, 쓴 것) 바이트.
+// statvfs 필드의 C 형은 OS마다 다르다(Linux는 u64, macOS는 u32도 있다).
+#[allow(clippy::unnecessary_cast)]
+pub fn disk_usage(path: &str) -> io::Result<(u64, u64)> {
+    let c =
+        std::ffi::CString::new(path).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    // SAFETY: statvfs는 정수 필드만 있는 C 구조체라 0으로 채워도 되고, c는 NUL로 끝나는 문자열이다.
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    check(unsafe { libc::statvfs(c.as_ptr(), &mut st) })?;
+    let frsize = st.f_frsize as u64;
+    let total = (st.f_blocks as u64).saturating_mul(frsize);
+    let free = (st.f_bfree as u64).saturating_mul(frsize);
+    Ok((total, total.saturating_sub(free)))
+}
+
 /// Linux 전용 시스템 호출. 부팅(`boot`)만 쓴다.
 #[cfg(target_os = "linux")]
 pub mod linux {

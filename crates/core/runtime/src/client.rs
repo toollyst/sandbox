@@ -1,6 +1,11 @@
 //! 게스트 연결의 호스트 쪽. 연결 하나에 요청 하나다(`sbx-guest-proto` 규칙). 모든 함수는 블로킹이다.
 //!
 //! 게스트가 보낸 것은 믿지 않는다. 순서가 틀리면 [`RuntimeError::Protocol`]이다.
+//!
+//! 게스트는 답하지 않을 수도 있다(연결을 받기만 하고 멈춘 에이전트). 그래서 연결마다 읽기·쓰기 하나가
+//! [`REQUEST_TIMEOUT`]까지만 기다린다(`stop`, `rm -f`, MCP 시간 제한이 게스트에 묶이지 않게). 끝없이 기다려야 하는
+//! 흐름(실행 중인 프로세스의 출력, 나가는 연결 자리)은 요청이 받아들여진 뒤 시간 제한을 푼다. 복사는 시간 제한을
+//! 둔 채 흐른다(읽기·쓰기 하나마다의 제한이라 큰 파일도 된다).
 
 use std::io;
 use std::path::Path;
@@ -16,6 +21,9 @@ use crate::hostfs;
 /// 연결을 다시 시도하는 간격.
 pub const RETRY: Duration = Duration::from_millis(5);
 
+/// 게스트의 답(과 게스트로 쓰기 하나)을 기다리는 최대 시간.
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
 fn proto_err(m: impl Into<String>) -> RuntimeError {
     RuntimeError::Protocol(m.into())
 }
@@ -25,30 +33,60 @@ fn proto_err(m: impl Into<String>) -> RuntimeError {
 pub struct Guest {
     executor: Arc<dyn Executor>,
     channel: ChannelSpec,
+    timeout: Duration,
+}
+
+fn lost(e: &io::Error) -> RuntimeError {
+    match e.kind() {
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => RuntimeError::Lost(format!(
+            "the guest did not answer within {}s",
+            REQUEST_TIMEOUT.as_secs()
+        )),
+        _ => RuntimeError::Lost(e.to_string()),
+    }
 }
 
 fn recv(c: &mut dyn GuestConn) -> Result<GuestMsg, RuntimeError> {
     GuestMsg::read_from(c).map_err(|e| match e.kind() {
         io::ErrorKind::InvalidData => proto_err(e.to_string()),
-        _ => RuntimeError::Lost(e.to_string()),
+        _ => lost(&e),
     })
 }
 
 fn send(c: &mut dyn GuestConn, m: &HostMsg) -> Result<(), RuntimeError> {
-    m.write_to(c).map_err(|e| RuntimeError::Lost(e.to_string()))
+    m.write_to(c).map_err(|e| lost(&e))
+}
+
+/// 요청이 받아들여진 뒤 끝없이 흐르는 연결의 시간 제한을 푼다.
+fn untimed(c: &dyn GuestConn) -> Result<(), RuntimeError> {
+    c.set_timeout(None)
+        .map_err(|e| RuntimeError::Lost(e.to_string()))
 }
 
 impl Guest {
     /// 만든다.
     pub fn new(executor: Arc<dyn Executor>, channel: ChannelSpec) -> Self {
-        Self { executor, channel }
+        Self {
+            executor,
+            channel,
+            timeout: REQUEST_TIMEOUT,
+        }
     }
 
-    /// 연결하고 버전을 확인한다.
+    /// 답을 기다리는 시간을 바꾼다(테스트, Unix 소켓 쌍을 쓰는 것만).
+    #[cfg(all(test, unix))]
+    pub(crate) fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// 연결하고 버전을 확인한다. 돌려준 연결에는 [`REQUEST_TIMEOUT`]이 걸려 있다.
     pub fn open(&self) -> Result<Box<dyn GuestConn>, RuntimeError> {
         let mut c = self
             .executor
             .connect(&self.channel)
+            .map_err(|e| RuntimeError::GuestUnreachable(e.to_string()))?;
+        c.set_timeout(Some(self.timeout))
             .map_err(|e| RuntimeError::GuestUnreachable(e.to_string()))?;
         send(
             &mut *c,
@@ -97,9 +135,59 @@ impl Guest {
         let mut c = self.open()?;
         send(&mut *c, &HostMsg::Exec(x))?;
         match recv(&mut *c)? {
-            GuestMsg::Started { pid } => Ok((c, pid)),
+            GuestMsg::Started { pid } => {
+                untimed(&*c)?;
+                Ok((c, pid))
+            }
             GuestMsg::Error(e) => Err(RuntimeError::CommandFailed(e)),
             other => Err(proto_err(format!("expected Started, got {other:?}"))),
+        }
+    }
+
+    /// 떼어 놓고 실행한다([`HostMsg::ExecDetached`]). 게스트 안의 PID.
+    pub fn exec_detached(&self, x: Exec) -> Result<u32, RuntimeError> {
+        let mut c = self.open()?;
+        send(&mut *c, &HostMsg::ExecDetached(x))?;
+        match recv(&mut *c) {
+            Ok(GuestMsg::Started { pid }) => Ok(pid),
+            Ok(GuestMsg::Error(e)) => Err(RuntimeError::CommandFailed(e)),
+            Ok(other) => Err(proto_err(format!("expected Started, got {other:?}"))),
+            // 이 요청을 모르는 게스트(0.2.0이 띄운 VM)는 답 없이 닫는다.
+            Err(RuntimeError::Lost(e)) => Err(RuntimeError::Lost(format!(
+                "{e}; the guest may be older than this sbx (the sandbox was started before an upgrade): \
+                 restart the sandbox to run detached commands"
+            ))),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// `-p`: 게스트 `127.0.0.1:port`로 이어진 연결([`HostMsg::Forward`]). 그 뒤로 Data·End를 주고받는다.
+    pub fn forward(&self, port: u16) -> Result<Box<dyn GuestConn>, RuntimeError> {
+        let mut c = self.open()?;
+        send(&mut *c, &HostMsg::Forward { port })?;
+        match recv(&mut *c)? {
+            GuestMsg::Done => {
+                untimed(&*c)?;
+                Ok(c)
+            }
+            GuestMsg::Error(e) => Err(RuntimeError::Guest(e)),
+            other => Err(proto_err(format!("expected Done, got {other:?}"))),
+        }
+    }
+
+    /// 게스트의 자원 사용량([`HostMsg::Usage`]).
+    pub fn usage(&self) -> Result<sbx_guest_proto::Usage, RuntimeError> {
+        let mut c = self.open()?;
+        send(&mut *c, &HostMsg::Usage)?;
+        match recv(&mut *c) {
+            Ok(GuestMsg::Usage(u)) => Ok(u),
+            Ok(GuestMsg::Error(e)) => Err(RuntimeError::Guest(e)),
+            Ok(other) => Err(proto_err(format!("expected Usage, got {other:?}"))),
+            Err(RuntimeError::Lost(e)) => Err(RuntimeError::Lost(format!(
+                "{e}; the guest may be older than this sbx (the sandbox was started before an upgrade): \
+                 restart the sandbox to see its usage"
+            ))),
+            Err(e) => Err(e),
         }
     }
 
@@ -224,6 +312,7 @@ impl Guest {
     pub fn egress_slot(&self) -> Result<Box<dyn GuestConn>, RuntimeError> {
         let mut c = self.open()?;
         send(&mut *c, &HostMsg::EgressSlot)?;
+        untimed(&*c)?;
         Ok(c)
     }
 
@@ -248,5 +337,60 @@ impl Guest {
             GuestMsg::Error(e) => Err(RuntimeError::Guest(e)),
             other => Err(proto_err(format!("expected Done, got {other:?}"))),
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::io::Read;
+    use std::os::unix::net::UnixStream;
+    use std::sync::Mutex;
+
+    use sbx_executor::{Capabilities, ExecutorError, VmConfig, VmHandle};
+    use sbx_model::BoxFuture;
+
+    use super::*;
+
+    /// 연결마다 짝의 다른 끝을 `peers`에 남기는 실행기. 짝은 읽기만 하고 답하지 않는다(멈춘 게스트).
+    struct Silent {
+        peers: Mutex<Vec<UnixStream>>,
+    }
+
+    impl Executor for Silent {
+        fn capabilities(&self) -> Capabilities {
+            unimplemented!()
+        }
+        fn launch(&self, _: VmConfig) -> BoxFuture<'_, Result<Box<dyn VmHandle>, ExecutorError>> {
+            unimplemented!()
+        }
+        fn connect(&self, _: &ChannelSpec) -> io::Result<Box<dyn GuestConn>> {
+            let (a, b) = UnixStream::pair()?;
+            self.peers.lock().unwrap().push(b);
+            Ok(Box::new(a))
+        }
+    }
+
+    #[test]
+    fn a_silent_guest_cannot_stall_the_host() {
+        let ex = Arc::new(Silent {
+            peers: Mutex::new(Vec::new()),
+        });
+        let g = Guest::new(
+            ex.clone(),
+            ChannelSpec {
+                host_endpoint: "x".into(),
+                guest_port: 1024,
+            },
+        )
+        .with_timeout(Duration::from_millis(200));
+        let t = Instant::now();
+        let e = g.shutdown().unwrap_err();
+        assert!(matches!(e, RuntimeError::Lost(_)), "{e:?}");
+        assert!(e.to_string().contains("did not answer"), "{e}");
+        assert!(t.elapsed() < Duration::from_secs(5));
+        // 게스트 쪽은 Hello를 받았다(연결이 닫혀 있어도 버퍼에 남아 있다).
+        let mut peer = ex.peers.lock().unwrap().pop().unwrap();
+        let mut buf = [0u8; 1];
+        assert_eq!(peer.read(&mut buf).unwrap(), 1);
     }
 }

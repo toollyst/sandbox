@@ -108,6 +108,11 @@ pub const COMMANDS: &[Command] = &[
         "Show a sandbox's settings and state",
     ),
     cmd(
+        "stats",
+        Section::Sandboxes,
+        "Show running sandboxes' CPU, memory, disk and process count",
+    ),
+    cmd(
         "exec",
         Section::Inside,
         "Run a command in a running sandbox",
@@ -148,6 +153,26 @@ pub const COMMANDS: &[Command] = &[
         "Remove image references or images (refused while in use; -f ignores stopped sandboxes)",
     ),
     cmd(
+        "load",
+        Section::Images,
+        "Add images from an OCI archive or directory (docker save, podman save)",
+    ),
+    cmd(
+        "save",
+        Section::Images,
+        "Write an image as an OCI archive that sbx, docker and podman can load",
+    ),
+    cmd(
+        "login",
+        Section::Images,
+        "Save credentials for a registry (Docker's config.json or its credential helper)",
+    ),
+    cmd(
+        "logout",
+        Section::Images,
+        "Remove saved credentials for a registry",
+    ),
+    cmd(
         "tui",
         Section::Watch,
         "Watch and manage sandboxes, images, events and executors on one screen",
@@ -155,7 +180,7 @@ pub const COMMANDS: &[Command] = &[
     cmd(
         "events",
         Section::Watch,
-        "Stream sandbox and image events (--since replays recent ones)",
+        "Stream sandbox, image and network events (--since replays recent ones)",
     ),
     cmd(
         "mcp",
@@ -171,6 +196,11 @@ pub const COMMANDS: &[Command] = &[
         "info",
         Section::Setup,
         "Show the host, executor and storage sbx uses (include it in bug reports)",
+    ),
+    cmd(
+        "system",
+        Section::Setup,
+        "Show disk usage and remove what nothing uses (df, prune)",
     ),
     cmd(
         "completion",

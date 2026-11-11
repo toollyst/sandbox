@@ -29,6 +29,21 @@ pub fn write_image_record(layout: &CacheLayout, record: &ImageRecord) -> io::Res
     atomic_write(&layout.image_record(&record.id), &json)
 }
 
+/// 받은 문서를 이미지 디렉터리에 둔다(`sbx save`가 읽는다). 기록보다 먼저 쓴다.
+pub fn write_image_documents(
+    layout: &CacheLayout,
+    id: &ImageId,
+    manifest: &[u8],
+    config: &[u8],
+    info: &crate::DocumentsInfo,
+) -> io::Result<()> {
+    create_image_dir(layout, id)?;
+    atomic_write(&layout.image_manifest(id), manifest)?;
+    atomic_write(&layout.image_config(id), config)?;
+    let json = serde_json::to_vec_pretty(info).map_err(io::Error::other)?;
+    atomic_write(&layout.image_documents(id), &json)
+}
+
 fn with_refs<T>(
     layout: &CacheLayout,
     f: impl FnOnce(&mut BTreeMap<String, ImageId>) -> T,

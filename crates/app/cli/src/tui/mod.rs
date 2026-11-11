@@ -31,7 +31,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event as TermEvent, KeyEventKind};
@@ -74,7 +74,7 @@ fn event_loop(
 ) -> AppResult<()> {
     let mut model = Model::default();
     loop {
-        terminal.draw(|f| view::draw(f, &mut model, now_ns()))?;
+        terminal.draw(|f| view::draw(f, &mut model, crate::app::now_ns()))?;
         if event::poll(TICK)?
             && let TermEvent::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
@@ -346,13 +346,6 @@ struct NoInterruptHandler;
 #[cfg(not(unix))]
 fn interrupt_handler() -> io::Result<NoInterruptHandler> {
     Ok(NoInterruptHandler)
-}
-
-fn now_ns() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

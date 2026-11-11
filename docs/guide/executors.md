@@ -115,6 +115,13 @@ another repository isn't used for it. So a repository of VMM packages for `firec
 adapter, and a repository added later can't bring in its own `firecracker` that would then run everyone's VMM
 packages.
 
+**Yanked versions and advisories.** A repository can yank a version it published (a broken or vulnerable build) and
+attach a one-line advisory to any version. `install NAME` and `install NAME@1.18.0` skip yanked versions; naming the
+exact version (`NAME@1.18.0+wick.2`) still installs it, with a warning, so a pinned project keeps working. What you
+already installed keeps running. `sbx executor search` marks yanked versions, and `sbx executor ls`, `adapter ls` and
+`sbx tui` warn about installed ones (as of the last `search` or `install`; `ls` itself never goes online). In JSON
+they are the `yanked` and `advisory` fields.
+
 ## Publish your own repository
 
 A repository is a directory you can serve from GitHub Pages, S3 or a plain web server. The tools are in this
@@ -126,6 +133,8 @@ cargo xtask repo-add --repo ./executors --schema 2 --vmm-for firecracker --arch 
     --bundle ./my-firecracker --name myfc --version 1.19.0
 cargo xtask repo-add --repo ./executors --schema 2 --bundle ./my-executor --name myvmm --version 0.1.0
 cargo xtask repo-sign --repo ./executors --key ./mine.key     # again after every change, and before it expires
+cargo xtask repo-yank --repo ./executors --schema 2 --name myvmm --version 0.1.0 \
+    --advisory "CVE-2026-0001: upgrade to 0.1.1"                # then repo-sign again; --undo takes it back
 ```
 
 Then upload the directory as is. The official repository is built exactly this way; its workflow in

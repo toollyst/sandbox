@@ -11,6 +11,9 @@
 //!     (그 밖)          호출자가 쓰는 로그 (예: `sbx-shim`의 기본 프로세스 출력)
 //! ```
 //!
+//! - 기록에는 비밀이 있을 수 있다(`-e`, `--env-file`의 값, 기본 프로세스의 출력, 샌드박스가 쓴 디스크). 그래서
+//!   Unix에서 `sandboxes/`와 샌드박스 디렉터리는 0700, 기록 파일은 0600으로 만든다. 0.2.0이 만든 `sandboxes/`가
+//!   다른 사용자에게 열려 있으면 0700으로 좁힌다([`private_dir`]).
 //! - 만들기는 임시 디렉터리에 다 쓴 뒤 rename한다. 그래서 반쯤 만든 샌드박스는 목록에 나오지 않는다.
 //! - 지우기는 먼저 ID가 아닌 이름으로 rename하고 지운다. 그래서 반쯤 지운 샌드박스도 목록에 나오지 않고,
 //!   읽는 도중에 지워지면 없는 것으로 본다. 지우다 프로세스가 죽으면 그 이름의 디렉터리가 남는다(목록에는 없다).
@@ -54,6 +57,9 @@ pub struct StateRecord {
     /// 게스트 안 나가는 연결 프록시의 포트 (실행 중이고 네트워크를 허용했을 때).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub egress_port: Option<u16>,
+    /// 공개한 포트(`-p`, 실행 중일 때): (듣는 호스트 주소, 게스트 포트).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub published: Vec<(std::net::SocketAddr, u16)>,
 }
 
 impl StateRecord {
@@ -66,6 +72,7 @@ impl StateRecord {
             exit_code: None,
             control: None,
             egress_port: None,
+            published: Vec::new(),
         }
     }
 }
@@ -133,6 +140,34 @@ fn sync(f: &File) -> io::Result<()> {
     f.sync_all()
 }
 
+/// 이 사용자만 쓰는 디렉터리(Unix 0700)를 만든다. 있고 다른 사용자에게 열려 있으면 좁힌다(이 사용자의 것일 때).
+pub fn private_dir(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)?;
+        let m = fs::symlink_metadata(path)?;
+        if m.is_dir() && m.mode() & 0o077 != 0 && m.uid() == rustix::process::geteuid().as_raw() {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    fs::create_dir_all(path)
+}
+
+/// 이 사용자만 읽고 쓰는 새 파일(Unix 0600). 있으면 비운다.
+fn private_file(path: &Path) -> io::Result<File> {
+    let mut o = OpenOptions::new();
+    o.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+    o.open(path)
+}
+
 fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let dir = path.parent().unwrap_or(Path::new("."));
     let name = path
@@ -141,7 +176,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
         .unwrap_or_default();
     let t = temp(dir, &name);
     let r = (|| {
-        let mut f = File::create(&t)?;
+        let mut f = private_file(&t)?;
         f.write_all(bytes)?;
         sync(&f)?;
         fs::rename(&t, path)
@@ -193,17 +228,21 @@ pub fn create(
     scratch_mib: u32,
 ) -> Result<(), RuntimeError> {
     let parent = data_dir.join("sandboxes");
-    fs::create_dir_all(&parent)?;
+    private_dir(&parent)?;
     let staging = temp(&parent, id.as_str());
     let r = (|| -> Result<(), RuntimeError> {
-        fs::create_dir(&staging)?;
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let mut d = fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut d, 0o700);
+        d.create(&staging)?;
         let p = Paths {
             dir: staging.clone(),
         };
         atomic_write(&p.spec(), &to_json(spec)?)?;
         atomic_write(&p.state(), &to_json(&StateRecord::new(State::Created))?)?;
-        File::create(p.scratch())?.set_len(u64::from(scratch_mib) << 20)?;
-        File::create(p.owner_lock())?;
+        private_file(&p.scratch())?.set_len(u64::from(scratch_mib) << 20)?;
+        private_file(&p.owner_lock())?;
         fs::create_dir(p.dir.join("logs"))?;
         fs::rename(&staging, Paths::new(data_dir, id).dir)?;
         Ok(())
@@ -275,6 +314,7 @@ fn read_present(paths: &Paths) -> Result<Option<(SandboxSpec, StateRecord)>, Run
             exit_code: state.exit_code,
             control: None,
             egress_port: None,
+            published: Vec::new(),
         };
     }
     Ok(Some((spec, state)))

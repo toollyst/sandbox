@@ -7,7 +7,7 @@
 //!
 //! 1. 호스트가 [`HostMsg::Hello`]를 보낸다. 게스트는 버전이 같으면 [`GuestMsg::HelloAck`],
 //!    다르면 [`GuestMsg::Error`]를 보내고 연결을 닫는다. 1.0 전까지 호환 규칙은 "같아야 한다"이다.
-//! 2. 호스트가 요청 하나를 보낸다: [`HostMsg::Exec`], [`HostMsg::CopyIn`], [`HostMsg::CopyOut`], [`HostMsg::Stat`], [`HostMsg::Share`], [`HostMsg::EgressListen`], [`HostMsg::EgressSlot`], [`HostMsg::Shutdown`].
+//! 2. 호스트가 요청 하나를 보낸다: [`HostMsg::Exec`], [`HostMsg::ExecDetached`], [`HostMsg::CopyIn`], [`HostMsg::CopyOut`], [`HostMsg::Stat`], [`HostMsg::Share`], [`HostMsg::EgressListen`], [`HostMsg::EgressSlot`], [`HostMsg::SignalMain`], [`HostMsg::Usage`], [`HostMsg::Forward`], [`HostMsg::Shutdown`].
 //! 3. 요청별 흐름은 각 메시지 문서에 있다. 실패는 언제든 [`GuestMsg::Error`] 하나로 끝난다.
 //!
 //! **인코딩**: 프레임([`frame`]) 하나에 메시지 하나. 본문의 첫 바이트가 메시지 종류이고,

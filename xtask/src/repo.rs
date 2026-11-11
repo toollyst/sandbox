@@ -22,6 +22,18 @@
 //! - 같은 이름, 버전, 플랫폼이 이미 있으면 거부한다(올린 파일은 바꾸지 않는다).
 //!
 //! 그 디렉터리를 그대로 어디든(GitHub Pages, S3, 웹 서버) 올리면 저장소다.
+//!
+//! `repo-yank`: 올린 버전을 거두거나(`yanked`) 알림(`advisory`)을 붙인다. 압축 파일은 지우지 않는다(그 버전에 고정한
+//! 곳이 정확한 버전으로 계속 받을 수 있게).
+//!
+//! ```text
+//! cargo xtask repo-yank --repo <디렉터리> --name <이름> --version <버전> [--schema 1|2] [--adapter]
+//!     [--advisory <한 줄>] [--undo]
+//! ```
+//!
+//! - `--undo`: 거둔 것을 되돌린다(알림은 `--advisory ''`로 지운다).
+//! - `--advisory`만 주고 거두지 않으려면 `--undo --advisory <글>`.
+//! - 서명된 저장소면 그 뒤 `repo-sign`으로 다시 서명한다(`serial`이 커진다).
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -314,6 +326,87 @@ pub fn add(args: &[String]) -> Result<PathBuf, String> {
     f.write_all(b"\n").map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, &index_path).map_err(|e| e.to_string())?;
     Ok(file)
+}
+
+/// `repo-yank`. 고친 색인 파일 경로를 돌려준다.
+pub fn yank(args: &[String]) -> Result<PathBuf, String> {
+    let (mut repo, mut name, mut version) = (None, None, None);
+    let (mut schema, mut adapter, mut undo, mut advisory) = (1u32, false, false, None::<String>);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let mut val = || it.next().cloned().ok_or(format!("{a} needs a value"));
+        match a.as_str() {
+            "--repo" => repo = Some(PathBuf::from(val()?)),
+            "--name" => name = Some(val()?),
+            "--version" => version = Some(val()?),
+            "--schema" => {
+                schema = match val()?.as_str() {
+                    "1" => 1,
+                    "2" => 2,
+                    s => return Err(format!("--schema must be 1 or 2, not {s:?}")),
+                }
+            }
+            "--adapter" => adapter = true,
+            "--undo" => undo = true,
+            "--advisory" => advisory = Some(val()?),
+            other => return Err(format!("unknown argument {other:?}")),
+        }
+    }
+    let repo = repo.ok_or("--repo is required")?;
+    let name = name.ok_or("--name is required")?;
+    let version = version.ok_or("--version is required")?;
+    if adapter && schema != 2 {
+        return Err("--adapter needs --schema 2".into());
+    }
+    // 클라이언트(`sbx_executor_repo::index::advisory_text`)가 바꾸지 않고 보이는 것만: 한 줄, 제어 문자 없이, 512자까지.
+    if let Some(a) = &advisory
+        && !a.is_empty()
+        && (a.chars().count() > 512
+            || a.trim() != a
+            || a.chars()
+                .any(|c| c.is_control() || (c.is_whitespace() && c != ' ')))
+    {
+        return Err(
+            "--advisory must be one line of at most 512 characters without control characters"
+                .into(),
+        );
+    }
+    let index_path = repo.join(if schema == 2 {
+        "v2/index.json"
+    } else {
+        "index.json"
+    });
+    let bytes = std::fs::read(&index_path).map_err(|e| format!("{}: {e}", index_path.display()))?;
+    let mut index: Value =
+        serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", index_path.display()))?;
+    let section = if adapter { "adapters" } else { "executors" };
+    let ver = index
+        .get_mut(section)
+        .and_then(|s| s.get_mut(&name))
+        .and_then(|e| e.get_mut("versions"))
+        .and_then(|v| v.get_mut(&version))
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| format!("{name}@{version} is not in {}", index_path.display()))?;
+    if undo {
+        ver.remove("yanked");
+    } else {
+        ver.insert("yanked".into(), json!(true));
+    }
+    match advisory.as_deref() {
+        Some("") => {
+            ver.remove("advisory");
+        }
+        Some(a) => {
+            ver.insert("advisory".into(), json!(a));
+        }
+        None => {}
+    }
+    let tmp = index_path.with_extension("json.tmp");
+    let mut f = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+    serde_json::to_writer_pretty(&mut f, &index).map_err(|e| e.to_string())?;
+    f.write_all(b"\n").map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &index_path).map_err(|e| e.to_string())?;
+    Ok(index_path)
 }
 
 #[cfg(all(test, unix))]
@@ -609,6 +702,67 @@ mod tests {
             .artifacts[0];
         assert!(p.url.as_str().contains("1.18.0%2Bwick.1"), "{}", p.url);
         assert!(p.url.to_file_path().unwrap().is_file(), "{}", p.url);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn yank_marks_and_unmarks_a_version() {
+        let root = std::env::temp_dir().join(format!("xtask-yank-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("v2")).unwrap();
+        let sha = "0".repeat(64);
+        let index = serde_json::json!({"schema": 2, "executors": {"w": {"versions": {"1.0": {"adapter": "fc",
+            "artifacts": [{"os": "linux", "architecture": "amd64", "url": "x.tar.gz", "sha256": sha, "size": 1}]}}}}});
+        std::fs::write(root.join("v2/index.json"), index.to_string()).unwrap();
+        let run = |extra: &[&str]| {
+            let mut a: Vec<String> = [
+                "--repo",
+                root.to_str().unwrap(),
+                "--name",
+                "w",
+                "--version",
+                "1.0",
+                "--schema",
+                "2",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+            a.extend(extra.iter().map(|s| s.to_string()));
+            yank(&a)
+        };
+        let read = || {
+            let b = std::fs::read(root.join("v2/index.json")).unwrap();
+            let url = url::Url::from_file_path(root.join("v2/index.json")).unwrap();
+            let i = sbx_executor_repo::Index::parse(&b, &url).unwrap();
+            let v = i.executor("w").unwrap().versions[0].clone();
+            (v.yanked, v.advisory)
+        };
+        run(&["--advisory", "CVE-2026-1: use 1.1"]).unwrap();
+        assert_eq!(read(), (true, Some("CVE-2026-1: use 1.1".into())));
+        run(&["--undo"]).unwrap();
+        assert_eq!(read(), (false, Some("CVE-2026-1: use 1.1".into())));
+        run(&["--undo", "--advisory", ""]).unwrap();
+        assert_eq!(read(), (false, None));
+        assert!(
+            run(&["--advisory", "two\nlines"])
+                .unwrap_err()
+                .contains("one line")
+        );
+        assert!(
+            yank(&[
+                "--repo".into(),
+                root.to_str().unwrap().into(),
+                "--name".into(),
+                "w".into(),
+                "--version".into(),
+                "9".into(),
+                "--schema".into(),
+                "2".into()
+            ])
+            .unwrap_err()
+            .contains("not in")
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 }

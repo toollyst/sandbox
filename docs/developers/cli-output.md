@@ -27,6 +27,7 @@ The JSON Schema (draft 2020-12) of every type is in [cli-output.schema.json](cli
 | `rm` | lines: `Done` |
 | `ps` | value: `[Sandbox]` |
 | `inspect` | value: `Sandbox` |
+| `stats` | value: `[Stats]` |
 | `exec` | not supported: its output is the process's own bytes |
 | `attach` | not supported: its output is the process's own bytes |
 | `logs` | lines: `LogLine` |
@@ -35,6 +36,10 @@ The JSON Schema (draft 2020-12) of every type is in [cli-output.schema.json](cli
 | `prepare` | value: `Prepared` |
 | `images` | value: `[Image]` |
 | `rmi` | lines: `Removed` |
+| `load` | value: `[Pulled]` |
+| `save` | not supported: its output is the tar itself |
+| `login` | value: `Login` |
+| `logout` | value: `Logout` |
 | `tui` | not supported: it is an interactive screen |
 | `events` | lines: `Event` |
 | `mcp` | not supported: it speaks the Model Context Protocol (JSON-RPC) on stdio |
@@ -54,4 +59,6 @@ The JSON Schema (draft 2020-12) of every type is in [cli-output.schema.json](cli
 | `executor repo add` | value: `Repository` |
 | `executor repo rm` | value: `Repository` |
 | `info` | value: `Info` |
+| `system df` | value: `[DiskUsage]` |
+| `system prune` | value: `PruneReport` |
 | `completion` | not supported: its output is a shell script |

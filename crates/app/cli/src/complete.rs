@@ -410,6 +410,9 @@ mod tests {
             open_stdin: false,
             tty: false,
             name: name.map(Into::into),
+            lifetime_secs: None,
+            ports: Vec::new(),
+            egress_limit_bytes: None,
         };
         std::fs::write(dir.join("spec.json"), serde_json::to_vec(&spec).unwrap()).unwrap();
         std::fs::write(dir.join("state.json"), br#"{"state":"stopped"}"#).unwrap();

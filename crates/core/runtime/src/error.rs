@@ -97,8 +97,6 @@ pub enum RuntimeError {
     OwnedElsewhere(SandboxId),
     /// 입출력 오류.
     Io(io::Error),
-    /// 아직 구현하지 않은 기능.
-    Unimplemented(&'static str),
 }
 
 impl fmt::Display for RuntimeError {
@@ -165,7 +163,6 @@ impl fmt::Display for RuntimeError {
                 f,
                 "sandbox {id} was started by another process; only that process can do this"
             ),
-            RuntimeError::Unimplemented(what) => write!(f, "not implemented yet: {what}"),
         }
     }
 }

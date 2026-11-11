@@ -196,7 +196,7 @@ fn main_does_not_wait_for_children_holding_the_pipe() {
             &[
                 "sh",
                 "-c",
-                "sleep 3 & head -c 200000 /dev/zero | tr '\\0' a; exit 5",
+                "sleep 6 & head -c 200000 /dev/zero | tr '\\0' a; exit 5",
             ],
             false,
         );
@@ -210,11 +210,12 @@ fn main_does_not_wait_for_children_holding_the_pipe() {
     // 이미 쓴 출력(파이프 버퍼보다 큰 것도)은 모두 오고, 남은 자식(sleep)은 기다리지 않는다.
     let (len, status, took) = run(true);
     assert_eq!((len, status), (200000, ExitStatus::Code(5)));
-    assert!(took < std::time::Duration::from_secs(2), "{took:?}");
+    // 여유를 크게 둔다(바쁜 CI). 남은 자식을 기다렸다면 6초가 걸린다.
+    assert!(took < std::time::Duration::from_secs(4), "{took:?}");
     // 기본은 파이프가 닫힐 때까지 기다린다.
     let (len, _, took) = run(false);
     assert_eq!(len, 200000);
-    assert!(took >= std::time::Duration::from_secs(2), "{took:?}");
+    assert!(took >= std::time::Duration::from_secs(4), "{took:?}");
 }
 
 #[test]
@@ -432,6 +433,83 @@ fn host_disconnect_kills_the_process() {
         assert!(Instant::now() < deadline, "process {pid} still alive");
         thread::sleep(Duration::from_millis(20));
     }
+}
+
+#[test]
+fn forward_connects_to_a_port_inside_and_relays_both_ways() {
+    use std::io::{Read, Write};
+    let f = Fixture::new("forward");
+    // 게스트 안의 서비스 흉내: 받은 것을 대문자로 돌려주고 닫는다.
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    thread::spawn(move || {
+        let (mut s, _) = l.accept().unwrap();
+        let mut b = Vec::new();
+        s.read_to_end(&mut b).unwrap();
+        s.write_all(&b.to_ascii_uppercase()).unwrap();
+    });
+    let mut c = f.connect();
+    send(&mut c, HostMsg::Forward { port });
+    assert_eq!(recv(&mut c), GuestMsg::Done);
+    send(&mut c, HostMsg::Data(b"ping".to_vec()));
+    send(&mut c, HostMsg::End);
+    let mut got = Vec::new();
+    loop {
+        match recv(&mut c) {
+            GuestMsg::Data(b) => got.extend(b),
+            GuestMsg::End => break,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    assert_eq!(got, b"PING");
+
+    // 듣는 것이 없으면 NotFound.
+    let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let closed = free.local_addr().unwrap().port();
+    drop(free);
+    let mut c = f.connect();
+    send(&mut c, HostMsg::Forward { port: closed });
+    assert_eq!(error_kind(&mut c), ErrorKind::NotFound);
+}
+
+#[test]
+fn a_detached_process_outlives_its_connection() {
+    let f = Fixture::new("detached");
+    let mark = f.dir.join("done");
+    let mut c = f.connect();
+    let script = format!("sleep 0.3; echo out; touch {}", mark.display());
+    send(
+        &mut c,
+        HostMsg::ExecDetached(f.exec(&["sh", "-c", &script], false)),
+    );
+    let pid = started(&mut c);
+    // 게스트가 곧바로 닫는다. 출력은 오지 않는다.
+    assert!(GuestMsg::read_from(&mut c).is_err());
+    drop(c);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !mark.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "detached process {pid} did not finish"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    // 거둔다(좀비로 남지 않는다).
+    while crate::sys::kill(pid, 0).is_ok() {
+        assert!(Instant::now() < deadline, "process {pid} was not reaped");
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    // 터미널, 입력, 기본 프로세스는 떼어 놓을 수 없다.
+    let mut c = f.connect();
+    send(&mut c, HostMsg::ExecDetached(f.exec(&["true"], true)));
+    assert_eq!(error_kind(&mut c), ErrorKind::InvalidArgument);
+    let mut c = f.connect();
+    send(
+        &mut c,
+        HostMsg::ExecDetached(f.exec(&["no-such-program"], false)),
+    );
+    assert_eq!(error_kind(&mut c), ErrorKind::NotFound);
 }
 
 #[test]

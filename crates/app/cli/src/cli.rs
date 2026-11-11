@@ -141,6 +141,15 @@ pub enum Command {
         #[arg(add = complete::sandbox())]
         id: String,
     },
+    #[command(about = about("stats"))]
+    Stats {
+        /// Print one sample and exit. Without a terminal, and with --format json, there is always one sample.
+        #[arg(long)]
+        no_stream: bool,
+        /// Sandbox names, IDs or ID prefixes (default: every running sandbox).
+        #[arg(add = complete::sandbox())]
+        ids: Vec<String>,
+    },
     #[command(about = about("exec"), override_usage = "sbx exec [OPTIONS] SANDBOX COMMAND [ARG...]")]
     Exec(ExecArgs),
     #[command(about = about("attach"))]
@@ -205,6 +214,44 @@ pub enum Command {
         #[arg(required = true, add = complete::image())]
         images: Vec<String>,
     },
+    #[command(about = about("load"))]
+    Load {
+        /// An OCI image layout: a tar (gzipped or not) from `docker save` (Docker 25 or later),
+        /// `podman save --format oci-archive` or `skopeo copy`, or such a directory. Without it, stdin.
+        #[arg(short = 'i', long = "input", value_name = "FILE")]
+        input: Option<PathBuf>,
+        /// Name the image (only when the archive holds one). Default: the names in the archive.
+        #[arg(long)]
+        tag: Option<String>,
+        /// linux/amd64 or linux/arm64. Defaults to the host architecture.
+        #[arg(long)]
+        platform: Option<String>,
+    },
+    #[command(about = about("save"))]
+    Save {
+        /// Write the tar here. Without it, stdout (refused when stdout is a terminal).
+        #[arg(short = 'o', long = "output", value_name = "FILE")]
+        output: Option<PathBuf>,
+        /// Image reference or ID.
+        #[arg(add = complete::image())]
+        image: String,
+    },
+    #[command(about = about("login"))]
+    Login {
+        /// User name. Asked for when it is missing and stdin is a terminal.
+        #[arg(short = 'u', long)]
+        username: Option<String>,
+        /// Read the password or access token from stdin (one line). Without it, sbx asks on the terminal.
+        #[arg(long)]
+        password_stdin: bool,
+        /// Registry, e.g. ghcr.io or localhost:5000. Defaults to Docker Hub.
+        server: Option<String>,
+    },
+    #[command(about = about("logout"))]
+    Logout {
+        /// Registry, e.g. ghcr.io. Defaults to Docker Hub.
+        server: Option<String>,
+    },
     #[command(about = about("tui"), after_help = crate::tui::keys::help_text())]
     Tui,
     #[command(about = about("events"))]
@@ -216,7 +263,7 @@ pub enum Command {
         /// Stop at this time (same forms as --since). Without it, keep streaming.
         #[arg(long)]
         until: Option<String>,
-        /// Filter: type=sandbox|image, event=ACTION, sandbox=ID-PREFIX|NAME, image=IMAGE.
+        /// Filter: type=sandbox|image|network, event=ACTION, sandbox=ID-PREFIX|NAME, image=IMAGE.
         /// Different keys must all match, a repeated key any of its values.
         #[arg(short = 'f', long = "filter", value_name = "KEY=VALUE")]
         filter: Vec<String>,
@@ -235,6 +282,25 @@ pub enum Command {
         /// The most memory one tool call may ask for (e.g. 2g).
         #[arg(long, default_value = "4g", value_parser = crate::parse::memory_mib)]
         max_memory: u32,
+        /// The largest writable disk one tool call may ask for (e.g. 20g).
+        #[arg(long, default_value = "16g", value_parser = crate::parse::disk_mib)]
+        max_disk: u32,
+        /// Stop every sandbox created through MCP at most this long after it starts (e.g. 1h); agents may ask for
+        /// less with `lifetime`. By default they run until stopped or removed.
+        #[arg(long, value_name = "DURATION", value_parser = crate::parse::lifetime_secs)]
+        max_lifetime: Option<u64>,
+        /// The most bytes each MCP sandbox with network access may send and receive per start (e.g. 1g); agents get
+        /// it as their limit. By default there is none.
+        #[arg(long, value_name = "SIZE", value_parser = crate::parse::transfer_bytes)]
+        max_egress: Option<u64>,
+        /// Refuse to pull an image for an agent when its layers add up to more than SIZE compressed (e.g. 2g), so an
+        /// agent can't fill the image cache. Checked before downloading. By default there is none.
+        #[arg(long, value_name = "SIZE", value_parser = crate::parse::transfer_bytes)]
+        max_image_size: Option<u64>,
+        /// Let agents allow loopback, private and link-local IP addresses and `localhost` (by default they can
+        /// only allow public hosts, so an agent can't reach services on this machine, the LAN or cloud metadata).
+        #[arg(long)]
+        allow_private_network: bool,
     },
     #[command(about = about("executor"))]
     Executor {
@@ -243,6 +309,11 @@ pub enum Command {
     },
     #[command(about = about("info"))]
     Info,
+    #[command(about = about("system"))]
+    System {
+        #[command(subcommand)]
+        command: SystemCommand,
+    },
     #[command(
         about = about("completion"),
         long_about = "Print the shell script that enables tab completion. Besides commands and options, it completes \
@@ -256,6 +327,25 @@ so it always matches the installed sbx.",
     Completion {
         /// Shell to enable completion for.
         shell: clap_complete::Shell,
+    },
+}
+
+/// `system` 아래 명령.
+#[derive(Debug, Subcommand)]
+pub enum SystemCommand {
+    /// Show how much disk images, sandboxes and executors take, and how much prune could free.
+    Df,
+    /// Remove stopped sandboxes, unused layers and leftovers (-a: also images no sandbox uses).
+    Prune {
+        /// Also remove every image no remaining sandbox uses.
+        #[arg(short = 'a', long)]
+        all: bool,
+        /// Don't ask for confirmation.
+        #[arg(short = 'f', long)]
+        force: bool,
+        /// Only sandboxes matching: until=TIME (created before), label=KEY[=VALUE].
+        #[arg(long = "filter", value_name = "KEY=VALUE")]
+        filter: Vec<String>,
     },
 }
 
@@ -504,6 +594,10 @@ pub struct RunArgs {
     /// Memory (e.g. 512m, 1g; default 512m).
     #[arg(short = 'm', long, help_heading = "Resources")]
     pub memory: Option<String>,
+    /// Writable disk: `size=SIZE` (e.g. size=20g; default 1g, at least 64m). Sparse, so the host only spends what
+    /// the sandbox writes.
+    #[arg(long = "storage-opt", value_name = "size=SIZE", value_parser = crate::parse::storage_opt, help_heading = "Resources")]
+    pub storage_opt: Option<u32>,
     /// Name the sandbox; other commands accept it in place of the ID.
     #[arg(long)]
     pub name: Option<String>,
@@ -528,9 +622,22 @@ pub struct RunArgs {
     /// Seconds to wait after the stop signal before powering off (default 10).
     #[arg(long, help_heading = "Stopping")]
     pub stop_timeout: Option<u32>,
+    /// Stop the sandbox this long after each start (e.g. 30m, 1h; like podman --timeout): stop signal, then power off
+    /// after the stop timeout. Without it a sandbox runs until its main process ends or it is stopped.
+    #[arg(long, value_name = "DURATION", value_parser = crate::parse::lifetime_secs, help_heading = "Stopping")]
+    pub timeout: Option<u64>,
     /// Destination allowed with --network allow: `HOST:PORT` (`*.example.com:443`, `10.0.0.5:*`, `[::1]:80`). Repeatable.
     #[arg(long = "allow", help_heading = "Network")]
     pub allow: Vec<String>,
+    /// With --network allow: the most bytes all outgoing connections may send and receive together in each start
+    /// (e.g. 500m, 2g). Reaching it closes them and refuses new ones.
+    #[arg(long = "egress-limit", value_name = "SIZE", value_parser = crate::parse::transfer_bytes, help_heading = "Network")]
+    pub egress_limit: Option<u64>,
+    /// Publish a sandbox TCP port on the host: PORT, HOST_PORT:PORT or IP:HOST_PORT:PORT (e.g. 8080:80). IP defaults
+    /// to 127.0.0.1, so only this machine can connect (Docker's default is every address; write 0.0.0.0: for that).
+    /// Without HOST_PORT a free port is picked; `sbx inspect` shows it.
+    #[arg(short = 'p', long = "publish", value_name = "[IP:][HOST_PORT:]PORT", value_parser = crate::parse::port_mapping, help_heading = "Network")]
+    pub publish: Vec<sbx_model::PortMapping>,
     /// Image reference or ID, then the command and its arguments. Everything after the image belongs to the
     /// command, even values that look like sbx options.
     #[arg(
@@ -565,6 +672,13 @@ pub struct ExecArgs {
     /// Allocate a TTY.
     #[arg(short = 't', long)]
     pub tty: bool,
+    /// Start the command in the background and return at once. Its output is discarded; it runs until it ends or
+    /// the sandbox stops.
+    #[arg(short = 'd', long, conflicts_with_all = ["interactive", "tty", "timeout"])]
+    pub detach: bool,
+    /// Kill the command (SIGKILL) if it is still running after DURATION (e.g. 30s, 5m); sbx then exits with 124.
+    #[arg(long, value_name = "DURATION", value_parser = crate::parse::lifetime_secs)]
+    pub timeout: Option<u64>,
     /// Environment variable K=V (K alone takes the host's value).
     #[arg(short = 'e', long = "env")]
     pub env: Vec<String>,

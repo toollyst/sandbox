@@ -34,13 +34,44 @@ pub const KEYS: &[KeyHelp] = &[
     k("r", "sandboxes", "restart"),
     k("K", "sandboxes", "kill (asks first)"),
     k("D", "sandboxes", "rm -f (asks first)"),
-    k("D", "images", "rmi (asks first)"),
     k("e", "sandboxes", "exec -it ID sh (takes the terminal)"),
+    k(
+        "E",
+        "sandboxes",
+        "exec -d: a command in the background (fills in the command)",
+    ),
     k("a", "sandboxes", "attach (takes the terminal)"),
+    k(
+        "T",
+        "sandboxes",
+        "stats: CPU, memory, disk (takes the terminal; Ctrl+C stops)",
+    ),
     k(
         "l",
         "sandboxes",
         "logs -f (takes the terminal; Ctrl+C stops following)",
+    ),
+    k("D", "images", "rmi (asks first)"),
+    k("U", "images", "system df: disk usage (takes the terminal)"),
+    k(
+        "P",
+        "images",
+        "system prune -a: unused sandboxes, images, layers (asks first)",
+    ),
+    k(
+        "L",
+        "images",
+        "login: save registry credentials (fills in the command)",
+    ),
+    k(
+        "I",
+        "images",
+        "load -i: add images from an OCI archive (fills in)",
+    ),
+    k(
+        "O",
+        "images",
+        "save -o: write the image as an OCI archive (fills in)",
     ),
     k(
         "u",

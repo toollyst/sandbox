@@ -78,6 +78,10 @@ mod unix {
             completion_offers_sandboxes_and_images,
         ),
         ("json_output_contract", json_output_contract),
+        (
+            "system_df_and_prune_free_what_nothing_uses",
+            system_df_and_prune_free_what_nothing_uses,
+        ),
         ("events_replay_and_follow", events_replay_and_follow),
         ("filters", filters),
         ("jq_shapes_json_output", jq_shapes_json_output),
@@ -110,6 +114,28 @@ mod unix {
         (
             "stop_sends_the_stop_signal_then_powers_off",
             stop_sends_the_stop_signal_then_powers_off,
+        ),
+        ("stats_reports_guest_usage", stats_reports_guest_usage),
+        (
+            "published_ports_reach_the_sandbox",
+            published_ports_reach_the_sandbox,
+        ),
+        (
+            "login_and_logout_use_dockers_config",
+            login_and_logout_use_dockers_config,
+        ),
+        (
+            "load_and_save_round_trip_an_oci_archive",
+            load_and_save_round_trip_an_oci_archive,
+        ),
+        ("policy_json_is_followed", policy_json_is_followed),
+        (
+            "registries_conf_is_read_for_pulls",
+            registries_conf_is_read_for_pulls,
+        ),
+        (
+            "a_detached_sandbox_stops_after_its_timeout",
+            a_detached_sandbox_stops_after_its_timeout,
         ),
         ("kill_wait_and_restart", kill_wait_and_restart),
         ("attach_to_a_detached_sandbox", attach_to_a_detached_sandbox),
@@ -152,6 +178,10 @@ mod unix {
         ("attach_tty_and_signal_proxy", attach_tty_and_signal_proxy),
         ("volume_is_shared_live", volume_is_shared_live),
         ("network_allow_list", network_allow_list),
+        (
+            "egress_limit_and_network_events",
+            egress_limit_and_network_events,
+        ),
         (
             "embedded_guest_init_is_unpacked_into_the_cache",
             embedded_guest_init_is_unpacked_into_the_cache,
@@ -257,6 +287,16 @@ mod unix {
                 .env("SBX_GUEST_INIT", self.root.join("initramfs"))
                 .env("SBX_EXECUTOR", std::env::current_exe().unwrap())
                 .env("SBX_SHIM", std::env::current_exe().unwrap())
+                // 레지스트리 자격 증명은 테스트 안의 것만 본다.
+                .env("DOCKER_CONFIG", self.root.join("docker"))
+                .env("XDG_CONFIG_HOME", self.root.join("xdg-config"))
+                .env_remove("REGISTRY_AUTH_FILE")
+                // registries.conf도(사용자 drop-in은 HOME 아래).
+                .env(
+                    "CONTAINERS_REGISTRIES_CONF",
+                    self.root.join("registries.conf"),
+                )
+                .env("HOME", self.root.join("home"))
                 .stdin(Stdio::null());
             c
         }
@@ -311,6 +351,77 @@ mod unix {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.root);
         }
+    }
+
+    fn system_df_and_prune_free_what_nothing_uses() {
+        use sbx_cli::output::{DiskUsage, PruneReport};
+        let e = Env::new();
+        let o = e.sbx(&["create", "--label", "keep=1", IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let kept = text(&o.stdout).trim().to_owned();
+        let o = e.sbx(&["run", "-d", IMAGE, "sleep", "30"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let running = text(&o.stdout).trim().to_owned();
+        let o = e.sbx(&["create", IMAGE, "true"]);
+        let stopped = text(&o.stdout).trim().to_owned();
+
+        let o = e.sbx(&["--format", "json", "system", "df"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let rows: Vec<DiskUsage> = serde_json::from_slice(&o.stdout).unwrap();
+        let sb = rows.iter().find(|r| r.kind == "sandboxes").unwrap();
+        assert_eq!((sb.total, sb.active), (3, 1));
+        let im = rows.iter().find(|r| r.kind == "images").unwrap();
+        assert_eq!((im.total, im.active), (1, 1));
+
+        // 터미널이 아니면 -f가 있어야 한다.
+        let o = e.sbx(&["system", "prune"]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(text(&o.stderr).contains("-f"), "{}", text(&o.stderr));
+        // 하나를 지우다 멈춘 샌드박스 디렉터리(오래된 것만 지운다).
+        let half = e.path("data/sandboxes/.gone-1");
+        std::fs::create_dir_all(&half).unwrap();
+        let fresh = e.path("data/sandboxes/.busy-1");
+        std::fs::create_dir_all(&fresh).unwrap();
+        let old = std::time::SystemTime::now() - Duration::from_secs(7200);
+        std::fs::File::open(&half)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+
+        let o = e.sbx(&[
+            "--format",
+            "json",
+            "system",
+            "prune",
+            "-f",
+            "--filter",
+            "label=keep",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let r: PruneReport = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(r.sandboxes, std::slice::from_ref(&kept));
+        assert!(r.leftovers.iter().any(|l| l.ends_with(".gone-1")), "{r:?}");
+        assert!(!half.exists() && fresh.exists());
+        // -a: 멈춘 것을 모두, 쓰는 샌드박스가 없는 이미지도. 실행 중인 것과 그 이미지는 남는다.
+        let o = e.sbx(&["--format", "json", "system", "prune", "-a", "-f"]);
+        let r: PruneReport = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(r.sandboxes, [stopped]);
+        assert!(
+            r.images.is_empty(),
+            "the running sandbox uses the image: {r:?}"
+        );
+        let ids: Vec<String> = e
+            .ps()
+            .iter()
+            .map(|s| s["id"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(ids, std::slice::from_ref(&running));
+        e.sbx(&["rm", "-f", &running]);
+        let o = e.sbx(&["--format", "json", "system", "prune", "-a", "-f"]);
+        let r: PruneReport = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(r.images.len(), 1, "{r:?}");
+        let o = e.sbx(&["images", "-q"]);
+        assert!(text(&o.stdout).trim().is_empty());
     }
 
     fn text(b: &[u8]) -> String {
@@ -466,6 +577,104 @@ mod unix {
             "printf %s \"$HTTP_PROXY\"",
         ]);
         assert_eq!(text(&o.stdout), "");
+    }
+
+    fn egress_limit_and_network_events() {
+        use std::io::{BufRead, BufReader};
+        // 목적지: 본문 4000바이트로 답하는 HTTP 서버.
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = server.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for c in server.incoming().flatten() {
+                let mut r = BufReader::new(c.try_clone().unwrap());
+                let mut line = String::new();
+                while r.read_line(&mut line).is_ok_and(|n| n > 2) {
+                    line.clear();
+                }
+                let mut c = c;
+                let _ = c.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: 4000\r\nConnection: close\r\n\r\n{}",
+                        "x".repeat(4000)
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        let e = Env::new();
+        let allow = format!("127.0.0.1:{port}");
+        let script = format!(
+            "curl -s -x \"$HTTP_PROXY\" --noproxy '' http://127.0.0.1:{port}/ | wc -c; \
+             curl -s -o /dev/null -w '%{{http_code}}' -x \"$HTTP_PROXY\" --noproxy '' http://127.0.0.1:{port}/"
+        );
+        let o = e.sbx(&[
+            "run",
+            "--rm",
+            "--network",
+            "allow",
+            "--allow",
+            &allow,
+            "--egress-limit",
+            "1k",
+            IMAGE,
+            "sh",
+            "-c",
+            &script,
+        ]);
+        let out = text(&o.stdout);
+        assert_eq!(o.status.code(), Some(0), "{out} {}", text(&o.stderr));
+        let mut lines = out.lines();
+        let got: usize = lines.next().unwrap().trim().parse().unwrap();
+        assert!(got < 1024, "{out}");
+        assert_eq!(lines.next(), Some("403"), "{out}");
+
+        let o = e.sbx(&[
+            "--format",
+            "json",
+            "events",
+            "--since",
+            "1h",
+            "--until",
+            "0s",
+            "--filter",
+            "type=network",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let events: Vec<serde_json::Value> = text(&o.stdout)
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let actions: Vec<&str> = events
+            .iter()
+            .map(|e| e["action"].as_str().unwrap())
+            .collect();
+        assert_eq!(actions, ["connect", "close", "refuse"], "{events:?}");
+        let attrs = |i: usize| &events[i]["attributes"];
+        assert_eq!(attrs(0)["host"], "127.0.0.1");
+        assert_eq!(attrs(0)["addr"], allow.as_str());
+        assert_eq!(attrs(1)["limit"], "1024");
+        assert!(
+            attrs(1)["received"]
+                .as_str()
+                .unwrap()
+                .parse::<u64>()
+                .unwrap()
+                <= 1024
+        );
+        assert!(
+            attrs(2)["reason"]
+                .as_str()
+                .unwrap()
+                .contains("egress limit")
+        );
+        // 나가는 연결이 없으면 상한은 받지 않는다.
+        let o = e.sbx(&["run", "--rm", "--egress-limit", "1k", IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(125), "{}", text(&o.stderr));
+        assert!(
+            text(&o.stderr).contains("needs network access"),
+            "{}",
+            text(&o.stderr)
+        );
     }
 
     fn volume_is_shared_live() {
@@ -1146,6 +1355,46 @@ mod unix {
         assert_eq!(text(&o.stdout), "24 80\r\ne\r\n");
         assert_eq!(e.sbx(&["exec", "-it", &id, "sh"]).status.code(), Some(1));
 
+        // -d: 곧바로 돌아오고, 명령은 sbx가 끝난 뒤에도 돈다. 출력은 버린다.
+        let mark = e.path("detached-done");
+        let script = format!("sleep 0.3; echo lost; touch {}", mark.display());
+        let o = e.sbx(&["exec", "-d", &id, "sh", "-c", &script]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !mark.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "the detached command did not run"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            e.sbx(&["exec", "-d", &id, "no-such-command-xyz"])
+                .status
+                .code(),
+            Some(127)
+        );
+        assert_eq!(
+            e.sbx(&["exec", "-d", "-t", &id, "true"]).status.code(),
+            Some(2)
+        );
+        // --timeout: 넘으면 죽이고 124. 일찍 끝나면 그 코드.
+        let o = e.sbx(&[
+            "exec",
+            "--timeout",
+            "1",
+            &id,
+            "sh",
+            "-c",
+            "echo start; sleep 30",
+        ]);
+        assert_eq!(o.status.code(), Some(124), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "start\n");
+        assert!(text(&o.stderr).contains("--timeout"), "{}", text(&o.stderr));
+        let o = e.sbx(&["exec", "--timeout", "30", &id, "sh", "-c", "exit 3"]);
+        assert_eq!(o.status.code(), Some(3), "{}", text(&o.stderr));
+
         // 가짜 실행기의 게스트 경로는 호스트 경로다.
         let src = e.path("src.txt");
         std::fs::write(&src, b"copied").unwrap();
@@ -1461,22 +1710,16 @@ mod unix {
         let last: LogLine = serde_json::from_str(text(&o.stdout).trim()).unwrap();
         assert_eq!(last.data, "partial");
 
-        // 이 판 전의 sbx가 쓴 로그(머리 없음, 시각 없음): 그대로 보이고, 시각이 필요한 옵션은 오류다.
+        // 0.1.x가 쓴 판 1 로그(머리 없음)는 읽지 않고 이유를 알린다.
         let log = e.path("data/sandboxes").join(&id).join("logs/main.log");
         std::fs::write(&log, [1, 0, 0, 0, 4, b'o', b'l', b'd', b'\n']).unwrap();
-        assert_eq!(text(&e.sbx(&["logs", &id]).stdout), "old\n");
-        for flag in [&["-t"][..], &["--since", "1h"], &["--until", "1h"]] {
-            let mut args = vec!["logs"];
-            args.extend_from_slice(flag);
-            args.push(&id);
-            let o = e.sbx(&args);
-            assert_eq!(o.status.code(), Some(1), "{flag:?}");
-            assert!(o.stdout.is_empty(), "{flag:?}");
-            assert!(text(&o.stderr).contains("older sbx"), "{}", text(&o.stderr));
-        }
-        let o = e.sbx(&["--format", "json", "logs", "-t", &id]);
-        let old: LogLine = serde_json::from_str(text(&o.stdout).trim()).unwrap();
-        assert_eq!((old.time, old.data.as_str()), (None, "old\n"));
+        let o = e.sbx(&["logs", &id]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("not an sbx log"),
+            "{}",
+            text(&o.stderr)
+        );
 
         // -f --until: 그 시각이 지나면 따라가기를 끝낸다. stdout이 닫혀도 조용히 끝난다.
         let o = e.sbx(&[
@@ -1552,6 +1795,424 @@ mod unix {
         let o = e.sbx(&["run", "-d", "--stop-signal", "NOPE", IMAGE, "true"]);
         assert_ne!(o.status.code(), Some(0));
         assert!(text(&o.stderr).contains("signal"), "{}", text(&o.stderr));
+    }
+
+    /// Basic 인증만 받는 레지스트리 흉내. `me:pw`만 통과한다.
+    fn basic_registry() -> u16 {
+        use std::io::{BufRead, BufReader};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for c in l.incoming() {
+                let Ok(mut c) = c else { return };
+                let mut r = BufReader::new(c.try_clone().unwrap());
+                let mut ok = false;
+                loop {
+                    let mut h = String::new();
+                    if r.read_line(&mut h).is_err() || h == "\r\n" || h.is_empty() {
+                        break;
+                    }
+                    // base64("me:pw")
+                    ok |= h
+                        .trim()
+                        .eq_ignore_ascii_case("authorization: basic bWU6cHc=");
+                }
+                let reply = if ok {
+                    "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                } else {
+                    "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"r\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                };
+                let _ = c.write_all(reply.as_bytes());
+            }
+        });
+        port
+    }
+
+    fn published_ports_reach_the_sandbox() {
+        use std::io::Read;
+        let e = Env::new();
+        // 가짜 실행기의 게스트는 호스트에서 돈다: 게스트 안 서비스 흉내를 호스트 포트에 띄운다.
+        let service = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let guest_port = service.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for c in service.incoming() {
+                let Ok(mut c) = c else { return };
+                let _ = c.write_all(b"hi from inside\n");
+            }
+        });
+        let o = e.sbx(&[
+            "run",
+            "-d",
+            "--name",
+            "web",
+            "-p",
+            &guest_port.to_string(),
+            IMAGE,
+            "sleep",
+            "30",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = e.sbx(&["--format", "json", "inspect", "web"]);
+        let s: sbx_cli::output::Sandbox = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(s.ports.len(), 1, "{:?}", s.ports);
+        let (host, guest) = s.ports[0].split_once("->").unwrap();
+        assert_eq!(guest, format!("{guest_port}/tcp"));
+        assert!(
+            host.starts_with("127.0.0.1:") && !host.ends_with(":0"),
+            "{host}"
+        );
+        let mut c = std::net::TcpStream::connect(host).unwrap();
+        let mut got = String::new();
+        c.read_to_string(&mut got).unwrap();
+        assert_eq!(got, "hi from inside\n");
+        assert_eq!(e.sbx(&["rm", "-f", "web"]).status.code(), Some(0));
+
+        // 잘못된 매핑과 UDP는 만들기 전에 거부한다.
+        for bad in ["80/udp", "x:80", "8080:0"] {
+            let o = e.sbx(&["create", "-p", bad, IMAGE, "true"]);
+            assert_eq!(o.status.code(), Some(2), "{bad}: {}", text(&o.stderr));
+        }
+    }
+
+    fn stats_reports_guest_usage() {
+        let e = Env::new();
+        // 실행 중인 것이 없으면 머리줄만.
+        let o = e.sbx(&["stats", "--no-stream"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout).lines().count(), 1);
+        let o = e.sbx(&["run", "-d", "--name", "st", IMAGE, "sleep", "30"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = e.sbx(&["--format", "json", "stats", "st"]);
+        // 가짜 실행기의 게스트는 호스트에서 돈다: Linux면 호스트의 /proc를 읽고, 아니면 /proc가 없다.
+        if cfg!(target_os = "linux") {
+            assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+            let rows: Vec<sbx_cli::output::Stats> = serde_json::from_slice(&o.stdout).unwrap();
+            assert_eq!(rows.len(), 1);
+            let r = &rows[0];
+            assert_eq!(r.name.as_deref(), Some("st"));
+            assert!(
+                r.cpus >= 1 && r.memory_total > 0 && r.memory_used <= r.memory_total,
+                "{r:?}"
+            );
+            assert!(r.pids > 0 && r.cpu_percent >= 0.0, "{r:?}");
+        } else {
+            assert_ne!(o.status.code(), Some(0));
+            assert!(text(&o.stderr).contains("usage"), "{}", text(&o.stderr));
+        }
+        assert_eq!(e.sbx(&["rm", "-f", "st"]).status.code(), Some(0));
+        // 멈춘 샌드박스를 고르면 오류다.
+        let o = e.sbx(&["create", "--name", "idle", IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_ne!(
+            e.sbx(&["stats", "--no-stream", "idle"]).status.code(),
+            Some(0)
+        );
+    }
+
+    /// `docker save`(Docker 25 이후)가 만드는 모양의 OCI layout tar: 레이어 하나, 이름 하나.
+    fn oci_archive(name: &str) -> (Vec<u8>, String) {
+        use sha2::Digest as _;
+        let hex = |b: &[u8]| {
+            sha2::Sha256::digest(b)
+                .iter()
+                .map(|x| format!("{x:02x}"))
+                .collect::<String>()
+        };
+        let mut layer_tar = tar::Builder::new(Vec::new());
+        let mut h = tar::Header::new_gnu();
+        h.set_size(5);
+        h.set_mode(0o644);
+        h.set_cksum();
+        layer_tar
+            .append_data(&mut h, "hello.txt", &b"hello"[..])
+            .unwrap();
+        let layer_tar = layer_tar.into_inner().unwrap();
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gz.write_all(&layer_tar).unwrap();
+        let layer = gz.finish().unwrap();
+        let arch = Arch::host().unwrap().oci_name();
+        let config = format!(
+            r#"{{"architecture":"{arch}","os":"linux","config":{{"Cmd":["sh"]}},"rootfs":{{"type":"layers","diff_ids":["sha256:{}"]}}}}"#,
+            hex(&layer_tar)
+        );
+        let manifest = format!(
+            r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:{}","size":{}}},"layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest":"sha256:{}","size":{}}}]}}"#,
+            hex(config.as_bytes()),
+            config.len(),
+            hex(&layer),
+            layer.len()
+        );
+        let index = format!(
+            r#"{{"schemaVersion":2,"manifests":[{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:{}","size":{},"annotations":{{"io.containerd.image.name":"{name}","org.opencontainers.image.ref.name":"latest"}}}}]}}"#,
+            hex(manifest.as_bytes()),
+            manifest.len()
+        );
+        let mut t = tar::Builder::new(Vec::new());
+        let mut add = |path: String, data: &[u8]| {
+            let mut h = tar::Header::new_gnu();
+            h.set_size(data.len() as u64);
+            h.set_mode(0o644);
+            h.set_cksum();
+            t.append_data(&mut h, path, data).unwrap();
+        };
+        // Docker가 함께 넣는 것(건너뛴다).
+        add("manifest.json".into(), b"[]");
+        add("oci-layout".into(), br#"{"imageLayoutVersion":"1.0.0"}"#);
+        add("index.json".into(), index.as_bytes());
+        for b in [config.as_bytes(), manifest.as_bytes(), &layer[..]] {
+            add(format!("blobs/sha256/{}", hex(b)), b);
+        }
+        (
+            t.into_inner().unwrap(),
+            format!("sha256:{}", hex(manifest.as_bytes())),
+        )
+    }
+
+    fn load_and_save_round_trip_an_oci_archive() {
+        let e = Env::new();
+        let (archive, id) = oci_archive("example.com/team/tool:1");
+        std::fs::write(e.path("in.tar"), &archive).unwrap();
+
+        let o = e.sbx(&[
+            "--format",
+            "json",
+            "load",
+            "-i",
+            e.path("in.tar").to_str().unwrap(),
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(v[0]["reference"], "example.com/team/tool:1");
+        assert_eq!(v[0]["id"], id.as_str());
+
+        // 표준 입력으로도, --tag로 다른 이름을.
+        let o = e.sbx_with_stdin(&["load", "--tag", "local/tool:copy"], &archive);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(
+            text(&o.stdout).contains("docker.io/local/tool:copy: loaded"),
+            "{}",
+            text(&o.stdout)
+        );
+
+        // 내보내고 지우고 다시 들이면 같은 ID다.
+        let out = e.path("out.tar");
+        let o = e.sbx(&[
+            "save",
+            "-o",
+            out.to_str().unwrap(),
+            "example.com/team/tool:1",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(o.stdout.is_empty());
+        // docker load가 읽는 manifest.json도 있다.
+        let mut t = tar::Archive::new(std::fs::File::open(&out).unwrap());
+        let docker: serde_json::Value = t
+            .entries()
+            .unwrap()
+            .map(Result::unwrap)
+            .find(|e| e.path().unwrap().to_str() == Some("manifest.json"))
+            .map(|e| serde_json::from_reader(e).unwrap())
+            .unwrap();
+        assert_eq!(docker[0]["RepoTags"][0], "example.com/team/tool:1");
+        let o = e.sbx(&["rmi", "example.com/team/tool:1", "local/tool:copy"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = e.sbx(&["--format", "json", "load", "-i", out.to_str().unwrap()]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(v[0]["reference"], "example.com/team/tool:1");
+        assert_eq!(v[0]["id"], id.as_str());
+        // 표준 출력으로도(터미널이 아니면).
+        let o = e.sbx(&["save", "example.com/team/tool:1"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(std::fs::read(&out).unwrap(), o.stdout);
+
+        // 받은 문서가 없는 이미지(0.2.1 전에 받은 것)는 다시 받으라고 한다.
+        let o = e.sbx(&["save", "-o", e.path("old.tar").to_str().unwrap(), IMAGE]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("pull it again"),
+            "{}",
+            text(&o.stderr)
+        );
+        assert!(!e.path("old.tar").exists());
+
+        // 망가진 blob은 들이지 않는다.
+        let mut bad = archive.clone();
+        let at = bad.windows(5).position(|w| w == b"Cmd\":").unwrap();
+        bad[at] ^= 1;
+        std::fs::write(e.path("bad.tar"), &bad).unwrap();
+        let o = e.sbx(&["load", "-i", e.path("bad.tar").to_str().unwrap()]);
+        assert_ne!(o.status.code(), Some(0));
+        // tar가 아니면 OCI layout이 아니라고 한다.
+        std::fs::write(e.path("junk.tar"), b"not a tar").unwrap();
+        let o = e.sbx(&["load", "-i", e.path("junk.tar").to_str().unwrap()]);
+        assert_ne!(o.status.code(), Some(0));
+        // 작업 공간에 남은 것이 없다.
+        let tmp = e.path("cache/tmp");
+        assert!(
+            std::fs::read_dir(&tmp).map_or(true, |d| d.count() == 0),
+            "{:?}",
+            std::fs::read_dir(&tmp).map(|d| d.collect::<Vec<_>>())
+        );
+    }
+
+    fn policy_json_is_followed() {
+        let e = Env::new();
+        let (archive, _) = oci_archive("example.com/team/tool:1");
+        std::fs::write(e.path("in.tar"), &archive).unwrap();
+        let policy = e.path("home/.config/containers/policy.json");
+        std::fs::create_dir_all(policy.parent().unwrap()).unwrap();
+        std::fs::write(&policy, r#"{"default":[{"type":"reject"}]}"#).unwrap();
+        // 거절은 레지스트리에 가기 전에(닫힌 포트라 가면 다른 오류다).
+        let o = e.sbx(&["pull", "127.0.0.1:9/a:1"]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("rejected by"),
+            "{}",
+            text(&o.stderr)
+        );
+        let o = e.sbx(&["load", "-i", e.path("in.tar").to_str().unwrap()]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("rejected by"),
+            "{}",
+            text(&o.stderr)
+        );
+        let o = e.sbx(&["images", "-q"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        // archive만 받는 정책. 서명을 요구하는 레지스트리 정책은 서명이 없으면 거절이다.
+        std::fs::write(
+            &policy,
+            r#"{"default":[{"type":"reject"}],"transports":{
+                "oci-archive":{"":[{"type":"insecureAcceptAnything"}]},
+                "docker":{"127.0.0.1:9":[{"type":"signedBy","keyType":"GPGKeys","keyPath":"/k"}]}}}"#,
+        )
+        .unwrap();
+        let o = e.sbx(&["load", "-i", e.path("in.tar").to_str().unwrap()]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = e.sbx(&["pull", "127.0.0.1:9/a:1"]);
+        assert!(text(&o.stderr).contains("GPG"), "{}", text(&o.stderr));
+    }
+
+    fn registries_conf_is_read_for_pulls() {
+        let e = Env::new();
+        let (archive, _) = oci_archive("example.com/team/tool:1");
+        // 미러가 없고 주 위치는 닫힌 포트: 차단이 먼저, 그다음 바꾼 곳으로 간다.
+        std::fs::write(
+            e.path("registries.conf"),
+            "[[registry]]\nlocation = \"blocked.invalid\"\nblocked = true\n\
+             [[registry]]\nprefix = \"example.invalid\"\nlocation = \"127.0.0.1:9/elsewhere\"\n",
+        )
+        .unwrap();
+        let o = e.sbx(&["pull", "blocked.invalid/a:1"]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("blocked by registries.conf"),
+            "{}",
+            text(&o.stderr)
+        );
+        let o = e.sbx(&["pull", "example.invalid/a:1"]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("127.0.0.1:9/v2/elsewhere/a"),
+            "{}",
+            text(&o.stderr)
+        );
+        // 사용자 drop-in도 읽는다. 틀린 설정은 넘기지 않고 오류다.
+        let d = e.path("home/.config/containers/registries.conf.d");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("x.conf"), "[[registry]]\nprefix = \"a.example\"\n").unwrap();
+        let o = e.sbx(&["pull", "alpine"]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(text(&o.stderr).contains("x.conf"), "{}", text(&o.stderr));
+        let o = e.sbx(&["images", "-q"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        // load는 레지스트리를 쓰지 않는다.
+        std::fs::write(e.path("in.tar"), &archive).unwrap();
+        let o = e.sbx(&["load", "-i", e.path("in.tar").to_str().unwrap()]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    }
+
+    fn login_and_logout_use_dockers_config() {
+        let e = Env::new();
+        let registry = format!("127.0.0.1:{}", basic_registry());
+        let config = e.path("docker/config.json");
+        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+        std::fs::write(&config, r#"{"proxies":{"default":{"noProxy":"x"}}}"#).unwrap();
+
+        // 틀린 비밀번호는 쓰지 않는다.
+        let o = e.sbx_with_stdin(
+            &["login", "-u", "me", "--password-stdin", &registry],
+            b"no\n",
+        );
+        assert_ne!(o.status.code(), Some(0));
+        assert!(text(&o.stderr).contains("refused"), "{}", text(&o.stderr));
+        assert!(!std::fs::read_to_string(&config).unwrap().contains("auths"));
+        // 이름 없이는 표준 입력을 비밀번호로 읽을 수 없다.
+        let o = e.sbx_with_stdin(&["login", "--password-stdin", &registry], b"pw\n");
+        assert_ne!(o.status.code(), Some(0));
+        assert!(text(&o.stderr).contains("-u"), "{}", text(&o.stderr));
+
+        let o = e.sbx_with_stdin(
+            &[
+                "--format",
+                "json",
+                "login",
+                "-u",
+                "me",
+                "--password-stdin",
+                &format!("https://{registry}/"),
+            ],
+            b"pw\n",
+        );
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let l: sbx_cli::output::Login = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(
+            (l.registry.as_str(), l.stored.as_str()),
+            (registry.as_str(), "file")
+        );
+        let v: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+        assert_eq!(v["auths"][&registry]["auth"], "bWU6cHc=");
+        assert_eq!(
+            v["proxies"]["default"]["noProxy"], "x",
+            "other settings stay"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&config).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+
+        let o = e.sbx(&["--format", "json", "logout", &registry]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let l: sbx_cli::output::Logout = serde_json::from_slice(&o.stdout).unwrap();
+        assert!(l.removed);
+        let o = e.sbx(&["logout", &registry]);
+        assert_eq!(text(&o.stdout), format!("Not logged in to {registry}\n"));
+    }
+
+    fn a_detached_sandbox_stops_after_its_timeout() {
+        let e = Env::new();
+        // 수명이 다 되면 멈춤 시그널을 받는다. 그 시그널로 끝나면 그 종료 코드.
+        let id = run_trapping(&e, &["--timeout", "1", "--stop-signal", "USR1"], "USR1", 5);
+        let s = state_of(&e, &id).unwrap();
+        assert_eq!(s["timeout_secs"], 1, "{s}");
+        let s = wait_state(&e, &id, "stopped");
+        assert_eq!(s["exit_code"], 5, "{s}");
+
+        // 시그널을 무시하면 멈춤 기다림 뒤에 전원을 끈다: 137과 그 까닭.
+        let id = run_trapping(&e, &["--timeout", "1", "--stop-timeout", "1"], "USR2", 4);
+        let s = wait_state(&e, &id, "stopped");
+        assert_eq!(s["exit_code"], 137, "{s}");
+        assert!(
+            s["error"].as_str().unwrap_or("").contains("--timeout"),
+            "{s}"
+        );
+
+        let o = e.sbx(&["run", "-d", "--timeout", "0", IMAGE, "true"]);
+        assert_ne!(o.status.code(), Some(0));
     }
 
     fn kill_wait_and_restart() {

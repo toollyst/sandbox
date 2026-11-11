@@ -1,0 +1,124 @@
+# sbx 릴리스 빌드와 출처 증명. release.yml만 부르는 재사용 워크플로다(SLSA Build L3).
+#
+# 빌드와 출처 증명(SLSA build provenance)·SBOM 증명을 이 워크플로 안에서 한다. 그러면 증명서의 서명 신원이
+# 부르는 쪽(release.yml)이 아니라 이 파일이 되고, 부르는 쪽의 단계는 빌드 결과도 증명도 바꿀 수 없다.
+# 확인: `gh attestation verify <file> -R toollyst/sandbox --signer-workflow toollyst/sandbox/.github/workflows/sbx-build.yml`
+#
+# 결과: 작업 산출물 `sbx-<platform>`(묶음과 `.sha256`), `sbom`(`sbx-<version>.spdx.json`).
+# Sigstore 번들(`.sigstore.json`, install.sh가 확인)은 release.yml이 그 신원(release.yml@refs/tags/v…)으로 만든다.
+# 0.2.0부터 문서에 적은 확인 명령이 그 신원을 보므로 바꾸지 않는다.
+name: sbx-build
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: workspace version (sbx-<version>.spdx.json)
+        required: true
+        type: string
+      attest:
+        description: make build provenance and SBOM attestations (tag releases only)
+        required: true
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_AUDITABLE: 0.7.7
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-latest, platform: linux-x86_64, target: x86_64-unknown-linux-musl }
+          - { os: ubuntu-24.04-arm, platform: linux-aarch64, target: aarch64-unknown-linux-musl }
+          - { os: macos-15, platform: darwin-aarch64, target: '' }
+          # Windows: 샌드박스를 띄울 실행기는 아직 없지만 pull·prepare·images가 되고, install.ps1이 받는다.
+          - { os: windows-latest, platform: windows-x86_64, target: '' }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # 실행 파일 안에 의존성 목록을 넣는다(`cargo audit bin`, syft, Trivy가 읽는다).
+      - run: cargo install cargo-auditable --locked --version "$CARGO_AUDITABLE"
+        shell: bash
+      - name: build
+        shell: bash
+        run: |
+          arch=$(uname -m | sed s/arm64/aarch64/)
+          rustup target add "$arch-unknown-linux-musl"
+          if [ -n "${{ matrix.target }}" ]; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
+            cargo xtask dist --auditable --target "${{ matrix.target }}"
+            out="target/${{ matrix.target }}/release"
+          else
+            cargo xtask dist --auditable
+            out=target/release
+          fi
+          d="sbx-${{ matrix.platform }}"
+          exe=""; [ "$RUNNER_OS" != Windows ] || exe=.exe
+          mkdir -p "dist/$d"
+          cp "$out/sbx$exe" "$out/sbx-shim$exe" LICENSE-APACHE LICENSE-MIT README.md "dist/$d/"
+          "dist/$d/sbx$exe" --version
+          # Windows는 zip(install.ps1이 Expand-Archive로 푼다), 나머지는 tar.gz.
+          if [ "$RUNNER_OS" = Windows ]; then
+            f="$d.zip"
+            (cd dist && 7z a -tzip -bso0 "$f" "$d")
+          else
+            f="$d.tar.gz"
+            tar -czf "dist/$f" -C dist "$d"
+          fi
+          if command -v sha256sum >/dev/null; then sum() { sha256sum "$1"; }; else sum() { shasum -a 256 "$1"; }; fi
+          (cd dist && sum "$f" | sed 's/ \*/  /' > "$f.sha256" && cat "$f.sha256")
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbx-${{ matrix.platform }}
+          path: |
+            dist/sbx-${{ matrix.platform }}.tar.gz*
+            dist/sbx-${{ matrix.platform }}.zip*
+
+  attest:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: sbx-*
+          path: artifacts
+      # SBOM: Cargo.lock의 의존성 전부(SPDX JSON). 릴리스에 올리고 각 묶음에 증명으로도 붙인다.
+      - uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          path: .
+          format: spdx-json
+          output-file: sbom/sbx-${{ inputs.version }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      # 출처 증명(SLSA build provenance)과 SBOM 증명. 서명 신원은 이 파일(sbx-build.yml)이다.
+      - if: inputs.attest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            artifacts/sbx-*/sbx-*.tar.gz
+            artifacts/sbx-*/sbx-*.zip
+      - if: inputs.attest
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-path: |
+            artifacts/sbx-*/sbx-*.tar.gz
+            artifacts/sbx-*/sbx-*.zip
+          sbom-path: sbom/sbx-${{ inputs.version }}.spdx.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom
+          path: sbom

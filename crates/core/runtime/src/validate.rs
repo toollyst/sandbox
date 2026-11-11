@@ -13,6 +13,8 @@
 //! |---|---|
 //! | `MountKind::Copy` + `readonly` | [`RuntimeError::Invalid`] (복사본이라 읽기 전용을 강제할 수 없다) |
 //! | `NetworkPolicy::Allow`에 규칙이 없음 | [`RuntimeError::Invalid`] (차단이면 `Disabled`다) |
+//! | `-p` 게스트 포트 0, 같은 호스트 주소·포트(0이 아닌)를 두 번 | [`RuntimeError::Invalid`] |
+//! | 나가는 연결이 없는데(`NetworkPolicy::Disabled`) `egress_limit_bytes` | [`RuntimeError::Invalid`] |
 
 use sbx_executor::Capabilities;
 use sbx_model::{MountKind, NetworkPolicy, SandboxSpec};
@@ -44,6 +46,31 @@ pub fn check(spec: &SandboxSpec, caps: &Capabilities) -> Result<(), RuntimeError
             "copy mount to {} cannot be read-only",
             m.destination
         )));
+    }
+    for (i, p) in spec.ports.iter().enumerate() {
+        if p.guest_port == 0 {
+            return Err(RuntimeError::Invalid(format!(
+                "-p {p}: the sandbox port can't be 0"
+            )));
+        }
+        if p.host_port != 0
+            && spec.ports[..i].iter().any(|q| {
+                q.host_port == p.host_port
+                    && (q.host_ip == p.host_ip
+                        || q.host_ip.is_unspecified()
+                        || p.host_ip.is_unspecified())
+            })
+        {
+            return Err(RuntimeError::Invalid(format!(
+                "-p {p}: host port {} is published twice",
+                p.host_port
+            )));
+        }
+    }
+    if spec.network == NetworkPolicy::Disabled && spec.egress_limit_bytes.is_some() {
+        return Err(RuntimeError::Invalid(
+            "an egress limit needs network access (--network allow:...)".into(),
+        ));
     }
     if spec.network == NetworkPolicy::Allow(Vec::new()) {
         return Err(RuntimeError::Invalid(
@@ -97,6 +124,9 @@ mod tests {
             open_stdin: false,
             tty: false,
             name: None,
+            lifetime_secs: None,
+            ports: Vec::new(),
+            egress_limit_bytes: None,
         }
     }
 

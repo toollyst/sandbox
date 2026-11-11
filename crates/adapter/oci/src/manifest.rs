@@ -81,6 +81,8 @@ pub struct Manifest {
     pub config_size: u64,
     /// 아래부터 순서대로.
     pub layers: Vec<LayerRef>,
+    /// 미디어 형식(OCI 또는 Docker v2 manifest).
+    pub media_type: String,
 }
 
 /// 해석한 문서.
@@ -164,6 +166,7 @@ pub fn parse_document(content_type: Option<&str>, bytes: &[u8]) -> Result<Docume
         config: digest(&config.digest)?,
         config_size: config.size,
         layers,
+        media_type,
     }))
 }
 
@@ -264,6 +267,17 @@ fn labels(v: &Value) -> Result<std::collections::BTreeMap<String, String>, Image
     }
 }
 
+/// `ExposedPorts`, `Volumes`: 키만 쓰는 객체(값은 `{}`).
+fn keys(key: &str, v: &Value) -> Result<Vec<String>, ImageError> {
+    match v {
+        Value::Null => Ok(Vec::new()),
+        Value::Object(m) => Ok(m.keys().cloned().collect()),
+        _ => Err(ImageError::Invalid(format!(
+            "config.{key} must be an object"
+        ))),
+    }
+}
+
 fn is_empty(v: &Value) -> bool {
     match v {
         Value::Null => true,
@@ -303,6 +317,8 @@ pub fn parse_config(bytes: &[u8]) -> Result<ParsedConfig, ImageError> {
             "User" => config.user = string(&key, &value)?,
             "StopSignal" => config.stop_signal = string(&key, &value)?,
             "Labels" => config.labels = labels(&value)?,
+            "ExposedPorts" => config.exposed_ports = keys(&key, &value)?,
+            "Volumes" => config.volumes = keys(&key, &value)?,
             _ if is_empty(&value) => {}
             _ => ignored.push(format!("config.{key}")),
         }
@@ -435,7 +451,8 @@ mod tests {
         let json = format!(
             r#"{{"architecture":"arm64","os":"linux",
               "config":{{"Env":["PATH=/usr/bin","EMPTY=","BARE"],"Cmd":["/bin/sh"],"Entrypoint":null,
-                        "WorkingDir":"","User":"app","Labels":{{"a":"b"}},"StopSignal":"SIGTERM","Volumes":null}},
+                        "WorkingDir":"","User":"app","Labels":{{"a":"b"}},"StopSignal":"SIGTERM","Volumes":{{"/data":{{}}}},
+                        "ExposedPorts":{{"80/tcp":{{}},"53/udp":{{}}}},"Healthcheck":{{"Test":["CMD","true"]}}}},
               "rootfs":{{"type":"layers","diff_ids":["{}"]}},
               "history":[{{"created_by":"x"}}]}}"#,
             d('c')
@@ -454,7 +471,9 @@ mod tests {
                 ("BARE".into(), "".into())
             ]
         );
-        assert!(c.ignored_fields.is_empty(), "{:?}", c.ignored_fields);
+        assert_eq!(c.ignored_fields, ["config.Healthcheck"]);
+        assert_eq!(c.config.volumes, ["/data"]);
+        assert_eq!(c.config.exposed_ports, ["53/udp", "80/tcp"]);
         assert_eq!(c.config.labels.get("a").map(String::as_str), Some("b"));
         assert_eq!(c.config.stop_signal.as_deref(), Some("SIGTERM"));
         assert_eq!(c.diff_ids[0].as_str(), d('c'));

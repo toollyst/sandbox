@@ -7,13 +7,21 @@
 //! - 이미지 참조 해석: [`reference`](mod@reference)
 //! - 문서 해석: [`manifest`]
 //! - 레지스트리 통신: [`registry`]
+//! - OCI image layout(`sbx load`, 디렉터리나 tar): [`layout`]
+//! - 레지스트리 자격 증명(Docker config.json, containers-auth.json, credential helper): [`auth`]
+//! - 미러, 이름 바꾸기, 차단(containers registries.conf): [`registries`]
+//! - 서명 정책(containers policy.json, cosign 키 서명): [`policy`]
 //!
 //! 해석 순서 ([`ImageSource::resolve`]):
 //!
-//! 1. 참조를 해석한다. digest가 있으면 digest로, 없으면 태그로 manifest를 받는다.
-//! 2. index면 linux/호스트 아키텍처 manifest를 고르고 다시 받는다.
-//! 3. 받은 문서는 모두 직접 sha256을 계산해 기대한 digest와 대조한다. 이미지 ID는 플랫폼 manifest의 digest다.
-//! 4. config를 받아 digest를 대조하고, os와 아키텍처가 맞는지, `diff_ids` 개수가 레이어 개수와 같은지 확인한다.
+//! 1. 참조를 해석한다. `registries.conf`가 있으면 받을 곳(미러들, 그다음 주 위치)을 정하고([`registries`]) 앞에서부터
+//!    시도한다. 한 곳이 실패하면(없음, 연결, 거부, 검증 실패) 다음 곳으로 가고, 모두 실패하면 주 위치의 오류다.
+//!    레이어는 문서를 받은 곳에서 받는다. digest가 있으면 digest로, 없으면 태그로 manifest를 받는다.
+//! 2. `policy.json`([`policy`])이 거절하면 레지스트리에 가지 않는다. 서명을 요구하면 처음 받은 manifest(최상위,
+//!    index일 수 있다)의 cosign 서명을 같은 곳에서 받아 확인한다.
+//! 3. index면 linux/호스트 아키텍처 manifest를 고르고 다시 받는다.
+//! 4. 받은 문서는 모두 직접 sha256을 계산해 기대한 digest와 대조한다. 이미지 ID는 플랫폼 manifest의 digest다.
+//! 5. config를 받아 digest를 대조하고, os와 아키텍처가 맞는지, `diff_ids` 개수가 레이어 개수와 같은지 확인한다.
 //!
 //! 레이어 blob의 digest 대조는 받는 쪽(`sbx-manage`)이 한다.
 //!
@@ -26,8 +34,12 @@ use sha2::{Digest as _, Sha256};
 use sbx_image::{ImageError, ImageSource, Platform, ResolvedImage};
 use sbx_model::{BoxFuture, Digest, ImageId, Layer};
 
+pub mod auth;
+pub mod layout;
 pub mod manifest;
+pub mod policy;
 pub mod reference;
+pub mod registries;
 pub mod registry;
 pub mod scope;
 
@@ -55,18 +67,126 @@ fn verify(what: &str, bytes: &[u8], expected: &Digest) -> Result<(), ImageError>
     }
 }
 
+/// 플랫폼 manifest와 그 config에서 [`ResolvedImage`]를 만든다. config의 digest를 대조하고, OS·아키텍처와
+/// 레이어 수를 확인한다. 레지스트리와 OCI layout(`sbx load`)이 함께 쓴다.
+fn assemble(
+    r: &Reference,
+    source: String,
+    platform: Platform,
+    manifest_bytes: Vec<u8>,
+    manifest: manifest::Manifest,
+    config_bytes: Vec<u8>,
+) -> Result<ResolvedImage, ImageError> {
+    verify("image config", &config_bytes, &manifest.config)?;
+    let parsed = manifest::parse_config(&config_bytes)?;
+    if parsed.os != "linux" || parsed.arch != platform.arch.oci_name() {
+        return Err(ImageError::PlatformNotFound {
+            reference: r.to_string(),
+            arch: platform.arch,
+        });
+    }
+    if parsed.diff_ids.len() != manifest.layers.len() {
+        return Err(ImageError::Invalid(format!(
+            "{} layers but {} diff_ids",
+            manifest.layers.len(),
+            parsed.diff_ids.len()
+        )));
+    }
+    let layers = manifest
+        .layers
+        .into_iter()
+        .zip(parsed.diff_ids)
+        .map(|(l, diff_id)| Layer {
+            digest: l.digest,
+            diff_id,
+            size: l.size,
+            compression: l.compression,
+        })
+        .collect();
+    Ok(ResolvedImage {
+        id: ImageId::new(sha256(&manifest_bytes)),
+        reference: r.to_string(),
+        source,
+        platform,
+        config: parsed.config,
+        layers,
+        ignored_fields: parsed.ignored_fields,
+        documents: Some(sbx_image::Documents {
+            manifest: manifest_bytes,
+            manifest_media_type: manifest.media_type,
+            config: config_bytes,
+            config_digest: manifest.config,
+        }),
+    })
+}
+
 /// OCI 레지스트리 이미지 소스.
-#[derive(Debug)]
+///
+/// 자격 증명 파일과 `registries.conf`는 레지스트리에 처음 갈 때 읽는다. 그래서 레지스트리를 쓰지 않는 일
+/// (`images`, `rmi`, `save` 등)은 그 파일이 틀려도 막히지 않는다.
+#[derive(Debug, Default)]
 pub struct OciImageSource {
+    auth: Option<auth::AuthFiles>,
+    conf: Option<registries::ConfFiles>,
+    policy_file: Option<std::path::PathBuf>,
+    state: std::sync::OnceLock<State>,
+}
+
+#[derive(Debug)]
+struct State {
     registry: Registry,
+    registries: registries::Registries,
+    policy: policy::Policy,
 }
 
 impl OciImageSource {
-    /// 만든다.
+    /// 만든다. 익명으로 받고 `registries.conf`를 읽지 않는다.
     pub fn new() -> Result<Self, ImageError> {
+        Ok(Self::default())
+    }
+
+    /// 401이면 `files`에서 레지스트리 자격 증명을 찾는다.
+    pub fn with_auth(files: auth::AuthFiles) -> Result<Self, ImageError> {
         Ok(Self {
-            registry: Registry::new()?,
+            auth: Some(files),
+            ..Self::default()
         })
+    }
+
+    /// 미러, 이름 바꾸기, 차단, `insecure`를 이 `registries.conf` 파일들대로([`registries`]).
+    pub fn with_registries(mut self, files: registries::ConfFiles) -> Self {
+        self.conf = Some(files);
+        self
+    }
+
+    /// 서명 정책을 이 `policy.json`대로([`policy`]). 파일이 없으면 모두 받는다.
+    pub fn with_policy(mut self, file: Option<std::path::PathBuf>) -> Self {
+        self.policy_file = file;
+        self
+    }
+
+    fn state(&self) -> Result<&State, ImageError> {
+        if let Some(s) = self.state.get() {
+            return Ok(s);
+        }
+        let registries = match &self.conf {
+            Some(f) => registries::Registries::load(f)?,
+            None => registries::Registries::default(),
+        };
+        let policy = policy::Policy::load(self.policy_file.as_deref())?;
+        let mut registry = Registry::new()?.with_insecure(registries.insecure_hosts())?;
+        if let Some(a) = &self.auth {
+            registry = registry.with_auth(a.clone());
+        }
+        // 동시에 처음 부른 쪽이 여럿이면 하나만 남는다(어느 것이든 같다).
+        let _ = self.state.set(State {
+            registry,
+            registries,
+            policy,
+        });
+        self.state
+            .get()
+            .ok_or_else(|| ImageError::Transport("registry client".into()))
     }
 
     async fn manifest(
@@ -75,6 +195,7 @@ impl OciImageSource {
         target: &str,
     ) -> Result<(Vec<u8>, Option<String>), ImageError> {
         let resp = self
+            .state()?
             .registry
             .get(
                 r.api_host(),
@@ -91,15 +212,53 @@ impl OciImageSource {
         input: &str,
         platform: Platform,
     ) -> Result<ResolvedImage, ImageError> {
-        let r = Reference::parse(input).map_err(ImageError::Reference)?;
+        let wanted = Reference::parse(input).map_err(ImageError::Reference)?;
+        let state = self.state()?;
+        // 거절이나 확인할 수 없는 요구는 레지스트리에 가기 전에.
+        let signed = state.policy.needs_signatures(&wanted)?;
+        let mut mirror_errors = Vec::new();
+        for e in state.registries.endpoints(&wanted)? {
+            match self
+                .resolve_at(&wanted, &e.reference, platform, signed)
+                .await
+            {
+                Ok(img) => return Ok(img),
+                Err(err) if e.mirror => {
+                    mirror_errors.push(format!("mirror {}: {err}", e.reference))
+                }
+                Err(err) if mirror_errors.is_empty() => return Err(err),
+                Err(err) => {
+                    return Err(ImageError::Transport(format!(
+                        "{err} (after {})",
+                        mirror_errors.join("; ")
+                    )));
+                }
+            }
+        }
+        unreachable!("endpoints always ends with the registry itself")
+    }
+
+    /// `at`(바꾼 참조)에서 받는다. 결과의 참조는 `wanted`, 출처는 `at`이다.
+    async fn resolve_at(
+        &self,
+        wanted: &Reference,
+        r: &Reference,
+        platform: Platform,
+        signed: bool,
+    ) -> Result<ResolvedImage, ImageError> {
         let target = match (&r.digest, &r.tag) {
             (Some(d), _) => d.to_string(),
             (None, Some(t)) => t.clone(),
             (None, None) => unreachable!("Reference always has a tag or a digest"),
         };
-        let (bytes, content_type) = self.manifest(&r, &target).await?;
+        let (bytes, content_type) = self.manifest(r, &target).await?;
         if let Some(d) = &r.digest {
             verify("manifest", &bytes, d)?;
+        }
+        if signed {
+            let top = sha256(&bytes);
+            let sigs = self.signatures(r, &top).await?;
+            self.state()?.policy.check(wanted, &top, &sigs)?;
         }
 
         let (manifest_bytes, manifest) =
@@ -108,11 +267,11 @@ impl OciImageSource {
                 Document::Index(entries) => {
                     let entry = manifest::select(&entries, platform.arch).ok_or_else(|| {
                         ImageError::PlatformNotFound {
-                            reference: r.to_string(),
+                            reference: wanted.to_string(),
                             arch: platform.arch,
                         }
                     })?;
-                    let (b, ct) = self.manifest(&r, entry.digest.as_str()).await?;
+                    let (b, ct) = self.manifest(r, entry.digest.as_str()).await?;
                     verify("platform manifest", &b, &entry.digest)?;
                     match manifest::parse_document(ct.as_deref(), &b)? {
                         Document::Manifest(m) => (b, m),
@@ -122,12 +281,11 @@ impl OciImageSource {
                     }
                 }
             };
-        let id = ImageId::new(sha256(&manifest_bytes));
-
         if manifest.config_size > MAX_DOCUMENT_BYTES as u64 {
             return Err(ImageError::Invalid("image config too large".into()));
         }
         let resp = self
+            .state()?
             .registry
             .get(
                 r.api_host(),
@@ -137,43 +295,64 @@ impl OciImageSource {
             )
             .await?;
         let (config_bytes, _) = read_limited(resp, MAX_DOCUMENT_BYTES).await?;
-        verify("image config", &config_bytes, &manifest.config)?;
-        let parsed = manifest::parse_config(&config_bytes)?;
-
-        if parsed.os != "linux" || parsed.arch != platform.arch.oci_name() {
-            return Err(ImageError::PlatformNotFound {
-                reference: r.to_string(),
-                arch: platform.arch,
-            });
-        }
-        if parsed.diff_ids.len() != manifest.layers.len() {
-            return Err(ImageError::Invalid(format!(
-                "{} layers but {} diff_ids",
-                manifest.layers.len(),
-                parsed.diff_ids.len()
-            )));
-        }
-        let layers = manifest
-            .layers
-            .into_iter()
-            .zip(parsed.diff_ids)
-            .map(|(l, diff_id)| Layer {
-                digest: l.digest,
-                diff_id,
-                size: l.size,
-                compression: l.compression,
-            })
-            .collect();
-
-        Ok(ResolvedImage {
-            id,
-            reference: r.to_string(),
-            source: format!("{}/{}", r.registry, r.repository),
+        assemble(
+            wanted,
+            format!("{}/{}", r.registry, r.repository),
             platform,
-            config: parsed.config,
-            layers,
-            ignored_fields: parsed.ignored_fields,
-        })
+            manifest_bytes,
+            manifest,
+            config_bytes,
+        )
+    }
+
+    /// cosign 서명들: 태그 `sha256-<hex>.sig`의 manifest 레이어. 태그가 없으면 빈 목록.
+    async fn signatures(
+        &self,
+        r: &Reference,
+        digest: &Digest,
+    ) -> Result<Vec<policy::Signature>, ImageError> {
+        let (bytes, _) = match self
+            .manifest(r, &format!("sha256-{}.sig", digest.hex()))
+            .await
+        {
+            Ok(m) => m,
+            Err(ImageError::NotFound(_)) => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        let v: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|e| ImageError::Invalid(format!("signature manifest: {e}")))?;
+        let layers = v["layers"].as_array().cloned().unwrap_or_default();
+        let mut out = Vec::new();
+        for l in layers
+            .iter()
+            .filter(|l| l["mediaType"].as_str() == Some(policy::SIGNATURE_MEDIA_TYPE))
+            .take(policy::MAX_SIGNATURES)
+        {
+            let (Some(sig), Some(d)) = (
+                l["annotations"][policy::SIGNATURE_ANNOTATION].as_str(),
+                l["digest"].as_str().and_then(|d| Digest::parse(d).ok()),
+            ) else {
+                continue;
+            };
+            let Some(signature) = auth::base64_decode(sig) else {
+                continue;
+            };
+            if l["size"]
+                .as_u64()
+                .is_none_or(|n| n > policy::MAX_PAYLOAD_BYTES as u64)
+            {
+                continue;
+            }
+            let resp = self
+                .state()?
+                .registry
+                .get(r.api_host(), &r.repository, &format!("blobs/{d}"), &[])
+                .await?;
+            let (payload, _) = read_limited(resp, policy::MAX_PAYLOAD_BYTES).await?;
+            verify("signature payload", &payload, &d)?;
+            out.push(policy::Signature { payload, signature });
+        }
+        Ok(out)
     }
 
     async fn fetch_blob_inner(
@@ -184,6 +363,7 @@ impl OciImageSource {
     ) -> Result<u64, ImageError> {
         let r = Reference::parse(source).map_err(ImageError::Reference)?;
         let mut resp = self
+            .state()?
             .registry
             .get(r.api_host(), &r.repository, &format!("blobs/{digest}"), &[])
             .await?;
@@ -243,5 +423,282 @@ mod tests {
             .unwrap();
         assert_eq!(n, img.layers[0].size);
         assert_eq!(sha256(&buf), img.layers[0].digest);
+    }
+
+    /// 경로 → (Content-Type, 본문)을 주는 레지스트리. 없는 경로는 404. 받은 경로를 남긴다.
+    fn fake_registry(
+        docs: std::collections::HashMap<String, (String, Vec<u8>)>,
+    ) -> (u16, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        fake_registry_on(0, docs)
+    }
+
+    fn fake_registry_on(
+        port: u16,
+        docs: std::collections::HashMap<String, (String, Vec<u8>)>,
+    ) -> (u16, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{BufRead, BufReader, Write};
+        let l = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+        let port = l.local_addr().unwrap().port();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        std::thread::spawn(move || {
+            for c in l.incoming() {
+                let Ok(mut c) = c else { return };
+                let mut r = BufReader::new(c.try_clone().unwrap());
+                let mut first = String::new();
+                if r.read_line(&mut first).is_err() {
+                    continue;
+                }
+                loop {
+                    let mut h = String::new();
+                    if r.read_line(&mut h).is_err() || h == "\r\n" || h.is_empty() {
+                        break;
+                    }
+                }
+                let path = first.split(' ').nth(1).unwrap_or("").to_owned();
+                log.lock().unwrap().push(path.clone());
+                let head = match docs.get(&path) {
+                    Some((ct, body)) => format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: {ct}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .into_bytes()
+                    .into_iter()
+                    .chain(body.iter().copied())
+                    .collect::<Vec<u8>>(),
+                    None => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
+                };
+                let _ = c.write_all(&head);
+            }
+        });
+        (port, seen)
+    }
+
+    #[tokio::test]
+    async fn mirrors_are_tried_first_and_the_name_stays_the_one_asked_for() {
+        let arch = Arch::host().unwrap();
+        let layer = b"layer bytes".to_vec();
+        let config = format!(
+            r#"{{"architecture":"{}","os":"linux","config":{{}},"rootfs":{{"type":"layers","diff_ids":["{}"]}}}}"#,
+            arch.oci_name(),
+            sha256(b"x")
+        );
+        let manifest = format!(
+            r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{}","size":{}}},"layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest":"{}","size":{}}}]}}"#,
+            sha256(config.as_bytes()),
+            config.len(),
+            sha256(&layer),
+            layer.len()
+        );
+        let mut docs = std::collections::HashMap::new();
+        docs.insert(
+            "/v2/real/tool/manifests/1".to_owned(),
+            (
+                "application/vnd.oci.image.manifest.v1+json".to_owned(),
+                manifest.clone().into_bytes(),
+            ),
+        );
+        docs.insert(
+            format!("/v2/real/tool/blobs/{}", sha256(config.as_bytes())),
+            (
+                "application/octet-stream".to_owned(),
+                config.clone().into_bytes(),
+            ),
+        );
+        docs.insert(
+            format!("/v2/real/tool/blobs/{}", sha256(&layer)),
+            ("application/octet-stream".to_owned(), layer.clone()),
+        );
+        let (primary, primary_seen) = fake_registry(docs);
+        let (mirror, mirror_seen) = fake_registry(Default::default());
+        let dir = std::env::temp_dir().join(format!("sbx-mirror-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("registries.conf"),
+            format!(
+                "[[registry]]\nprefix = \"example.invalid/team\"\nlocation = \"127.0.0.1:{primary}/real\"\n\
+                 [[registry.mirror]]\nlocation = \"127.0.0.1:{mirror}/m\"\n\
+                 [[registry]]\nlocation = \"blocked.invalid\"\nblocked = true\n"
+            ),
+        )
+        .unwrap();
+        let src = OciImageSource::new()
+            .unwrap()
+            .with_registries(registries::ConfFiles {
+                main: Some(dir.join("registries.conf")),
+                dropin_dirs: vec![],
+            });
+
+        let img = src
+            .resolve("example.invalid/team/tool:1", Platform { arch })
+            .await
+            .unwrap();
+        assert_eq!(img.reference, "example.invalid/team/tool:1");
+        assert_eq!(img.source, format!("127.0.0.1:{primary}/real/tool"));
+        assert_eq!(img.id, ImageId::new(sha256(manifest.as_bytes())));
+        assert_eq!(
+            mirror_seen.lock().unwrap().first().map(String::as_str),
+            Some("/v2/m/tool/manifests/1")
+        );
+        let mut buf = Vec::new();
+        src.fetch_blob(&img.source, &img.layers[0].digest, &mut buf)
+            .await
+            .unwrap();
+        assert_eq!(buf, layer);
+        assert!(primary_seen.lock().unwrap().len() >= 3);
+
+        // 어디에도 없으면 주 위치의 오류에 미러의 것을 붙인다.
+        let e = src
+            .resolve("example.invalid/team/none:1", Platform { arch })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("/real/none") && e.contains("mirror"), "{e}");
+        let e = src
+            .resolve("blocked.invalid/a:1", Platform { arch })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("blocked"), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 레이어 하나짜리 이미지의 문서들(`/v2/<repo>/...` 경로)과 manifest.
+    fn image_docs(repo: &str) -> (std::collections::HashMap<String, (String, Vec<u8>)>, String) {
+        let arch = Arch::host().unwrap();
+        let layer = b"layer".to_vec();
+        let config = format!(
+            r#"{{"architecture":"{}","os":"linux","config":{{}},"rootfs":{{"type":"layers","diff_ids":["{}"]}}}}"#,
+            arch.oci_name(),
+            sha256(b"x")
+        );
+        let manifest = format!(
+            r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{}","size":{}}},"layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest":"{}","size":{}}}]}}"#,
+            sha256(config.as_bytes()),
+            config.len(),
+            sha256(&layer),
+            layer.len()
+        );
+        let mut docs = std::collections::HashMap::new();
+        let oci = "application/vnd.oci.image.manifest.v1+json".to_owned();
+        docs.insert(
+            format!("/v2/{repo}/manifests/1"),
+            (oci, manifest.clone().into_bytes()),
+        );
+        for b in [config.into_bytes(), layer] {
+            docs.insert(
+                format!("/v2/{repo}/blobs/{}", sha256(&b)),
+                ("application/octet-stream".to_owned(), b),
+            );
+        }
+        (docs, manifest)
+    }
+
+    #[tokio::test]
+    async fn policy_json_signatures_are_checked_before_layers() {
+        use aws_lc_rs::encoding::AsDer;
+        use aws_lc_rs::signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, KeyPair};
+        let arch = Arch::host().unwrap();
+        let (mut docs, manifest) = image_docs("team/app");
+        let digest = sha256(manifest.as_bytes());
+        let pem_data = |k: &EcdsaKeyPair| {
+            let der = k.public_key().as_der().unwrap();
+            let pem = format!(
+                "-----BEGIN PUBLIC KEY-----\n{}\n-----END PUBLIC KEY-----\n",
+                auth::base64_encode(der.as_ref())
+            );
+            auth::base64_encode(pem.as_bytes())
+        };
+        let key = EcdsaKeyPair::generate(&ECDSA_P256_SHA256_ASN1_SIGNING).unwrap();
+        let other = EcdsaKeyPair::generate(&ECDSA_P256_SHA256_ASN1_SIGNING).unwrap();
+        let (port, seen) = {
+            // 서명(cosign 모양)은 서버 주소를 알아야 해서 먼저 포트를 받는다.
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = l.local_addr().unwrap().port();
+            let payload = format!(
+                r#"{{"critical":{{"identity":{{"docker-reference":"127.0.0.1:{port}/team/app"}},"image":{{"docker-manifest-digest":"{digest}"}},"type":"cosign container image signature"}},"optional":null}}"#
+            )
+            .into_bytes();
+            let sig = key
+                .sign(&aws_lc_rs::rand::SystemRandom::new(), &payload)
+                .unwrap();
+            let sig_manifest = format!(
+                r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{}","size":2}},"layers":[{{"mediaType":"{}","digest":"{}","size":{},"annotations":{{"{}":"{}"}}}}]}}"#,
+                sha256(b"{}"),
+                policy::SIGNATURE_MEDIA_TYPE,
+                sha256(&payload),
+                payload.len(),
+                policy::SIGNATURE_ANNOTATION,
+                auth::base64_encode(sig.as_ref())
+            );
+            docs.insert(
+                format!("/v2/team/app/manifests/sha256-{}.sig", digest.hex()),
+                (
+                    "application/vnd.oci.image.manifest.v1+json".to_owned(),
+                    sig_manifest.into_bytes(),
+                ),
+            );
+            docs.insert(
+                format!("/v2/team/app/blobs/{}", sha256(&payload)),
+                ("application/octet-stream".to_owned(), payload),
+            );
+            drop(l);
+            let (p, seen) = fake_registry_on(port, docs);
+            (p, seen)
+        };
+        let dir = std::env::temp_dir().join(format!("sbx-policy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = |k: &EcdsaKeyPair, extra: &str| {
+            let file = dir.join(format!("p{}.json", seen.lock().unwrap().len()));
+            std::fs::write(
+                &file,
+                format!(
+                    r#"{{"default":[{{"type":"insecureAcceptAnything"}}],"transports":{{"docker":{{
+                        "127.0.0.1:{port}/team":[{{"type":"sigstoreSigned","keyData":"{}","signedIdentity":{{"type":"matchRepository"}}}}]{extra}}}}}}}"#,
+                    pem_data(k)
+                ),
+            )
+            .unwrap();
+            OciImageSource::new().unwrap().with_policy(Some(file))
+        };
+        let image = format!("127.0.0.1:{port}/team/app:1");
+
+        let img = source(&key, "")
+            .resolve(&image, Platform { arch })
+            .await
+            .unwrap();
+        assert_eq!(img.id, ImageId::new(digest.clone()));
+
+        // 다른 키: config를 받기 전에 멈춘다.
+        seen.lock().unwrap().clear();
+        let e = source(&other, "")
+            .resolve(&image, Platform { arch })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("not signed by a key"), "{e}");
+        assert!(
+            !seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|p| p.contains(&sha256(b"layer").hex().to_string()))
+        );
+
+        // 거절이면 레지스트리에 가지 않는다.
+        seen.lock().unwrap().clear();
+        let e = source(
+            &key,
+            &format!(r#","127.0.0.1:{port}/team/app:1":[{{"type":"reject"}}]"#),
+        )
+        .resolve(&image, Platform { arch })
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("rejected"), "{e}");
+        assert!(seen.lock().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -4,6 +4,8 @@
 //!
 //! - [`ProcessExecutor::new`]는 `<실행기> capabilities`를 한 번 실행해 capability를 받아 둔다.
 //! - `launch`는 `<실행기> run`을 띄우고 `Launch`를 보낸 뒤 `Started`를 기다린다. 실행기의 표준 오류는 [`VmConfig::log`]에 붙인다.
+//!   표준 오류에는 게스트 콘솔이 섞일 수 있으므로(Firecracker의 직렬 출력) 띄울 때마다 [`MAX_LOG_BYTES`]까지만 쓰고
+//!   나머지는 읽어서 버린다(게스트가 호스트 디스크를 채우지 못하게, 그리고 실행기가 쓰다 막히지 않게).
 //! - [`VmHandle`]이 살아 있는 동안 실행기의 표준 입력을 쥐고 있다. 버려지면 `Kill`을 보내고, 끝나지 않으면 프로세스를 죽인다.
 //!   sbx 프로세스가 죽어도 표준 입력이 닫히므로 실행기가 VM을 끝낸다(규약 5).
 //! - `connect`는 채널의 Unix 소켓에 vsock 방식으로 연결한다. Unix에서만 된다.
@@ -14,7 +16,7 @@
 
 use std::ffi::OsString;
 use std::fs::OpenOptions;
-use std::io::{self, BufReader};
+use std::io::{self, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
@@ -343,6 +345,36 @@ fn retry_busy<T>(mut f: impl FnMut() -> io::Result<T>) -> io::Result<T> {
     f()
 }
 
+/// 실행기 한 번(VM 하나)이 로그에 쓸 수 있는 바이트.
+pub const MAX_LOG_BYTES: u64 = 16 << 20;
+
+/// `from`을 끝까지 읽어 `limit` 바이트까지 `to`에 쓴다. 넘으면 한 줄로 알리고 나머지는 버린다.
+fn copy_capped(mut from: impl Read, mut to: impl Write, limit: u64) {
+    let mut buf = [0u8; 8192];
+    let mut left = limit;
+    loop {
+        let n = match from.read(&mut buf) {
+            Ok(0) => return,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return,
+        };
+        if left == 0 {
+            continue;
+        }
+        let k = (n as u64).min(left) as usize;
+        let _ = to.write_all(&buf[..k]);
+        left -= k as u64;
+        if left == 0 {
+            let _ = writeln!(
+                to,
+                "\nsbx: this log reached {} MiB; the rest of the executor's output is dropped",
+                limit >> 20
+            );
+        }
+    }
+}
+
 fn launch_blocking(
     binary: &Path,
     env: &[(OsString, OsString)],
@@ -359,16 +391,24 @@ fn launch_blocking(
             .arg("run")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(log.try_clone()?)
+            .stderr(Stdio::piped())
             .spawn()
     })
     .map_err(|e| ExecutorError::Launch(format!("cannot run {}: {e}", binary.display())))?;
+    let err = child.stderr.take().expect("piped");
+    let logger = std::sync::Mutex::new(Some(std::thread::spawn(move || {
+        copy_capped(err, log, MAX_LOG_BYTES)
+    })));
     let mut stdin = child.stdin.take().expect("piped");
     let mut stdout = BufReader::new(child.stdout.take().expect("piped"));
 
     let fail = |child: &mut Child, msg: String| {
         let _ = child.kill();
         let _ = child.wait();
+        // 실행기가 남긴 이유가 로그에 다 쓰인 뒤 돌아간다(호출자가 로그를 읽는다).
+        if let Some(h) = logger.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            let _ = h.join();
+        }
         ExecutorError::Launch(format!("{msg} (see {})", vm.log.display()))
     };
     if let Err(e) = proto::write_line(
@@ -562,10 +602,15 @@ mod tests {
             );
             assert!(e.contains("did not finish within 0.5s"), "{name}: {e}");
         }
-        // 끝없이 쓰는 실행기: 상한까지만 읽고 거부한다.
-        let e = ProcessExecutor::with_timeout(script("flood", "exec yes"), Vec::new(), t)
-            .unwrap_err()
-            .to_string();
+        // 끝없이 쓰는 실행기: 상한까지만 읽고 거부한다. 시간 상한이 먼저 걸리지 않게 넉넉히 준다(바쁜 기계에서는
+        // 셸이 뜨고 2 MiB를 쓰는 데 0.5초가 넘을 수 있다).
+        let e = ProcessExecutor::with_timeout(
+            script("flood", "exec yes"),
+            Vec::new(),
+            Duration::from_secs(10),
+        )
+        .unwrap_err()
+        .to_string();
         assert!(e.contains("capabilities printed more than"), "{e}");
         // 답은 했지만 너무 긴 줄: 끝까지 읽지 않고 거부한다.
         let long = format!("printf '%0{}d\\n' 0", proto::MAX_LINE + 10);
@@ -609,5 +654,23 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(e.contains("sbx speaks"), "{e}");
+    }
+}
+
+#[cfg(test)]
+mod log_tests {
+    use super::*;
+
+    #[test]
+    fn the_log_stops_at_its_limit_but_the_pipe_is_drained() {
+        let input = vec![b'x'; 100_000];
+        let mut out = Vec::new();
+        copy_capped(&input[..], &mut out, 1000);
+        assert!(out.starts_with(&[b'x'; 1000]));
+        assert!(String::from_utf8_lossy(&out[1000..]).contains("dropped"));
+        assert!(out.len() < 1200);
+        let mut small = Vec::new();
+        copy_capped(&b"hello"[..], &mut small, 1000);
+        assert_eq!(small, b"hello");
     }
 }

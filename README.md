@@ -46,8 +46,9 @@ virtualization. It is made for running code you don't trust: **AI agents** (with
 - **Nothing in the way.** One binary: no daemon, no root, no account. On macOS it needs no privileges at all.
 - **Offline unless you say so.** The VM has no network device. You allow `host:port` pairs one by one, and the host
   enforces them.
-- **Docker muscle memory.** `run -it`, `-d`, `exec`, `cp`, `logs -f`, `ps -aq`, `--name`, `--env-file` and exit codes
-  125/126/127 behave the way you expect, on the same OCI images, unmodified.
+- **Docker muscle memory.** `run -it`, `-d`, `-p`, `exec`, `cp`, `logs -f`, `ps -aq`, `stats`, `login`, `save`/`load`,
+  `--name`, `--env-file` and exit codes 125/126/127 behave the way you expect, on the same OCI images, unmodified. Your
+  registry credentials, mirrors and signature policy come from the files Docker and podman already read.
 - **Open standards, not one VMM.** `sbx` doesn't build in a hypervisor. It talks to an **executor** over a documented
   protocol, installs executors from static repositories that follow an open spec, and runs whatever you installed.
   `wick` is our Firecracker build and one executor among any others; you can write your own and publish your own

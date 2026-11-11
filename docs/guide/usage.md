@@ -20,6 +20,8 @@ sbx run --rm --cpus 2 -m 1g python:3.12-alpine python -c 'print(42)'
 
 sbx run -d --name dev alpine sleep 600               # detached
 sbx exec -it dev sh                                  # a name, an ID, or an ID prefix
+sbx exec -d dev sh -c 'make serve'                   # in the background; returns at once
+sbx exec --timeout 5m dev make test                  # killed after 5 minutes (exit 124)
 sbx cp dev:/etc/alpine-release .
 sbx logs -f dev
 sbx logs -t --since 10m dev                          # with timestamps, the last 10 minutes only
@@ -28,12 +30,18 @@ sbx stop dev && sbx rm dev
 sbx rm -f $(sbx ps -aq)                              # clean up everything
 ```
 
+`sbx stats` shows each running sandbox's CPU, memory, writable disk and process count as its guest reports them,
+refreshing every second on a terminal (`--no-stream` for one sample; one sample without a terminal and with
+`--format json`).
+
 The lifecycle commands are `create`, `start [-a] [-i]`, `stop [-s SIG] [-t SECS]`, `restart`, `kill [-s SIG]`,
 `wait`, `attach` (detach with Ctrl-P Ctrl-Q) and `rm [-f]`. A stopped sandbox keeps its disk, so `start` picks up
 where it left off. `-e`, `--env-file`, `-w`, `-u`, `--name`, `--label` and `--entrypoint` work as in Docker.
 
 Exit codes follow Docker: 125 when `sbx` fails, 126 when the command can't run, 127 when it isn't found, and the
-command's own code otherwise.
+command's own code otherwise. `exec --timeout` exits 124 when it had to kill the command, like `timeout(1)`.
+`exec -d` discards the command's output; redirect it to a file inside the sandbox to keep it. A sandbox started by
+an older `sbx` needs a restart before `exec -d` works in it.
 
 ## Files
 
@@ -66,12 +74,111 @@ A rule can be `host:port`, `*.example.com:443`, `10.0.0.5:*` or `[::1]:80`. A na
 private address is refused unless the rule names that IP, or `localhost`, explicitly. Without `--network allow`, name
 lookups fail at once instead of hanging.
 
+`--egress-limit SIZE` (e.g. `500m`) caps how many bytes all outgoing connections send and receive together in each
+start; at the limit the open ones are cut and new ones refused. Every decision is recorded as a `network` event:
+`connect` (with the address reached), `refuse` (with the reason) and `close` (bytes sent and received):
+
+```sh
+sbx events --since 1h --until 0s --filter type=network --filter sandbox=web
+```
+
+These records live apart from the sandbox lifecycle events, so a busy sandbox can't push those out; like them, the
+most recent 1-2 MiB are kept.
+
+`-p` publishes a TCP port of the sandbox on the host, with Docker's syntax:
+
+```sh
+sbx run -d --name web -p 8080:80 nginx          # http://127.0.0.1:8080 reaches port 80 inside
+sbx run -d -p 3000 node:22 node server.js       # a free host port; `sbx inspect` shows it under ports
+sbx run -d -p 0.0.0.0:8080:80 nginx             # reachable from other machines too
+```
+
+Unlike Docker, a mapping without an address listens on `127.0.0.1` only. The service inside must listen on its
+loopback (or on all addresses). It works with `--network none`: published ports don't let the sandbox reach anything.
+The process that owns the VM (`sbx` for an attached sandbox, `sbx-shim` for a detached one) does the listening, so a
+port that is already in use makes the start fail. A sandbox started by an older `sbx` needs a restart first.
+
 ## Images
 
 `pull` (with a progress bar), `prepare` (build the disk image ahead of time), `images [-q]` and `rmi [-f]`. `run`
 pulls and prepares on first use (`--pull=missing|always|never`). Images come from Docker Hub, GHCR or any OCI
 registry, unmodified. Each is converted once into a read-only EROFS disk image and cached, so after the first run,
-starting a sandbox is just booting a VM.
+starting a sandbox is just booting a VM. `images --format json` also lists the ports and volumes an image declares
+(`exposed_ports`, `volumes`); `sbx` doesn't open ports or create volumes, and those paths stay on the sandbox's disk.
+
+Without a registry, `load` and `save` move images as OCI image layout archives, the format that `docker save` (Docker
+25 or later), `podman save --format oci-archive` and `skopeo copy … oci-archive:` write:
+
+```sh
+docker save alpine:3.20 | sbx load            # or: sbx load -i alpine.tar (a .tar.gz or an unpacked directory too)
+sbx load -i tool.tar --tag local/tool:dev     # name an archive that holds one image
+sbx save -o alpine.tar alpine:3.20            # docker load, podman load and sbx load all read it back
+```
+
+`load` checks every digest just like `pull`, and reads only the layout files out of a tar (no links, nothing outside
+it). `save` writes the manifest, config and layers exactly as they were pulled, so loading the archive anywhere
+gives the same image ID. An image pulled by `sbx` older than 0.2.1 has to be pulled again before it can be saved. In
+`sbx tui`, `I` and `O` on the Images tab fill in `load -i` and `save -o`.
+
+Private images use the credentials you already have: `sbx` reads Docker's `config.json` (`$DOCKER_CONFIG` or
+`~/.docker`), including its `credHelpers` and `credsStore` (`docker-credential-*`), then `REGISTRY_AUTH_FILE` and
+the containers `auth.json` that podman and skopeo use. It has no credential store of its own, so `docker login` is
+enough. `sbx login` and `sbx logout` write and remove the same entries:
+
+```sh
+echo "$GHCR_TOKEN" | sbx login -u me --password-stdin ghcr.io
+sbx login                                      # Docker Hub; asks for the user name and password
+sbx logout ghcr.io
+```
+
+`login` checks the credentials with the registry before it saves them. Without a credential helper they are saved
+base64-encoded in `config.json`, like Docker does, readable only by you.
+
+Mirrors, rewritten locations and blocked registries come from the containers
+[`registries.conf`](https://github.com/containers/image/blob/main/docs/containers-registries.conf.5.md) that podman,
+skopeo and buildah read: `$CONTAINERS_REGISTRIES_CONF`, else `~/.config/containers/registries.conf`, else
+`/etc/containers/registries.conf`, plus `registries.conf.d/*.conf`. For example, to pull Docker Hub images through
+a mirror first:
+
+```toml
+[[registry]]
+location = "docker.io"
+[[registry.mirror]]
+location = "mirror.gcr.io"
+```
+
+Mirrors are tried in order, then the registry itself; the image keeps the name you asked for. `prefix`, `blocked`,
+`insecure` (falls back to plain HTTP; unlike podman, certificates are still checked, so add a self-signed CA to the
+system trust store), `mirror-by-digest-only` and `pull-from-mirror` work as
+the containers documentation describes. `unqualified-search-registries` and short-name aliases are not used: like
+Docker, `sbx` reads a short name as a Docker Hub image. A mistake in the file stops pulls with an error naming it.
+
+Signature checks follow the containers
+[`policy.json`](https://github.com/containers/image/blob/main/docs/containers-policy.json.5.md)
+(`~/.config/containers/policy.json`, else `/etc/containers/policy.json`; without either, everything is accepted, as
+with Docker). `sbx` checks cosign signatures made with a key (`cosign sign --key`): with this policy, images under
+`ghcr.io/my-org` must carry a signature by `cosign.pub`, and everything else is pulled as before:
+
+```json
+{
+  "default": [{ "type": "insecureAcceptAnything" }],
+  "transports": {
+    "docker": {
+      "ghcr.io/my-org": [{
+        "type": "sigstoreSigned",
+        "keyPath": "/home/me/cosign.pub",
+        "signedIdentity": { "type": "matchRepository" }
+      }]
+    }
+  }
+}
+```
+
+The check runs before any layer is downloaded, and a `reject` before `sbx` contacts the registry at all. cosign
+signs a repository without a tag, so a tag pull needs `matchRepository` (or `exactRepository`, `remapIdentity`), as
+with podman. Requirements `sbx` can't check (`signedBy` GPG signatures, keyless `fulcio`/`pki` and `rekorPublicKey*`)
+make the images they cover fail to pull, never pass. `sbx load` follows the `oci-archive` (tar) or `oci` (directory)
+transport and refuses an archive whose policy asks for signatures.
 
 The guest kernel comes with the executor. An image can bring its own instead, with the label
 `io.github.toollyst.sandbox.kernel=/path/in/image`; other labels under `io.github.toollyst.sandbox.` are reserved
@@ -79,8 +186,26 @@ for `sbx` and an image can't set them.
 
 ## Resources
 
-`--cpus` and `-m` set a sandbox's vCPUs and memory. A sandbox's output can't fill the host's memory or disk. Which executor a sandbox runs on is covered in
+`--cpus` and `-m` set a sandbox's vCPUs and memory, and `--storage-opt size=20g` its writable disk (1 GiB by
+default; the file is sparse, so the host only spends what the sandbox writes). A sandbox's output can't fill the host's memory or disk.
+
+`--timeout 2h` stops a sandbox that long after each start (a plain number is seconds; `30m`, `1h30m` work too).
+It gets its stop signal, then is powered off after its stop timeout, and `sbx inspect` shows `timeout_secs` and the
+reason it stopped. `sbx start` starts the clock again. Which executor a sandbox runs on is covered in
 [Executors](executors.md).
+
+## Disk usage and cleanup
+
+```sh
+sbx system df                  # images, sandboxes and executors: count, in use, size, reclaimable
+sbx system prune               # stopped sandboxes, unused layers, leftovers of interrupted pulls (asks first)
+sbx system prune -a -f         # also every image no sandbox uses; -f doesn't ask
+sbx system prune --filter until=24h --filter label=ci=1
+```
+
+Sizes are what is actually on disk: a sandbox's writable disk counts what it wrote. `prune` never touches running
+sandboxes or the images they use, and only removes leftovers older than an hour (another `sbx` may still be writing
+them). Without a terminal it needs `-f`. In `sbx tui`, `U` and `P` on the Images tab do the same.
 
 ## Scripting
 
@@ -88,8 +213,10 @@ for `sbx` and an image can't set them.
   print a value or JSON Lines; commands whose output is a process's own bytes (`exec`, attached `run`) refuse it.
 - `--jq EXPR` picks fields with a built-in jq, so you don't need jq installed: `sbx --format json ps --jq '.[].name'`.
 - `ps`, `images` and `events` take `--filter KEY=VALUE` with Docker's rules. `-q` prints IDs only.
-- `sbx events` streams what changes (sandboxes created, started, stopped and removed; images pulled, prepared,
-  untagged and deleted) with no daemon, and `--since 10m` replays the recent past first.
+- `sbx events` streams what changes (sandboxes created, started, stopped and removed; commands run with `exec`, as
+  `exec_start` with their argv and `exec_die` with their exit code; images pulled, prepared, untagged and deleted)
+  with no daemon, and `--since 10m` replays the recent past first. The log lives in the data directory, readable
+  only by you.
 - `sbx logs` takes `-t`, `--since`, `--until` and `--format json`.
 
 The JSON shapes and their JSON Schema are in [cli-output.md](../developers/cli-output.md); what counts as a breaking

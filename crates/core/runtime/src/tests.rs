@@ -105,6 +105,9 @@ impl Env {
             open_stdin: false,
             tty: false,
             name: None,
+            lifetime_secs: None,
+            ports: Vec::new(),
+            egress_limit_bytes: None,
         }
     }
 
@@ -933,6 +936,36 @@ fn state_changes_are_recorded_as_events() {
     assert!(!got[2].attributes.contains_key("error"));
 }
 
+#[cfg(unix)]
+#[test]
+fn exec_is_recorded_with_its_argv_and_exit_code() {
+    let e = Env::new("evexec");
+    e.prepare_image();
+    let s = block_on(e.rt.create(e.spec(&["sleep", "30"]))).unwrap();
+    let _main = block_on(s.start(IoMode::default())).unwrap();
+    let s = block_on(e.rt.get(s.id())).unwrap();
+    let mut r = events_log(&e.root.join("d"))
+        .reader(sbx_events::Start::End)
+        .unwrap();
+    let p = block_on(s.exec(exec(&["sh", "-c", "exit 5"]))).unwrap();
+    assert_eq!(block_on(p.wait()).unwrap(), 5);
+    let pid = block_on(s.exec_detached(exec(&["true"]))).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut got = Vec::new();
+    while got.len() < 3 && Instant::now() < deadline {
+        got.extend(std::iter::from_fn(|| r.next_event().unwrap()));
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    block_on(s.stop(None, Duration::ZERO)).unwrap();
+    let actions: Vec<&str> = got.iter().map(|e| e.action.as_str()).collect();
+    assert_eq!(actions, ["exec_start", "exec_die", "exec_start"]);
+    assert_eq!(got[0].attributes["args"], r#"["sh","-c","exit 5"]"#);
+    assert_eq!(got[1].attributes["exit_code"], "5");
+    assert_eq!(got[0].attributes["pid"], got[1].attributes["pid"]);
+    assert_eq!(got[2].attributes["detached"], "true");
+    assert_eq!(got[2].attributes["pid"], pid.to_string());
+}
+
 #[test]
 fn a_failed_create_records_nothing() {
     let e = Env::new("evfail");
@@ -957,4 +990,113 @@ fn test_environment_names_are_unique() {
     let before = names.len();
     names.dedup();
     assert_eq!(before, names.len(), "an Env::new name is used twice");
+}
+
+#[cfg(unix)]
+#[test]
+fn sandbox_records_are_private_to_their_user() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = Env::new("perm");
+    let s = env.sandbox(&["true"]);
+    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    let dir = env.root.join("d/sandboxes").join(s.id().as_str());
+    assert_eq!(mode(&env.root.join("d/sandboxes")), 0o700);
+    assert_eq!(mode(&dir), 0o700);
+    for f in ["spec.json", "state.json", "scratch.img", "owner.lock"] {
+        assert_eq!(mode(&dir.join(f)), 0o600, "{f}");
+    }
+    // 0.2.0이 만든 열린 디렉터리는 좁힌다.
+    let old = env.root.join("old");
+    std::fs::create_dir(&old).unwrap();
+    std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o755)).unwrap();
+    records::private_dir(&old).unwrap();
+    assert_eq!(mode(&old), 0o700);
+    let _ = std::fs::remove_dir_all(&env.root);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_sandbox_stops_when_its_lifetime_runs_out() {
+    let e = Env::new("life");
+    e.prepare_image();
+    let mut spec = e.spec(&["sleep", "30"]);
+    spec.lifetime_secs = Some(1);
+    spec.stop.timeout_secs = Some(1);
+    let s = block_on(e.rt.create(spec)).unwrap();
+    let started = std::time::Instant::now();
+    let main = block_on(s.start(IoMode::default())).unwrap();
+    // sleep은 TERM으로 끝난다(128+15).
+    let code = block_on(main.wait()).unwrap();
+    assert_eq!(code, 143);
+    assert!(started.elapsed() < Duration::from_secs(20));
+    let info = e.wait_state(&s, State::Stopped);
+    assert_eq!(info.exit_code, Some(143));
+    let _ = std::fs::remove_dir_all(&e.root);
+}
+
+#[cfg(unix)]
+#[test]
+fn published_ports_reach_a_service_inside_and_close_on_stop() {
+    use std::io::{Read, Write};
+    let e = Env::new("ports");
+    e.prepare_image();
+    // 가짜 실행기의 게스트는 호스트에서 돈다: 게스트 안 서비스 흉내를 호스트 포트에 띄운다.
+    let service = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let guest_port = service.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for s in service.incoming() {
+            let Ok(mut s) = s else { return };
+            std::thread::spawn(move || {
+                let mut b = Vec::new();
+                let _ = s.read_to_end(&mut b);
+                let _ = s.write_all(&b.to_ascii_uppercase());
+            });
+        }
+    });
+    let mut spec = e.spec(&["sleep", "30"]);
+    spec.ports = vec![format!("127.0.0.1::{guest_port}").parse().unwrap()];
+    let s = block_on(e.rt.create(spec)).unwrap();
+    let _main = block_on(s.start(IoMode::default())).unwrap();
+    let info = block_on(e.rt.get(s.id())).unwrap().info().clone();
+    assert_eq!(info.published.len(), 1);
+    let (addr, g) = info.published[0];
+    assert_eq!(g, guest_port);
+    assert_ne!(addr.port(), 0, "the picked port is recorded");
+    for _ in 0..2 {
+        let mut c = std::net::TcpStream::connect(addr).unwrap();
+        c.write_all(b"hello").unwrap();
+        c.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut got = Vec::new();
+        c.read_to_end(&mut got).unwrap();
+        assert_eq!(got, b"HELLO");
+    }
+    block_on(
+        block_on(e.rt.get(s.id()))
+            .unwrap()
+            .stop(None, Duration::ZERO),
+    )
+    .unwrap();
+    let info = e.wait_state(&s, State::Stopped);
+    assert!(info.published.is_empty());
+    // 멈추면 듣지 않는다.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while std::net::TcpStream::connect(addr).is_ok() {
+        assert!(Instant::now() < deadline, "{addr} still accepts after stop");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // 이미 쓰는 포트면 VM 없이 시작이 실패한다.
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut spec = e.spec(&["sleep", "30"]);
+    spec.ports = vec![
+        format!("{}:{guest_port}", taken.local_addr().unwrap().port())
+            .parse()
+            .unwrap(),
+    ];
+    let s = block_on(e.rt.create(spec)).unwrap();
+    let err = block_on(s.start(IoMode::default()))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("can't listen"), "{err}");
+    let _ = std::fs::remove_dir_all(&e.root);
 }
