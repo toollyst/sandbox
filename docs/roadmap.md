@@ -1,6 +1,6 @@
 # 로드맵
 
-2026년 11월 11일 · 현재 릴리스 `v0.2.0`(유지는 0.2부터, 0.1.x는 거뒀다, 40) · 상위 문서: sandbox 기획서, [docs/plan/architecture.md](plan/architecture.md)
+2026년 11월 11일 · 현재 릴리스 `v0.2.1`(유지는 0.2부터, 0.1.x는 거뒀다, 40. 0.2.1에 들어간 것은 [CHANGELOG](../CHANGELOG.md#v021)와 M7의 P 표) · 상위 문서: sandbox 기획서, [docs/plan/architecture.md](plan/architecture.md)
 
 순서는 기획서의 성공 기준 1 "Linux에서 공개 OCI 이미지를 받아 microVM 안에서 명령을 실행하고 결과를 받는다"까지의 최단 경로다. 각 단계는 "어떻게 검증되면 끝인가"를 함께 적는다.
 
@@ -148,4 +148,5 @@ SLSA, TUF(색인 신선도), EU CRA. 범위는 sbx 자신이다. sbx는 실행�
 - 다른 외부 실행기 (libkrun 등). 규약(`sbx-executor-proto`)만 지키면 된다.
 - Kubernetes·containerd(shim v2, RuntimeClass), 스냅샷과 빠른 시작(복제본마다 난수·boot_id를 새로), 다중 테넌트 서버 배포
 - 언어 바인딩
-- OCI 범위 확대 (`docs/plan/architecture.md` 3장의 "나중")
+- OCI에서 남은 "나중"(`docs/plan/architecture.md` 3장): push, keyless(Fulcio·Rekor)와 GPG 서명, 런타임 번들 입력. 0.2.1에 넣은 것: 레지스트리 인증, 미러, 서명 정책, `load`/`save`, `ExposedPorts`·`Volumes`
+- 유휴 시간 상한(P7): 게스트가 활동을 알려 주는 규약이 먼저다

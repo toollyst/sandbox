@@ -12,7 +12,7 @@ that does it. The doc comment there is the precise rule.
  sbx (sbx-cli) ──────────── cache_dir: blobs, images/<id>/rootfs.erofs, guest/…/initramfs,   (sbx-manage writes)
      │                                 events/images/
      │  sbx-runtime ─────── data_dir:  sandboxes/<id>/{spec.json,state.json,scratch.img,owner.lock,logs/},
-     │                                 events/sandboxes/, executors/, adapters/ (the last two: sbx executor)
+     │                                 events/sandboxes/, events/network/, executors/, adapters/ (the last two: sbx executor)
      │                      socket_dir: short paths for Unix sockets (macOS caps them at 104 bytes)
      │  stdin/stdout: executor protocol (line-delimited JSON)
      ▼
@@ -55,9 +55,14 @@ Parsing lives in [`parse.rs`](../../crates/app/cli/src/parse.rs). Defaults and D
 neither. The CLI then calls the management core:
 
 - **`pull_with`**: [`sbx-oci`](../../crates/adapter/oci) resolves `alpine` to
-  `docker.io/library/alpine:latest`, fetches the index and picks `linux/<host arch>`, checks every document's
-  sha256, and lists the layers. `sbx-manage` downloads only the missing layers. It checks each digest while writing
-  and reports progress (the CLI draws the bar). The image record and reference are written last.
+  `docker.io/library/alpine:latest`. The containers `registries.conf` ([`registries.rs`](../../crates/adapter/oci/src/registries.rs))
+  may turn that into mirrors to try first or block it, and `policy.json` ([`policy.rs`](../../crates/adapter/oci/src/policy.rs))
+  may reject it before any request or require a cosign signature on the first manifest. Credentials come from
+  Docker's and podman's files ([`auth.rs`](../../crates/adapter/oci/src/auth.rs)) when the registry asks. It fetches
+  the index and picks `linux/<host arch>`, checks every document's sha256, and lists the layers. `sbx-manage` downloads only the missing layers. It checks each digest while
+  writing and reports progress (the CLI draws the bar). The manifest and config are kept as pulled (for `sbx save`),
+  and the image record and reference are written last.
+  `sbx load` runs the same steps with an OCI image layout as the source ([`layout.rs`](../../crates/adapter/oci/src/layout.rs)).
 - **`prepare`**: [`sbx-rootfs`](../../crates/port/rootfs) merges the layers in memory (whiteouts, opaque
   directories, hard links) and writes one EROFS image to `images/<id>/rootfs.erofs`. Nothing is unpacked onto your
   disk, so the result is the same on macOS, Linux and Windows. If the image carries its own kernel (label
@@ -170,7 +175,8 @@ There is no daemon to ask what changed, so the process that changes something wr
 `sbx-runtime` appends a line to `data_dir/events/sandboxes` whenever it records a sandbox as created, running,
 stopped or removed, and `sbx-manage` appends to `cache_dir/events/images` after a pull, prepare, untag or delete.
 Both use [`sbx-events`](../../crates/port/events/src/lib.rs): one JSON object per line, appended under a file lock,
-two generations of 1 MiB. `sbx events` reads both directories, merges them by time, replays from `--since`, and
+two generations of 1 MiB. `sbx events` reads both directories and the outgoing-connection records in
+`data_dir/events/network`, merges them by time, replays from `--since`, and
 keeps following until `--until` or Ctrl-C. A VM whose owner was killed has no `stop` event, because nobody was left
 to write it (it is listed in `DOCKER_DIFFERENCES`).
 
@@ -197,7 +203,9 @@ The VM has no network device. With `--network allow`:
 3. The owner process checks the target against the allow list
    ([`crates/core/runtime/src/egress.rs`](../../crates/core/runtime/src/egress.rs)). It resolves names on the host
    and drops loopback, private, link-local and multicast addresses, unless the rule names that IP or `localhost`.
-   Then it dials and relays bytes, or refuses (the client gets 403 with the reason).
+   Then it dials and relays bytes, or refuses (the client gets 403 with the reason). With `--egress-limit` it stops
+   relaying at the limit and refuses new connections. Each decision goes to `data_dir/events/network` (`connect`,
+   `refuse`, `close` with byte counts), apart from the lifecycle events so a busy sandbox can't push them out.
 
 UDP, and programs that ignore the proxy settings, simply have no way out.
 
