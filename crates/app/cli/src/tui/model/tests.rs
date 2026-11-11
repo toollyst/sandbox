@@ -130,6 +130,9 @@ fn keys_become_sbx_command_lines_for_the_selected_sandbox() {
         press(&mut m, KeyCode::Char('l')),
         Some(Action::Handover(strings(&["logs", "-f", "web"])))
     );
+    // E는 명령을 칠 수 있게 명령 줄을 채운다.
+    assert_eq!(press(&mut m, KeyCode::Char('E')), None);
+    assert_eq!(m.prompt.take().unwrap().text, "exec -d web ");
     // 이름이 없으면 전체 ID.
     press(&mut m, KeyCode::Down);
     assert_eq!(
@@ -173,7 +176,8 @@ fn every_listed_letter_key_does_something() {
     for h in KEYS.iter().filter(|h| h.tabs == "sandboxes") {
         let mut m = loaded();
         let c = h.keys.chars().next().unwrap();
-        let acted = press(&mut m, KeyCode::Char(c)).is_some() || m.popup.is_some();
+        let acted =
+            press(&mut m, KeyCode::Char(c)).is_some() || m.popup.is_some() || m.prompt.is_some();
         assert!(acted, "{:?}", h.keys);
     }
     for h in KEYS.iter().filter(|h| h.tabs == "executors") {

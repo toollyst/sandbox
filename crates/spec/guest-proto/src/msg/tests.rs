@@ -73,6 +73,19 @@ fn host_samples() -> Vec<HostMsg> {
             reason: "not allowed".into(),
         },
         HostMsg::SignalMain(15),
+        HostMsg::ExecDetached(Exec {
+            args: vec!["sleep".into(), "9".into()],
+            env: vec![],
+            cwd: "/".into(),
+            user: User {
+                user: Ident::Id(0),
+                group: None,
+            },
+            tty: false,
+            stdin: false,
+            size: None,
+            main: false,
+        }),
     ]
 }
 

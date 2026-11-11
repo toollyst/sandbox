@@ -435,6 +435,46 @@ fn host_disconnect_kills_the_process() {
 }
 
 #[test]
+fn a_detached_process_outlives_its_connection() {
+    let f = Fixture::new("detached");
+    let mark = f.dir.join("done");
+    let mut c = f.connect();
+    let script = format!("sleep 0.3; echo out; touch {}", mark.display());
+    send(
+        &mut c,
+        HostMsg::ExecDetached(f.exec(&["sh", "-c", &script], false)),
+    );
+    let pid = started(&mut c);
+    // 게스트가 곧바로 닫는다. 출력은 오지 않는다.
+    assert!(GuestMsg::read_from(&mut c).is_err());
+    drop(c);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !mark.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "detached process {pid} did not finish"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    // 거둔다(좀비로 남지 않는다).
+    while crate::sys::kill(pid, 0).is_ok() {
+        assert!(Instant::now() < deadline, "process {pid} was not reaped");
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    // 터미널, 입력, 기본 프로세스는 떼어 놓을 수 없다.
+    let mut c = f.connect();
+    send(&mut c, HostMsg::ExecDetached(f.exec(&["true"], true)));
+    assert_eq!(error_kind(&mut c), ErrorKind::InvalidArgument);
+    let mut c = f.connect();
+    send(
+        &mut c,
+        HostMsg::ExecDetached(f.exec(&["no-such-program"], false)),
+    );
+    assert_eq!(error_kind(&mut c), ErrorKind::NotFound);
+}
+
+#[test]
 fn shutdown_syncs_replies_then_calls_back() {
     let (mut host, guest) = UnixStream::pair().unwrap();
     let called = Arc::new(AtomicBool::new(false));

@@ -46,6 +46,11 @@ pub const KEYS: &[KeyHelp] = &[
         "system df: disk usage (hands over the terminal)",
     ),
     k("e", "sandboxes", "exec -it ID sh (hands over the terminal)"),
+    k(
+        "E",
+        "sandboxes",
+        "exec -d: run a command in the background (fills in the command line to finish)",
+    ),
     k("a", "sandboxes", "attach (hands over the terminal)"),
     k(
         "l",

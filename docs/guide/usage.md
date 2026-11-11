@@ -20,6 +20,8 @@ sbx run --rm --cpus 2 -m 1g python:3.12-alpine python -c 'print(42)'
 
 sbx run -d --name dev alpine sleep 600               # detached
 sbx exec -it dev sh                                  # a name, an ID, or an ID prefix
+sbx exec -d dev sh -c 'make serve'                   # in the background; returns at once
+sbx exec --timeout 5m dev make test                  # killed after 5 minutes (exit 124)
 sbx cp dev:/etc/alpine-release .
 sbx logs -f dev
 sbx logs -t --since 10m dev                          # with timestamps, the last 10 minutes only
@@ -33,7 +35,9 @@ The lifecycle commands are `create`, `start [-a] [-i]`, `stop [-s SIG] [-t SECS]
 where it left off. `-e`, `--env-file`, `-w`, `-u`, `--name`, `--label` and `--entrypoint` work as in Docker.
 
 Exit codes follow Docker: 125 when `sbx` fails, 126 when the command can't run, 127 when it isn't found, and the
-command's own code otherwise.
+command's own code otherwise. `exec --timeout` exits 124 when it had to kill the command, like `timeout(1)`.
+`exec -d` discards the command's output; redirect it to a file inside the sandbox to keep it. A sandbox started by
+an older `sbx` needs a restart before `exec -d` works in it.
 
 ## Files
 

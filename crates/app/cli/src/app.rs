@@ -1144,11 +1144,33 @@ impl Ctx {
             user: a.user.as_deref().map(str::parse::<UserSpec>).transpose()?,
             tty: a.tty,
         };
+        if a.detach {
+            sandbox
+                .exec_detached(spec)
+                .await
+                .map_err(|e| start_failure(e, 1))?;
+            return Ok(0);
+        }
         let p = sandbox
             .exec_with(spec, io)
             .await
             .map_err(|e| start_failure(e, 1))?;
-        Ok(behavior::exit_byte(attach(p, io, a.interactive).await?))
+        let Some(secs) = a.timeout else {
+            return Ok(behavior::exit_byte(attach(p, io, a.interactive).await?));
+        };
+        let input = p.input();
+        let timer = tokio::task::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(secs)).await;
+            input.signal(behavior::SIGKILL);
+        });
+        let code = attach(p, io, a.interactive).await?;
+        let fired = timer.is_finished();
+        timer.abort();
+        if fired && code == behavior::EXIT_KILLED {
+            eprintln!("sbx: the command was killed after its --timeout of {secs}s");
+            return Ok(behavior::EXIT_TIMED_OUT);
+        }
+        Ok(behavior::exit_byte(code))
     }
 
     async fn cp(&self, src: &str, dst: &str) -> AppResult<u8> {

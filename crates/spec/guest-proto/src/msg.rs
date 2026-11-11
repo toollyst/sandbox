@@ -218,6 +218,12 @@ pub enum HostMsg {
     /// 기본 프로세스([`Exec::main`])에 시그널을 보낸다. 그 프로세스의 연결이 없는 쪽(다른 호스트 프로세스)도 보낼 수 있다.
     /// 번호는 Linux 번호다. 흐름: 게스트가 [`GuestMsg::Done`]. 실행 중인 기본 프로세스가 없으면 `NotFound` 오류.
     SignalMain(i32),
+    /// 프로세스를 떼어 놓고 실행한다(`sbx exec -d`). [`Exec`]의 `tty`, `stdin`, `main`은 거짓이어야 한다.
+    /// 표준 입출력은 `/dev/null`이다.
+    ///
+    /// 흐름: 게스트가 [`GuestMsg::Started`]를 보내고 닫는다. 연결이 닫혀도 프로세스는 계속 돈다.
+    /// 시작하지 못하면 [`GuestMsg::Error`]. 이 메시지를 모르는 게스트(0.2.0)는 `Protocol` 오류를 보낸다.
+    ExecDetached(Exec),
 }
 
 /// 게스트 → 호스트.
@@ -310,6 +316,7 @@ mod tag {
     pub const CONNECTED: u8 = 0x11;
     pub const REFUSED: u8 = 0x12;
     pub const SIGNAL_MAIN: u8 = 0x13;
+    pub const EXEC_DETACHED: u8 = 0x14;
 
     pub const HELLO_ACK: u8 = 0x81;
     pub const STARTED: u8 = 0x82;
@@ -452,8 +459,12 @@ impl HostMsg {
                 e = Encoder::new(tag::HELLO);
                 e.u32(*version);
             }
-            HostMsg::Exec(x) => {
-                e = Encoder::new(tag::EXEC);
+            HostMsg::Exec(x) | HostMsg::ExecDetached(x) => {
+                e = Encoder::new(if matches!(self, HostMsg::Exec(_)) {
+                    tag::EXEC
+                } else {
+                    tag::EXEC_DETACHED
+                });
                 e.list(&x.args, |e, a| {
                     e.str(a);
                 })
@@ -531,7 +542,7 @@ impl HostMsg {
         let mut d = Decoder::new(body);
         let msg = match d.u8()? {
             tag::HELLO => HostMsg::Hello { version: d.u32()? },
-            tag::EXEC => {
+            t @ (tag::EXEC | tag::EXEC_DETACHED) => {
                 let args = d.list(|d| d.string())?;
                 let env = d.list(|d| Ok((d.string()?, d.string()?)))?;
                 let cwd = d.string()?;
@@ -539,7 +550,7 @@ impl HostMsg {
                     user: dec_ident(&mut d)?,
                     group: d.opt(dec_ident)?,
                 };
-                HostMsg::Exec(Exec {
+                let x = Exec {
                     args,
                     env,
                     cwd,
@@ -548,7 +559,12 @@ impl HostMsg {
                     stdin: d.bool()?,
                     size: d.opt(dec_size)?,
                     main: d.bool()?,
-                })
+                };
+                if t == tag::EXEC {
+                    HostMsg::Exec(x)
+                } else {
+                    HostMsg::ExecDetached(x)
+                }
             }
             tag::STDIN => HostMsg::Stdin(d.bytes()?.to_vec()),
             tag::STDIN_CLOSE => HostMsg::StdinClose,

@@ -823,6 +823,23 @@ impl Sandbox {
         Ok(Process::spawn(conn, pid, None))
     }
 
+    /// 떼어 놓고 실행한다(`exec -d`, Docker와 같다): 입출력 없이 시작만 하고 게스트 안의 PID를 돌려준다.
+    /// 그 프로세스는 이 호출 뒤에도, 이 호스트 프로세스가 끝나도 샌드박스가 멈출 때까지 돈다. 터미널은 열 수 없다.
+    pub async fn exec_detached(&self, spec: ExecSpec) -> Result<u32, RuntimeError> {
+        let (info, guest) = self.require_running("exec")?;
+        if spec.tty {
+            return Err(RuntimeError::Invalid(
+                "a detached command can't have a terminal".into(),
+            ));
+        }
+        let p = process::for_exec(&info.spec.process, &spec)?;
+        let mut x = to_proto_exec(&p, IoMode::default(), false);
+        if let Some(port) = info.egress_port {
+            process::add_proxy_env(&mut x.env, port);
+        }
+        blocking(move || guest.exec_detached(x)).await
+    }
+
     /// 호스트 파일이나 디렉터리를 게스트로 복사한다. 대상 규칙은 [`cpplan`].
     pub async fn copy_in(&self, host: &Path, guest_path: &str) -> Result<(), RuntimeError> {
         let (_, guest) = self.require_running("copy")?;

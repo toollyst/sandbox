@@ -144,6 +144,23 @@ impl Guest {
         }
     }
 
+    /// 떼어 놓고 실행한다([`HostMsg::ExecDetached`]). 게스트 안의 PID.
+    pub fn exec_detached(&self, x: Exec) -> Result<u32, RuntimeError> {
+        let mut c = self.open()?;
+        send(&mut *c, &HostMsg::ExecDetached(x))?;
+        match recv(&mut *c) {
+            Ok(GuestMsg::Started { pid }) => Ok(pid),
+            Ok(GuestMsg::Error(e)) => Err(RuntimeError::CommandFailed(e)),
+            Ok(other) => Err(proto_err(format!("expected Started, got {other:?}"))),
+            // 이 요청을 모르는 게스트(0.2.0이 띄운 VM)는 답 없이 닫는다.
+            Err(RuntimeError::Lost(e)) => Err(RuntimeError::Lost(format!(
+                "{e}; the guest may be older than this sbx (the sandbox was started before an upgrade): \
+                 restart the sandbox to run detached commands"
+            ))),
+            Err(e) => Err(e),
+        }
+    }
+
     /// 경로 정보 (링크를 따라간다).
     pub fn stat(&self, path: &str) -> Result<Option<Entry>, RuntimeError> {
         let mut c = self.open()?;

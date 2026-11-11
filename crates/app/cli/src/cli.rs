@@ -588,6 +588,13 @@ pub struct ExecArgs {
     /// Allocate a TTY.
     #[arg(short = 't', long)]
     pub tty: bool,
+    /// Start the command in the background and return at once. Its output is discarded; it runs until it ends or
+    /// the sandbox stops.
+    #[arg(short = 'd', long, conflicts_with_all = ["interactive", "tty", "timeout"])]
+    pub detach: bool,
+    /// Kill the command (SIGKILL) if it is still running after DURATION (e.g. 30s, 5m); sbx then exits with 124.
+    #[arg(long, value_name = "DURATION", value_parser = crate::parse::lifetime_secs)]
+    pub timeout: Option<u64>,
     /// Environment variable K=V (K alone takes the host's value).
     #[arg(short = 'e', long = "env")]
     pub env: Vec<String>,

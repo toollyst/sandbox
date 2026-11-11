@@ -147,6 +147,7 @@ pub const MIN_ID_PREFIX: usize = 12;
 /// | `run`에서 sbx 쪽 실패 (이미지, 실행기, VM, 게스트) | [`EXIT_RUN_FAILED`] 125 |
 /// | `run`, `exec`에서 명령을 시작하지 못함: 실행 권한 없음 | [`EXIT_CANNOT_INVOKE`] 126 |
 /// | `run`, `exec`에서 명령을 시작하지 못함: 실행 파일 없음 | [`EXIT_NOT_FOUND`] 127 |
+/// | `exec --timeout`이 넘어 명령을 죽임 | [`EXIT_TIMED_OUT`] 124 (`timeout(1)`과 같다) |
 /// | 그 밖의 명령의 실패 | 1 |
 /// | 사용법 오류 | 2 (clap) |
 pub const EXIT_RUN_FAILED: u8 = 125;
@@ -156,6 +157,15 @@ pub const EXIT_CANNOT_INVOKE: u8 = 126;
 
 /// 명령을 찾지 못함.
 pub const EXIT_NOT_FOUND: u8 = 127;
+
+/// `exec --timeout`이 넘어 명령을 죽였다.
+pub const EXIT_TIMED_OUT: u8 = 124;
+
+/// 게스트(Linux)의 SIGKILL 번호.
+pub const SIGKILL: i32 = 9;
+
+/// SIGKILL로 끝난 프로세스의 종료 코드(128 + 9).
+pub const EXIT_KILLED: i32 = 128 + SIGKILL;
 
 /// `run`, `exec`에서 명령을 시작하지 못했을 때의 종료 코드.
 pub fn command_failure_code(kind: ErrorKind) -> u8 {

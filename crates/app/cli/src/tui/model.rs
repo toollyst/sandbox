@@ -474,6 +474,14 @@ impl Model {
                         a.push(SHELL.to_owned());
                         Some(Action::Handover(a))
                     }
+                    'E' => {
+                        // 명령은 사용자가 친다. 떼어 놓으므로 터미널을 넘기지 않는다.
+                        self.prompt = Some(Prompt {
+                            kind: PromptKind::Command,
+                            text: format!("exec -d {target} "),
+                        });
+                        None
+                    }
                     'a' => Some(Action::Handover(args(&["attach"], target))),
                     'l' => Some(Action::Handover(args(&["logs", "-f"], target))),
                     _ => None,

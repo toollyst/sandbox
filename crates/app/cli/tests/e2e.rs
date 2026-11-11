@@ -1225,6 +1225,46 @@ mod unix {
         assert_eq!(text(&o.stdout), "24 80\r\ne\r\n");
         assert_eq!(e.sbx(&["exec", "-it", &id, "sh"]).status.code(), Some(1));
 
+        // -d: 곧바로 돌아오고, 명령은 sbx가 끝난 뒤에도 돈다. 출력은 버린다.
+        let mark = e.path("detached-done");
+        let script = format!("sleep 0.3; echo lost; touch {}", mark.display());
+        let o = e.sbx(&["exec", "-d", &id, "sh", "-c", &script]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !mark.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "the detached command did not run"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            e.sbx(&["exec", "-d", &id, "no-such-command-xyz"])
+                .status
+                .code(),
+            Some(127)
+        );
+        assert_eq!(
+            e.sbx(&["exec", "-d", "-t", &id, "true"]).status.code(),
+            Some(2)
+        );
+        // --timeout: 넘으면 죽이고 124. 일찍 끝나면 그 코드.
+        let o = e.sbx(&[
+            "exec",
+            "--timeout",
+            "1",
+            &id,
+            "sh",
+            "-c",
+            "echo start; sleep 30",
+        ]);
+        assert_eq!(o.status.code(), Some(124), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "start\n");
+        assert!(text(&o.stderr).contains("--timeout"), "{}", text(&o.stderr));
+        let o = e.sbx(&["exec", "--timeout", "30", &id, "sh", "-c", "exit 3"]);
+        assert_eq!(o.status.code(), Some(3), "{}", text(&o.stderr));
+
         // 가짜 실행기의 게스트 경로는 호스트 경로다.
         let src = e.path("src.txt");
         std::fs::write(&src, b"copied").unwrap();

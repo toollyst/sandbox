@@ -111,13 +111,36 @@ pub fn run(x: Exec, root: &Path, input: impl Read + Send + 'static, out: Out, ma
     }
 }
 
-fn run_inner(
-    x: Exec,
-    root: &Path,
-    mut input: impl Read + Send + 'static,
-    out: &Out,
-    main: &Main,
-) -> Result<(), Error> {
+/// 떼어 놓고 실행한다(`HostMsg::ExecDetached`): 표준 입출력은 `/dev/null`, `Started`를 보내고 곧바로 끝난다.
+/// 연결이 닫혀도 프로세스는 계속 돈다. 이 프로세스(연결 처리)가 부모이므로 스레드 하나가 거둔다.
+pub fn run_detached(x: Exec, root: &Path, out: Out) {
+    let started = (|| {
+        if x.tty || x.stdin || x.main {
+            return Err(Error::new(
+                ErrorKind::InvalidArgument,
+                "a detached process has no terminal or input and is not the main process",
+            ));
+        }
+        let mut cmd = command(&x, root)?;
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        // 자기 프로세스 그룹: 연결 처리 쪽 그룹에 보내는 시그널을 받지 않는다.
+        cmd.process_group(0);
+        let child = cmd.spawn().map_err(|e| spawn_error(&x.args[0], e))?;
+        Ok(child)
+    })();
+    match started {
+        Ok(mut child) => {
+            let _ = out.send(&GuestMsg::Started { pid: child.id() });
+            thread::spawn(move || child.wait());
+        }
+        Err(e) => out.error(e),
+    }
+}
+
+/// 받은 그대로 [`Command`]를 만든다: argv, 환경, 작업 디렉터리, 사용자. 입출력은 부르는 쪽이 정한다.
+fn command(x: &Exec, root: &Path) -> Result<Command, Error> {
     let Some(program) = x.args.first() else {
         return Err(Error::new(ErrorKind::InvalidArgument, "empty argv"));
     };
@@ -145,6 +168,32 @@ fn run_inner(
     if !x.env.iter().any(|(k, _)| k == "HOME") {
         cmd.env("HOME", &creds.home);
     }
+    Ok(cmd)
+}
+
+fn spawn_error(program: &str, e: io::Error) -> Error {
+    match e.kind() {
+        io::ErrorKind::NotFound => Error::new(
+            ErrorKind::NotFound,
+            format!("exec: {program:?}: executable file not found in $PATH"),
+        ),
+        io::ErrorKind::PermissionDenied => Error::new(
+            ErrorKind::PermissionDenied,
+            format!("exec: {program:?}: permission denied"),
+        ),
+        _ => io_error(&format!("exec {program:?}"), &e),
+    }
+}
+
+fn run_inner(
+    x: Exec,
+    root: &Path,
+    mut input: impl Read + Send + 'static,
+    out: &Out,
+    main: &Main,
+) -> Result<(), Error> {
+    let mut cmd = command(&x, root)?;
+    let program = &x.args[0];
     // 터미널이면 주 쪽을 쥐고, 종 쪽을 자식의 표준 입출력으로 준다.
     let tty = if x.tty {
         let size = x.size.unwrap_or(WinSize { rows: 24, cols: 80 });
@@ -169,17 +218,7 @@ fn run_inner(
     let spawned = cmd.spawn();
     // 부모가 쥔 종 쪽을 닫는다. 그래야 자식들이 모두 닫으면 주 쪽에서 끝을 본다.
     drop(cmd);
-    let mut child = spawned.map_err(|e| match e.kind() {
-        io::ErrorKind::NotFound => Error::new(
-            ErrorKind::NotFound,
-            format!("exec: {program:?}: executable file not found in $PATH"),
-        ),
-        io::ErrorKind::PermissionDenied => Error::new(
-            ErrorKind::PermissionDenied,
-            format!("exec: {program:?}: permission denied"),
-        ),
-        _ => io_error(&format!("exec {program:?}"), &e),
-    })?;
+    let mut child = spawned.map_err(|e| spawn_error(program, e))?;
 
     let proc = Arc::new(Proc {
         pid: child.id(),
