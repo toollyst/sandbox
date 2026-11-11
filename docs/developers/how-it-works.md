@@ -29,6 +29,12 @@ There are three directories, each passed in by the caller. The CLI's defaults ar
 environment variables override them. Two processes given the same paths share state, and different paths keep them
 apart.
 
+Both `data_dir` and `cache_dir` hold a `layout-version` file (from 0.2.1): one decimal number, the on-disk layout
+that wrote them. [`layout.rs`](../../crates/app/cli/src/layout.rs) checks it whenever `sbx` starts. A missing file
+(a directory 0.2.0 wrote) is layout 1 and gets written; a higher number than this `sbx` knows is refused rather than
+guessed at; a lower one is migrated in place. A change to the layout bumps `layout::CURRENT` and adds a step to
+`layout::migrate`.
+
 ## `sbx run --rm alpine echo hello`
 
 ### 1. Parse and assemble (`sbx-cli`)

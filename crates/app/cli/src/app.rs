@@ -292,6 +292,14 @@ impl Ctx {
             .clone()
             .or_else(dirs::cache_dir)
             .ok_or_else(|| msg("cannot determine a cache directory; use --cache-dir"))?;
+        let data_dir = cli
+            .data_dir
+            .clone()
+            .or_else(dirs::data_dir)
+            .ok_or_else(|| msg("cannot determine a data directory; use --data-dir"))?;
+        // 더 새 sbx가 바꾼 배치는 짐작하지 않고 거부한다(COMPATIBILITY.md).
+        crate::layout::check(&data_dir, "data directory").map_err(msg)?;
+        crate::layout::check(&cache_dir, "cache directory").map_err(msg)?;
         Ok(Self {
             socket_dir: cli
                 .socket_dir
@@ -299,11 +307,7 @@ impl Ctx {
                 .or_else(dirs::socket_dir)
                 .ok_or_else(|| msg("cannot determine a socket directory; use --socket-dir"))?,
             guest_init: cli.guest_init.clone(),
-            data_dir: cli
-                .data_dir
-                .clone()
-                .or_else(dirs::data_dir)
-                .ok_or_else(|| msg("cannot determine a data directory; use --data-dir"))?,
+            data_dir,
             cache_dir,
             executor: cli.executor.clone(),
             shim: cli.shim.clone(),
