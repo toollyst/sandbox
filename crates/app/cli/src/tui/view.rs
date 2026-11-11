@@ -1,15 +1,18 @@
 //! 그리기. [`Model`]을 화면에 옮길 뿐 상태를 정하지 않는다(표의 첫 줄만 보이는 범위에 맞춘다).
 //!
 //! ```text
-//!  sbx  1 Sandboxes 3 │ 2 Images 2 │ 3 Events 41 │ 4 Executors 3  filter: web
-//! ┌──────────────────────────────────────────────────────────────────────┐
-//! │ NAME   ID            IMAGE         STATE      COMMAND    CREATED    │  표: 보이는 줄만 만든다
-//! │ web    3f2a9c0d1e2b  alpine:3.20   running    sleep 1d   2 minutes  │
+//!  sbx   1 Sandboxes 3   2 Images 2   3 Events 41   4 Executors 3                filter: web
+//! ┌ Sandboxes ───────────────────────────────────────────────────────────┐
+//! │ NAME   ID            IMAGE         STATE      COMMAND    CREATED     │  표: 보이는 줄만 만든다
+//! │ web    3f2a9c0d1e2b  alpine:3.20   running    sleep 1d   2 minutes   │
 //! └──────────────────────────────────────────────────────────────────────┘
 //! ┌ Recent events ───────────────────────────────────────────────────────┐  샌드박스 탭, 화면이 넉넉할 때
 //! └──────────────────────────────────────────────────────────────────────┘
-//!  ✓ sbx stop web                                          ? help  q quit   상태 줄 또는 입력 줄
+//!  ✓ sbx stop web                   s start  x stop … / filter  ? help  q quit   상태 줄(또는 입력 줄)과 키
 //! ```
+//!
+//! 줄이 없으면 표 가운데에 무엇이 없는지와 다음에 할 일을 적는다(경고가 아니다). 거르는 글에 맞는 것이 없을 때도
+//! 같다. 아래 줄의 키는 지금 할 수 있는 것만 보인다(고른 줄이 없으면 줄에 하는 키는 뺀다).
 
 use std::time::Duration;
 
@@ -18,11 +21,12 @@ use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Cell, Clear, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table,
-    TableState, Wrap,
+    Block, Cell, Clear, Padding, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    Table, TableState, Wrap,
 };
 
-use super::keys::KEYS;
+use super::detail::DetailLine;
+use super::keys::{grouped, keys_width};
 use super::model::{Cursor, ExecutorRow, Model, Popup, PromptKind, TABS, Tab, display, state_name};
 use crate::behavior::{MIN_ID_PREFIX, familiar, human_ago, human_size};
 use crate::output::{Event, Sandbox, SandboxState};
@@ -67,25 +71,83 @@ fn header(frame: &mut Frame, model: &Model, area: Rect) {
         model.visible_events().len(),
         model.visible_executor_rows().len(),
     ];
-    let mut spans = vec![Span::from(" sbx ").bold().reversed(), Span::from(" ")];
+    let mut spans = vec![Span::from(" sbx ").bold().cyan(), Span::from(" ")];
     for (i, tab) in TABS.iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::from(" │ ").dark_gray());
-        }
-        let text = format!("{} {} {}", i + 1, tab.title(), counts[i]);
-        spans.push(if *tab == model.tab() {
-            Span::from(text).bold().underlined()
+        let (n, title, count) = (
+            format!(" {} ", i + 1),
+            tab.title(),
+            format!(" {} ", counts[i]),
+        );
+        if *tab == model.tab() {
+            let on = Style::new().add_modifier(Modifier::REVERSED | Modifier::BOLD);
+            spans.extend([
+                Span::styled(n, on),
+                Span::styled(title, on),
+                Span::styled(count, on),
+            ]);
         } else {
-            Span::from(text)
-        });
+            spans.extend([
+                Span::from(n).dark_gray(),
+                Span::from(title),
+                Span::from(count).dark_gray(),
+            ]);
+        }
+        spans.push(Span::from(" "));
     }
     frame.render_widget(Line::from(spans), area);
     if !model.filter.is_empty() {
-        let f = Line::from(format!("filter: {} ", model.filter))
-            .yellow()
-            .right_aligned();
+        let f = Line::from(vec![
+            Span::from("filter: ").dark_gray(),
+            Span::from(format!("{} ", model.filter)).yellow(),
+        ])
+        .right_aligned();
         frame.render_widget(f, area);
     }
+}
+
+/// 줄이 없을 때 표 가운데에 적는 것: 무엇이 없는지와 다음에 할 일.
+struct Empty<'a> {
+    what: String,
+    next: Line<'a>,
+}
+
+impl<'a> Empty<'a> {
+    fn new(what: impl Into<String>, next: Line<'a>) -> Self {
+        Self {
+            what: what.into(),
+            next,
+        }
+    }
+}
+
+/// 안내 한 줄. 짝수 번째 조각(0부터)은 그냥 글, 홀수 번째는 키나 명령이라 굵게.
+fn hint(parts: &[&'static str]) -> Line<'static> {
+    Line::from(
+        parts
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                if i % 2 == 1 {
+                    Span::from(*p).bold()
+                } else {
+                    Span::from(*p).dark_gray()
+                }
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// `area` 가운데에 제목 한 줄과 안내 한 줄.
+fn centered_message(frame: &mut Frame, area: Rect, what: &str, next: Line) {
+    let mut lines = vec![Line::from(what.to_owned()).bold()];
+    if !next.spans.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(next);
+    }
+    let [v] = Layout::vertical([Constraint::Length(lines.len() as u16)])
+        .flex(Flex::Center)
+        .areas(area);
+    frame.render_widget(Paragraph::new(lines).centered(), v);
 }
 
 /// 표 하나의 모양.
@@ -97,6 +159,10 @@ struct Spec<'a> {
     loaded: bool,
     header: &'a [&'a str],
     widths: &'a [Constraint],
+    /// 거르는 글(`/`). 맞는 것이 없을 때의 안내가 달라진다.
+    filter: &'a str,
+    /// 줄이 하나도 없을 때(거르지 않았는데).
+    empty: Empty<'a>,
 }
 
 /// 테두리 안에 머리줄과 보이는 줄만 담은 표, 오른쪽에 스크롤 막대. `rows`는 범위를 받아 그 줄만 만든다
@@ -114,16 +180,30 @@ fn table<'a>(
         loaded,
         header,
         widths,
+        filter,
+        empty,
     } = spec;
-    let block = Block::bordered().title(format!(" {title} "));
+    let block = Block::bordered()
+        .title(format!(" {title} "))
+        .padding(Padding::horizontal(1));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if !loaded {
-        frame.render_widget(Paragraph::new("loading…").dark_gray(), inner);
+        centered_message(frame, inner, "Loading…", Line::from(""));
         return;
     }
     if len == 0 {
-        frame.render_widget(Paragraph::new("nothing here").dark_gray(), inner);
+        if filter.is_empty() {
+            centered_message(frame, inner, &empty.what, empty.next);
+        } else {
+            let what = format!("Nothing matches “{filter}”");
+            centered_message(
+                frame,
+                inner,
+                &what,
+                hint(&["Press ", "Esc", " to clear the filter"]),
+            );
+        }
         return;
     }
     // 머리줄 한 줄을 뺀 만큼이 보인다.
@@ -143,6 +223,14 @@ fn table<'a>(
             &mut sb,
         );
     }
+}
+
+/// 실행기가 하나도 없고 고를 수도 없다(PATH에도 없다). 샌드박스를 만들기 전에 설치해야 한다.
+fn no_executor(model: &Model) -> bool {
+    model
+        .executors
+        .as_ref()
+        .is_some_and(|x| x.executors.is_empty() && x.current.is_err())
 }
 
 fn sandboxes(frame: &mut Frame, model: &mut Model, area: Rect, now_ns: u64) {
@@ -166,12 +254,31 @@ fn sandboxes(frame: &mut Frame, model: &mut Model, area: Rect, now_ns: u64) {
         // "Less than a second ago"가 다 들어간다.
         Constraint::Length(22),
     ];
+    let next = if no_executor(model) {
+        hint(&[
+            "Install an executor first: press ",
+            "4",
+            " for Executors, then ",
+            "S",
+            " to search",
+        ])
+    } else {
+        hint(&[
+            "Press ",
+            ":",
+            " and type ",
+            "run -it alpine sh",
+            " to start one",
+        ])
+    };
     let spec = Spec {
         title: "Sandboxes",
         len: rows.len(),
         loaded: model.sandboxes.is_some(),
         header: &["NAME", "ID", "IMAGE", "STATE", "COMMAND", "CREATED"],
         widths: &widths,
+        filter: &model.filter,
+        empty: Empty::new("No sandboxes yet", next),
     };
     table(frame, area, &mut cursor, spec, |range| {
         rows[range]
@@ -206,6 +313,16 @@ fn images(frame: &mut Frame, model: &mut Model, area: Rect) {
             Constraint::Length(9),
             Constraint::Max(20),
         ],
+        filter: &model.filter,
+        empty: Empty::new(
+            "No images yet",
+            hint(&[
+                "run pulls what it needs, or press ",
+                ":",
+                " and type ",
+                "pull IMAGE",
+            ]),
+        ),
     };
     table(frame, area, &mut cursor, spec, |range| {
         rows[range]
@@ -232,10 +349,10 @@ fn images(frame: &mut Frame, model: &mut Model, area: Rect) {
 /// 실행기 탭. 위 한 줄은 새 샌드박스가 쓸 실행기와 그 까닭(`executor current`), 아래는 실행기와 어댑터 표.
 /// `*`는 기본, `>`는 지금 쓸 것이다.
 fn executors(frame: &mut Frame, model: &mut Model, area: Rect) {
-    let [top, list] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
     let current = model.executors.as_ref().map(|x| &x.current);
+    // 위 줄은 알릴 것이 있을 때만: 지금 쓸 것, 또는 설치한 것이 있는데 고를 수 없는 까닭.
+    // 아무것도 설치하지 않았으면 표 가운데의 안내가 그 말을 한다(경고가 아니다).
     let line = match current {
-        None => Line::from(" current: …").dark_gray(),
         Some(Ok(c)) => {
             let what = match (&c.name, &c.version) {
                 (Some(n), Some(v)) => format!("{n}@{v}"),
@@ -244,21 +361,49 @@ fn executors(frame: &mut Frame, model: &mut Model, area: Rect) {
             let mut spans = vec![
                 Span::from(" current: ").dark_gray(),
                 Span::from(what).bold(),
-                Span::from(format!("  ({})", c.source)).dark_gray(),
+                Span::from(format!("  · {}", c.source)).dark_gray(),
             ];
             if let Some(a) = &c.adapter {
-                spans.push(Span::from(format!("  adapter {a}")).dark_gray());
+                spans.push(Span::from(format!("  · adapter {a}")).dark_gray());
             }
-            Line::from(spans)
+            Some(Line::from(spans))
         }
-        Some(Err(e)) => Line::from(format!(" current: {e}")).yellow(),
+        Some(Err(e)) if !no_executor(model) => {
+            Some(Line::from(format!(" current: none ({e})")).yellow())
+        }
+        _ => None,
     };
-    frame.render_widget(line, top);
+    let list = match line {
+        Some(line) => {
+            let [top, list] =
+                Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+            frame.render_widget(line, top);
+            list
+        }
+        None => area,
+    };
     let current = current
         .and_then(|c| c.as_ref().ok())
         .and_then(|c| Some(format!("{}@{}", c.name.as_ref()?, c.version.as_ref()?)));
     let mut cursor = *model.cursor(Tab::Executors);
     let rows = model.visible_executor_rows();
+    // 칸마다 내용만큼(넘치면 자른다). 남는 자리는 경로 칸이 갖는다.
+    let cells: Vec<[String; 7]> = rows
+        .iter()
+        .map(|r| executor_cells(r, current.as_deref()))
+        .collect();
+    let w = |i: usize, min: usize, max: usize| {
+        fit(cells.iter().map(|c| c[i].chars().count()), min, max)
+    };
+    let widths = [
+        Constraint::Length(1),
+        Constraint::Length(8),
+        Constraint::Length(w(2, 4, 24)),
+        Constraint::Length(w(3, 7, 24)),
+        Constraint::Length(w(4, 17, 32)),
+        Constraint::Length(w(5, 4, 16)),
+        Constraint::Fill(1),
+    ];
     let spec = Spec {
         title: "Executors and adapters",
         len: rows.len(),
@@ -272,66 +417,60 @@ fn executors(frame: &mut Frame, model: &mut Model, area: Rect) {
             "FROM",
             "PATH",
         ],
-        widths: &[
-            Constraint::Length(2),
-            Constraint::Length(8),
-            Constraint::Max(20),
-            Constraint::Max(20),
-            Constraint::Max(28),
-            Constraint::Max(12),
-            Constraint::Fill(1),
-        ],
+        widths: &widths,
+        filter: &model.filter,
+        empty: Empty::new(
+            "No executors installed",
+            hint(&[
+                "Press ",
+                "S",
+                " to search the repositories, or ",
+                "i",
+                " to install one",
+            ]),
+        ),
     };
     table(frame, list, &mut cursor, spec, |range| {
-        rows[range]
+        cells[range]
             .iter()
-            .map(|r| {
-                let mark = match r {
-                    ExecutorRow::Executor(e) => {
-                        let now = current.as_deref() == Some(r.spec().as_str());
-                        match (e.default, now) {
-                            (_, true) => ">",
-                            (true, false) => "*",
-                            _ => "",
-                        }
-                    }
-                    ExecutorRow::Adapter(_) => "",
-                };
-                let (kind, name, version, link, origin, path) = match r {
-                    ExecutorRow::Executor(e) => (
-                        "executor",
-                        &e.name,
-                        &e.version,
-                        e.adapter.clone().unwrap_or_else(|| "-".into()),
-                        &e.origin,
-                        &e.path,
-                    ),
-                    ExecutorRow::Adapter(a) => (
-                        "adapter",
-                        &a.name,
-                        &a.version,
-                        if a.used_by.is_empty() {
-                            "-".into()
-                        } else {
-                            a.used_by.join(", ")
-                        },
-                        &a.origin,
-                        &a.path,
-                    ),
-                };
-                Row::new(vec![
-                    Cell::from(mark),
-                    Cell::from(kind),
-                    Cell::from(name.clone()),
-                    Cell::from(version.clone()),
-                    Cell::from(link),
-                    Cell::from(origin.clone().unwrap_or_else(|| "-".into())),
-                    Cell::from(path.clone()),
-                ])
-            })
+            .map(|c| Row::new(c.iter().cloned().map(Cell::from)))
             .collect()
     });
     *model.cursor(Tab::Executors) = cursor;
+}
+
+/// 실행기 탭 한 줄의 칸: 표시(`>` 지금 쓸 것, `*` 기본), 종류, 이름, 버전, 어댑터나 그것을 쓰는 VMM 묶음, 출처, 경로.
+fn executor_cells(r: &ExecutorRow, current: Option<&str>) -> [String; 7] {
+    let dash = |v: Option<String>| v.unwrap_or_else(|| "-".into());
+    match r {
+        ExecutorRow::Executor(e) => {
+            let mark = if current == Some(r.spec().as_str()) {
+                ">"
+            } else if e.default {
+                "*"
+            } else {
+                ""
+            };
+            [
+                mark.into(),
+                "executor".into(),
+                e.name.clone(),
+                e.version.clone(),
+                dash(e.adapter.clone()),
+                dash(e.origin.clone()),
+                e.path.clone(),
+            ]
+        }
+        ExecutorRow::Adapter(a) => [
+            String::new(),
+            "adapter".into(),
+            a.name.clone(),
+            a.version.clone(),
+            dash((!a.used_by.is_empty()).then(|| a.used_by.join(", "))),
+            dash(a.origin.clone()),
+            a.path.clone(),
+        ],
+    }
 }
 
 const EVENT_HEADER: [&str; 5] = ["TIME (UTC)", "TYPE", "ACTION", "ID", "ATTRIBUTES"];
@@ -384,6 +523,11 @@ fn events(frame: &mut Frame, model: &mut Model, area: Rect) {
         loaded: true,
         header: &EVENT_HEADER,
         widths: &EVENT_WIDTHS,
+        filter: &model.filter,
+        empty: Empty::new(
+            format!("No events in the last {}", since_words()),
+            hint(&["New ones show up here as they happen"]),
+        ),
     };
     table(frame, area, &mut cursor, spec, |range| {
         rows[range].iter().map(|e| event_row(e)).collect()
@@ -393,9 +537,20 @@ fn events(frame: &mut Frame, model: &mut Model, area: Rect) {
 
 /// 샌드박스 탭 아래의 최근 이벤트(거르지 않는다, 고를 수 없다).
 fn recent_events(frame: &mut Frame, model: &Model, area: Rect) {
-    let block = Block::bordered().title(" Recent events ").dark_gray();
+    let block = Block::bordered()
+        .title(" Recent events ")
+        .padding(Padding::horizontal(1))
+        .dark_gray();
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    if model.events.is_empty() {
+        let what = format!("No events in the last {}", since_words());
+        let [v] = Layout::vertical([Constraint::Length(1)])
+            .flex(Flex::Center)
+            .areas(inner);
+        frame.render_widget(Paragraph::new(what).centered().dark_gray(), v);
+        return;
+    }
     let n = inner.height.saturating_sub(1) as usize;
     let start = model.events.len().saturating_sub(n);
     let rows: Vec<Row> = model.events.range(start..).map(event_row).collect();
@@ -403,6 +558,53 @@ fn recent_events(frame: &mut Frame, model: &Model, area: Rect) {
         .header(Row::new(EVENT_HEADER).bold())
         .column_spacing(2);
     frame.render_widget(t, inner);
+}
+
+/// `events --since`의 기간을 말로(`1h` → `hour`).
+fn since_words() -> &'static str {
+    match super::EVENTS_SINCE {
+        "1h" => "hour",
+        other => other,
+    }
+}
+
+/// 지금 탭에서 할 수 있는 키(키, 하는 일). 줄에 하는 키는 고른 줄이 있을 때만.
+fn hints(model: &Model) -> Vec<(&'static str, &'static str)> {
+    let mut h = Vec::new();
+    match model.tab() {
+        Tab::Sandboxes if !model.visible_sandboxes().is_empty() => h.extend([
+            ("s", "start"),
+            ("x", "stop"),
+            ("e", "shell"),
+            ("l", "logs"),
+            ("D", "rm"),
+            ("enter", "details"),
+        ]),
+        Tab::Images if !model.visible_images().is_empty() => {
+            h.extend([("D", "rmi"), ("enter", "details")])
+        }
+        Tab::Events if !model.visible_events().is_empty() => h.push(("enter", "details")),
+        Tab::Executors => {
+            let rows = model.visible_executor_rows();
+            let i = model.cursors[3].selected.min(rows.len().saturating_sub(1));
+            let executor = matches!(rows.get(i), Some(ExecutorRow::Executor(_)));
+            if executor {
+                h.push(("u", "use"));
+            }
+            h.extend([("i", "install"), ("S", "search")]);
+            if !rows.is_empty() {
+                h.extend([("D", "rm"), ("P", "prune")]);
+            }
+        }
+        _ => {}
+    }
+    h.extend([
+        ("/", "filter"),
+        (":", "command"),
+        ("?", "help"),
+        ("q", "quit"),
+    ]);
+    h
 }
 
 fn footer(frame: &mut Frame, model: &Model, area: Rect) {
@@ -417,15 +619,6 @@ fn footer(frame: &mut Frame, model: &Model, area: Rect) {
         frame.set_cursor_position((x.min(area.right().saturating_sub(1)), area.y));
         return;
     }
-    let hints = Line::from(match model.tab() {
-        Tab::Sandboxes => "s start  x stop  e shell  l logs  D rm  ? help  q quit ",
-        Tab::Images => "D rmi  : command  ? help  q quit ",
-        Tab::Events => "/ filter  ? help  q quit ",
-        Tab::Executors => "u use  i install  S search  D rm  P prune  ? help  q quit ",
-    })
-    .dark_gray()
-    .right_aligned();
-    frame.render_widget(hints, area);
     let left = if let Some(e) = &model.error {
         Line::from(format!(" ✗ {e}")).red()
     } else if let Some(s) = &model.status {
@@ -445,28 +638,53 @@ fn footer(frame: &mut Frame, model: &Model, area: Rect) {
     } else {
         Line::from("")
     };
+    // 키는 오른쪽에, 상태 줄과 겹치지 않을 만큼만(앞의 것부터 뺀다: 끝의 help와 quit는 남는다).
+    let room = (area.width as usize).saturating_sub(left.width() + 2);
+    let mut keys = hints(model);
+    let width = |k: &[(&str, &str)]| -> usize {
+        k.iter()
+            .map(|(a, b)| a.chars().count() + 1 + b.len() + 2)
+            .sum::<usize>()
+    };
+    while !keys.is_empty() && width(&keys) > room {
+        keys.remove(0);
+    }
+    let mut spans = Vec::new();
+    for (k, what) in keys {
+        spans.push(Span::from(k).bold());
+        spans.push(Span::from(format!(" {what}  ")).dark_gray());
+    }
+    frame.render_widget(Line::from(spans).right_aligned(), area);
     frame.render_widget(left, area);
 }
 
 fn popup(frame: &mut Frame, p: &mut Popup) {
     let area = frame.area();
     match p {
-        Popup::Help => {
-            let lines: Vec<Line> = KEYS
-                .iter()
-                .map(|h| {
-                    Line::from(vec![
-                        Span::from(format!(" {:<28}", h.keys)).bold(),
-                        Span::from(format!("{:<11}", h.tabs)).dark_gray(),
+        Popup::Help { scroll } => {
+            let w = keys_width();
+            let mut lines: Vec<Line> = Vec::new();
+            for (title, keys) in grouped() {
+                if !lines.is_empty() {
+                    lines.push(Line::from(""));
+                }
+                lines.push(Line::from(format!(" {title}")).bold().cyan());
+                for h in keys {
+                    lines.push(Line::from(vec![
+                        Span::from(format!("   {:<w$}  ", h.keys)).bold(),
                         Span::from(h.does),
-                    ])
-                })
-                .collect();
-            let r = centered(area, 96, lines.len() as u16 + 2);
-            frame.render_widget(Clear, r);
-            frame.render_widget(
-                Paragraph::new(lines).block(Block::bordered().title(" Keys (any key closes) ")),
-                r,
+                    ]));
+                }
+            }
+            let width = lines.iter().map(Line::width).max().unwrap_or(0) as u16 + 5;
+            scrolling(
+                frame,
+                area,
+                " Keys ",
+                lines,
+                width,
+                scroll,
+                " any key closes ",
             );
         }
         Popup::Confirm { args } => {
@@ -475,7 +693,12 @@ fn popup(frame: &mut Frame, p: &mut Popup) {
             let text = vec![
                 Line::from(""),
                 Line::from(format!(" {}", display(args))).bold(),
-                Line::from(" y: run   any other key: cancel").dark_gray(),
+                Line::from(vec![
+                    Span::from(" y").bold(),
+                    Span::from(" run   ").dark_gray(),
+                    Span::from("any other key").bold(),
+                    Span::from(" cancel").dark_gray(),
+                ]),
             ];
             frame.render_widget(
                 Paragraph::new(text).block(Block::bordered().title(" Run? ").yellow()),
@@ -484,41 +707,83 @@ fn popup(frame: &mut Frame, p: &mut Popup) {
         }
         Popup::Detail {
             title,
-            body,
+            lines,
+            source,
             scroll,
         } => {
-            let r = centered(
-                area,
-                area.width.saturating_sub(8),
-                area.height.saturating_sub(4),
-            );
-            frame.render_widget(Clear, r);
-            let lines = body.lines().count();
-            let visible = r.height.saturating_sub(2) as usize;
-            // 끝을 넘어 내리지 않는다.
-            *scroll = (*scroll).min(lines.saturating_sub(visible) as u16);
-            frame.render_widget(
-                Paragraph::new(body.as_str())
-                    .wrap(Wrap { trim: false })
-                    .scroll((*scroll, 0))
-                    .block(
-                        Block::bordered()
-                            .title(format!(" {title} "))
-                            .title_bottom(" Up Down scroll, any other key closes "),
-                    ),
-                r,
-            );
-            if lines > visible {
-                let mut sb =
-                    ScrollbarState::new(lines.saturating_sub(visible)).position(*scroll as usize);
-                frame.render_stateful_widget(
-                    Scrollbar::new(ScrollbarOrientation::VerticalRight),
-                    r,
-                    &mut sb,
-                );
-            }
+            let body: Vec<Line> = lines.iter().map(detail_line).collect();
+            let footer = format!(" same as: {source} ");
+            let content_w = body.iter().map(Line::width).max().unwrap_or(0);
+            let width = (content_w.max(footer.chars().count()) as u16 + 4).max(50);
+            let title = format!(" {title} ");
+            scrolling(frame, area, &title, body, width, scroll, &footer);
         }
     }
+}
+
+/// 가운데에 뜨는 창: 내용만큼 크고(화면보다 크면 화면에서 조금 작게), 넘치면 내리고 스크롤 막대를 둔다.
+/// 넘칠 때는 아래 제목에 내리는 키를 적는다.
+fn scrolling(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    body: Vec<Line>,
+    width: u16,
+    scroll: &mut u16,
+    footer: &str,
+) {
+    let total = body.len();
+    let width = width.min(area.width.saturating_sub(4));
+    let height = (total as u16 + 2).min(area.height.saturating_sub(2));
+    let r = centered(area, width, height);
+    frame.render_widget(Clear, r);
+    let visible = r.height.saturating_sub(2) as usize;
+    // 끝을 넘어 내리지 않는다.
+    *scroll = (*scroll).min(total.saturating_sub(visible) as u16);
+    let overflow = total > visible;
+    let bottom = if overflow {
+        format!(" ↑↓ scroll ·{footer}")
+    } else {
+        footer.to_owned()
+    };
+    frame.render_widget(
+        Paragraph::new(body)
+            .wrap(Wrap { trim: false })
+            .scroll((*scroll, 0))
+            .block(
+                Block::bordered()
+                    .title(title.to_owned())
+                    .title_bottom(Line::from(bottom).dark_gray())
+                    .padding(Padding::horizontal(1)),
+            ),
+        r,
+    );
+    if overflow {
+        let mut sb = ScrollbarState::new(total.saturating_sub(visible)).position(*scroll as usize);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight),
+            r,
+            &mut sb,
+        );
+    }
+}
+
+/// 상세 창의 줄 하나: 단계마다 두 칸, 목록 항목은 `- `, 이름은 굵게, 값은 형제끼리 한 칸에.
+fn detail_line(l: &DetailLine) -> Line<'static> {
+    let mut indent = "  ".repeat(l.depth as usize);
+    if l.bullet {
+        indent.replace_range(indent.len().saturating_sub(2).., "- ");
+    }
+    let mut spans = vec![Span::from(indent).dark_gray()];
+    if !l.key.is_empty() {
+        spans.push(Span::from(l.key.clone()).bold());
+        if !l.value.is_empty() {
+            let pad = l.key_width.saturating_sub(l.key.chars().count()) + 2;
+            spans.push(Span::from(" ".repeat(pad)));
+        }
+    }
+    spans.push(Span::from(l.value.clone()));
+    Line::from(spans)
 }
 
 /// 가운데에 `width`×`height`(화면보다 크면 화면만큼).
