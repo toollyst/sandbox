@@ -329,6 +329,10 @@ pub struct ImageConfig {
     pub stop_signal: Option<String>,
     /// `Labels`.
     pub labels: BTreeMap<String, String>,
+    /// `ExposedPorts`의 키(`80/tcp`). 정보로만 보인다: sbx는 포트를 열지 않는다.
+    pub exposed_ports: Vec<String>,
+    /// `Volumes`의 키(`/data`). 정보로만 보인다: sbx는 볼륨을 만들지 않는다(쓰기 디스크에 남는다).
+    pub volumes: Vec<String>,
 }
 
 impl ImageConfig {

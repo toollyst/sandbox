@@ -79,7 +79,8 @@ lookups fail at once instead of hanging.
 `pull` (with a progress bar), `prepare` (build the disk image ahead of time), `images [-q]` and `rmi [-f]`. `run`
 pulls and prepares on first use (`--pull=missing|always|never`). Images come from Docker Hub, GHCR or any OCI
 registry, unmodified. Each is converted once into a read-only EROFS disk image and cached, so after the first run,
-starting a sandbox is just booting a VM.
+starting a sandbox is just booting a VM. `images --format json` also lists the ports and volumes an image declares
+(`exposed_ports`, `volumes`); `sbx` doesn't open ports or create volumes, and those paths stay on the sandbox's disk.
 
 Private images use the credentials you already have: `sbx` reads Docker's `config.json` (`$DOCKER_CONFIG` or
 `~/.docker`), including its `credHelpers` and `credsStore` (`docker-credential-*`), then `REGISTRY_AUTH_FILE` and

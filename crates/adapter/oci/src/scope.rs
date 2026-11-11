@@ -55,6 +55,9 @@ pub const APPLIED_CONFIG_FIELDS: &[&str] = &[
     "User",
     "StopSignal",
     "Labels",
+    // 정보로만(`images --format json`): 포트를 열거나 볼륨을 만들지 않는다.
+    "ExposedPorts",
+    "Volumes",
 ];
 
 /// Runtime Spec 중 VM 경계에서는 의미가 없어 적용하지 않는 필드.

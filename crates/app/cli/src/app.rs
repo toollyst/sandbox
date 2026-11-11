@@ -795,6 +795,8 @@ impl Ctx {
                     prepared: i.prepared.iter().map(|f| f.to_string()).collect(),
                     compressed_size: i.record.compressed_size(),
                     ignored_fields: i.record.ignored_fields.clone(),
+                    exposed_ports: i.record.config.exposed_ports.clone(),
+                    volumes: i.record.config.volumes.clone(),
                 })
                 .collect();
             output::print_value(&list)?;

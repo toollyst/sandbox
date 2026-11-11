@@ -358,6 +358,13 @@ pub struct Image {
     pub compressed_size: u64,
     /// Image config fields sbx does not apply.
     pub ignored_fields: Vec<String>,
+    /// Ports the image declares (`ExposedPorts`, e.g. `80/tcp`), for information: sbx opens no ports.
+    #[serde(default)]
+    pub exposed_ports: Vec<String>,
+    /// Paths the image declares as volumes (`Volumes`), for information: sbx creates no volumes, they stay on the
+    /// sandbox's writable disk.
+    #[serde(default)]
+    pub volumes: Vec<String>,
 }
 
 /// The result for one image given to `rmi`.

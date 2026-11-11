@@ -441,6 +441,14 @@
           "minimum": 0,
           "type": "integer"
         },
+        "exposed_ports": {
+          "default": [],
+          "description": "Ports the image declares (`ExposedPorts`, e.g. `80/tcp`), for information: sbx opens no ports.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "id": {
           "description": "Image ID.",
           "type": "string"
@@ -461,6 +469,14 @@
         },
         "references": {
           "description": "Normalized references that point to this image. Empty if none does.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "volumes": {
+          "default": [],
+          "description": "Paths the image declares as volumes (`Volumes`), for information: sbx creates no volumes, they stay on the\nsandbox's writable disk.",
           "items": {
             "type": "string"
           },

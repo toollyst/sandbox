@@ -174,6 +174,7 @@ mod tests {
                 ("b".to_owned(), "image".to_owned()),
             ]
             .into(),
+            ..Default::default()
         }
     }
 

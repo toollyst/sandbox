@@ -1125,7 +1125,11 @@ pub fn fuzz_tool_arguments(v: &Value, stdin: bool) {
     let strings = |k: &str| -> Vec<String> {
         v.get(k)
             .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(str::to_owned))
+                    .collect()
+            })
             .unwrap_or_default()
     };
     assert_eq!(Some(r.image()), v.get("image").and_then(Value::as_str));
@@ -1147,7 +1151,10 @@ pub fn fuzz_tool_arguments(v: &Value, stdin: bool) {
     let env = v.get("env").and_then(Value::as_object);
     assert_eq!(r.env.len(), env.map_or(0, |m| m.len()));
     assert_eq!(r.name.as_deref(), v.get("name").and_then(Value::as_str));
-    assert_eq!(r.workdir.as_deref(), v.get("workdir").and_then(Value::as_str));
+    assert_eq!(
+        r.workdir.as_deref(),
+        v.get("workdir").and_then(Value::as_str)
+    );
 }
 
 #[cfg(test)]
