@@ -4,12 +4,12 @@
 #   curl -fsSL https://toollyst.github.io/sandbox/install.sh | sh
 #
 # Environment:
-#   SBX_VERSION       release tag to install (default: the latest release), e.g. v0.1.0
+#   SBX_VERSION       release tag to install (default: the latest release), e.g. v0.2.0
 #   SBX_INSTALL_DIR   where sbx and sbx-shim go (default: ~/.local/bin)
 #   SBX_DOWNLOAD_URL  where the release files are (default: GitHub Releases of toollyst/sandbox)
 #   SBX_VERIFY        auto (default), require or off: check the release's Sigstore signature with cosign.
-#                     auto checks it when cosign is on PATH (and then a missing signature is an error, except for
-#                     an SBX_VERSION before v0.2.0, which were unsigned); require also fails without cosign.
+#                     auto checks it when cosign is on PATH (and then a missing signature is an error);
+#                     require also fails without cosign.
 #                     With SBX_VERSION, the signature must come from that exact tag.
 #
 # What it does: downloads sbx-<os>-<arch>.tar.gz and its .sha256, checks the checksum and (see SBX_VERIFY) the
@@ -88,10 +88,8 @@ case "$verify" in auto | require | off) ;; *) die "SBX_VERIFY must be auto, requ
 # Which tag the signature must come from: SBX_VERSION exactly (so an older signed release can't be served in its
 # place), or any v* tag for the latest release.
 tag_re='v'
-unsigned_ok=false
 if [ -n "${SBX_VERSION:-}" ]; then
     tag_re="$(printf '%s' "$SBX_VERSION" | sed 's/[.]/[.]/g; s/[+]/[+]/g')\$"
-    case "$SBX_VERSION" in v0.0.* | v0.1.*) unsigned_ok=true ;; esac
 fi
 if [ "$verify" != off ]; then
     if ! command -v cosign >/dev/null 2>&1; then
@@ -100,12 +98,8 @@ if [ "$verify" != off ]; then
         say "      run: gh attestation verify $asset -R $REPO"
     elif ! curl -fsSL --retry 3 -o "$tmp/$asset.sigstore.json" "$base/$asset.sigstore.json"; then
         # Whoever controls the download URL can delete the signature, so with cosign at hand a missing one is an
-        # error. Only releases before v0.2.0, asked for by name, were published without one.
-        if [ "$verify" = auto ] && $unsigned_ok; then
-            say "note: $SBX_VERSION has no signature (releases before v0.2.0 are unsigned); only the SHA-256 was checked"
-        else
-            die "no signature for $asset at $base (set SBX_VERIFY=off to install without checking it)"
-        fi
+        # error. Every release is signed.
+        die "no signature for $asset at $base (set SBX_VERIFY=off to install without checking it)"
     else
         cosign verify-blob --bundle "$tmp/$asset.sigstore.json" \
             --certificate-identity-regexp "^https://github[.]com/$REPO/[.]github/workflows/release[.]yml@refs/tags/$tag_re" \

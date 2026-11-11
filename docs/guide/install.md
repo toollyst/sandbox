@@ -49,23 +49,39 @@ so if it isn't.
 
 ## Windows
 
-Not supported yet. There is no Windows build in the releases and no tested executor for Windows. A build from source
-can `pull`, `prepare` and list images, but can't run them.
+You need Windows 10 or later on x86_64. In PowerShell (Windows PowerShell 5.1 or PowerShell 7), with no administrator
+rights:
+
+```powershell
+irm https://toollyst.github.io/sandbox/install.ps1 | iex
+sbx info
+sbx pull alpine
+```
+
+The installer puts `sbx.exe` and `sbx-shim.exe` in `%LOCALAPPDATA%\Programs\sbx` and prints the command that adds it
+to your user `PATH`; it doesn't change `PATH` itself. On Windows, `sbx` can `pull`, `prepare` and list images, but
+there is no tested executor for Windows yet, so it can't run sandboxes. [Read the installer](../../install.ps1)
+before you run it.
 
 ## Installer options
 
-The installer downloads the release archive for your OS and architecture, checks its SHA-256, checks its Sigstore
-signature when `cosign` is installed, and copies `sbx` and `sbx-shim` into `~/.local/bin`. It writes nothing else and
-doesn't install an executor. [Read it](../../install.sh) before you run it.
+Both installers ([`install.sh`](../../install.sh) for macOS and Linux, [`install.ps1`](../../install.ps1) for Windows)
+do the same: download the release archive for your OS and architecture, check its SHA-256, check its Sigstore
+signature when `cosign` is installed, and copy `sbx` and `sbx-shim` into your OS's place for user programs. They
+never write to the directory you run them from or anywhere else, and don't install an executor.
 
 | Variable | Default | What it does |
 | --- | --- | --- |
 | `SBX_VERSION` | the latest release | Install this tag, e.g. `v0.2.0`. The signature must then come from exactly that tag |
-| `SBX_INSTALL_DIR` | `~/.local/bin` | Where `sbx` and `sbx-shim` go |
+| `SBX_INSTALL_DIR` | `~/.local/bin`; Windows: `%LOCALAPPDATA%\Programs\sbx` | Where `sbx` and `sbx-shim` go |
 | `SBX_VERIFY` | `auto` | `auto` checks the signature when `cosign` is on `PATH`, and then a missing signature is an error; `require` also fails without `cosign`; `off` checks only the SHA-256 |
 
 ```sh
 curl -fsSL https://toollyst.github.io/sandbox/install.sh | SBX_VERSION=v0.2.0 SBX_VERIFY=require sh
+```
+
+```powershell
+$env:SBX_VERSION = 'v0.2.0'; $env:SBX_VERIFY = 'require'; irm https://toollyst.github.io/sandbox/install.ps1 | iex
 ```
 
 To check a release by hand instead, see [SECURITY.md](../../SECURITY.md#verifying-what-you-install).
@@ -77,11 +93,14 @@ built for it and embedded in `sbx`.
 
 ```sh
 git clone https://github.com/toollyst/sandbox && cd sandbox
-rustup target add "$(uname -m | sed s/arm64/aarch64/)-unknown-linux-musl"
-cargo xtask dist                  # target/release/sbx and sbx-shim
-export PATH="$PWD/target/release:$PATH"
+rustup target add "$(uname -m | sed s/arm64/aarch64/)-unknown-linux-musl"   # Windows: x86_64-unknown-linux-musl
+cargo xtask install               # builds sbx and sbx-shim and installs them where the installers do
 sbx executor install wick
 ```
+
+`cargo xtask install` puts them in the same place as the installers (`~/.local/bin`, or `%LOCALAPPDATA%\Programs\sbx`
+on Windows; `--dir DIR` to choose), so you don't run `sbx` out of the build directory and a rebuild doesn't change
+what you installed. `cargo xtask dist` only builds them, into `target/release/`.
 
 To build the executor too, the adapter is a directory with `sbx-executor` (built from `crates/executor/firecracker`)
 and `kernel` (`cargo xtask kernel --arch <x86_64|aarch64>`, built in Docker), and the VMM package is a directory with
@@ -108,9 +127,8 @@ Completion offers subcommands and flags, and also sandbox names and IDs and imag
 
 Run the installer again to upgrade. Sandboxes, images and executors are kept.
 
-From 0.1.x: the installer no longer installs an executor, so run `sbx executor install wick` once. A repository list
-from 0.1.x keeps working; its `official` entry now reads from the new official repository. What else changed is in
-the [CHANGELOG](../../CHANGELOG.md).
+What changed in each release is in the [CHANGELOG](../../CHANGELOG.md). Releases before 0.2 are withdrawn and not
+supported; if you have one, remove it and its data (below) and install again.
 
 To uninstall, remove the binaries, then the data (sandboxes, executors, settings) and the cache (images):
 
@@ -118,5 +136,6 @@ To uninstall, remove the binaries, then the data (sandboxes, executors, settings
 | --- | --- | --- | --- |
 | macOS | `~/.local/bin/sbx`, `sbx-shim` | `~/Library/Application Support/sbx` | `~/Library/Caches/sbx` |
 | Linux | `~/.local/bin/sbx`, `sbx-shim` | `${XDG_DATA_HOME:-~/.local/share}/sbx` | `${XDG_CACHE_HOME:-~/.cache}/sbx` |
+| Windows | `%LOCALAPPDATA%\Programs\sbx` | `%LOCALAPPDATA%\sbx\data` | `%LOCALAPPDATA%\sbx\cache` |
 
 `sbx rm -f $(sbx ps -aq)` first stops and removes any sandbox that is still running.

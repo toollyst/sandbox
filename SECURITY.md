@@ -32,15 +32,16 @@ If a fix needs a change in wick, upstream Firecracker or the Linux kernel, we co
 its embargo. Every release note has a **Security** section listing the advisories it fixes.
 
 **Supported versions.** The latest two minor releases get security fixes, each for at least one year after it
-came out. While `sbx` is below 1.0, a minor release (0.2, 0.3, …) may break compatibility, so the fix may require
+came out, starting with 0.2. Releases before 0.2 are withdrawn and get no fixes. While `sbx` is below 1.0, a minor release (0.2, 0.3, …) may break compatibility, so the fix may require
 moving to the newest patch of a supported minor. `main` always has the fix.
 
 ## Verifying what you install
 
 From v0.2.0, every release archive comes with a Sigstore signature (`.sigstore.json`), a GitHub build provenance
 attestation (SLSA) and an SBOM (SPDX, `sbx-<version>.spdx.json`). `install.sh` checks the signature when `cosign` is
-on `PATH` (`SBX_VERIFY=require` makes that mandatory). Then a missing signature is an error too, since whoever
-controls the download can delete it; only a release before v0.2.0 named with `SBX_VERSION` installs without one. With
+on `PATH` (`SBX_VERIFY=require` makes that mandatory), and so does `install.ps1` on Windows
+(`sbx-windows-x86_64.zip`). Then a missing signature is an error too, since whoever
+controls the download can delete it. With
 `SBX_VERSION`, the signature must come from that exact tag, so an older signed release can't be served in its
 place. To check by hand:
 
@@ -91,8 +92,7 @@ These are known gaps, in rough order of importance. Some are on the [roadmap](do
   Pages and Releases) controls what `sbx executor install` gets from it.
 - **A repository you add is trusted for the names it publishes first.** If you add a repository ahead of
   `official` in the list file, or install a name from it with `--repo` before anything else has it, that repository
-  owns the name on your machine. Executors installed before origins were recorded (sbx 0.1.x) have no origin and
-  aren't protected this way; reinstall them to record one.
+  owns the name on your machine.
 - **Data you allow out can leave.** The allow list decides *where* a sandbox may connect, not *what* it sends there.
 - **Resource limits are coarse.** vCPU count, memory and scratch disk size are fixed per sandbox. There are no CPU
   quotas, I/O limits or caps on how much disk an image pull and prepare may use. `sbx mcp` caps how many sandboxes

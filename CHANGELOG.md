@@ -9,6 +9,20 @@ to release a tag without one. Changes land under `## Unreleased` first, and the 
 
 ## Unreleased
 
+### Breaking
+
+- Releases before 0.2 are withdrawn: their GitHub releases, tags and the old executor index are gone, and nothing
+  reads what they wrote. An `official` line with the 0.1.x URL in a repository list is no longer read as the
+  official repository, and `install.sh` has no exception for unsigned releases.
+
+### Added
+
+- Windows x86_64 releases (`sbx-windows-x86_64.zip`, signed like the others) and `install.ps1`
+  (`irm https://toollyst.github.io/sandbox/install.ps1 | iex`), into `%LOCALAPPDATA%\Programs\sbx`. `pull`, `prepare`
+  and `images` work on Windows; there is no tested executor for it yet.
+- `cargo xtask install`: build and install `sbx` where the installers put it, instead of running it from the build
+  directory.
+
 ### Changed
 
 - `sbx --help` groups commands by what you want to do (sandboxes, working inside one, images, watching and
@@ -76,7 +90,3 @@ to release a tag without one. Changes land under `## Unreleased` first, and the 
 - A user guide in [docs/guide/](docs/guide/) (install per OS, usage, MCP, executors); the README is now the short version.
 - [COMPATIBILITY.md](COMPATIBILITY.md), [SECURITY.md](SECURITY.md) response times and supported versions,
   governance files, coverage-guided fuzzing of every parser that reads untrusted bytes.
-
-## v0.1.1
-
-First public release.

@@ -70,11 +70,10 @@ if $no_cosign; then
 fi
 run "off: no signature check" ok "installed" "$with" SBX_VERIFY=off FAKE_COSIGN_EXIT=1
 run "bad SBX_VERIFY value" fail "must be auto, require or off" "$with" SBX_VERIFY=yes
-# cosign이 있으면 서명이 없는 것은 오류다(URL을 쥔 쪽이 서명만 지울 수 있다). 이름으로 고른 v0.2.0 전 릴리스만 예외.
+# cosign이 있으면 서명이 없는 것은 오류다(URL을 쥔 쪽이 서명만 지울 수 있다). 모든 릴리스가 서명돼 있다.
 run "auto, signature removed: refused" fail "no signature" "$with"
-run "auto, unsigned old release by name: checksum only" ok "releases before v0.2.0 are unsigned" "$with" SBX_VERSION=v0.1.1
-run "auto, unsigned new release by name: refused" fail "no signature" "$with" SBX_VERSION=v0.2.0
-run "require, unsigned old release: refused" fail "no signature" "$with" SBX_VERIFY=require SBX_VERSION=v0.1.1
+run "auto, unsigned release by name: refused" fail "no signature" "$with" SBX_VERSION=v0.2.0
+run "require, unsigned release: refused" fail "no signature" "$with" SBX_VERIFY=require SBX_VERSION=v0.2.0
 run "bad SBX_VERSION: refused" fail "must be a release tag" "$with" SBX_VERSION='v1;rm -rf x'
 run "bad SBX_VERSION (not a tag): refused" fail "must be a release tag" "$with" SBX_VERSION=latest
 echo '{}' >"$work/rel/$asset.sigstore.json"
