@@ -9,6 +9,12 @@ to release a tag without one. Changes land under `## Unreleased` first, and the 
 
 ## Unreleased
 
+### Breaking
+
+- Releases before 0.2 are withdrawn: their GitHub releases, tags and the old executor index are gone, and nothing
+  reads what they wrote. An `official` line with the 0.1.x URL in a repository list is no longer read as the
+  official repository, and `install.sh` has no exception for unsigned releases.
+
 ## v0.2.0
 
 ### Breaking
@@ -67,7 +73,3 @@ to release a tag without one. Changes land under `## Unreleased` first, and the 
 - A user guide in [docs/guide/](docs/guide/) (install per OS, usage, MCP, executors); the README is now the short version.
 - [COMPATIBILITY.md](COMPATIBILITY.md), [SECURITY.md](SECURITY.md) response times and supported versions,
   governance files, coverage-guided fuzzing of every parser that reads untrusted bytes.
-
-## v0.1.1
-
-First public release.

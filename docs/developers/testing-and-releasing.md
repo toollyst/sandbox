@@ -188,8 +188,6 @@ once `OFFICIAL_KEYS` has a key the workflow refuses to publish unsigned. Its `ex
 the index expires. To rotate the key, add the new public key next to the old one in `OFFICIAL_KEYS`, release, then
 switch the secret.
 
-The schema 1 `executors/index.json` on this repository's `gh-pages`, which `sbx` 0.1.x reads, stays as it is.
-
 ### Executor repositories and packages
 
 A repository is a static directory: an index and `.tar.gz` packages. There are three kinds of package, all specified
