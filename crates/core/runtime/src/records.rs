@@ -231,6 +231,7 @@ pub fn create(
     private_dir(&parent)?;
     let staging = temp(&parent, id.as_str());
     let r = (|| -> Result<(), RuntimeError> {
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut d = fs::DirBuilder::new();
         #[cfg(unix)]
         std::os::unix::fs::DirBuilderExt::mode(&mut d, 0o700);

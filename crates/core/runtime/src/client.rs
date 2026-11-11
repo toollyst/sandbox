@@ -73,8 +73,8 @@ impl Guest {
         }
     }
 
-    /// 답을 기다리는 시간을 바꾼다(테스트).
-    #[cfg(test)]
+    /// 답을 기다리는 시간을 바꾼다(테스트, Unix 소켓 쌍을 쓰는 것만).
+    #[cfg(all(test, unix))]
     pub(crate) fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
