@@ -23,6 +23,15 @@ to release a tag without one. Changes land under `## Unreleased` first, and the 
 - `cargo xtask install`: build and install `sbx` where the installers put it, instead of running it from the build
   directory.
 
+### Changed
+
+- `sbx --help` groups commands by what you want to do (sandboxes, working inside one, images, watching and
+  automating, setup) and ends with first steps. `--help` is as compact as `-h` and wraps to the terminal. `run` and
+  `create` group their options (process, resources, files, network, stopping).
+- `sbx tui`: errors read as sentences, not JSON; an empty tab says what to do next in its middle instead of a
+  warning; Enter shows a row's fields as `name  value` lines (with the `--format json` command that prints them);
+  the bottom line only lists keys that do something now; `?` groups keys by tab and scrolls.
+
 ## v0.2.0
 
 ### Breaking

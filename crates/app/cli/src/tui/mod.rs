@@ -39,10 +39,7 @@ use ratatui::crossterm::event::{self, Event as TermEvent, KeyEventKind};
 use crate::app::AppResult;
 use crate::cli::Cli;
 use crate::output::{ErrorLine, Event, Image, Sandbox};
-use model::{Action, Model, Msg};
-
-/// 이벤트를 얼마나 거슬러 받는지(`events --since`). 화면을 열 때 최근 일을 보여 준다.
-pub const EVENTS_SINCE: &str = "1h";
+use model::{Action, EVENTS_SINCE, Model, Msg};
 
 /// 키를 기다리는 최대 시간. 그동안 온 소식은 다음 장에 그린다.
 const TICK: Duration = Duration::from_millis(100);

@@ -27,7 +27,9 @@ use ratatui::widgets::{
 
 use super::detail::DetailLine;
 use super::keys::{grouped, keys_width};
-use super::model::{Cursor, ExecutorRow, Model, Popup, PromptKind, TABS, Tab, display, state_name};
+use super::model::{
+    Cursor, EVENTS_SINCE, ExecutorRow, Model, Popup, PromptKind, TABS, Tab, display, state_name,
+};
 use crate::behavior::{MIN_ID_PREFIX, familiar, human_ago, human_size};
 use crate::output::{Event, Sandbox, SandboxState};
 
@@ -562,7 +564,7 @@ fn recent_events(frame: &mut Frame, model: &Model, area: Rect) {
 
 /// `events --since`의 기간을 말로(`1h` → `hour`).
 fn since_words() -> &'static str {
-    match super::EVENTS_SINCE {
+    match EVENTS_SINCE {
         "1h" => "hour",
         other => other,
     }
