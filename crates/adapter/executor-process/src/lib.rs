@@ -122,7 +122,7 @@ pub fn convert_vm(vm: &VmConfig) -> proto::VmSpec {
 }
 
 impl ProcessExecutor {
-    /// 실행 파일로 만든다. `<실행기> capabilities`를 실행해 본다(블로킹).
+    /// 실행 파일로 만든다. `<실행기> capabilities`를 실행해 본다(블로킹, 길어야 [`CAPABILITIES_TIMEOUT`]).
     pub fn new(binary: impl Into<PathBuf>) -> Result<Self, ExecutorError> {
         Self::with_env(binary, Vec::new())
     }
@@ -132,15 +132,19 @@ impl ProcessExecutor {
         binary: impl Into<PathBuf>,
         env: Vec<(OsString, OsString)>,
     ) -> Result<Self, ExecutorError> {
-        let binary = binary.into();
-        let out = retry_busy(|| {
-            Command::new(&binary)
-                .envs(env.iter().map(|(k, v)| (k, v)))
-                .arg("capabilities")
-                .stdin(Stdio::null())
-                .output()
-        })
-        .map_err(|e| {
+        Self::with_timeout(binary.into(), env, CAPABILITIES_TIMEOUT)
+    }
+
+    fn with_timeout(
+        binary: PathBuf,
+        env: Vec<(OsString, OsString)>,
+        timeout: Duration,
+    ) -> Result<Self, ExecutorError> {
+        let mut cmd = Command::new(&binary);
+        cmd.envs(env.iter().map(|(k, v)| (k, v)))
+            .arg("capabilities")
+            .stdin(Stdio::null());
+        let out = bounded_output(&mut cmd, timeout).map_err(|e| {
             ExecutorError::Launch(format!("cannot run executor {}: {e}", binary.display()))
         })?;
         if !out.status.success() {
@@ -252,6 +256,79 @@ impl Executor for ConnectOnly {
 
 /// 실행 파일이 막 쓰여 다른 프로세스가 아직 쓰기로 쥐고 있으면(Linux `ETXTBSY`, 예: 방금 내려받은 실행기,
 /// 다른 스레드가 fork한 자식이 잠깐 물려받은 파일) 실행이 실패한다. 잠깐씩 기다리며 몇 번 다시 해 본다.
+/// `capabilities`를 기다리는 가장 긴 시간. 그동안 답이 없으면 실행기를 죽이고 실패한다. 설치는 잠금을 쥔 채
+/// 이것을 부르므로, 멈춘 실행기가 다른 설치를 끝없이 막지 못한다.
+pub const CAPABILITIES_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// `cmd`를 실행해 출력을 모은다. 표준 출력은 두 줄([`proto::MAX_LINE`] 둘)까지, 표준 오류는 64KiB까지만 읽고,
+/// `timeout`이 지나면 죽인다. 실행기가 띄운 자식이 파이프를 쥐고 있어도 기다림은 `timeout`을 넘지 않는다.
+fn bounded_output(cmd: &mut Command, timeout: Duration) -> io::Result<std::process::Output> {
+    use std::io::Read;
+    const STDOUT_LIMIT: u64 = 2 * proto::MAX_LINE as u64 + 2;
+    const STDERR_LIMIT: u64 = 64 * 1024;
+    let deadline = Instant::now() + timeout;
+    let mut child = retry_busy(|| cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn())?;
+    let read = |pipe: Option<Box<dyn Read + Send>>, limit: u64| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(p) = pipe {
+                let _ = p.take(limit).read_to_end(&mut buf);
+            }
+            let _ = tx.send(buf);
+        });
+        rx
+    };
+    let stdout = read(
+        child
+            .stdout
+            .take()
+            .map(|p| Box::new(p) as Box<dyn Read + Send>),
+        STDOUT_LIMIT,
+    );
+    let stderr = read(
+        child
+            .stderr
+            .take()
+            .map(|p| Box::new(p) as Box<dyn Read + Send>),
+        STDERR_LIMIT,
+    );
+    let timed_out = || {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!(
+                "capabilities did not finish within {}s",
+                timeout.as_secs_f32()
+            ),
+        )
+    };
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(timed_out());
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let left = || deadline.saturating_duration_since(Instant::now());
+    let stdout = stdout.recv_timeout(left()).map_err(|_| timed_out())?;
+    if stdout.len() as u64 >= STDOUT_LIMIT {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("capabilities printed more than {STDOUT_LIMIT} bytes"),
+        ));
+    }
+    let stderr = stderr.recv_timeout(left()).unwrap_or_default();
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
 fn retry_busy<T>(mut f: impl FnMut() -> io::Result<T>) -> io::Result<T> {
     let mut wait = std::time::Duration::from_millis(5);
     for _ in 0..8 {
@@ -458,6 +535,48 @@ mod tests {
         format!(
             r#"{{"version":{max},{min}"name":"x","arch":"{arch}","rootfs_formats":["erofs"],"live_share":false,"custom_kernel":false,"snapshot":false,"max_disks":2}}"#
         )
+    }
+
+    /// 멈추거나 끝없이 쓰는 실행기는 제한 시간 안에 죽이고 실패한다(설치 잠금을 쥔 채 멈추지 않는다).
+    #[test]
+    fn a_hung_or_flooding_executor_is_killed_and_refused() {
+        let script = |name: &str, body: &str| {
+            let exe = executor(name, "");
+            std::fs::write(&exe, format!("#!/bin/sh\n{body}\n")).unwrap();
+            exe
+        };
+        let t = Duration::from_millis(500);
+        for (name, body) in [
+            ("hang", "exec sleep 60"),
+            // 자식이 표준 출력을 쥐고 남아도 기다림은 제한 시간을 넘지 않는다.
+            ("orphan", "sleep 60 &\nexit 0"),
+        ] {
+            let start = Instant::now();
+            let e = ProcessExecutor::with_timeout(script(name, body), Vec::new(), t)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "{name}: {:?}",
+                start.elapsed()
+            );
+            assert!(e.contains("did not finish within 0.5s"), "{name}: {e}");
+        }
+        // 끝없이 쓰는 실행기: 상한까지만 읽고 거부한다.
+        let e = ProcessExecutor::with_timeout(script("flood", "exec yes"), Vec::new(), t)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("capabilities printed more than"), "{e}");
+        // 답은 했지만 너무 긴 줄: 끝까지 읽지 않고 거부한다.
+        let long = format!("printf '%0{}d\\n' 0", proto::MAX_LINE + 10);
+        let e = ProcessExecutor::with_timeout(
+            script("long", &long),
+            Vec::new(),
+            Duration::from_secs(10),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("line exceeds MAX_LINE"), "{e}");
     }
 
     #[test]

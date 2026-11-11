@@ -307,7 +307,9 @@ OCI types never leave this crate. They become `ImageConfig` and a layer list.
 
 `Executor` for any program that speaks the executor protocol. This is how `sbx` runs every real VMM.
 
-- `ProcessExecutor::new` runs `<executor> capabilities` once. `launch` starts `<executor> run`, sends `Launch` and
+- `ProcessExecutor::new` runs `<executor> capabilities` once, for at most `CAPABILITIES_TIMEOUT` (30 s) and two
+  `MAX_LINE`s of output; past either it kills the executor and fails, so a hung executor can't hold the install
+  lock. `launch` starts `<executor> run`, sends `Launch` and
   waits for `Started`. The executor's stderr goes to the sandbox's `executor.log`.
 - The `VmHandle` holds the executor's stdin. Dropping it sends `Kill` (and kills the process if needed), and if `sbx`
   dies, the closed stdin makes the executor stop the VM.

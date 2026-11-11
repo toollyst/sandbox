@@ -38,6 +38,8 @@ to release a tag without one. Changes land under `## Unreleased` first, and the 
   from. A name can't be taken from behind a repository that failed to load, or by changing its case.
 - A remote index can only point at `https` archives (or ones of its own scheme), and every redirect hop is checked:
   no step from `https` down to `http`, no more than 10.
+- `sbx` waits at most 30 seconds for an executor's `capabilities` and reads at most 2 MiB of it, so a hung executor
+  can't block installs or `run`.
 - Executor indexes have at most 64 archives per version, so a hostile one can't stall `search` and `install`.
 - Release archives are signed with Sigstore and come with build provenance and an SBOM; `install.sh` checks the
   signature (`SBX_VERIFY`), and with `SBX_VERSION` it must come from that exact tag.
