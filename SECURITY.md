@@ -106,6 +106,11 @@ These are known gaps, in rough order of importance. Some are on the [roadmap](do
   an agent runs and how big each one is, but not how long a `create`d sandbox lives or how much it sends out.
 - **The macOS VMM is young.** See the first boundary above: wick uses Seatbelt in place of seccomp, has no jailer
   equivalent yet, and itself advises against untrusted multi-tenant workloads on macOS until that lands.
+- **An image can pick its own kernel.** An image that sets the label `io.github.toollyst.sandbox.kernel` boots the
+  kernel it carries instead of the executor's default, when the executor supports custom kernels. That doesn't cross
+  the boundary (the guest kernel is assumed hostile anyway), but it drops whatever hardening the default kernel has
+  and hands the VMM's kernel loader a file the image chose. Use images you trust for that, or an executor without
+  `custom_kernel`.
 - **Side channels** between VMs on the same host (CPU caches, timing) are out of scope.
 - **The guest init and its protocol have not been audited by a third party.** The host-side parsers of untrusted
   input (guest messages and `cp` answers, egress requests, the detached log, registry documents, image layers,
