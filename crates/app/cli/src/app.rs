@@ -1374,7 +1374,8 @@ impl Ctx {
             sbx_runtime::events_log(&self.data_dir).reader(start)?,
             sbx_manage::events_log(&self.cache_dir).reader(start)?,
         ];
-        let mut out = std::io::stdout().lock();
+        // 표준 출력은 줄마다 비운다. 묶음마다 한 번 비우게 감싼다.
+        let mut out = std::io::BufWriter::new(std::io::stdout().lock());
         loop {
             // 끝낼 때인지 먼저 정하고 읽는다. 그 시각까지 덧붙은 것은 이번에 모두 읽힌다.
             let done = until.is_some_and(|u| now() > u);
@@ -1414,10 +1415,14 @@ impl Ctx {
                     )]
                 };
                 for line in lines {
-                    if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
+                    if writeln!(out, "{line}").is_err() {
                         return Ok(0);
                     }
                 }
+            }
+            // 묶음마다 한 번(줄마다 하면 많은 기록을 읽을 때 줄마다 쓰기 호출이 된다).
+            if out.flush().is_err() {
+                return Ok(0);
             }
             if done {
                 return Ok(0);

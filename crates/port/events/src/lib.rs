@@ -26,7 +26,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -141,19 +141,24 @@ impl Log {
             generation: 1,
             file: None,
             pending: Vec::new(),
+            pos: 0,
         };
         match start {
             Start::Beginning => r.generation = gens.first().copied().unwrap_or(1),
             Start::End => {
                 r.generation = gens.last().copied().unwrap_or(1);
                 if let Ok(mut f) = File::open(self.path(r.generation)) {
-                    // 지금 끝까지 건너뛴다. 끝에 반쯤 쓰인 줄은 다 쓰이면 읽힌다.
-                    let mut skipped = Vec::new();
-                    f.read_to_end(&mut skipped)?;
-                    if let Some(i) = skipped.iter().rposition(|b| *b == b'\n') {
-                        r.pending = skipped[i + 1..].to_vec();
-                    } else {
-                        r.pending = skipped;
+                    // 지금 끝까지 건너뛴다(세대 전체를 읽지 않고 끝 근처만). 끝에 반쯤 쓰인 줄은 다 쓰이면 읽힌다.
+                    let len = f.seek(SeekFrom::End(0))?;
+                    let back = len.min(TAIL_WINDOW);
+                    f.seek(SeekFrom::Start(len - back))?;
+                    let mut tail = Vec::new();
+                    f.read_to_end(&mut tail)?;
+                    match tail.iter().rposition(|b| *b == b'\n') {
+                        Some(i) => r.pending = tail[i + 1..].to_vec(),
+                        // 창 안에 줄바꿈이 없으면 창 앞에서 시작한 아주 긴 줄의 끝이다. 그 줄은 버린다.
+                        None if back < len => {}
+                        None => r.pending = tail,
                     }
                     r.file = Some(f);
                 }
@@ -173,9 +178,14 @@ pub struct Reader {
     log: Log,
     generation: u64,
     file: Option<File>,
-    /// 아직 줄바꿈이 오지 않은 바이트.
+    /// 읽었지만 아직 꺼내지 않은 바이트. `pos` 앞은 이미 꺼냈다.
     pending: Vec<u8>,
+    /// `pending`에서 다음 줄이 시작하는 곳. 줄마다 버퍼를 앞으로 옮기지 않으려고 둔다(그러면 O(n²)이다).
+    pos: usize,
 }
+
+/// `Start::End`가 반쪽 줄을 찾으려고 끝에서 읽는 바이트. 이벤트 한 줄보다 훨씬 크다.
+const TAIL_WINDOW: u64 = 64 << 10;
 
 impl Reader {
     /// 다음 이벤트. 지금 더 없으면 `None`.
@@ -212,6 +222,7 @@ impl Reader {
             self.file = None;
             // 넘기기 전 세대 끝의 반쪽 줄은 끝내 완성되지 않는다.
             self.pending.clear();
+            self.pos = 0;
         }
     }
 
@@ -220,6 +231,9 @@ impl Reader {
         let Some(f) = &mut self.file else {
             return Ok(false);
         };
+        // 꺼낸 것을 한 번에 버린다.
+        self.pending.drain(..self.pos);
+        self.pos = 0;
         let before = self.pending.len();
         f.read_to_end(&mut self.pending)?;
         Ok(self.pending.len() > before)
@@ -227,9 +241,10 @@ impl Reader {
 
     /// 완성된 줄 하나를 꺼낸다. 읽을 수 없는 줄은 건너뛴다.
     fn take_line(&mut self) -> Option<Event> {
-        while let Some(i) = self.pending.iter().position(|b| *b == b'\n') {
-            let line: Vec<u8> = self.pending.drain(..=i).collect();
-            if let Ok(e) = serde_json::from_slice::<Event>(&line[..i]) {
+        while let Some(i) = self.pending[self.pos..].iter().position(|b| *b == b'\n') {
+            let line = &self.pending[self.pos..self.pos + i];
+            self.pos += i + 1;
+            if let Ok(e) = serde_json::from_slice::<Event>(line) {
                 return Some(e);
             }
         }

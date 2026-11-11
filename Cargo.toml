@@ -85,3 +85,11 @@ sbx-executor-process = { path = "crates/adapter/executor-process" }
 sbx-executor-install = { path = "crates/spec/executor-install" }
 sbx-executor-repo = { path = "crates/spec/executor-repo" }
 sbx-shim = { path = "crates/app/shim" }
+
+# 배포 빌드(`cargo xtask dist`, 게스트 init). fat LTO와 codegen-units 1로 한 덩어리로 최적화하고 기호를 지운다:
+# macOS arm64 sbx가 16.7 MB → 9.7 MB. 대가는 빌드 시간이다(개발은 debug 빌드를 쓴다).
+# panic은 unwind로 둔다: tui가 패닉할 때 Drop으로 자식 프로세스와 터미널을 정리한다.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
