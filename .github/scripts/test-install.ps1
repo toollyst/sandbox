@@ -129,3 +129,5 @@ try {
 } finally {
     Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 }
+# 마지막 경우(실패해야 하는 설치)의 $LASTEXITCODE가 이 스크립트의 종료 코드가 되지 않게.
+exit 0
