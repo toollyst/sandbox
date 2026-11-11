@@ -73,7 +73,8 @@ struct Server {
     reserved: std::cell::Cell<u32>,
 }
 
-/// `sbx mcp --max-sandboxes`, `--max-cpus`, `--max-memory`, `--max-disk`, `--max-lifetime`, `--allow-private-network`.
+/// `sbx mcp --max-sandboxes`, `--max-cpus`, `--max-memory`, `--max-disk`, `--max-lifetime`, `--max-egress`,
+/// `--allow-private-network`.
 #[derive(Debug, Clone, Copy)]
 struct Limits {
     sandboxes: u32,
@@ -82,6 +83,8 @@ struct Limits {
     disk_mib: u32,
     /// 샌드박스 하나가 시작마다 돌 수 있는 가장 긴 시간(초). 있으면 `lifetime`을 주지 않은 샌드박스도 이만큼 뒤에 멈춘다.
     lifetime_secs: Option<u64>,
+    /// 나가는 연결이 있는 샌드박스 하나가 시작마다 주고받을 수 있는 바이트. 있으면 그 샌드박스의 상한이 된다.
+    egress_bytes: Option<u64>,
     /// 허용 목록에 루프백·사설·링크 로컬 IP와 `localhost`를 받는다.
     private_network: bool,
 }
@@ -138,6 +141,9 @@ impl Server {
                 Some(_) => {}
                 None => spec.timeout = Some(max),
             }
+        }
+        if !spec.allow.is_empty() && spec.egress_limit.is_none() {
+            spec.egress_limit = l.egress_bytes;
         }
         if !l.private_network
             && let Some(r) = spec.allow.iter().find(|r| opens_private_network(r))
@@ -234,6 +240,7 @@ pub async fn serve(cli: &Cli) -> AppResult<u8> {
         max_memory,
         max_disk,
         max_lifetime,
+        max_egress,
         allow_private_network,
     } = cli.command
     else {
@@ -248,6 +255,7 @@ pub async fn serve(cli: &Cli) -> AppResult<u8> {
             memory_mib: max_memory,
             disk_mib: max_disk,
             lifetime_secs: max_lifetime,
+            egress_bytes: max_egress,
             private_network: allow_private_network,
         },
         reserved: Default::default(),

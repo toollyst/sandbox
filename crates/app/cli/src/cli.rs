@@ -296,6 +296,10 @@ pub enum Command {
         /// less with `lifetime`. By default they run until stopped or removed.
         #[arg(long, value_name = "DURATION", value_parser = crate::parse::lifetime_secs)]
         max_lifetime: Option<u64>,
+        /// The most bytes each MCP sandbox with network access may send and receive per start (e.g. 1g); agents get
+        /// it as their limit. By default there is none.
+        #[arg(long, value_name = "SIZE", value_parser = crate::parse::transfer_bytes)]
+        max_egress: Option<u64>,
         /// Let agents allow loopback, private and link-local IP addresses and `localhost` (by default they can
         /// only allow public hosts, so an agent can't reach services on this machine, the LAN or cloud metadata).
         #[arg(long)]
@@ -606,6 +610,10 @@ pub struct RunArgs {
     /// Destination allowed with --network allow: `HOST:PORT` (`*.example.com:443`, `10.0.0.5:*`, `[::1]:80`). Repeatable.
     #[arg(long = "allow")]
     pub allow: Vec<String>,
+    /// With --network allow: the most bytes all outgoing connections may send and receive together in each start
+    /// (e.g. 500m, 2g). Reaching it closes them and refuses new ones.
+    #[arg(long = "egress-limit", value_name = "SIZE", value_parser = crate::parse::transfer_bytes)]
+    pub egress_limit: Option<u64>,
     /// Image reference or ID, then the command and its arguments. Everything after the image belongs to the
     /// command, even values that look like sbx options.
     #[arg(

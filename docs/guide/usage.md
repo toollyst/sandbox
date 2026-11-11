@@ -74,6 +74,17 @@ A rule can be `host:port`, `*.example.com:443`, `10.0.0.5:*` or `[::1]:80`. A na
 private address is refused unless the rule names that IP, or `localhost`, explicitly. Without `--network allow`, name
 lookups fail at once instead of hanging.
 
+`--egress-limit SIZE` (e.g. `500m`) caps how many bytes all outgoing connections send and receive together in each
+start; at the limit the open ones are cut and new ones refused. Every decision is recorded as a `network` event:
+`connect` (with the address reached), `refuse` (with the reason) and `close` (bytes sent and received):
+
+```sh
+sbx events --since 1h --until 0s --filter type=network --filter sandbox=web
+```
+
+These records live apart from the sandbox lifecycle events, so a busy sandbox can't push those out; like them, the
+most recent 1-2 MiB are kept.
+
 `-p` publishes a TCP port of the sandbox on the host, with Docker's syntax:
 
 ```sh

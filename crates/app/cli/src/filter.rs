@@ -51,6 +51,9 @@ pub const ACTIONS: &[&str] = &[
     "prepare",
     "untag",
     "delete",
+    "connect",
+    "refuse",
+    "close",
 ];
 
 /// `ps --filter`. `status`나 `exited`가 있으면 `-a`가 없어도 멈춘 것까지 본다(Docker와 같다).
@@ -90,7 +93,7 @@ pub const IMAGES: &[Key] = &[
 pub const EVENTS: &[Key] = &[
     key(
         "type",
-        Value::OneOf(&["sandbox", "image"]),
+        Value::OneOf(&["sandbox", "image", "network"]),
         "event type is VALUE",
     ),
     key("event", Value::OneOf(ACTIONS), "action is VALUE"),

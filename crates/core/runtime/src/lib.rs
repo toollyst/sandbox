@@ -176,6 +176,14 @@ pub fn events_log(data_dir: &Path) -> sbx_events::Log {
     sbx_events::Log::new(data_dir.join("events").join("sandboxes"))
 }
 
+pub use egress::NETWORK_EVENT_KIND;
+
+/// `data_dir`의 나가는 연결 기록: 허용(`connect`, 연결한 주소), 거부(`refuse`, 이유), 닫힘(`close`, 보낸·받은
+/// 바이트). 샌드박스 수명 기록과 같은 장치(세대마다 1 MiB, 앞 세대 하나)라서 대략 2 MiB까지 남는다.
+pub fn network_log(data_dir: &Path) -> sbx_events::Log {
+    sbx_events::Log::new(data_dir.join("events").join("network"))
+}
+
 /// `data_dir`의 샌드박스 ID와 이름. ID 순서. 셸 자동완성처럼 빨리 훑어볼 때 쓴다.
 ///
 /// [`Runtime::list`]와 달리 기록(`spec.json`)만 읽는다: 소유 잠금을 열거나 쥐지 않고(그래서 상태는 모른다),
@@ -730,6 +738,9 @@ impl Sandbox {
         let mut main = to_proto_exec(&spec.process, io, true);
         let mounts = spec.mounts.clone();
         let network = spec.network.clone();
+        let egress_limit = spec.egress_limit_bytes;
+        let data_dir = rt.inner.config.data_dir.clone();
+        let id_for_egress = id.as_str().to_owned();
         let (vm, started) = blocking(move || {
             let mut vm = vm;
             let r = (|| {
@@ -762,7 +773,17 @@ impl Sandbox {
                     NetworkPolicy::Disabled => None,
                     NetworkPolicy::Allow(rules) => {
                         let port = guest.egress_listen()?;
-                        egress::start(guest.clone(), rules);
+                        egress::start(
+                            guest.clone(),
+                            rules,
+                            egress::Limits {
+                                bytes: egress_limit,
+                            },
+                            egress::Record {
+                                log: network_log(&data_dir),
+                                sandbox: id_for_egress.clone(),
+                            },
+                        );
                         process::add_proxy_env(&mut main.env, port);
                         Some(port)
                     }

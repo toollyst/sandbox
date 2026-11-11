@@ -179,6 +179,10 @@ mod unix {
         ("volume_is_shared_live", volume_is_shared_live),
         ("network_allow_list", network_allow_list),
         (
+            "egress_limit_and_network_events",
+            egress_limit_and_network_events,
+        ),
+        (
             "embedded_guest_init_is_unpacked_into_the_cache",
             embedded_guest_init_is_unpacked_into_the_cache,
         ),
@@ -573,6 +577,104 @@ mod unix {
             "printf %s \"$HTTP_PROXY\"",
         ]);
         assert_eq!(text(&o.stdout), "");
+    }
+
+    fn egress_limit_and_network_events() {
+        use std::io::{BufRead, BufReader};
+        // 목적지: 본문 4000바이트로 답하는 HTTP 서버.
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = server.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for c in server.incoming().flatten() {
+                let mut r = BufReader::new(c.try_clone().unwrap());
+                let mut line = String::new();
+                while r.read_line(&mut line).is_ok_and(|n| n > 2) {
+                    line.clear();
+                }
+                let mut c = c;
+                let _ = c.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: 4000\r\nConnection: close\r\n\r\n{}",
+                        "x".repeat(4000)
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        let e = Env::new();
+        let allow = format!("127.0.0.1:{port}");
+        let script = format!(
+            "curl -s -x \"$HTTP_PROXY\" --noproxy '' http://127.0.0.1:{port}/ | wc -c; \
+             curl -s -o /dev/null -w '%{{http_code}}' -x \"$HTTP_PROXY\" --noproxy '' http://127.0.0.1:{port}/"
+        );
+        let o = e.sbx(&[
+            "run",
+            "--rm",
+            "--network",
+            "allow",
+            "--allow",
+            &allow,
+            "--egress-limit",
+            "1k",
+            IMAGE,
+            "sh",
+            "-c",
+            &script,
+        ]);
+        let out = text(&o.stdout);
+        assert_eq!(o.status.code(), Some(0), "{out} {}", text(&o.stderr));
+        let mut lines = out.lines();
+        let got: usize = lines.next().unwrap().trim().parse().unwrap();
+        assert!(got < 1024, "{out}");
+        assert_eq!(lines.next(), Some("403"), "{out}");
+
+        let o = e.sbx(&[
+            "--format",
+            "json",
+            "events",
+            "--since",
+            "1h",
+            "--until",
+            "0s",
+            "--filter",
+            "type=network",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let events: Vec<serde_json::Value> = text(&o.stdout)
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let actions: Vec<&str> = events
+            .iter()
+            .map(|e| e["action"].as_str().unwrap())
+            .collect();
+        assert_eq!(actions, ["connect", "close", "refuse"], "{events:?}");
+        let attrs = |i: usize| &events[i]["attributes"];
+        assert_eq!(attrs(0)["host"], "127.0.0.1");
+        assert_eq!(attrs(0)["addr"], allow.as_str());
+        assert_eq!(attrs(1)["limit"], "1024");
+        assert!(
+            attrs(1)["received"]
+                .as_str()
+                .unwrap()
+                .parse::<u64>()
+                .unwrap()
+                <= 1024
+        );
+        assert!(
+            attrs(2)["reason"]
+                .as_str()
+                .unwrap()
+                .contains("egress limit")
+        );
+        // 나가는 연결이 없으면 상한은 받지 않는다.
+        let o = e.sbx(&["run", "--rm", "--egress-limit", "1k", IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(125), "{}", text(&o.stderr));
+        assert!(
+            text(&o.stderr).contains("needs network access"),
+            "{}",
+            text(&o.stderr)
+        );
     }
 
     fn volume_is_shared_live() {

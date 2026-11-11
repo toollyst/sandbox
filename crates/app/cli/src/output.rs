@@ -836,6 +836,9 @@ pub struct Sandbox {
     /// the port the OS picked for a `-p PORT`); otherwise what was asked for (`:0` = pick one).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ports: Vec<String>,
+    /// Bytes its outgoing connections may move per start (`--egress-limit`); absent when unlimited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub egress_limit_bytes: Option<u64>,
 }
 
 /// Sandbox lifecycle state (OCI names).
@@ -1021,6 +1024,7 @@ impl Sandbox {
                     .map(|(a, g)| format!("{a}->{g}/tcp"))
                     .collect()
             },
+            egress_limit_bytes: spec.egress_limit_bytes,
         }
     }
 }

@@ -1083,6 +1083,15 @@
             "null"
           ]
         },
+        "egress_limit_bytes": {
+          "description": "Bytes its outgoing connections may move per start (`--egress-limit`); absent when unlimited.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "error": {
           "description": "Why it stopped, if an error stopped it.",
           "type": [

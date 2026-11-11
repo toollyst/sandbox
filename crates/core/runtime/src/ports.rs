@@ -102,7 +102,7 @@ pub fn serve(bound: Bound, guest: Guest) -> Forwarding {
                 let (open, guest) = (open.clone(), guest.clone());
                 thread::spawn(move || {
                     if let Ok(conn) = guest.forward(guest_port) {
-                        crate::egress::splice(conn, tcp);
+                        crate::egress::splice(conn, tcp, None);
                     }
                     open.fetch_sub(1, Ordering::SeqCst);
                 });

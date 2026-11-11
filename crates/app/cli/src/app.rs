@@ -1057,6 +1057,7 @@ impl Ctx {
                         name: a.name.clone(),
                         lifetime_secs: a.timeout,
                         ports: a.publish.clone(),
+                        egress_limit_bytes: a.egress_limit,
                     };
                     let sandbox = self.launcher_with(&chosen)?.create(spec).await?;
                     return Ok(sandbox.id().clone());
@@ -1401,7 +1402,7 @@ impl Ctx {
             f.allows("type", |v| v == e.kind)
                 && f.allows("event", |v| v == e.action)
                 && f.allows("sandbox", |v| {
-                    e.kind == sbx_runtime::EVENT_KIND
+                    (e.kind == sbx_runtime::EVENT_KIND || e.kind == sbx_runtime::NETWORK_EVENT_KIND)
                         && (e.id.starts_with(v) || attr("name") == Some(v))
                 })
                 && f.allows("image", |v| {
@@ -1433,6 +1434,7 @@ impl Ctx {
         };
         let mut readers = [
             sbx_runtime::events_log(&self.data_dir).reader(start)?,
+            sbx_runtime::network_log(&self.data_dir).reader(start)?,
             sbx_manage::events_log(&self.cache_dir).reader(start)?,
         ];
         // 표준 출력은 줄마다 비운다. 묶음마다 한 번 비우게 감싼다.

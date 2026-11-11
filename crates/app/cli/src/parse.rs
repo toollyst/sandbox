@@ -116,6 +116,24 @@ pub fn disk_mib(value: &str) -> ParseResult<u32> {
     storage_opt(&format!("size={value}"))
 }
 
+/// 전송량(`--egress-limit`): 바이트 수, 또는 `k`·`m`·`g`·`t`(1024의 거듭제곱, 뒤에 `b`를 붙여도 된다). 1 이상.
+pub fn transfer_bytes(value: &str) -> ParseResult<u64> {
+    let v = value.trim().to_ascii_lowercase();
+    let v = v.strip_suffix('b').unwrap_or(&v);
+    let (num, shift) = match v.chars().last() {
+        Some('k') => (&v[..v.len() - 1], 10),
+        Some('m') => (&v[..v.len() - 1], 20),
+        Some('g') => (&v[..v.len() - 1], 30),
+        Some('t') => (&v[..v.len() - 1], 40),
+        _ => (v, 0),
+    };
+    num.parse::<u64>()
+        .ok()
+        .and_then(|n| n.checked_mul(1 << shift))
+        .filter(|n| *n > 0)
+        .ok_or_else(|| format!("invalid size {value:?} (bytes, or e.g. 500m, 2g)"))
+}
+
 /// `--cpus`. VM의 vCPU 개수라서 1 이상의 정수만 받는다.
 pub fn cpus(value: &str) -> ParseResult<u8> {
     match value.parse::<u8>() {
@@ -586,6 +604,12 @@ mod tests {
 
     #[test]
     fn lifetimes_read_like_durations() {
+        assert_eq!(transfer_bytes("1000"), Ok(1000));
+        assert_eq!(transfer_bytes("500m"), Ok(500 << 20));
+        assert_eq!(transfer_bytes("2GB"), Ok(2 << 30));
+        for bad in ["0", "", "m", "1.5g", "-1", "99999999999t"] {
+            assert!(transfer_bytes(bad).is_err(), "{bad}");
+        }
         assert_eq!(lifetime_secs("600"), Ok(600));
         assert_eq!(lifetime_secs("30m"), Ok(1800));
         assert_eq!(lifetime_secs("1h30m"), Ok(5400));

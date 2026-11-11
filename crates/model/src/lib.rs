@@ -819,6 +819,10 @@ pub struct SandboxSpec {
     /// 호스트 TCP 포트를 게스트의 포트로 잇는다(`-p`). VM을 소유한 프로세스가 듣는다.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ports: Vec<PortMapping>,
+    /// 시작할 때마다 나가는 연결(`NetworkPolicy::Allow`)로 주고받을 수 있는 바이트 합계(`--egress-limit`). 닿으면
+    /// 열린 연결을 끊고 새 연결을 거절한다. 없으면 끝없이.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub egress_limit_bytes: Option<u64>,
 }
 
 /// `-p [IP:][HOST_PORT:]PORT[/tcp]`: 호스트의 `IP:HOST_PORT`에 온 TCP 연결을 게스트 `127.0.0.1:PORT`로 잇는다.
