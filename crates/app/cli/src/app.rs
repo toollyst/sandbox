@@ -197,7 +197,8 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
 }
 
 /// 지금 유닉스 시각(나노초).
-fn now_ns() -> u64 {
+/// 지금 시각(유닉스 시각, 나노초).
+pub(crate) fn now_ns() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
@@ -232,7 +233,7 @@ impl LogSink {
     }
 
     /// 기록(또는 `--tail`의 줄) 하나를 쓴다. stdout이 닫혔으면 `false`.
-    fn write(&mut self, stream: Stream, time_ns: Option<u64>, data: &[u8]) -> AppResult<bool> {
+    fn write(&mut self, stream: Stream, time_ns: u64, data: &[u8]) -> AppResult<bool> {
         if self.json {
             for piece in data.split_inclusive(|&b| b == b'\n') {
                 // `--jq`도 여기서 적용한다(`render_line`).
@@ -249,13 +250,12 @@ impl LogSink {
         }
         let i = usize::from(stream == Stream::Stderr);
         let prefixed;
-        let data = match time_ns {
-            Some(t) if self.prefix => {
-                let prefix = format!("{} ", behavior::rfc3339_ns(t));
-                prefixed = behavior::prefix_lines(data, &prefix, &mut self.at_line_start[i]);
-                &prefixed[..]
-            }
-            _ => data,
+        let data = if self.prefix {
+            let prefix = format!("{} ", behavior::rfc3339_ns(time_ns));
+            prefixed = behavior::prefix_lines(data, &prefix, &mut self.at_line_start[i]);
+            &prefixed[..]
+        } else {
+            data
         };
         Ok(match stream {
             Stream::Stdout => self
@@ -441,7 +441,7 @@ impl Ctx {
         if let (Some(n), Some(r)) = (tail, &mut reader) {
             let mut records = Vec::new();
             while let Some(rec) = r.next_record()? {
-                if times.wants(rec.time_ns).map_err(msg)? {
+                if times.wants(rec.time_ns) {
                     records.push((rec.stream, rec.time_ns, rec.data));
                 }
             }
@@ -461,7 +461,7 @@ impl Ctx {
             }
             if let Some(r) = &mut reader {
                 while let Some(rec) = r.next_record()? {
-                    if times.wants(rec.time_ns).map_err(msg)?
+                    if times.wants(rec.time_ns)
                         && !sink.write(rec.stream, rec.time_ns, &rec.data)?
                     {
                         return Ok(0);

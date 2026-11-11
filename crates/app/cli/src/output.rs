@@ -657,8 +657,8 @@ impl Event {
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct LogLine {
-    /// When sbx received it (RFC 3339, nanoseconds). Lines that arrived together share a time. Null if the log was
-    /// written by an older sbx that did not record times.
+    /// When sbx received it (RFC 3339, nanoseconds). Lines that arrived together share a time. Always set by
+    /// sbx 0.2.1 and later; kept nullable for scripts written against 0.2.0's schema.
     pub time: Option<String>,
     /// `stdout` or `stderr`.
     pub stream: String,
@@ -670,7 +670,7 @@ pub struct LogLine {
 
 impl LogLine {
     /// 로그 기록 조각 하나에서. UTF-8이 아니면(조각 경계에서 잘린 문자 포함) base64.
-    pub fn new(stream: sbx_shim::Stream, time_ns: Option<u64>, data: &[u8]) -> Self {
+    pub fn new(stream: sbx_shim::Stream, time_ns: u64, data: &[u8]) -> Self {
         use base64::Engine as _;
         let (data, encoding) = match std::str::from_utf8(data) {
             Ok(s) => (s.to_owned(), "utf-8"),
@@ -680,7 +680,7 @@ impl LogLine {
             ),
         };
         Self {
-            time: time_ns.map(behavior::rfc3339_ns),
+            time: Some(behavior::rfc3339_ns(time_ns)),
             stream: match stream {
                 sbx_shim::Stream::Stdout => "stdout",
                 sbx_shim::Stream::Stderr => "stderr",

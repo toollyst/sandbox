@@ -628,7 +628,7 @@
           "type": "string"
         },
         "time": {
-          "description": "When sbx received it (RFC 3339, nanoseconds). Lines that arrived together share a time. Null if the log was\nwritten by an older sbx that did not record times.",
+          "description": "When sbx received it (RFC 3339, nanoseconds). Lines that arrived together share a time. Always set by\nsbx 0.2.1 and later; kept nullable for scripts written against 0.2.0's schema.",
           "type": [
             "string",
             "null"

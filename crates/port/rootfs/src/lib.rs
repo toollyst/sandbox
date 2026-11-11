@@ -180,8 +180,6 @@ pub enum RootfsError {
     Unsupported(String),
     /// 입출력 오류.
     Io(io::Error),
-    /// 아직 구현하지 않은 기능.
-    Unimplemented(&'static str),
 }
 
 impl fmt::Display for RootfsError {
@@ -198,7 +196,6 @@ impl fmt::Display for RootfsError {
             }
             RootfsError::Unsupported(m) => write!(f, "unsupported: {m}"),
             RootfsError::Io(e) => write!(f, "io: {e}"),
-            RootfsError::Unimplemented(what) => write!(f, "not implemented yet: {what}"),
         }
     }
 }

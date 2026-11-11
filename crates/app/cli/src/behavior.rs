@@ -558,9 +558,6 @@ pub fn last_lines<S: Copy + PartialEq, T: Copy>(
 ///
 /// - `--since`, `--until`은 그 시각을 넣는다(Docker와 같다). 시각은 shim이 출력 조각을 받은 때다.
 /// - `--tail`은 이 조건에 맞는 기록에서 마지막 N줄을 센다.
-/// - 시각이 필요한데(`-t`의 텍스트 출력, `--since`, `--until`) 기록에 없으면(이 판 전의 sbx가 쓴 로그,
-///   [`sbx_shim::log`]의 판 1) 아무것도 고르지 않고 오류다. 범위 안인지 알 수 없는 줄을 넣거나 빼서 조용히 틀리지 않는다.
-///   그런 로그도 시각 없이는(`--format json`이면 `time: null`로) 다 보인다.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LogTimes {
     /// 이 시각(나노초)부터.
@@ -571,20 +568,10 @@ pub struct LogTimes {
     pub prefix: bool,
 }
 
-/// 시각이 없는 로그에 시각이 필요한 옵션을 쓴 오류.
-pub const LOG_WITHOUT_TIMES: &str = "this sandbox's log was written by an older sbx that did not record times, \
-     so -t, --since and --until cannot be used (logs without them still shows it); recreate the sandbox to get times";
-
 impl LogTimes {
     /// 시각이 `time_ns`인 기록을 보일지.
-    pub fn wants(&self, time_ns: Option<u64>) -> Result<bool, &'static str> {
-        match time_ns {
-            Some(t) => Ok(self.since.is_none_or(|s| t >= s) && self.until.is_none_or(|u| t <= u)),
-            None if self.prefix || self.since.is_some() || self.until.is_some() => {
-                Err(LOG_WITHOUT_TIMES)
-            }
-            None => Ok(true),
-        }
+    pub fn wants(&self, time_ns: u64) -> bool {
+        self.since.is_none_or(|s| time_ns >= s) && self.until.is_none_or(|u| time_ns <= u)
     }
 }
 
@@ -620,10 +607,7 @@ pub fn human_size(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        LOG_WITHOUT_TIMES, LogTimes, familiar, human_ago, human_size, last_lines, prefix_lines,
-        rfc3339,
-    };
+    use super::{LogTimes, familiar, human_ago, human_size, last_lines, prefix_lines, rfc3339};
 
     #[test]
     fn tail_counts_lines_across_records() {
@@ -660,25 +644,17 @@ mod tests {
     }
 
     #[test]
-    fn log_times_select_a_closed_range_and_refuse_logs_without_times() {
+    fn log_times_select_a_closed_range() {
         let range = LogTimes {
             since: Some(10),
             until: Some(20),
             prefix: false,
         };
-        assert_eq!(range.wants(Some(9)), Ok(false));
-        assert_eq!(range.wants(Some(10)), Ok(true));
-        assert_eq!(range.wants(Some(20)), Ok(true));
-        assert_eq!(range.wants(Some(21)), Ok(false));
-        assert_eq!(range.wants(None), Err(LOG_WITHOUT_TIMES));
-        let prefix = LogTimes {
-            prefix: true,
-            ..LogTimes::default()
-        };
-        assert_eq!(prefix.wants(None), Err(LOG_WITHOUT_TIMES));
-        // 시각이 필요 없으면 시각 없는 기록도 보인다.
-        assert_eq!(LogTimes::default().wants(None), Ok(true));
-        assert_eq!(LogTimes::default().wants(Some(0)), Ok(true));
+        assert!(!range.wants(9));
+        assert!(range.wants(10));
+        assert!(range.wants(20));
+        assert!(!range.wants(21));
+        assert!(LogTimes::default().wants(0));
     }
 
     #[test]

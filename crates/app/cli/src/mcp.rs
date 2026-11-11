@@ -1247,7 +1247,12 @@ mod tests {
         ] {
             assert!(opens_private_network(r), "{r}");
         }
-        for r in ["pypi.org:443", "*.github.com:443", "1.1.1.1:53", "[2606:4700::1111]:443"] {
+        for r in [
+            "pypi.org:443",
+            "*.github.com:443",
+            "1.1.1.1:53",
+            "[2606:4700::1111]:443",
+        ] {
             assert!(!opens_private_network(r), "{r}");
         }
     }

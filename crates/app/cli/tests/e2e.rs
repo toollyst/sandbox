@@ -1461,22 +1461,12 @@ mod unix {
         let last: LogLine = serde_json::from_str(text(&o.stdout).trim()).unwrap();
         assert_eq!(last.data, "partial");
 
-        // 이 판 전의 sbx가 쓴 로그(머리 없음, 시각 없음): 그대로 보이고, 시각이 필요한 옵션은 오류다.
+        // 0.1.x가 쓴 판 1 로그(머리 없음)는 읽지 않고 이유를 알린다.
         let log = e.path("data/sandboxes").join(&id).join("logs/main.log");
         std::fs::write(&log, [1, 0, 0, 0, 4, b'o', b'l', b'd', b'\n']).unwrap();
-        assert_eq!(text(&e.sbx(&["logs", &id]).stdout), "old\n");
-        for flag in [&["-t"][..], &["--since", "1h"], &["--until", "1h"]] {
-            let mut args = vec!["logs"];
-            args.extend_from_slice(flag);
-            args.push(&id);
-            let o = e.sbx(&args);
-            assert_eq!(o.status.code(), Some(1), "{flag:?}");
-            assert!(o.stdout.is_empty(), "{flag:?}");
-            assert!(text(&o.stderr).contains("older sbx"), "{}", text(&o.stderr));
-        }
-        let o = e.sbx(&["--format", "json", "logs", "-t", &id]);
-        let old: LogLine = serde_json::from_str(text(&o.stdout).trim()).unwrap();
-        assert_eq!((old.time, old.data.as_str()), (None, "old\n"));
+        let o = e.sbx(&["logs", &id]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(text(&o.stderr).contains("not an sbx log"), "{}", text(&o.stderr));
 
         // -f --until: 그 시각이 지나면 따라가기를 끝낸다. stdout이 닫혀도 조용히 끝난다.
         let o = e.sbx(&[

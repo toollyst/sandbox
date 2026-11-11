@@ -2610,7 +2610,6 @@ dependencies = [
 name = "sbx-shim"
 version = "0.2.0"
 dependencies = [
- "sbx-executor",
  "sbx-executor-process",
  "sbx-executor-proto",
  "sbx-model",
