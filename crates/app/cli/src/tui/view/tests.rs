@@ -260,3 +260,14 @@ fn help_scrolls_to_every_group_on_a_short_screen() {
     m.key(KeyEvent::from(KeyCode::Char('x')));
     assert_eq!(m.popup, None);
 }
+
+#[test]
+fn help_lines_fit_a_100_column_terminal() {
+    let mut m = loaded();
+    m.key(KeyEvent::from(KeyCode::Char('?')));
+    let s = render(&mut m, 100, 60);
+    // 접히지 않는다: 설명이 키와 같은 줄에서 끝난다.
+    for h in crate::tui::keys::KEYS {
+        assert!(s.lines().any(|l| l.contains(h.does)), "{:?}\n{s}", h.does);
+    }
+}
