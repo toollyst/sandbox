@@ -15,7 +15,7 @@
 //!
 //! `<키>`는 `--key <파일>`이나 `--key-env <변수>`(색인 키의 비밀키)다. 셋 모두 고친 뒤 `serial`과 `expires`(기본
 //! 30일)를 새로 정하고 `<파일>.minisig`를 쓴다. 그 전에 있던 파일은 **그 키로 서명된 것이어야 한다**(공개키는
-//! 비밀키에서 얻는다): gh-pages에 누가 넣은 내용을 서명해 주지 않는다. 있던 `serial`이 지금보다 하루 넘게 앞서면
+//! 비밀키에서 얻는다. 색인 키를 바꿀 때는 `--signed-by <옛 공개키>`): gh-pages에 누가 넣은 내용을 서명해 주지 않는다. 있던 `serial`이 지금보다 하루 넘게 앞서면
 //! 거부한다(아주 큰 serial로 모든 클라이언트를 영영 막는 것).
 //! - `sign-files`: 파일마다 `<파일>.minisig`(릴리스 묶음의 서명, `sbx upgrade`가 본다).
 
@@ -49,6 +49,7 @@ struct Options {
     advisory: Option<String>,
     undo: bool,
     key: Option<String>,
+    signed_by: Option<String>,
     expires_days: Option<u64>,
     files: Vec<PathBuf>,
 }
@@ -67,6 +68,7 @@ fn parse(cmd: &str, args: &[String]) -> Result<Options, String> {
             "--advisory" => o.advisory = Some(val()?),
             "--undo" => o.undo = true,
             "--key" | "--key-env" => o.key = Some(sign::key_option(a, &val()?)?),
+            "--signed-by" => o.signed_by = Some(val()?),
             "--expires-days" => o.expires_days = Some(sign::expires_days(&val()?)?),
             f if !f.starts_with('-') && cmd == "sign-files" => o.files.push(PathBuf::from(f)),
             other => return Err(format!("unknown option {other}\n{}", usage(cmd))),
@@ -109,7 +111,7 @@ fn now() -> u64 {
 
 /// 있던 색인을 읽는다. 없으면 빈 색인. 있으면 `key`(비밀키)의 공개키로 한 서명이 맞아야 하고, `serial`이 지금보다 하루
 /// 넘게 앞서면 안 된다.
-fn load_verified(path: &Path, key: &str) -> Result<Value, String> {
+fn load_verified(path: &Path, key: &str, signed_by: Option<&str>) -> Result<Value, String> {
     if !path.exists() {
         return Ok(json!({ "schema": 1, "releases": [] }));
     }
@@ -121,8 +123,12 @@ fn load_verified(path: &Path, key: &str) -> Result<Value, String> {
             sig_file.display()
         )
     })?;
-    let sk = sign::secret_key(key)?;
-    let pk = minisign::PublicKey::from_secret_key(&sk).map_err(|e| e.to_string())?;
+    let pk = match signed_by {
+        Some(b64) => minisign::PublicKey::from_base64(b64.trim())
+            .map_err(|e| format!("--signed-by {b64:?}: {e}"))?,
+        None => minisign::PublicKey::from_secret_key(&sign::secret_key(key)?)
+            .map_err(|e| e.to_string())?,
+    };
     let sig = minisign::SignatureBox::from_string(&sig)
         .map_err(|e| format!("{}: {e}", sig_file.display()))?;
     minisign::verify(&pk, &sig, std::io::Cursor::new(&body), true, false, false).map_err(|e| {
@@ -223,7 +229,7 @@ pub fn index(root: &Path, args: &[String]) -> Result<Vec<String>, String> {
     let dir = need(o.assets, "--assets", cmd)?;
     let base = need(o.base_url, "--base-url", cmd)?;
     let key = need(o.key, "--key or --key-env", cmd)?;
-    let mut idx = load_verified(&path, &key)?;
+    let mut idx = load_verified(&path, &key, o.signed_by.as_deref())?;
     let base = base.trim_end_matches('/');
     let mut assets = serde_json::Map::new();
     let mut platforms = Vec::new();
@@ -269,7 +275,7 @@ pub fn yank(args: &[String]) -> Result<(), String> {
     let path = need(o.index, "--index", cmd)?;
     let ver = version(&need(o.version, "--version", cmd)?)?;
     let key = need(o.key, "--key or --key-env", cmd)?;
-    let mut idx = load_verified(&path, &key)?;
+    let mut idx = load_verified(&path, &key, o.signed_by.as_deref())?;
     let entry = releases(&mut idx)?
         .iter_mut()
         .find(|r| r["version"] == json!(ver))
@@ -292,7 +298,7 @@ pub fn sign_index(args: &[String]) -> Result<u64, String> {
     if !path.exists() {
         return Err(format!("{} does not exist", path.display()));
     }
-    let mut idx = load_verified(&path, &key)?;
+    let mut idx = load_verified(&path, &key, o.signed_by.as_deref())?;
     sign_and_save(&path, &mut idx, &key, o.expires_days)
 }
 
@@ -421,6 +427,15 @@ mod tests {
         std::fs::remove_file(sig_path(&file)).unwrap();
         let e = sign_index(&s(&["--index", f, "--key", k])).unwrap_err();
         assert!(e.contains("nobody signed"), "{e}");
+        restore();
+        // 색인 키 바꾸기: 새 키로, 지금 파일을 서명한 옛 공개키를 대고.
+        let ok = other_key.to_str().unwrap();
+        let old_pk = kp.pk.to_base64();
+        sign_index(&s(&["--index", f, "--key", ok, "--signed-by", &old_pk])).unwrap();
+        assert!(
+            sign_index(&s(&["--index", f, "--key", k])).is_err(),
+            "now signed by the new key"
+        );
         restore();
 
         // 클라이언트가 읽는다. 묶음 URL은 base/<이름>이라 그곳에 두고 서명한다.

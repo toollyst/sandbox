@@ -193,10 +193,8 @@ git -C pages commit -qam "releases.json: yank 0.2.2" && git -C pages push origin
 
 (`--undo` takes it back.) Every xtask command that edits or signs the index first checks that the current file is
 signed by that key and that its `serial` isn't more than a day ahead of now. A yanked release is skipped by
-`sbx upgrade` and the notice, and an `sbx` running it is told so on every command. The public keys are
-`ARCHIVE_KEYS` and `INDEX_KEYS` in [`update.rs`](../../crates/app/cli/src/update.rs); make each key pair offline with
-`cargo xtask repo-keygen --out <prefix>`, keep the secret key offline too, and put a spare public key in each list
-before you need to switch. To rotate, release an `sbx` that knows the new key first, then sign with it.
+`sbx upgrade` and the notice, and an `sbx` running it is told so on every command. Making the keys, putting them into GitHub and switching them is in
+[release-keys.md](release-keys.md).
 
 **Rehearsal.** `gh workflow run release.yml --ref <branch>` runs the same jobs on any branch without a tag. It builds,
 runs the smoke test, signs with Sigstore and uploads the result as the artifact `rehearsal`, with the notes from
