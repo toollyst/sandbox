@@ -36,7 +36,11 @@ fuzz_target!(|data: &[u8]| {
             platforms.insert(p.clone());
             assert_eq!(a.url.scheme(), "https", "{}", a.url);
             assert_eq!(a.sha256.len(), 64);
-            assert!(a.sha256.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')));
+            assert!(
+                a.sha256
+                    .bytes()
+                    .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+            );
             assert!(a.size >= 1 && a.size <= MAX_ASSET_BYTES);
         }
     }
@@ -54,7 +58,9 @@ fuzz_target!(|data: &[u8]| {
                 .max();
             assert_eq!(s.latest.map(|r| r.version), best);
             assert_eq!(
-                target(cur, &idx, p, None, false).unwrap().map(|r| r.version),
+                target(cur, &idx, p, None, false)
+                    .unwrap()
+                    .map(|r| r.version),
                 best
             );
             for r in &idx.releases {
