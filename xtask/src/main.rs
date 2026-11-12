@@ -113,6 +113,11 @@ const RULES: &[(&str, Allowed)] = &[
         "sbx-executor-repo",
         Allowed::Workspace(&["sbx-executor-install"]),
     ),
+    // sbx 릴리스 색인(새 버전 알림과 `sbx upgrade`). 받기·서명·풀기는 실행기 저장소의 것을 쓴다. sbx 코어를 모른다.
+    (
+        "sbx-release-index",
+        Allowed::Workspace(&["sbx-executor-repo", "sbx-executor-install"]),
+    ),
     (
         "sbx-shim",
         Allowed::Workspace(&[

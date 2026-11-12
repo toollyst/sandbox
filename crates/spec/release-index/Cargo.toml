@@ -1,0 +1,23 @@
+[package]
+name = "sbx-release-index"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# 받기, minisign 확인, 본 serial, 압축 풀기는 실행기 저장소와 같은 코드를 쓴다.
+sbx-executor-repo.workspace = true
+serde = { workspace = true }
+serde_json.workspace = true
+url = "2"
+
+[dev-dependencies]
+minisign.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+sha2.workspace = true

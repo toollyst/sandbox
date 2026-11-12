@@ -72,12 +72,25 @@ pub const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60)
 impl Fetcher {
     /// 시스템 설정(프록시 환경 변수 포함)을 쓰는 클라이언트를 만든다.
     pub fn new() -> Result<Self, RepoError> {
+        Self::with_options(
+            concat!("sbx-executor-repo/", env!("CARGO_PKG_VERSION")),
+            CONNECT_TIMEOUT,
+            READ_TIMEOUT,
+        )
+    }
+
+    /// [`Fetcher::new`]와 같되 `User-Agent`와 시간 제한을 정한다(짧게 기다려야 하는 쪽, 예: 새 버전 확인).
+    pub fn with_options(
+        user_agent: &str,
+        connect: std::time::Duration,
+        read: std::time::Duration,
+    ) -> Result<Self, RepoError> {
         let http = reqwest::Client::builder()
-            .user_agent(concat!("sbx-executor-repo/", env!("CARGO_PKG_VERSION")))
+            .user_agent(user_agent)
             // 멈춘 미러나 중간자가 search·install을 끝없이 붙잡지 못하게. 읽기 제한은 읽기 하나마다라서
             // 큰 묶음도 받는다.
-            .connect_timeout(CONNECT_TIMEOUT)
-            .read_timeout(READ_TIMEOUT)
+            .connect_timeout(connect)
+            .read_timeout(read)
             .redirect(reqwest::redirect::Policy::custom(
                 |attempt| match location::check_redirect(attempt.previous(), attempt.url()) {
                     Ok(()) => attempt.follow(),
@@ -213,7 +226,8 @@ impl Fetcher {
         Ok(index)
     }
 
-    async fn bytes(&self, url: &Url, limit: u64) -> Result<Vec<u8>, RepoError> {
+    /// `url`의 내용을 `limit` 바이트까지 받는다([`crate::location::check`]의 규칙, redirect도 같다).
+    pub async fn bytes(&self, url: &Url, limit: u64) -> Result<Vec<u8>, RepoError> {
         let mut body = Vec::new();
         self.stream(url, limit, &mut |c| {
             body.extend_from_slice(c);

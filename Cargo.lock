@@ -2590,6 +2590,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "sbx-release-index"
+version = "0.2.1"
+dependencies = [
+ "minisign",
+ "sbx-executor-repo",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "sbx-rootfs"
 version = "0.2.1"
 dependencies = [
