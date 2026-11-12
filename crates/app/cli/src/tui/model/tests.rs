@@ -488,3 +488,12 @@ fn images_tab_prunes_and_shows_disk_usage() {
     assert_eq!(press(&mut m, KeyCode::Char('I')), None);
     assert_eq!(m.prompt.take().unwrap().text, "load -i ");
 }
+
+#[test]
+fn v_upgrades_from_any_tab() {
+    let mut m = loaded();
+    assert_eq!(
+        press(&mut m, KeyCode::Char('V')),
+        Some(Action::Handover(vec!["upgrade".into()]))
+    );
+}

@@ -271,3 +271,21 @@ fn help_lines_fit_a_100_column_terminal() {
         assert!(s.lines().any(|l| l.contains(h.does)), "{:?}\n{s}", h.does);
     }
 }
+
+#[test]
+fn header_shows_the_version_and_a_newer_one() {
+    let mut m = loaded();
+    let s = render(&mut m, 120, 10);
+    let cur = format!("sbx {}", env!("CARGO_PKG_VERSION"));
+    assert!(s.lines().next().unwrap().contains(&cur), "{s}");
+    m.apply(Msg::Update(Some(("9.9.9".into(), false))));
+    let s = render(&mut m, 120, 10);
+    assert!(
+        s.lines()
+            .next()
+            .unwrap()
+            .contains(&format!("{cur} (9.9.9)")),
+        "{s}"
+    );
+    assert!(s.contains("1 Sandboxes 2"), "tabs still fit: {s}");
+}

@@ -90,6 +90,11 @@ pub const KEYS: &[KeyHelp] = &[
         "executor rm, or executor adapter rm (asks first)",
     ),
     k("P", "executors", "executor prune (asks first)"),
+    k(
+        "V",
+        "all",
+        "upgrade: replace sbx with the newest release (takes the terminal)",
+    ),
     k("?", "all", "this help"),
     k("q, Ctrl+C", "all", "quit"),
 ];

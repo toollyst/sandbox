@@ -324,6 +324,36 @@ pub fn version_text(cache_dir: Option<&Path>) -> String {
         .unwrap_or(plain)
 }
 
+/// `sbx tui` 머리줄의 괄호 안(`0.2.2`, `0.2.2, security fix`, `yanked`)과 급한지. 알릴 것이 없으면 `None`.
+pub fn short(cache_dir: &Path) -> Option<(String, bool)> {
+    let platform = sbx_release_index::host_platform();
+    let index = Cache::load(cache_dir).index(now(), &platform)?;
+    let s = sbx_release_index::status(current(), &index, &platform);
+    let text = match (s.latest, s.yanked()) {
+        (Some(l), _) if s.security => format!("{}, security fix", l.version),
+        (Some(l), true) => format!("{}; this one is yanked", l.version),
+        (Some(l), false) => l.version.to_string(),
+        (None, true) => "yanked".to_owned(),
+        (None, false) => return None,
+    };
+    Some((text, s.urgent()))
+}
+
+/// 할 때가 됐으면 색인을 받아 기록한다(`sbx tui`가 뒤에서 부른다). 받지 못하면 실패로 기록한다.
+pub async fn refresh(cache_dir: &Path, data_dir: &Path) {
+    let mut cache = Cache::load(cache_dir);
+    let now = now();
+    if !checks_enabled() || !cache.due(now) {
+        return;
+    }
+    let platform = sbx_release_index::host_platform();
+    match fetch_index(data_dir, WAIT).await {
+        Ok(index) => cache.record(Ok(&index), now, &platform),
+        Err(_) => cache.record(Err(()), now, &platform),
+    }
+    cache.save(cache_dir);
+}
+
 /// 명령과 함께 도는 확인.
 pub struct Check {
     cache_dir: PathBuf,
