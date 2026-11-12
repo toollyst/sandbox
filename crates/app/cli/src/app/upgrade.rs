@@ -12,9 +12,9 @@
 //! 5. 받기: 이 플랫폼의 tar.gz. 크기·SHA-256(색인)과 묶음 키의 minisign 서명이 맞아야 한다. `cosign`이 있으면
 //!    Sigstore 번들도 본다(`SBX_VERIFY=require`면 cosign이 있어야 하고, `off`면 Sigstore는 보지 않는다. minisign은 늘 본다).
 //! 6. 풀어서 `sbx`와 `sbx-shim`을 같은 디렉터리의 임시 이름으로 두고, 새 `sbx --version`이 목표 버전을 말하는지 본다.
-//! 7. 잠금(`.sbx-upgrade.lock`) 아래에서 `sbx-shim`, `sbx` 차례로 바꾼다. 지금 것을 `.<이름>.old`로 옮기고 새 것을
-//!    넣는다. 하나라도 실패하면 옮긴 것을 되돌린다. 끝나면 `.old`를 지운다(Windows에서 돌고 있는 파일은 지울 수 없어
-//!    다음 `upgrade`가 지운다).
+//! 7. 잠금(`.sbx-upgrade.lock`) 아래에서 `sbx-shim`, `sbx` 차례로 바꾼다. 지금 것을 `.<이름>.old-<pid>`로 옮기고 새
+//!    것을 넣는다(실행 중인 파일도 이름은 바꿀 수 있다, Windows 포함). 하나라도 실패하면 되돌린다. 끝나면 `.old-*`를
+//!    지운다. Windows에서 돌고 있는 것(지금 이 `sbx`, detached 샌드박스의 `sbx-shim`)은 지울 수 없어 다음 `upgrade`가 지운다.
 //!
 //! 돌고 있는 샌드박스는 그대로 둔다(게스트 규약은 더하기만 한다).
 
@@ -110,15 +110,26 @@ installed executors may stop working until you install newer ones.",
     Ok(q)
 }
 
-/// `.<이름>.old`.
+/// `.<이름>.old-<pid>`. 프로세스마다 다르다: Windows에서 지난 `upgrade`의 `.old`가 아직 돌고 있으면 지울 수도 덮을
+/// 수도 없다.
 fn old_name(dir: &Path, name: &str) -> PathBuf {
-    dir.join(format!(".{name}.old"))
+    dir.join(format!(".{name}.old-{}", std::process::id()))
 }
 
-/// 지난 `upgrade`가 남긴 `.old`를 지운다(지울 수 없으면 둔다).
+/// 지난 `upgrade`가 남긴 `.old-*`를 지운다(돌고 있어 지울 수 없으면 둔다).
 fn clean_old(dir: &Path) {
-    for n in ["sbx", "sbx-shim"] {
-        let _ = std::fs::remove_file(old_name(dir, &exe(n)));
+    let prefixes: Vec<String> = ["sbx", "sbx-shim"]
+        .iter()
+        .map(|n| format!(".{}.old-", exe(n)))
+        .collect();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if prefixes.iter().any(|p| name.starts_with(p.as_str())) {
+            let _ = std::fs::remove_file(e.path());
+        }
     }
 }
 
@@ -130,7 +141,6 @@ fn replace_all(dir: &Path, staged: &[(String, PathBuf)]) -> std::io::Result<()> 
         for (name, new) in staged {
             let path = dir.join(name);
             let old = old_name(dir, name);
-            let _ = std::fs::remove_file(&old);
             std::fs::rename(&path, &old)?;
             moved.push((old.clone(), path.clone()));
             std::fs::rename(new, &path)?;
@@ -402,7 +412,8 @@ impl Ctx {
                     "{name} in the sbx {v} archive is not a regular file"
                 )));
             }
-            let to = scratch.join(format!("{name}.new"));
+            // 이름 끝은 그대로 둔다(Windows는 .exe로 끝나야 실행한다).
+            let to = scratch.join(format!("new-{name}"));
             std::fs::copy(&from, &to)?;
             #[cfg(unix)]
             {
@@ -514,6 +525,56 @@ mod tests {
         .unwrap();
         assert_eq!(std::fs::read_to_string(d.join("a")).unwrap(), "new a");
         assert_eq!(std::fs::read_to_string(d.join("b")).unwrap(), "new b");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Windows: 돌고 있는 exe는 덮을 수 없지만 이름은 바꿀 수 있다. `.old-*`는 끝난 뒤에 지워진다.
+    #[cfg(windows)]
+    #[test]
+    fn a_running_exe_is_replaced_on_windows() {
+        let d = std::env::temp_dir().join(format!("sbx-upgrade-win-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
+        std::fs::copy(
+            Path::new(&root).join("System32").join("ping.exe"),
+            d.join("sbx.exe"),
+        )
+        .unwrap();
+        std::fs::write(d.join("sbx-shim.exe"), "old shim").unwrap();
+        let mut child = std::process::Command::new(d.join("sbx.exe"))
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(
+            std::fs::write(d.join("sbx.exe"), "x").is_err(),
+            "a running exe can't be overwritten"
+        );
+        std::fs::write(d.join("new-sbx.exe"), "new").unwrap();
+        std::fs::write(d.join("new-sbx-shim.exe"), "new shim").unwrap();
+        replace_all(
+            &d,
+            &[
+                ("sbx-shim.exe".into(), d.join("new-sbx-shim.exe")),
+                ("sbx.exe".into(), d.join("new-sbx.exe")),
+            ],
+        )
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(d.join("sbx.exe")).unwrap(), "new");
+        assert_eq!(
+            std::fs::read_to_string(d.join("sbx-shim.exe")).unwrap(),
+            "new shim"
+        );
+        clean_old(&d);
+        assert!(old_name(&d, "sbx.exe").exists(), "still running");
+        assert!(!old_name(&d, "sbx-shim.exe").exists());
+        child.kill().unwrap();
+        child.wait().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        clean_old(&d);
+        assert!(!old_name(&d, "sbx.exe").exists());
         let _ = std::fs::remove_dir_all(&d);
     }
 }

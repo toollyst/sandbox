@@ -48,6 +48,9 @@ jobs:
         shell: bash
       - name: build
         shell: bash
+        # 새 버전 알림은 릴리스 빌드에서만 돈다(crates/app/cli/src/update.rs).
+        env:
+          SBX_RELEASE_BUILD: '1'
         run: |
           arch=$(uname -m | sed s/arm64/aarch64/)
           rustup target add "$arch-unknown-linux-musl"
