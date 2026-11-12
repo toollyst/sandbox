@@ -58,7 +58,7 @@ ruzstd = "0.9"
 tar = "0.4"
 # 이미지 서명 검증. rustls가 이미 쓰는 것(aws-lc-sys)을 같이 쓴다.
 aws-lc-rs = { version = "1.19", default-features = false, features = ["aws-lc-sys"] }
-toml = { version = "0.9", default-features = false, features = ["std", "parse", "serde"] }
+toml = { version = "1.2", default-features = false, features = ["std", "parse", "serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 reqwest = "0.13"
 # wrap_help: 도움말을 터미널 너비에 맞춰 접는다(긴 설명이 한 줄로 늘어지지 않게).
