@@ -15,6 +15,8 @@
 //!   더한다. [`repo`]에 있다.
 //! - `repo-keygen --out <접두사>`, `repo-sign --repo <디렉터리> --key <파일>`: 저장소 색인 서명 키를 만들고, 색인에
 //!   서명한다(minisign, `serial`·`expires`). [`sign`]에 있다.
+//! - `release-index`, `release-yank`, `release-sign`, `sign-files`: sbx 릴리스 색인(`releases.json`)과 릴리스 묶음의
+//!   minisign 서명. [`release`]에 있다.
 //! - `demo [--sbx <파일>] [--out <SVG>]`: README의 데모를 실제로 돌려 만든다. [`demo`]에 있다.
 //! - `bench [--sbx <파일>] [--image <참조>] [--runs <N>] [--parallel <K>]`: `sbx`로 시간을 잰다. [`bench`](mod@bench)에 있다.
 //! - `fuzz [--time <초>] [대상...] [-- <libFuzzer 옵션>]`, `fuzz --seeds`: `fuzz/`의 퍼징 대상을 돌린다
@@ -33,6 +35,7 @@ mod kernel;
 mod layout;
 mod modules;
 mod paths;
+mod release;
 mod repo;
 mod sign;
 mod smoke;
@@ -295,6 +298,32 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Some(cmd @ ("release-index" | "release-yank" | "release-sign" | "sign-files")) => {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("xtask lives inside the workspace");
+            let r = match cmd {
+                "release-index" => release::index(root, &args[1..]).map(|p| p.join(" ")),
+                "release-yank" => release::yank(&args[1..]).map(|()| "ok".to_owned()),
+                "release-sign" => release::sign_index(&args[1..]).map(|s| format!("serial {s}")),
+                _ => release::sign_files(&args[1..]).map(|f| {
+                    f.iter()
+                        .map(|p| p.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                }),
+            };
+            match r {
+                Ok(out) => {
+                    println!("{out}");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("{cmd}: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Some("demo") => {
             let root = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .parent()
@@ -344,7 +373,7 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "usage: cargo xtask check-deps\n       cargo xtask guest-initramfs --arch <x86_64|aarch64> [--binary <file>] [--out <file>]\n       cargo xtask dist [--target <triple>] [--auditable]\n       cargo xtask install [--dir <dir>]\n       cargo xtask kernel --arch <x86_64|aarch64> [--out <file>]\n       cargo xtask smoke [--sbx <file>] [--no-internet]\n       cargo xtask repo-add --repo <dir> --bundle <dir> --name <name> --version <version> [--os <os>] [--capabilities <file>] [--url <prefix>] [--description <text>] [--schema 1|2] [--adapter-package | --vmm-for <adapter> --arch <amd64|arm64>]\n       cargo xtask repo-yank --repo <dir> --name <name> --version <version> [--schema 1|2] [--adapter] [--advisory <text>] [--undo]\n       cargo xtask repo-keygen --out <prefix>\n       cargo xtask repo-sign --repo <dir> (--key <file> | --key-env <var>) [--serial <n>] [--expires-days <d>]\n       cargo xtask demo [--sbx <file>] [--out <svg>]\n       cargo xtask bench [--sbx <file>] [--image <ref>] [--runs <n>] [--parallel <k>] [--docker]\n       cargo xtask fuzz [--time <secs>] [<target>...] [-- <libFuzzer args>] | --seeds"
+                "usage: cargo xtask check-deps\n       cargo xtask guest-initramfs --arch <x86_64|aarch64> [--binary <file>] [--out <file>]\n       cargo xtask dist [--target <triple>] [--auditable]\n       cargo xtask install [--dir <dir>]\n       cargo xtask kernel --arch <x86_64|aarch64> [--out <file>]\n       cargo xtask smoke [--sbx <file>] [--no-internet]\n       cargo xtask repo-add --repo <dir> --bundle <dir> --name <name> --version <version> [--os <os>] [--capabilities <file>] [--url <prefix>] [--description <text>] [--schema 1|2] [--adapter-package | --vmm-for <adapter> --arch <amd64|arm64>]\n       cargo xtask repo-yank --repo <dir> --name <name> --version <version> [--schema 1|2] [--adapter] [--advisory <text>] [--undo]\n       cargo xtask repo-keygen --out <prefix>\n       cargo xtask repo-sign --repo <dir> (--key <file> | --key-env <var>) [--serial <n>] [--expires-days <d>]\n       cargo xtask release-index --index <file> --version <version> --assets <dir> --base-url <url> [--security]\n       cargo xtask release-yank --index <file> --version <version> [--advisory <text>] [--undo]\n       cargo xtask release-sign --index <file> (--key <file> | --key-env <var>) [--expires-days <d>]\n       cargo xtask sign-files (--key <file> | --key-env <var>) <file>...\n       cargo xtask demo [--sbx <file>] [--out <svg>]\n       cargo xtask bench [--sbx <file>] [--image <ref>] [--runs <n>] [--parallel <k>] [--docker]\n       cargo xtask fuzz [--time <secs>] [<target>...] [-- <libFuzzer args>] | --seeds"
             );
             ExitCode::from(2)
         }

@@ -35,20 +35,18 @@ exe 바꾸기), TUF(timestamp의 기한, 롤백·동결 막기), 이미 있는 �
 ```json
 {
   "schema": 1,
-  "serial": 7,
-  "expires": "2026-12-12T00:00:00Z",
+  "serial": 1763000000,
+  "expires": 1765600000,
   "releases": [
     {
       "version": "0.2.2",
-      "date": "2026-11-20",
       "security": false,
       "yanked": false,
       "advisory": null,
       "layout_version": 1,
       "protocol": { "min": 2, "max": 2 },
       "assets": {
-        "linux-x86_64": { "file": "sbx-linux-x86_64.tar.gz", "sha256": "…" },
-        "darwin-aarch64": { "file": "sbx-darwin-aarch64.tar.gz", "sha256": "…" }
+        "linux-x86_64": { "url": "https://github.com/toollyst/sandbox/releases/download/v0.2.2/sbx-linux-x86_64.tar.gz", "sha256": "…", "size": 4718592 }
       }
     }
   ]
@@ -58,14 +56,16 @@ exe 바꾸기), TUF(timestamp의 기한, 롤백·동결 막기), 이미 있는 �
 - 서명 범위 안의 `serial`(본 것보다 낮으면 거부)과 `expires`(지나면 거부)로 옛 색인을 다시 내미는 것과 새 색인을
   감추는 것을 막는다. 본 `serial`은 `data_dir/sbx-releases.seen`. 코드는 실행기 저장소의 `trust`(minisign 확인,
   `Seen`)를 그대로 쓴다.
-- `security`: 그 버전이 보안 고침을 담는다(CHANGELOG의 Security 절이 있으면 publish가 켠다). `yanked`·`advisory`는
+- `security`: 그 버전이 보안 고침을 담는다(그 태그의 CHANGELOG 절이 GHSA나 CVE를 말하면 publish가 켠다). 강화만 적은
+  Security 절로는 켜지 않는다(매 명령 알림이 흔해지지 않게). `yanked`·`advisory`는
   P12와 같은 규칙(알림 문구는 제어 문자를 빼고 512자, `index::advisory_text`).
 - `layout_version`·`protocol`은 `upgrade`가 바꾸기 전에 보는 것(5장). `sha256`은 묶음을 받은 뒤 서명과 함께 본다.
 - 정식 릴리스만 싣는다(`-rc` 등은 싣지 않는다).
-- `expires`는 30일. 매달 다시 서명하는 작업 `releases-resign.yml`(environment `release`, 비밀 값이 거기에만 있다).
+- `expires`(Unix 초, 실행기 색인과 같다)는 30일. 매주 다시 서명하는 작업 `releases-resign.yml`(environment
+  `release-index`: 승인 없이, main에서만).
   기한이 지나면 알림은 조용히 건너뛰고, `upgrade`는 이유를 말하고 멈춘다.
-- 거두기: `cargo xtask release-yank v0.2.2 [--advisory TEXT] [--undo]`가 색인을 고쳐 `serial`을 올리고, 서명은
-  `releases-resign.yml`이 한다.
+- 거두기: `releases-resign.yml`을 손으로 돌린다(입력 `yank`, `advisory`, `undo`). 안에서
+  `cargo xtask release-yank`와 `release-sign`을 한다.
 - 형식은 계약이다(COMPATIBILITY.md에 더한다): 필드는 더하기만, 모르는 필드는 무시, `schema`를 올리면 옛 클라이언트는
   알림을 건너뛴다.
 
@@ -116,10 +116,10 @@ sbx upgrade [--check] [--version VERSION] [-y|--yes] [--allow-downgrade]
    있어야 하고, 목표의 `layout_version`이 지금 데이터 디렉터리보다 낮으면 거부한다(옛 `sbx`는 새 배치를 읽지 않는다).
 3. **실행기와 맞는지 본다.** 설치한 실행기·어댑터의 규약 범위가 목표의 `protocol`과 겹치지 않으면 무엇이 멈출지
    보이고 묻는다.
-4. **받는다.** `releases/download/v<버전>/`에서 이 플랫폼의 묶음, `.minisig`, `.sigstore.json`. 크기 상한 200 MiB,
-   시간 상한.
-5. **확인한다.** 색인의 `sha256`. 공식 키의 minisign 서명(필수, 공개키는 `sbx` 안에, 여럿을 둘 수 있어 교체할 수
-   있다). `cosign`이 PATH에 있으면 Sigstore 번들도 본다(신원은 `release.yml@refs/tags/v<그 버전>`, `install.sh`와
+4. **받는다.** 색인이 가리키는 이 플랫폼의 tar.gz(Windows도 tar.gz를 함께 낸다), `.minisig`, `.sigstore.json`.
+   크기 상한 256 MiB, 시간 상한.
+5. **확인한다.** 색인의 `sha256`과 크기. 묶음 키의 minisign 서명(필수, 공개키는 `sbx` 안에, 여럿을 둘 수 있어
+   교체할 수 있다). `cosign`이 PATH에 있으면 Sigstore 번들도 본다(신원은 `release.yml@refs/tags/v<그 버전>`, `install.sh`와
    같다. `SBX_VERIFY=require`면 cosign이 없을 때 멈춘다). 하나라도 틀리면 아무것도 바꾸지 않는다.
 6. **바꾸기 전에 돌려 본다.** 같은 디렉터리의 임시 이름으로 풀고 `sbx --version`이 목표 버전을 말하는지 본다.
 7. **바꾼다.** 잠금(`<디렉터리>/.sbx-upgrade.lock`) 아래에서 `sbx-shim`, 그다음 `sbx`를 rename으로 바꾼다. 하나가
@@ -138,8 +138,11 @@ sbx upgrade [--check] [--version VERSION] [-y|--yes] [--allow-downgrade]
 - 알림 경로는 서명한 색인만 믿는다. 서명이 없거나 틀리거나 기한이 지난 색인은 버린다(가짜 "보안 고침" 알림을 막는다).
 - `upgrade`는 묶음의 minisign 서명이 필수다. 색인을 바꿔치기해도 묶음 서명은 못 만든다. 공개키는 바이너리 안에만
   있고 환경 변수로 바꿀 수 없다(시험용 키는 `cfg(test)`와 시험용 feature에서만).
-- 공식 키는 둘(쓰는 것, 예비). 비밀 키는 environment `release`의 비밀 값과 오프라인 보관본에만 둔다. 교체는 새 키를
-  넣은 `sbx`를 먼저 내고 다음 릴리스부터 새 키로 서명한다.
+- 키는 역할이 둘이다(TUF의 targets와 timestamp처럼). **묶음 키**(`SBX_RELEASE_SIGNING_KEY`)는 묶음만 서명하고
+  environment `release`(승인, 태그만)에만 있다. **색인 키**(`SBX_RELEASE_INDEX_KEY`)는 `releases.json`만 서명하고
+  `release`와 `release-index`(매주 다시 서명)에 있다. 색인 키가 새면 가짜 알림은 만들 수 있지만 설치할 묶음은 못
+  만든다. 각 역할에 예비 키를 하나씩 `sbx`에 넣어 두고, 비밀 키는 비밀 값과 오프라인 보관본에만 둔다. 교체는 새
+  키를 넣은 `sbx`를 먼저 내고 다음 릴리스부터 새 키로 서명한다.
 - SECURITY.md 위협 모델에 "호스트의 버전 확인" 줄을 더한다: 무엇을 보내나, 무엇을 믿나, 어떻게 끄나.
 - 적대적 검토 대상: 롤백(낮은 `serial`), 동결(기한), 다른 플랫폼의 묶음, 묶음 안 경로 탈출과 링크, 큰 응답, redirect,
   잠금 경합, 중간 실패 뒤 되돌리기, Windows의 `.old` 처리, 서명 없이 시험용 키가 들어간 릴리스 빌드.
@@ -156,8 +159,9 @@ sbx upgrade [--check] [--version VERSION] [-y|--yes] [--allow-downgrade]
 | U6 | 문서: install.md "Upgrade", usage, SECURITY.md, COMPATIBILITY.md, testing-and-releasing(키, 거두기), CHANGELOG | main push 전 문서 검사 |
 | U7 | 적대적 검토(6장 목록) | 항목마다 회귀 테스트 |
 
-사람의 일: 공식 minisign 키 둘을 오프라인에서 만들기, 비밀 값 `SBX_RELEASE_SIGNING_KEY`를 environment `release`에
-넣기, 공개키를 코드와 문서에 싣기. 키가 없으면 U1의 서명 단계는 건너뛰고(리허설은 시험용 키), 알림과 `upgrade`는
+사람의 일: 오프라인에서 묶음 키와 색인 키(각각 예비 하나 더)를 `cargo xtask repo-keygen`으로 만들기,
+`SBX_RELEASE_SIGNING_KEY`를 `release`에, `SBX_RELEASE_INDEX_KEY`를 `release`와 `release-index`에 넣기
+(`release-index`는 `.github/scripts/apply-settings.sh`가 만든다), 공개키를 코드와 문서에 싣기. 키가 없으면 U1의 서명 단계는 건너뛰고(리허설은 시험용 키), 알림과 `upgrade`는
 "서명한 색인이 아직 없다"로 아무것도 하지 않는다.
 
 0.2.1을 쓰는 사람은 이 코드가 없으므로 설치 스크립트를 한 번 더 돌려야 0.2.2가 된다. 그 뒤부터 `sbx upgrade`로 된다.

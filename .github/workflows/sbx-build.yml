@@ -64,16 +64,17 @@ jobs:
           mkdir -p "dist/$d"
           cp "$out/sbx$exe" "$out/sbx-shim$exe" LICENSE-APACHE LICENSE-MIT README.md "dist/$d/"
           "dist/$d/sbx$exe" --version
-          # Windows는 zip(install.ps1이 Expand-Archive로 푼다), 나머지는 tar.gz.
+          # 모든 플랫폼에 tar.gz(`sbx upgrade`가 푼다). Windows는 zip도(install.ps1이 Expand-Archive로 푼다).
+          files="$d.tar.gz"
+          tar -czf "dist/$d.tar.gz" -C dist "$d"
           if [ "$RUNNER_OS" = Windows ]; then
-            f="$d.zip"
-            (cd dist && 7z a -tzip -bso0 "$f" "$d")
-          else
-            f="$d.tar.gz"
-            tar -czf "dist/$f" -C dist "$d"
+            files="$files $d.zip"
+            (cd dist && 7z a -tzip -bso0 "$d.zip" "$d")
           fi
           if command -v sha256sum >/dev/null; then sum() { sha256sum "$1"; }; else sum() { shasum -a 256 "$1"; }; fi
-          (cd dist && sum "$f" | sed 's/ \*/  /' > "$f.sha256" && cat "$f.sha256")
+          for f in $files; do
+            (cd dist && sum "$f" | sed 's/ \*/  /' > "$f.sha256" && cat "$f.sha256")
+          done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sbx-${{ matrix.platform }}

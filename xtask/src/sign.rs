@@ -84,26 +84,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
         let mut val = || it.next().cloned().ok_or(format!("{a} needs a value"));
         match a.as_str() {
             "--repo" => repo = Some(PathBuf::from(val()?)),
-            "--key" => {
-                let f = val()?;
-                key = Some(std::fs::read_to_string(&f).map_err(|e| format!("{f}: {e}"))?);
-            }
-            "--key-env" => {
-                let v = val()?;
-                key = Some(
-                    std::env::var(&v)
-                        .map_err(|_| format!("environment variable {v} is not set"))?,
-                );
-            }
+            "--key" | "--key-env" => key = Some(key_option(a, &val()?)?),
             "--serial" => serial = Some(val()?.parse().map_err(|_| "--serial needs a number")?),
-            "--expires-days" => {
-                days = val()?
-                    .parse()
-                    .map_err(|_| "--expires-days needs a number")?;
-                if !(1..=MAX_EXPIRES_DAYS).contains(&days) {
-                    return Err(format!("--expires-days must be 1 to {MAX_EXPIRES_DAYS}"));
-                }
-            }
+            "--expires-days" => days = expires_days(&val()?)?,
             other => return Err(format!("unknown option {other}")),
         }
     }
@@ -119,15 +102,49 @@ fn parse(args: &[String]) -> Result<Options, String> {
 pub fn sign(args: &[String]) -> Result<PathBuf, String> {
     let o = parse(args)?;
     let index_file = o.repo.join("v2/index.json");
-    let text = std::fs::read_to_string(&index_file)
-        .map_err(|e| format!("{}: {e}", index_file.display()))?;
-    let mut index: Value =
-        serde_json::from_str(&text).map_err(|e| format!("{}: {e}", index_file.display()))?;
+    let mut index = read_json(&index_file)?;
     if index["schema"] != json!(2) {
         return Err(format!("{} is not a schema 2 index", index_file.display()));
     }
+    let sig_file = o.repo.join("v2/index.json.minisig");
+    sign_json(
+        &mut index,
+        &o.key,
+        o.serial,
+        o.expires_days,
+        "sbx executor repository index",
+        &index_file,
+        &sig_file,
+    )?;
+    Ok(sig_file)
+}
+
+/// JSON 파일을 읽는다.
+pub fn read_json(path: &Path) -> Result<Value, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// 비밀키(minisign 상자, 암호 없음) 내용을 읽는다.
+pub fn secret_key(text: &str) -> Result<minisign::SecretKey, String> {
+    minisign::SecretKeyBox::from_string(text.trim())
+        .and_then(|b| b.into_unencrypted_secret_key())
+        .map_err(|e| format!("cannot read the secret key: {e}"))
+}
+
+/// `index`의 맨 위 `serial`(주지 않으면 지금 Unix 초와 있던 값 + 1 중 큰 것)과 `expires`(지금부터 `days`일)를
+/// 새로 정하고 서명해 `file`과 `sig_file`을 함께 바꾼다(서명을 먼저 임시 파일에 쓰고, 색인, 서명 순으로 rename).
+pub fn sign_json(
+    index: &mut Value,
+    key: &str,
+    serial: Option<u64>,
+    days: u64,
+    what: &str,
+    file: &Path,
+    sig_file: &Path,
+) -> Result<u64, String> {
     let old = index["serial"].as_u64().unwrap_or(0);
-    let serial = match o.serial {
+    let serial = match serial {
         Some(s) if s <= old => {
             return Err(format!(
                 "--serial {s} must be larger than the current {old}"
@@ -140,22 +157,38 @@ pub fn sign(args: &[String]) -> Result<PathBuf, String> {
         ),
     };
     index["serial"] = json!(serial);
-    index["expires"] = json!(now() + o.expires_days * 86_400);
+    index["expires"] = json!(now() + days * 86_400);
     let body = serde_json::to_string_pretty(&index).map_err(|e| e.to_string())? + "\n";
-    let sk = minisign::SecretKeyBox::from_string(o.key.trim())
-        .and_then(|b| b.into_unencrypted_secret_key())
-        .map_err(|e| format!("cannot read the secret key: {e}"))?;
-    let trusted = format!("sbx executor repository index serial {serial}");
+    let sk = secret_key(key)?;
+    let trusted = format!("{what} serial {serial}");
     let sig = minisign::sign(None, &sk, body.as_bytes(), Some(&trusted), None)
         .map_err(|e| e.to_string())?;
-    let sig_file = o.repo.join("v2/index.json.minisig");
-    // 색인과 서명을 함께 바꾼다: 서명을 먼저 임시 파일에 쓰고, 색인, 서명 순으로 rename한다.
     let tmp = |p: &Path| p.with_extension(format!("tmp-{}", std::process::id()));
-    std::fs::write(tmp(&index_file), &body).map_err(|e| e.to_string())?;
-    std::fs::write(tmp(&sig_file), sig.into_string()).map_err(|e| e.to_string())?;
-    std::fs::rename(tmp(&index_file), &index_file).map_err(|e| e.to_string())?;
-    std::fs::rename(tmp(&sig_file), &sig_file).map_err(|e| e.to_string())?;
-    Ok(sig_file)
+    std::fs::write(tmp(file), &body).map_err(|e| e.to_string())?;
+    std::fs::write(tmp(sig_file), sig.into_string()).map_err(|e| e.to_string())?;
+    std::fs::rename(tmp(file), file).map_err(|e| e.to_string())?;
+    std::fs::rename(tmp(sig_file), sig_file).map_err(|e| e.to_string())?;
+    Ok(serial)
+}
+
+/// `--key <파일>`이나 `--key-env <변수>`의 값.
+pub fn key_option(flag: &str, value: &str) -> Result<String, String> {
+    match flag {
+        "--key" => std::fs::read_to_string(value).map_err(|e| format!("{value}: {e}")),
+        "--key-env" => {
+            std::env::var(value).map_err(|_| format!("environment variable {value} is not set"))
+        }
+        _ => unreachable!("not a key option: {flag}"),
+    }
+}
+
+/// `--expires-days`의 값(1~[`MAX_EXPIRES_DAYS`]).
+pub fn expires_days(value: &str) -> Result<u64, String> {
+    let days: u64 = value.parse().map_err(|_| "--expires-days needs a number")?;
+    if !(1..=MAX_EXPIRES_DAYS).contains(&days) {
+        return Err(format!("--expires-days must be 1 to {MAX_EXPIRES_DAYS}"));
+    }
+    Ok(days)
 }
 
 #[cfg(test)]

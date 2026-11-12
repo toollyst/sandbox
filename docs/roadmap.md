@@ -152,7 +152,7 @@ SLSA, TUF(색인 신선도), EU CRA. 범위는 sbx 자신이다. sbx는 실행�
 
 | 단계 | 내용 | 상태 |
 |---|---|---|
-| U1 | `releases.json`과 서명, `xtask release-index`·`release-yank`, publish·`releases-resign.yml`, 묶음의 `.minisig` | 남음 |
+| U1 | `releases.json`과 서명, `xtask release-index`·`release-yank`·`release-sign`·`sign-files`, publish·`releases-resign.yml`, 묶음의 `.minisig`, Windows tar.gz | 완료: 크레이트 `sbx-release-index`(서명·기한·본 serial은 실행기 저장소 코드), 키 둘(묶음 키는 `release`에만) |
 | U2 | 시작할 때 확인과 알림, `--version`·`info`(JSON `update`) | 남음 |
 | U3 | `sbx upgrade`(Unix): 판별, 고르기, 받기, 확인, 시험 실행, 바꾸기, 되돌리기 | 남음 |
 | U4 | Windows 바꾸기(`.old`) | 남음 |
@@ -160,7 +160,7 @@ SLSA, TUF(색인 신선도), EU CRA. 범위는 sbx 자신이다. sbx는 실행�
 | U6 | 문서(install, usage, SECURITY, COMPATIBILITY, testing-and-releasing, CHANGELOG) | 남음 |
 | U7 | 적대적 검토 | 남음 |
 
-사람의 일: 공식 minisign 키 둘(쓰는 것, 예비)을 만들어 비밀 값 `SBX_RELEASE_SIGNING_KEY`를 environment `release`에 넣기.
+사람의 일: 묶음 키와 색인 키(각각 예비 하나 더)를 만들어 `SBX_RELEASE_SIGNING_KEY`(`release`), `SBX_RELEASE_INDEX_KEY`(`release`, `release-index`)에 넣기.
 
 ## 그 뒤
 
