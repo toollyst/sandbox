@@ -28,10 +28,16 @@ use url::Url;
 use crate::cli::{Cli, Command, Format};
 
 /// `releases.json`을 서명하는 색인 키(minisign 공개키, 한 줄 base64). 비어 있으면 알림이 없다.
-pub const INDEX_KEYS: &[&str] = &[];
+pub const INDEX_KEYS: &[&str] = &[
+    "RWQErLK0V41d0FB9dXtZKU7wcQrONLepSj9s4cq0wbKjWHmsti8NyKXD",
+    "RWTX1Xl5hIj8pN0bOHaD/GizQjAN/H6IoznrKHINhT2dgNRe73NRGvoF",
+];
 
 /// 릴리스 묶음을 서명하는 묶음 키. 비어 있으면 `sbx upgrade`가 아무것도 설치하지 않는다.
-pub const ARCHIVE_KEYS: &[&str] = &[];
+pub const ARCHIVE_KEYS: &[&str] = &[
+    "RWSr7ktMwZC4t4vgBvqOe2Km++mDzKImzELNmRcj7LGgbEj5BpJGunRs",
+    "RWT2l04k8kMiFHbILLsjw7ZNl613AmkjHaJO50zUuKQfFVfuJoCEzZ3r",
+];
 
 /// 성공한 확인 사이의 간격(초).
 pub const CHECK_EVERY: u64 = 24 * 3600;

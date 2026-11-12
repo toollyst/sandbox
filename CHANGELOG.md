@@ -27,6 +27,12 @@ to release a tag without one. Changes land under `## Unreleased` first, and the 
 ### Notes
 
 - 0.2.1 doesn't have this yet: run the installer once more to get 0.2.2, then `sbx upgrade` from there on.
+- Release signing keys (minisign public keys built into `sbx`; the first of each pair is in use, the second is the
+  spare):
+  - archives: `RWSr7ktMwZC4t4vgBvqOe2Km++mDzKImzELNmRcj7LGgbEj5BpJGunRs`,
+    `RWT2l04k8kMiFHbILLsjw7ZNl613AmkjHaJO50zUuKQfFVfuJoCEzZ3r`
+  - release index: `RWQErLK0V41d0FB9dXtZKU7wcQrONLepSj9s4cq0wbKjWHmsti8NyKXD`,
+    `RWTX1Xl5hIj8pN0bOHaD/GizQjAN/H6IoznrKHINhT2dgNRe73NRGvoF`
 
 ## v0.2.1
 
