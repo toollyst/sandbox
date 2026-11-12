@@ -164,6 +164,7 @@ sbx upgrade [--check] [--version VERSION] [-y|--yes] [--allow-downgrade]
 사람의 일: 오프라인에서 묶음 키와 색인 키(각각 예비 하나 더)를 `cargo xtask repo-keygen`으로 만들기,
 `SBX_RELEASE_SIGNING_KEY`를 `release`에, `SBX_RELEASE_INDEX_KEY`를 `release`와 `release-index`에 넣기
 (`release-index`는 `.github/scripts/apply-settings.sh`가 만든다), 공개키를 코드와 문서에 싣기. 키가 없으면 U1의 서명 단계는 건너뛰고(리허설은 시험용 키), 알림과 `upgrade`는
-"서명한 색인이 아직 없다"로 아무것도 하지 않는다.
+"서명한 색인이 아직 없다"로 아무것도 하지 않는다. 완료(2026-11-12): 손으로 하던 이 일을 `.github/scripts/release-keys.sh` 하나로
+묶었다(키는 git이 무시하는 `release-keys/`에). 순서는 [release-keys.md](../developers/release-keys.md).
 
 0.2.1을 쓰는 사람은 이 코드가 없으므로 설치 스크립트를 한 번 더 돌려야 0.2.2가 된다. 그 뒤부터 `sbx upgrade`로 된다.

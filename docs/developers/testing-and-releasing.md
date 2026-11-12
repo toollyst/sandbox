@@ -187,7 +187,7 @@ To yank a release, a maintainer edits the index with the offline index key and p
 
 ```sh
 git worktree add pages gh-pages
-cargo xtask release-yank --index pages/releases.json --version 0.2.2 --advisory "data loss on stop; use 0.2.3" --key index.key
+cargo xtask release-yank --index pages/releases.json --version 0.2.2 --advisory "data loss on stop; use 0.2.3" --key release-keys/index-1.key
 git -C pages commit -qam "releases.json: yank 0.2.2" && git -C pages push origin gh-pages
 ```
 

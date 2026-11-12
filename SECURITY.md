@@ -69,6 +69,19 @@ nothing. Someone holding only the index key can fake notices and choose among ge
 one), but can't make `sbx upgrade` install an archive the archive key didn't sign, and can't make it move to an older
 release without `--allow-downgrade`.
 
+The public keys built into `sbx` (the first of each pair signs, the second is the spare), also listed in the
+[CHANGELOG](CHANGELOG.md) of the release that added them:
+
+| Key | minisign public key |
+|---|---|
+| archive | `RWSr7ktMwZC4t4vgBvqOe2Km++mDzKImzELNmRcj7LGgbEj5BpJGunRs` |
+| archive (spare) | `RWT2l04k8kMiFHbILLsjw7ZNl613AmkjHaJO50zUuKQfFVfuJoCEzZ3r` |
+| release index | `RWQErLK0V41d0FB9dXtZKU7wcQrONLepSj9s4cq0wbKjWHmsti8NyKXD` |
+| release index (spare) | `RWTX1Xl5hIj8pN0bOHaD/GizQjAN/H6IoznrKHINhT2dgNRe73NRGvoF` |
+
+To check an archive from v0.2.2 on by hand, download it with its `.minisig` and run
+`minisign -Vm sbx-linux-x86_64.tar.gz -P RWSr7ktMwZC4t4vgBvqOe2Km++mDzKImzELNmRcj7LGgbEj5BpJGunRs`.
+
 Dependencies are checked on every push against the RustSec advisory database, an allow list of licenses and
 crates.io as the only source ([`deny.toml`](deny.toml)), and GitHub Actions are pinned to commit SHAs.
 

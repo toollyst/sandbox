@@ -2,7 +2,7 @@
 
 How this repository meets the [OpenSSF Open Source Project Security Baseline](https://baseline.openssf.org/versions/2025-10-10)
 (version 2025-10-10), control by control. Status is one of **met**, **partly** (what is missing is said) or
-**not met**. Last checked 2026-11-11 for v0.2.1. Update this file in the same pull request as a change that affects a
+**not met**. Last checked 2026-11-12 for v0.2.2. Update this file in the same pull request as a change that affects a
 control.
 
 Summary: every Level 1 and Level 2 control is met except MFA enforcement (OSPS-AC-01.01), which is an organisation
@@ -31,7 +31,7 @@ VEX documents (OSPS-VM-04.02), and CodeQL blocking merges (OSPS-VM-06.02); subpr
 | BR-03.01, BR-03.02 encrypted channels | 1 | met | GitHub over HTTPS; installers are served from GitHub Pages over HTTPS and download only HTTPS URLs. |
 | BR-04.01 change log | 2 | met | [CHANGELOG.md](../../CHANGELOG.md) with a **Security** section per release. |
 | BR-05.01 standard dependency tooling | 2 | met | Cargo with the committed `Cargo.lock`, `--locked` builds. |
-| BR-06.01 signed releases | 2 | met | Sigstore keyless signatures, GitHub build provenance (SLSA Build L3) and SBOM attestations; [SECURITY.md](../../SECURITY.md#verifying-what-you-install). |
+| BR-06.01 signed releases | 2 | met | Sigstore keyless signatures, GitHub build provenance (SLSA Build L3) and SBOM attestations; from v0.2.2 also minisign signatures (`.minisig`) and a signed release index, checked by `sbx upgrade` against keys built into `sbx`; [SECURITY.md](../../SECURITY.md#verifying-what-you-install). |
 | BR-07.01 no secrets in version control | 1 | met | Secret scanning with push protection ([`.github/settings/security-and-analysis.json`](../../.github/settings/security-and-analysis.json)); `.gitignore` covers local keys. |
 | BR-07.02 secrets policy | 3 | met | [GOVERNANCE.md](../../GOVERNANCE.md#secrets): no long-lived secrets, how one would be stored, who can read it, rotation. |
 
