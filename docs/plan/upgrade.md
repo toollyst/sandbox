@@ -73,9 +73,10 @@ exe 바꾸기), TUF(timestamp의 기한, 롤백·동결 막기), 이미 있는 �
 
 **언제 확인하나.** 아래를 모두 만족할 때만 네트워크에 닿는다.
 
-- 릴리스 빌드다. release.yml이 `SBX_RELEASE_BUILD=1`로 빌드한 바이너리만 확인한다. 소스 빌드, `cargo xtask install`,
-  테스트는 확인하지 않는다. 패키지 관리자 빌드는 `SBX_PACKAGED_BY=homebrew`처럼 빌드 때 이름을 주면 확인은 하되
-  `upgrade` 대신 그 관리자의 명령을 알려 준다(gh의 `updaterEnabled`와 같은 생각).
+- 릴리스 빌드다. sbx-build.yml이 `SBX_RELEASE_BUILD=1`로 빌드한 바이너리만 확인한다. 소스 빌드, `cargo xtask install`,
+  테스트는 확인하지 않는다(시험은 디버그 빌드의 `SBX_TEST_*`로). 패키지 관리자 빌드는 빌드 때
+  `SBX_UPGRADE_COMMAND='brew upgrade sbx'`처럼 주면 확인은 하되 `upgrade` 대신 그 명령을 권한다(gh의 `updaterEnabled`와
+  같은 생각).
 - `SBX_NO_UPDATE_CHECK`가 없고, `CI`가 없다.
 - 명령이 `mcp`, `completion`, 셸 완성(`COMPLETE=`), `sbx-shim`, 내부 명령, `upgrade`가 아니다. `tui`는 머리줄에 보인다.
 - 마지막 확인에서 24시간이 지났다(실패했으면 1시간 뒤 다시). 기록은 `cache_dir/update-check.json`(확인한 시각, 받은
@@ -92,15 +93,15 @@ exe 바꾸기), TUF(timestamp의 기한, 롤백·동결 막기), 이미 있는 �
 | 새 버전 | `sbx 0.2.1 (0.2.2 available): run 'sbx upgrade'` | 하루 한 번 |
 | 그 사이에 보안 고침 | `sbx 0.2.1 (0.2.2 available, security fix): run 'sbx upgrade'` | 명령마다 |
 | 지금 버전을 거둠 | `sbx 0.2.1 (yanked: <알림>; 0.2.2 available): run 'sbx upgrade'` | 명령마다 |
-| 패키지 관리자 빌드 | `… run 'brew upgrade sbx'` | 위와 같다 |
+| 패키지 관리자 빌드 | `… run 'brew upgrade sbx'`(`SBX_UPGRADE_COMMAND`) | 위와 같다 |
 
 `--format json`, `-q`이면 줄을 찍지 않는다. 같은 정보를 보는 곳:
 
 - `sbx --version`: stdout이 터미널이면 `sbx 0.2.1 (0.2.2 available)`, 아니면 지금처럼 `sbx 0.2.1`(스크립트가 읽는
   모양은 그대로). 캐시만 본다.
 - `sbx info`: 첫 줄이 같은 모양. JSON에 `update`(`latest`, `security`, `yanked`, `checked_at`, 없으면 `null`)를 더한다.
-- `sbx tui`: 머리줄 ` sbx 0.2.1 (0.2.2) `(보안 고침·거둠이면 빨강). 도움말에 `:upgrade`.
-- `sbx upgrade --check`: 캐시를 무시하고 지금 확인한다. 종료 코드 0(최신), 1(새 버전 있음), 125(확인 실패, `sbx`의 다른 실패와 같다).
+- `sbx tui`: 머리줄 ` sbx 0.2.1 (0.2.2) `(보안 고침·거둠이면 빨강). `V`가 `sbx upgrade`(터미널을 넘긴다).
+- `sbx upgrade --check`: 캐시를 무시하고 지금 확인한다. 종료 코드 0(최신), 10(새 버전 있음), 1(확인 실패, `sbx`의 다른 실패와 같다).
 
 ## 5. `sbx upgrade`
 
@@ -110,7 +111,7 @@ sbx upgrade [--check] [--version VERSION] [-y|--yes] [--allow-downgrade]
 
 1. **설치 방식을 본다.** 이 바이너리가 있는 디렉터리에 `sbx`와 `sbx-shim`이 함께 있고 사용자가 쓸 수 있으며, 패키지
    관리자 경로(Homebrew `Cellar`, `/nix/store`, `~/.cargo/bin`, `/usr/bin` 등)가 아니어야 한다. 아니면 무엇으로
-   올릴지 알려 주고 멈춘다(`SBX_PACKAGED_BY`가 있으면 그 명령).
+   올릴지 알려 주고 멈춘다(`SBX_UPGRADE_COMMAND`가 있으면 그 명령).
 2. **목표를 고른다.** 기본은 거두지 않은 가장 높은 버전. 다른 minor로 넘어가면(0.x에서는 깨질 수 있다) CHANGELOG의
    Breaking 절 링크를 보이고 묻는다(`-y`면 묻지 않는다). `--version`은 그 버전. 낮은 버전은 `--allow-downgrade`가
    있어야 하고, 목표의 `layout_version`이 지금 데이터 디렉터리보다 낮으면 거부한다(옛 `sbx`는 새 배치를 읽지 않는다).
@@ -125,8 +126,8 @@ sbx upgrade [--check] [--version VERSION] [-y|--yes] [--allow-downgrade]
 7. **바꾼다.** 잠금(`<디렉터리>/.sbx-upgrade.lock`) 아래에서 `sbx-shim`, 그다음 `sbx`를 rename으로 바꾼다. 하나가
    실패하면 바꾼 것을 되돌린다.
    - Unix: 실행 중인 바이너리 위로 rename해도 된다(돌고 있는 프로세스는 옛 파일을 계속 쓴다).
-   - Windows: 실행 중인 exe는 덮어쓸 수 없지만 이름은 바꿀 수 있다. 옛 파일을 `sbx.exe.old`로 옮기고 새 파일을 넣는다.
-     detached 샌드박스의 `sbx-shim.exe`도 같다. `.old`는 다음 시작에 지운다(`self-replace` 크레이트의 방법).
+   - Windows: 실행 중인 exe는 덮어쓸 수 없지만 이름은 바꿀 수 있다. 옛 파일을 `.sbx.exe.old-<pid>`로 옮기고 새 파일을
+     넣는다. detached 샌드박스의 `sbx-shim.exe`도 같다. 지울 수 없는 `.old-*`는 다음 `upgrade`가 지운다.
 8. **알린다.** `sbx 0.2.1 → 0.2.2`, 그 버전 CHANGELOG 링크. 데이터 배치 이전은 새 `sbx`를 처음 실행할 때 한다(이미
    있는 `layout-version`).
 

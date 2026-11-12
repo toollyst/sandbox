@@ -153,11 +153,11 @@ SLSA, TUF(색인 신선도), EU CRA. 범위는 sbx 자신이다. sbx는 실행�
 | 단계 | 내용 | 상태 |
 |---|---|---|
 | U1 | `releases.json`과 서명, `xtask release-index`·`release-yank`·`release-sign`·`sign-files`, publish·`releases-resign.yml`, 묶음의 `.minisig`, Windows tar.gz | 완료: 크레이트 `sbx-release-index`(서명·기한·본 serial은 실행기 저장소 코드), 키 둘(묶음 키는 `release`에만) |
-| U2 | 시작할 때 확인과 알림, `--version`·`info`(JSON `update`) | 남음 |
-| U3 | `sbx upgrade`(Unix): 판별, 고르기, 받기, 확인, 시험 실행, 바꾸기, 되돌리기 | 남음 |
-| U4 | Windows 바꾸기(`.old`) | 남음 |
-| U5 | tui 머리줄과 `:upgrade` | 남음 |
-| U6 | 문서(install, usage, SECURITY, COMPATIBILITY, testing-and-releasing, CHANGELOG) | 남음 |
+| U2 | 시작할 때 확인과 알림, `--version`·`info`(JSON `update`) | 완료: `crates/app/cli/src/update.rs`, 릴리스 빌드(`SBX_RELEASE_BUILD`)에서만, e2e(가짜 서명 색인) |
+| U3 | `sbx upgrade`(Unix): 판별, 고르기, 받기, 확인, 시험 실행, 바꾸기, 되돌리기 | 완료: `crates/app/cli/src/app/upgrade.rs`, `--check` 종료 코드 10, e2e(틀린 서명·다른 키 거부, 바꾸기) |
+| U4 | Windows 바꾸기(`.old`) | 완료: `.old-<pid>`, 돌고 있는 exe를 바꾸는 Windows 단위 테스트 |
+| U5 | tui 머리줄과 `V`(`sbx upgrade`) | 완료 |
+| U6 | 문서(install, usage, SECURITY, COMPATIBILITY, testing-and-releasing, CHANGELOG, README) | 완료 |
 | U7 | 적대적 검토 | 남음 |
 
 사람의 일: 묶음 키와 색인 키(각각 예비 하나 더)를 만들어 `SBX_RELEASE_SIGNING_KEY`(`release`), `SBX_RELEASE_INDEX_KEY`(`release`, `release-index`)에 넣기.

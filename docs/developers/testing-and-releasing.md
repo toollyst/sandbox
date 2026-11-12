@@ -132,16 +132,21 @@ usually after a new wick release.
 Pushing `v<version>` runs [`release.yml`](../../.github/workflows/release.yml):
 
 1. **`version`** fails unless the tag matches the workspace version in `Cargo.toml`.
-2. **`sbx`** builds `sbx-<os>-<arch>.tar.gz` (+ `.sha256`) for Linux x86_64 and aarch64 (static musl) and macOS
-   arm64, and `sbx-windows-x86_64.zip` (+ `.sha256`) for Windows, each with the guest init embedded.
+2. **`sbx`** builds `sbx-<os>-<arch>.tar.gz` (+ `.sha256`) for Linux x86_64 and aarch64 (static musl), macOS
+   arm64 and Windows x86_64, and `sbx-windows-x86_64.zip` (+ `.sha256`) for `install.ps1`, each with the guest init
+   embedded and built with `SBX_RELEASE_BUILD=1` (only such builds run the new-version check).
 3. **`smoke`** runs on Linux x86_64 with KVM, the same way as the CI `vm` job: it builds the adapter from this
    commit, makes a VMM package from upstream Firecracker, puts both in a local `file://` repository, and has the new
    `sbx` install `firecracker@<version>` from there before `cargo xtask smoke`. A `sbx` release depends on neither a
    wick release nor what the official repository holds, so `sbx` and the executors can be released in any order. If
    the protocol version changes, publish a matching adapter to the official repository afterwards
    ([Executors](#executors)).
-4. **`publish`** creates the GitHub release with the `sbx` archives and copies `install.sh` and `install.ps1` to the top of the
-   `gh-pages` branch. GitHub Pages serves that branch at <https://toollyst.github.io/sandbox/>.
+4. **`publish`** signs every tar.gz with the archive key (`.minisig`, secret `SBX_RELEASE_SIGNING_KEY`), creates the
+   GitHub release with the `sbx` archives, and copies `install.sh` and `install.ps1` to the top of the `gh-pages`
+   branch. It also adds the release to `gh-pages/releases.json` (`cargo xtask release-index`) and signs that with the
+   index key (`release-sign`, secret `SBX_RELEASE_INDEX_KEY`), marking it `security` when the CHANGELOG section names a
+   GHSA or CVE. Without the secrets those steps are skipped with a warning, and `sbx upgrade` and the new-version
+   notice don't see the release. GitHub Pages serves that branch at <https://toollyst.github.io/sandbox/>.
 
 To cut a release:
 
@@ -168,6 +173,15 @@ only be created by admins, and `main` and `gh-pages` can't be force-pushed or de
 A tag whose workflow fails publishes nothing, because `publish` only runs when every build succeeded. Fix the cause,
 bump the version and tag again rather than moving a pushed tag. If only the `gh-pages` push fails, the GitHub release
 is already up: copy `install.sh` and `install.ps1` to `gh-pages` by hand and fix the step on `main`.
+
+**Release index and keys.** [`releases-resign.yml`](../../.github/workflows/releases-resign.yml) re-signs
+`releases.json` every Monday (it expires after 30 days) in the `release-index` environment (no approval, `main`
+only), which holds only the index key. Run it by hand to yank a release: `gh workflow run releases-resign.yml -f
+yank=0.2.2 -f advisory="data loss on stop; use 0.2.3"` (`-f undo=true` takes it back). A yanked release is skipped by
+`sbx upgrade` and the notice, and an `sbx` running it is told so on every command. The public keys are
+`ARCHIVE_KEYS` and `INDEX_KEYS` in [`update.rs`](../../crates/app/cli/src/update.rs); make each key pair offline with
+`cargo xtask repo-keygen --out <prefix>`, keep the secret key offline too, and put a spare public key in each list
+before you need to switch. To rotate, release an `sbx` that knows the new key first, then sign with it.
 
 **Rehearsal.** `gh workflow run release.yml --ref <branch>` runs the same jobs on any branch without a tag. It builds,
 runs the smoke test, signs with Sigstore and uploads the result as the artifact `rehearsal`, with the notes from

@@ -230,3 +230,5 @@ runs an `sbx` command and shows its command line, so anything you do there you c
 The bottom line shows the keys you can use right now; `?` lists them all, by tab (so does `sbx tui --help`). Enter
 opens the selected row's details, with the `sbx … --format json` command that prints the same fields. An empty tab
 says what to do next, for example to install an executor before the first sandbox.
+The header shows the `sbx` version, and a newer release in parentheses (red when it fixes a vulnerability or yours
+was yanked); `V` runs `sbx upgrade`.

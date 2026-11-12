@@ -83,7 +83,8 @@ finish in **0.50 s**. Try it on your machine ([source](xtask/src/bench.rs)).
 
 The installer puts `sbx` and `sbx-shim` in your OS's place for user programs (`~/.local/bin`, or
 `%LOCALAPPDATA%\Programs\sbx` on Windows), never in the directory you run it from, after checking their SHA-256
-(and their Sigstore signature when `cosign` is installed). Then you pick an executor.
+(and their Sigstore signature when `cosign` is installed). Then you pick an executor. Later, `sbx upgrade` moves to
+the newest signed release, and `sbx` tells you when one is out (`SBX_NO_UPDATE_CHECK=1` turns that off).
 
 ### macOS
 
