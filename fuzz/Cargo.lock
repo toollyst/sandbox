@@ -306,6 +306,7 @@ dependencies = [
  "anstyle",
  "clap_lex",
  "strsim",
+ "terminal_size",
 ]
 
 [[package]]
@@ -2341,7 +2342,7 @@ dependencies = [
 
 [[package]]
 name = "sbx-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64 0.23.1",
  "clap",
@@ -2362,6 +2363,7 @@ dependencies = [
  "sbx-manage",
  "sbx-model",
  "sbx-oci",
+ "sbx-release-index",
  "sbx-rootfs",
  "sbx-runtime",
  "sbx-shim",
@@ -2369,11 +2371,12 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "url",
 ]
 
 [[package]]
 name = "sbx-events"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2381,18 +2384,18 @@ dependencies = [
 
 [[package]]
 name = "sbx-executor"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "sbx-model",
 ]
 
 [[package]]
 name = "sbx-executor-install"
-version = "0.2.0"
+version = "0.2.1"
 
 [[package]]
 name = "sbx-executor-process"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "sbx-executor",
  "sbx-executor-proto",
@@ -2401,7 +2404,7 @@ dependencies = [
 
 [[package]]
 name = "sbx-executor-proto"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2409,7 +2412,7 @@ dependencies = [
 
 [[package]]
 name = "sbx-executor-repo"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "flate2",
  "minisign-verify",
@@ -2438,6 +2441,7 @@ dependencies = [
  "sbx-manage",
  "sbx-model",
  "sbx-oci",
+ "sbx-release-index",
  "sbx-rootfs",
  "sbx-runtime",
  "sbx-shim",
@@ -2448,7 +2452,7 @@ dependencies = [
 
 [[package]]
 name = "sbx-guest"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "libc",
  "sbx-guest-proto",
@@ -2456,18 +2460,18 @@ dependencies = [
 
 [[package]]
 name = "sbx-guest-proto"
-version = "0.2.0"
+version = "0.2.1"
 
 [[package]]
 name = "sbx-image"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "sbx-model",
 ]
 
 [[package]]
 name = "sbx-manage"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "flate2",
  "ruzstd",
@@ -2476,39 +2480,54 @@ dependencies = [
  "sbx-model",
  "sbx-rootfs",
  "sbx-store",
+ "serde_json",
  "tar",
 ]
 
 [[package]]
 name = "sbx-model"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "sbx-oci"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
+ "aws-lc-rs",
+ "flate2",
  "reqwest",
  "sbx-image",
  "sbx-model",
  "serde",
  "serde_json",
  "sha2 0.11.1",
+ "tar",
  "tokio",
+ "toml",
+]
+
+[[package]]
+name = "sbx-release-index"
+version = "0.2.1"
+dependencies = [
+ "sbx-executor-repo",
+ "serde",
+ "serde_json",
+ "url",
 ]
 
 [[package]]
 name = "sbx-rootfs"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "sbx-model",
 ]
 
 [[package]]
 name = "sbx-runtime"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "libc",
  "rustix",
@@ -2523,7 +2542,7 @@ dependencies = [
 
 [[package]]
 name = "sbx-shim"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "sbx-executor-process",
  "sbx-executor-proto",
@@ -2534,7 +2553,7 @@ dependencies = [
 
 [[package]]
 name = "sbx-store"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "sbx-model",
  "serde",
@@ -2633,6 +2652,15 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "serde_spanned"
+version = "1.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c187e0a369471c550af028cba56d4f4fa2a489ad28151ae95a4d340a2a8b782"
+dependencies = [
+ "serde_core",
 ]
 
 [[package]]
@@ -2901,6 +2929,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "terminal_size"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
+dependencies = [
+ "rustix",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "terminfo"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3090,6 +3128,45 @@ dependencies = [
  "pin-project-lite",
  "tokio",
 ]
+
+[[package]]
+name = "toml"
+version = "0.9.12+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf92845e79fc2e2def6a5d828f0801e29a2f8acc037becc5ab08595c7d5e9863"
+dependencies = [
+ "indexmap",
+ "serde_core",
+ "serde_spanned",
+ "toml_datetime",
+ "toml_parser",
+ "toml_writer",
+ "winnow 0.7.15",
+]
+
+[[package]]
+name = "toml_datetime"
+version = "0.7.5+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92e1cfed4a3038bc5a127e35a2d360f145e1f4b971b551a2ba5fd7aedf7e1347"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
+name = "toml_parser"
+version = "1.1.5+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "baa693a8032d7e1cada7d0041e96126df243179ff061456783ac7f12bda4744c"
+dependencies = [
+ "winnow 1.0.5",
+]
+
+[[package]]
+name = "toml_writer"
+version = "1.2.0+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "009dbb7700f11c55ef83aebbe4c0e9cf1f1ac0844bd8d6f00dc38f302026e13a"
 
 [[package]]
 name = "tower"
@@ -3623,6 +3700,18 @@ name = "windows_x86_64_msvc"
 version = "0.52.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
+
+[[package]]
+name = "winnow"
+version = "0.7.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
+
+[[package]]
+name = "winnow"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c3b93199df0ab874cdf0c6a94f0a0dc3423fe41f1cafb62b8bd7b1deb277aef"
 
 [[package]]
 name = "wit-bindgen"

@@ -169,6 +169,9 @@ jobs:
         with:
           name: signed
           path: artifacts
+      # 서명 도구는 비밀 값이 없는 단계에서 만든다(의존성의 build.rs·proc-macro가 비밀 값을 읽지 못하게).
+      - name: build xtask (no secrets)
+        run: cargo build -q --locked -p xtask
       # minisign: 묶음마다 .minisig(`sbx upgrade`가 sbx 안의 공개키로 확인한다). 묶음 키는 이 environment에만 있다.
       # 비밀 값이 없으면 건너뛴다(그 릴리스는 `sbx upgrade`와 새 버전 알림에 나오지 않는다).
       - name: minisign archives
@@ -179,7 +182,7 @@ jobs:
             echo "::warning::SBX_RELEASE_SIGNING_KEY is not set: no .minisig files, so sbx upgrade can't install this release"
             exit 0
           fi
-          cargo xtask sign-files --key-env SBX_RELEASE_SIGNING_KEY artifacts/sbx-*/sbx-*.tar.gz
+          target/debug/xtask sign-files --key-env SBX_RELEASE_SIGNING_KEY artifacts/sbx-*/sbx-*.tar.gz
       - name: release
         run: |
           set -- artifacts/sbx-*/sbx-*.tar.gz.minisig
@@ -189,7 +192,8 @@ jobs:
             artifacts/sbx-*/sbx-*.zip artifacts/sbx-*/sbx-*.zip.sha256 artifacts/sbx-*/sbx-*.zip.sigstore.json \
             "artifacts/sbx-$VERSION.spdx.json" "$@"
       # gh-pages: 설치 스크립트와 sbx 릴리스 색인(releases.json, 색인 키로 서명). 색인은 묶음이 서명됐을 때만 더한다.
-      # 보안 고침 표시(`security`)는 이 태그의 CHANGELOG 절이 GHSA나 CVE를 말할 때다.
+      # 있던 releases.json은 색인 키로 서명된 것이어야 한다(xtask가 확인한다). 보안 고침 표시(`security`)는 이 태그의
+      # CHANGELOG 절의 `### Security` 아래가 GHSA나 CVE를 말할 때다(강화만 적은 Security 절은 아니다).
       - name: install.sh, install.ps1 and releases.json (gh-pages)
         env:
           SBX_RELEASE_INDEX_KEY: ${{ secrets.SBX_RELEASE_INDEX_KEY }}
@@ -207,10 +211,12 @@ jobs:
             echo "::warning::SBX_RELEASE_INDEX_KEY is not set or the archives are not signed: releases.json is unchanged"
           else
             security=
-            if grep -Eq 'GHSA-|CVE-' artifacts/release-notes.md; then security=--security; fi
-            cargo xtask release-index --index pages/releases.json --version "$VERSION" --assets artifacts \
-              --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME" $security
-            cargo xtask release-sign --index pages/releases.json --key-env SBX_RELEASE_INDEX_KEY
+            if awk '/^### /{on=($0=="### Security")} on' artifacts/release-notes.md | grep -Eq 'GHSA-|CVE-'; then
+              security=--security
+            fi
+            target/debug/xtask release-index --index pages/releases.json --version "$VERSION" --assets artifacts \
+              --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME" $security \
+              --key-env SBX_RELEASE_INDEX_KEY
           fi
           cd pages
           git add -A

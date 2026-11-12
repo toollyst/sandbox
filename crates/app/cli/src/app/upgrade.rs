@@ -12,9 +12,10 @@
 //! 5. 받기: 이 플랫폼의 tar.gz. 크기·SHA-256(색인)과 묶음 키의 minisign 서명이 맞아야 한다. `cosign`이 있으면
 //!    Sigstore 번들도 본다(`SBX_VERIFY=require`면 cosign이 있어야 하고, `off`면 Sigstore는 보지 않는다. minisign은 늘 본다).
 //! 6. 풀어서 `sbx`와 `sbx-shim`을 같은 디렉터리의 임시 이름으로 두고, 새 `sbx --version`이 목표 버전을 말하는지 본다.
-//! 7. 잠금(`.sbx-upgrade.lock`) 아래에서 `sbx-shim`, `sbx` 차례로 바꾼다. 지금 것을 `.<이름>.old-<pid>`로 옮기고 새
-//!    것을 넣는다(실행 중인 파일도 이름은 바꿀 수 있다, Windows 포함). 하나라도 실패하면 되돌린다. 끝나면 `.old-*`를
-//!    지운다. Windows에서 돌고 있는 것(지금 이 `sbx`, detached 샌드박스의 `sbx-shim`)은 지울 수 없어 다음 `upgrade`가 지운다.
+//! 7. 잠금(`.sbx-upgrade.lock`) 아래에서 `sbx-shim`, `sbx` 차례로 바꾼다([`swap_in`]: Unix는 하드 링크로 옛 것을
+//!    `.<이름>.old-<pid>`에 두고 새 것을 rename으로 덮는다, Windows는 돌고 있는 exe를 덮을 수 없어 이름을 먼저
+//!    바꾼다). 하나라도 실패하면 되돌린다. `.old-*`와 끊긴 upgrade의 임시 디렉터리는 잠금 아래에서만 지운다.
+//!    Windows에서 돌고 있는 것(지금 이 `sbx`, detached 샌드박스의 `sbx-shim`)은 지울 수 없어 다음 `upgrade`가 지운다.
 //!
 //! 돌고 있는 샌드박스는 그대로 둔다(게스트 규약은 더하기만 한다).
 
@@ -76,14 +77,22 @@ fn data_layout(data_dir: &Path) -> u32 {
 /// 물어야 할 것들(없으면 빈 목록).
 fn questions(current: Version, target: &Release, data_layout: u32) -> AppResult<Vec<String>> {
     let v = target.version;
-    if v < current
-        && let Some(l) = target.layout_version
-        && l < data_layout
-    {
-        return Err(msg(format!(
-            "sbx {v} uses data layout version {l}, but the data directory is already at {data_layout}; \
+    if v < current {
+        match target.layout_version {
+            Some(l) if l >= data_layout => {}
+            Some(l) => {
+                return Err(msg(format!(
+                    "sbx {v} uses data layout version {l}, but the data directory is already at {data_layout}; \
 an older sbx can't read it"
-        )));
+                )));
+            }
+            None => {
+                return Err(msg(format!(
+                    "the release index doesn't say which data layout sbx {v} uses, so it can't tell whether an \
+older sbx reads this data directory"
+                )));
+            }
+        }
     }
     let mut q = Vec::new();
     if !v.same_line(&current) {
@@ -133,31 +142,76 @@ fn clean_old(dir: &Path) {
     }
 }
 
+/// 끊긴 `upgrade`(Ctrl+C 등)가 남긴 `.sbx-upgrade-<pid>/`를 지운다. 한 시간 넘은 것만(돌고 있는 다른 upgrade의 것은 두게).
+fn clean_scratch(dir: &Path) {
+    let mine = scratch_name();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let old = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > Duration::from_secs(3600));
+        if name.starts_with(".sbx-upgrade-") && name != mine && old {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
+
+fn scratch_name() -> String {
+    format!(".sbx-upgrade-{}", std::process::id())
+}
+
 /// `new`(같은 디렉터리의 임시 파일)들을 제자리에 넣는다. 하나라도 실패하면 되돌린다.
 fn replace_all(dir: &Path, staged: &[(String, PathBuf)]) -> std::io::Result<()> {
-    let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
-    let mut placed: Vec<(PathBuf, &Path)> = Vec::new();
+    // (제자리, 옛 것을 둔 곳, 새 것을 놓아 둔 곳)
+    let mut done: Vec<(PathBuf, PathBuf, &Path)> = Vec::new();
     let result = (|| {
         for (name, new) in staged {
             let path = dir.join(name);
             let old = old_name(dir, name);
-            std::fs::rename(&path, &old)?;
-            moved.push((old.clone(), path.clone()));
-            std::fs::rename(new, &path)?;
-            placed.push((path, new));
+            swap_in(&path, &old, new)?;
+            done.push((path, old, new));
         }
         Ok(())
     })();
     if result.is_err() {
-        // 넣은 새 파일은 놓아 둔 곳으로, 옮긴 지금 파일은 제자리로.
-        for (path, new) in placed.iter().rev() {
-            let _ = std::fs::rename(path, new);
-        }
-        for (old, path) in moved.iter().rev() {
-            let _ = std::fs::rename(old, path);
+        for (path, old, new) in done.iter().rev() {
+            swap_back(path, old, new);
         }
     }
     result
+}
+
+/// `new`를 `path`에 넣고 지금 것을 `old`에 둔다.
+///
+/// Unix: 지금 것을 `old`에 하드 링크하고 `new`를 `path` 위로 rename한다. `path`가 없는 순간이 없다(그 사이에 sbx가
+/// `sbx-shim`을 찾으면 PATH의 다른 것을 쓸 수 있다). Windows: 돌고 있는 exe는 덮을 수 없어 이름을 먼저 바꾼다.
+fn swap_in(path: &Path, old: &Path, new: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::fs::hard_link(path, old)?;
+        std::fs::rename(new, path).inspect_err(|_| {
+            let _ = std::fs::remove_file(old);
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::rename(path, old)?;
+        std::fs::rename(new, path).inspect_err(|_| {
+            let _ = std::fs::rename(old, path);
+        })
+    }
+}
+
+/// [`swap_in`]을 되돌린다: 넣은 것은 놓아 둔 곳으로, 옛 것은 제자리로.
+fn swap_back(path: &Path, old: &Path, new: &Path) {
+    let _ = std::fs::hard_link(path, new).or_else(|_| std::fs::copy(path, new).map(|_| ()));
+    let _ = std::fs::rename(old, path);
 }
 
 /// 새 `sbx --version`이 `want`를 말하는가.
@@ -358,7 +412,7 @@ impl Ctx {
             .assets
             .get(&platform)
             .ok_or_else(|| msg(format!("sbx {v} has no build for {platform}")))?;
-        let scratch = dir.join(format!(".sbx-upgrade-{}", std::process::id()));
+        let scratch = dir.join(scratch_name());
         let _ = std::fs::remove_dir_all(&scratch);
         std::fs::create_dir_all(&scratch).map_err(|e| {
             msg(format!(
@@ -423,9 +477,13 @@ impl Ctx {
             staged.push((name, to));
         }
         tries(&staged[1].1, v).await?;
+        // 지우기도 잠금 아래에서만 한다: 다른 upgrade가 되돌릴 때 쓸 `.old`를 지우지 않게.
         sbx_executor_repo::file::locked(&dir.join("sbx-upgrade"), || {
             clean_old(dir);
-            replace_all(dir, &staged)
+            clean_scratch(dir);
+            replace_all(dir, &staged)?;
+            clean_old(dir);
+            Ok::<_, std::io::Error>(())
         })
         .map_err(|e| {
             msg(format!(
@@ -433,7 +491,6 @@ impl Ctx {
                 dir.display()
             ))
         })?;
-        clean_old(dir);
         Ok(if sigstore == "Sigstore verified" {
             "minisign and Sigstore verified"
         } else {

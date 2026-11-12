@@ -748,6 +748,11 @@ impl Ctx {
             Some(s) => println!("{s}"),
             None => println!("sbx {}", env!("CARGO_PKG_VERSION")),
         }
+        if let Some(days) = crate::update::stale_days(&self.cache_dir) {
+            println!(
+                " Updates:     the release index could not be read for {days} days (`sbx upgrade --check` says why)"
+            );
+        }
         println!(
             " Host:        {} ({}/{})",
             host::os(),

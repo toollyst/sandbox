@@ -108,7 +108,17 @@ pub async fn fetch(fetcher: &Fetcher, src: &Source, seen: Option<&Seen>) -> Resu
         ));
     }
     if let Some(seen) = seen {
-        seen.check_and_record_named(SEEN_NAME, src.url.as_str(), index.serial, src.url.as_str())?;
+        match seen.check_and_record_named(
+            SEEN_NAME,
+            src.url.as_str(),
+            index.serial,
+            src.url.as_str(),
+        ) {
+            Ok(()) => {}
+            // 적지 못했다(읽기 전용 데이터 디렉터리): 이미 적힌 serial과는 견줬으니(적을 때만 쓴다) 그대로 쓴다.
+            Err(RepoError::Io(_)) => {}
+            Err(e) => return Err(e.into()),
+        }
     }
     Ok(index)
 }

@@ -1,8 +1,9 @@
 # sbx 릴리스 색인(gh-pages의 releases.json)을 다시 서명한다. 색인의 기한(expires)은 30일이고 이 작업이 매주 늘린다.
-# 손으로 돌리면 버전을 거두거나(yank) 되돌리거나 알림을 단다.
+# 내용은 바꾸지 않는다: 있던 파일이 색인 키로 서명된 것이 아니면 서명하지 않는다(xtask release-sign이 확인한다).
+# 그래서 gh-pages에 push할 수 있는 누군가가 releases.json을 고쳐도 이 작업이 그것을 서명해 주지 않는다.
 #
 # 서명 키는 environment `release-index`(승인 없음, main에서만)의 SBX_RELEASE_INDEX_KEY다. 묶음을 서명하는 키는
-# 여기 없다(`release`에만): 이 키가 새도 가짜 알림은 만들 수 있지만 `sbx upgrade`가 설치할 묶음은 못 만든다.
+# 여기 없다(`release`에만). 버전을 거두는 것은 메인테이너가 오프라인 키로 한다(docs/developers/testing-and-releasing.md).
 # 키가 없거나 releases.json이 아직 없으면 아무것도 하지 않는다.
 name: releases-resign
 
@@ -10,19 +11,6 @@ on:
   schedule:
     - cron: '23 4 * * 1'
   workflow_dispatch:
-    inputs:
-      yank:
-        description: version to yank, e.g. 0.2.2 (empty = only re-sign)
-        required: false
-        type: string
-      advisory:
-        description: one-line advisory for that version (optional)
-        required: false
-        type: string
-      undo:
-        description: un-yank the version instead
-        required: false
-        type: boolean
 
 permissions:
   contents: read
@@ -37,14 +25,14 @@ jobs:
     concurrency:
       group: gh-pages
       cancel-in-progress: false
-    env:
-      SBX_RELEASE_INDEX_KEY: ${{ secrets.SBX_RELEASE_INDEX_KEY }}
-      YANK: ${{ inputs.yank }}
-      ADVISORY: ${{ inputs.advisory }}
-      UNDO: ${{ inputs.undo }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # 서명 도구는 비밀 값이 없는 단계에서 만든다(의존성의 build.rs·proc-macro가 비밀 값을 읽지 못하게).
+      - name: build xtask (no secrets)
+        run: cargo build -q --locked -p xtask
       - name: re-sign releases.json
+        env:
+          SBX_RELEASE_INDEX_KEY: ${{ secrets.SBX_RELEASE_INDEX_KEY }}
         run: |
           if [ -z "$SBX_RELEASE_INDEX_KEY" ]; then
             echo "::warning::SBX_RELEASE_INDEX_KEY is not set: nothing to sign"
@@ -53,17 +41,9 @@ jobs:
           if ! git fetch origin gh-pages:gh-pages 2>/dev/null; then echo "no gh-pages branch yet"; exit 0; fi
           git worktree add pages gh-pages
           if [ ! -f pages/releases.json ]; then echo "no releases.json yet"; exit 0; fi
-          if [ -n "$YANK" ]; then
-            set -- --index pages/releases.json --version "$YANK"
-            if [ -n "$ADVISORY" ]; then set -- "$@" --advisory "$ADVISORY"; fi
-            if [ "$UNDO" = true ]; then set -- "$@" --undo; fi
-            cargo xtask release-yank "$@"
-          fi
-          cargo xtask release-sign --index pages/releases.json --key-env SBX_RELEASE_INDEX_KEY
+          target/debug/xtask release-sign --index pages/releases.json --key-env SBX_RELEASE_INDEX_KEY
           cd pages
           git add releases.json releases.json.minisig
-          msg="re-sign releases.json"
-          if [ -n "$YANK" ]; then msg="releases.json: yank $YANK (undo=$UNDO)"; fi
           git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-            commit -qm "$msg"
+            commit -qm "re-sign releases.json"
           git push origin gh-pages

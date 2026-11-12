@@ -64,8 +64,9 @@ exe 바꾸기), TUF(timestamp의 기한, 롤백·동결 막기), 이미 있는 �
 - `expires`(Unix 초, 실행기 색인과 같다)는 30일. 매주 다시 서명하는 작업 `releases-resign.yml`(environment
   `release-index`: 승인 없이, main에서만).
   기한이 지나면 알림은 조용히 건너뛰고, `upgrade`는 이유를 말하고 멈춘다.
-- 거두기: `releases-resign.yml`을 손으로 돌린다(입력 `yank`, `advisory`, `undo`). 안에서
-  `cargo xtask release-yank`와 `release-sign`을 한다.
+- 거두기: 메인테이너가 오프라인 색인 키로 `cargo xtask release-yank`를 하고 gh-pages에 push한다. 매주 다시 서명하는
+  작업은 내용을 바꾸지 않고, 색인 키로 서명된 파일만 다시 서명한다(gh-pages를 고친 것만으로는 아무것도 서명되지
+  않는다). xtask는 있던 `serial`이 지금보다 하루 넘게 앞서면 거부하고, 클라이언트는 `serial > expires`인 색인을 거부한다.
 - 형식은 계약이다(COMPATIBILITY.md에 더한다): 필드는 더하기만, 모르는 필드는 무시, `schema`를 올리면 옛 클라이언트는
   알림을 건너뛴다.
 

@@ -158,7 +158,7 @@ SLSA, TUF(색인 신선도), EU CRA. 범위는 sbx 자신이다. sbx는 실행�
 | U4 | Windows 바꾸기(`.old`) | 완료: `.old-<pid>`, 돌고 있는 exe를 바꾸는 Windows 단위 테스트 |
 | U5 | tui 머리줄과 `V`(`sbx upgrade`) | 완료 |
 | U6 | 문서(install, usage, SECURITY, COMPATIBILITY, testing-and-releasing, CHANGELOG, README) | 완료 |
-| U7 | 적대적 검토 | 남음 |
+| U7 | 적대적 검토 | 완료(1차, 2026-11-12): 버린 확인이 이름 풀이에 걸려 종료가 늦어짐(런타임을 200 ms만 기다리고 닫음, 늦으면 실패로 적음), gh-pages에 넣은 내용을 색인 키가 서명해 줌(있던 서명 확인, 큰 serial 거부, 클라이언트는 `serial > expires` 거부, 주간 작업은 다시 서명만, 거두기는 오프라인 키), 서명 도구 빌드 중 비밀 값 노출(빌드를 비밀 없는 단계로), 보안 표시 오탐(`### Security` 아래만), 바꾸기 경합(Unix는 하드 링크와 rename으로 빈 순간 없음, 지우기는 잠금 아래, 끊긴 임시 디렉터리 정리), 배치 버전을 모르는 낮은 버전 거부, 읽기 전용 데이터 디렉터리, `info`의 오래된 확인 알림. 퍼징 대상 `release_index` |
 
 사람의 일: 묶음 키와 색인 키(각각 예비 하나 더)를 만들어 `SBX_RELEASE_SIGNING_KEY`(`release`), `SBX_RELEASE_INDEX_KEY`(`release`, `release-index`)에 넣기.
 

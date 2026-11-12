@@ -175,6 +175,11 @@ impl Index {
         let (Some(serial), Some(expires)) = (raw.serial, raw.expires) else {
             return Err("serial and expires are required".into());
         };
+        // 서명할 때 serial은 그때의 시각이고 expires는 그 뒤다. 그보다 큰 serial은 모든 클라이언트가 기억해 이후의
+        // 진짜 색인을 롤백으로 보게 만든다.
+        if serial > expires {
+            return Err(format!("serial {serial} is after expires {expires}"));
+        }
         if raw.releases.len() > MAX_RELEASES {
             return Err(format!("more than {MAX_RELEASES} releases"));
         }

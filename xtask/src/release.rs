@@ -1,19 +1,22 @@
 //! sbx 릴리스 색인(`releases.json`)을 만들고 서명한다. 형식과 클라이언트 규칙은 `sbx-release-index` 크레이트 문서다.
 //!
 //! ```text
-//! cargo xtask release-index --index <파일> --version <버전> --assets <디렉터리> --base-url <URL> [--security]
-//! cargo xtask release-yank --index <파일> --version <버전> [--advisory <글>] [--undo]
-//! cargo xtask release-sign --index <파일> (--key <파일> | --key-env <변수>) [--expires-days <D>]
+//! cargo xtask release-index --index <파일> --version <버전> --assets <디렉터리> --base-url <URL> [--security] <키> [--expires-days <D>]
+//! cargo xtask release-yank --index <파일> --version <버전> [--advisory <글>] [--undo] <키> [--expires-days <D>]
+//! cargo xtask release-sign --index <파일> <키> [--expires-days <D>]
 //! cargo xtask sign-files (--key <파일> | --key-env <변수>) <파일>...
 //! ```
 //!
 //! - `release-index`: `<디렉터리>` 아래(한 단계 안까지)의 `sbx-<플랫폼>.tar.gz`마다 SHA-256과 크기를 재어 그 버전의
 //!   항목을 쓴다(있으면 바꾼다). URL은 `<URL>/<파일 이름>`. `layout_version`은 `crates/app/cli/src/layout.rs`의
-//!   `CURRENT`, `protocol`은 `sbx-executor-proto`의 `MIN_VERSION..=VERSION`이다. 파일이 없으면 새로 만든다. 서명은
-//!   하지 않는다(`release-sign`).
-//! - `release-yank`: 그 버전을 거두거나(`--undo`면 되돌린다) 알림을 단다. 서명은 하지 않는다.
-//! - `release-sign`: `serial`과 `expires`(기본 30일)를 새로 정하고 `<파일>.minisig`를 쓴다. 고칠 때마다, 그리고 기한
-//!   전에 다시 한다.
+//!   `CURRENT`, `protocol`은 `sbx-executor-proto`의 `MIN_VERSION..=VERSION`이다. 파일이 없으면 새로 만든다.
+//! - `release-yank`: 그 버전을 거두거나(`--undo`면 되돌린다) 알림을 단다.
+//! - `release-sign`: 내용은 그대로 두고 `serial`과 `expires`만 새로 정한다(기한 전에 다시 서명).
+//!
+//! `<키>`는 `--key <파일>`이나 `--key-env <변수>`(색인 키의 비밀키)다. 셋 모두 고친 뒤 `serial`과 `expires`(기본
+//! 30일)를 새로 정하고 `<파일>.minisig`를 쓴다. 그 전에 있던 파일은 **그 키로 서명된 것이어야 한다**(공개키는
+//! 비밀키에서 얻는다): gh-pages에 누가 넣은 내용을 서명해 주지 않는다. 있던 `serial`이 지금보다 하루 넘게 앞서면
+//! 거부한다(아주 큰 serial로 모든 클라이언트를 영영 막는 것).
 //! - `sign-files`: 파일마다 `<파일>.minisig`(릴리스 묶음의 서명, `sbx upgrade`가 본다).
 
 use std::path::{Path, PathBuf};
@@ -28,8 +31,8 @@ const DEFAULT_EXPIRES_DAYS: u64 = 30;
 
 fn usage(cmd: &str) -> String {
     match cmd {
-        "release-index" => "usage: cargo xtask release-index --index <file> --version <version> --assets <dir> --base-url <url> [--security]",
-        "release-yank" => "usage: cargo xtask release-yank --index <file> --version <version> [--advisory <text>] [--undo]",
+        "release-index" => "usage: cargo xtask release-index --index <file> --version <version> --assets <dir> --base-url <url> [--security] (--key <file> | --key-env <var>) [--expires-days <days>]",
+        "release-yank" => "usage: cargo xtask release-yank --index <file> --version <version> [--advisory <text>] [--undo] (--key <file> | --key-env <var>) [--expires-days <days>]",
         "release-sign" => "usage: cargo xtask release-sign --index <file> (--key <file> | --key-env <var>) [--expires-days <days>]",
         _ => "usage: cargo xtask sign-files (--key <file> | --key-env <var>) <file>...",
     }
@@ -92,23 +95,75 @@ fn version(v: &str) -> Result<String, String> {
     }
 }
 
-fn load(path: &Path) -> Result<Value, String> {
+fn sig_path(path: &Path) -> PathBuf {
+    let mut sig = path.as_os_str().to_owned();
+    sig.push(".minisig");
+    PathBuf::from(sig)
+}
+
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// 있던 색인을 읽는다. 없으면 빈 색인. 있으면 `key`(비밀키)의 공개키로 한 서명이 맞아야 하고, `serial`이 지금보다 하루
+/// 넘게 앞서면 안 된다.
+fn load_verified(path: &Path, key: &str) -> Result<Value, String> {
     if !path.exists() {
         return Ok(json!({ "schema": 1, "releases": [] }));
     }
-    let v = sign::read_json(path)?;
+    let body = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let sig_file = sig_path(path);
+    let sig = std::fs::read_to_string(&sig_file).map_err(|e| {
+        format!(
+            "{}: {e} (refusing to sign a release index nobody signed)",
+            sig_file.display()
+        )
+    })?;
+    let sk = sign::secret_key(key)?;
+    let pk = minisign::PublicKey::from_secret_key(&sk).map_err(|e| e.to_string())?;
+    let sig = minisign::SignatureBox::from_string(&sig)
+        .map_err(|e| format!("{}: {e}", sig_file.display()))?;
+    minisign::verify(&pk, &sig, std::io::Cursor::new(&body), true, false, false).map_err(|e| {
+        format!(
+            "{} is not signed by this key ({e}); refusing to sign content that changed since",
+            path.display()
+        )
+    })?;
+    let v: Value = serde_json::from_slice(&body).map_err(|e| format!("{}: {e}", path.display()))?;
     if v["schema"] != json!(1) {
         return Err(format!(
             "{} is not a schema 1 release index",
             path.display()
         ));
     }
+    let serial = v["serial"].as_u64().unwrap_or(0);
+    if serial > now() + 86_400 {
+        return Err(format!(
+            "{} has serial {serial}, more than a day ahead of now; refusing to carry it forward",
+            path.display()
+        ));
+    }
     Ok(v)
 }
 
-fn save(path: &Path, v: &Value) -> Result<(), String> {
-    let body = serde_json::to_string_pretty(v).map_err(|e| e.to_string())? + "\n";
-    std::fs::write(path, body).map_err(|e| format!("{}: {e}", path.display()))
+/// 고친 색인에 서명해 쓴다. 새 `serial`을 돌려준다.
+fn sign_and_save(
+    path: &Path,
+    idx: &mut Value,
+    key: &str,
+    days: Option<u64>,
+) -> Result<u64, String> {
+    sign::sign_json(
+        idx,
+        key,
+        None,
+        days.unwrap_or(DEFAULT_EXPIRES_DAYS),
+        "sbx release index",
+        path,
+        &sig_path(path),
+    )
 }
 
 fn releases(v: &mut Value) -> Result<&mut Vec<Value>, String> {
@@ -167,6 +222,8 @@ pub fn index(root: &Path, args: &[String]) -> Result<Vec<String>, String> {
     let ver = version(&need(o.version, "--version", cmd)?)?;
     let dir = need(o.assets, "--assets", cmd)?;
     let base = need(o.base_url, "--base-url", cmd)?;
+    let key = need(o.key, "--key or --key-env", cmd)?;
+    let mut idx = load_verified(&path, &key)?;
     let base = base.trim_end_matches('/');
     let mut assets = serde_json::Map::new();
     let mut platforms = Vec::new();
@@ -198,11 +255,10 @@ pub fn index(root: &Path, args: &[String]) -> Result<Vec<String>, String> {
         },
         "assets": assets,
     });
-    let mut idx = load(&path)?;
     let list = releases(&mut idx)?;
     list.retain(|r| r["version"] != json!(ver));
     list.push(entry);
-    save(&path, &idx)?;
+    sign_and_save(&path, &mut idx, &key, o.expires_days)?;
     Ok(platforms)
 }
 
@@ -212,7 +268,8 @@ pub fn yank(args: &[String]) -> Result<(), String> {
     let o = parse(cmd, args)?;
     let path = need(o.index, "--index", cmd)?;
     let ver = version(&need(o.version, "--version", cmd)?)?;
-    let mut idx = load(&path)?;
+    let key = need(o.key, "--key or --key-env", cmd)?;
+    let mut idx = load_verified(&path, &key)?;
     let entry = releases(&mut idx)?
         .iter_mut()
         .find(|r| r["version"] == json!(ver))
@@ -223,7 +280,7 @@ pub fn yank(args: &[String]) -> Result<(), String> {
     } else if o.undo {
         entry["advisory"] = Value::Null;
     }
-    save(&path, &idx)
+    sign_and_save(&path, &mut idx, &key, o.expires_days).map(|_| ())
 }
 
 /// `release-sign`. 새 `serial`을 돌려준다.
@@ -232,21 +289,11 @@ pub fn sign_index(args: &[String]) -> Result<u64, String> {
     let o = parse(cmd, args)?;
     let path = need(o.index, "--index", cmd)?;
     let key = need(o.key, "--key or --key-env", cmd)?;
-    let mut idx = load(&path)?;
     if !path.exists() {
         return Err(format!("{} does not exist", path.display()));
     }
-    let mut sig = path.clone().into_os_string();
-    sig.push(".minisig");
-    sign::sign_json(
-        &mut idx,
-        &key,
-        None,
-        o.expires_days.unwrap_or(DEFAULT_EXPIRES_DAYS),
-        "sbx release index",
-        &path,
-        Path::new(&sig),
-    )
+    let mut idx = load_verified(&path, &key)?;
+    sign_and_save(&path, &mut idx, &key, o.expires_days)
 }
 
 /// `sign-files`. 쓴 서명 파일들을 돌려준다.
@@ -286,18 +333,10 @@ mod tests {
     async fn the_index_it_makes_is_read_by_the_client() {
         let root = std::env::temp_dir().join(format!("sbx-xtask-release-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join("artifacts/sbx-linux-x86_64")).unwrap();
-        std::fs::create_dir_all(root.join("artifacts/sbx-darwin-aarch64")).unwrap();
-        std::fs::write(
-            root.join("artifacts/sbx-linux-x86_64/sbx-linux-x86_64.tar.gz"),
-            b"linux",
-        )
-        .unwrap();
-        std::fs::write(
-            root.join("artifacts/sbx-darwin-aarch64/sbx-darwin-aarch64.tar.gz"),
-            b"mac",
-        )
-        .unwrap();
+        for p in ["linux-x86_64", "darwin-aarch64"] {
+            std::fs::create_dir_all(root.join(format!("artifacts/sbx-{p}"))).unwrap();
+            std::fs::write(root.join(format!("artifacts/sbx-{p}/sbx-{p}.tar.gz")), p).unwrap();
+        }
         std::fs::write(
             root.join("artifacts/sbx-linux-x86_64/sbx-linux-x86_64.tar.gz.sha256"),
             b"x",
@@ -307,40 +346,33 @@ mod tests {
         let file = root.join("releases.json");
         let f = file.to_str().unwrap();
         let assets = root.join("artifacts");
+        let a = assets.to_str().unwrap();
         let base = url::Url::from_directory_path(&assets).unwrap();
-        for v in ["v0.2.1", "0.2.2"] {
-            let p = index(
-                ws,
-                &s(&[
-                    "--index",
-                    f,
-                    "--version",
-                    v,
-                    "--assets",
-                    assets.to_str().unwrap(),
-                    "--base-url",
-                    base.as_str(),
-                ]),
-            )
-            .unwrap();
-            assert_eq!(p, ["darwin-aarch64", "linux-x86_64"]);
-        }
-        // 다시 쓰면 바꾼다(겹치지 않는다).
-        index(
-            ws,
-            &s(&[
+        let kp = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let key = root.join("k.key");
+        std::fs::write(&key, kp.sk.to_box(None).unwrap().into_string()).unwrap();
+        let k = key.to_str().unwrap();
+        let add = |v: &str, extra: &[&str]| {
+            let mut args = s(&[
                 "--index",
                 f,
                 "--version",
-                "0.2.2",
+                v,
                 "--assets",
-                assets.to_str().unwrap(),
+                a,
                 "--base-url",
                 base.as_str(),
-                "--security",
-            ]),
-        )
-        .unwrap();
+                "--key",
+                k,
+            ]);
+            args.extend(s(extra));
+            index(ws, &args)
+        };
+        for v in ["v0.2.1", "0.2.2"] {
+            assert_eq!(add(v, &[]).unwrap(), ["darwin-aarch64", "linux-x86_64"]);
+        }
+        // 다시 쓰면 바꾼다(겹치지 않는다).
+        add("0.2.2", &["--security"]).unwrap();
         yank(&s(&[
             "--index",
             f,
@@ -348,42 +380,58 @@ mod tests {
             "0.2.1",
             "--advisory",
             "use 0.2.2",
-        ]))
-        .unwrap();
-        assert!(yank(&s(&["--index", f, "--version", "9.9.9"])).is_err());
-        assert!(
-            index(
-                ws,
-                &s(&[
-                    "--index",
-                    f,
-                    "--version",
-                    "0.2",
-                    "--assets",
-                    "x",
-                    "--base-url",
-                    "y"
-                ])
-            )
-            .is_err()
-        );
-
-        let kp = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
-        let key = root.join("k.key");
-        std::fs::write(&key, kp.sk.to_box(None).unwrap().into_string()).unwrap();
-        let serial = sign_index(&s(&["--index", f, "--key", key.to_str().unwrap()])).unwrap();
-        // 묶음은 클라이언트가 서명을 본다. 리눅스 것만 서명해 확인한다.
-        let linux = root.join("artifacts/sbx-linux-x86_64/sbx-linux-x86_64.tar.gz");
-        // 위에서 하위 디렉터리의 것을 찾았지만 URL은 base/<이름>이다: 클라이언트가 찾게 base에 둔다.
-        std::fs::copy(&linux, assets.join("sbx-linux-x86_64.tar.gz")).unwrap();
-        let sigs = sign_files(&s(&[
             "--key",
-            key.to_str().unwrap(),
-            assets.join("sbx-linux-x86_64.tar.gz").to_str().unwrap(),
+            k,
         ]))
         .unwrap();
-        assert_eq!(sigs.len(), 1);
+        assert!(yank(&s(&["--index", f, "--version", "9.9.9", "--key", k])).is_err());
+        assert!(add("0.2", &[]).is_err());
+        let serial = sign_index(&s(&["--index", f, "--key", k])).unwrap();
 
+        // 서명한 뒤 누가 고친 색인에는 서명하지 않는다(다른 키, 서명 없음, 아주 큰 serial도).
+        let signed = std::fs::read_to_string(&file).unwrap();
+        let signed_sig = std::fs::read_to_string(sig_path(&file)).unwrap();
+        let restore = || {
+            std::fs::write(&file, &signed).unwrap();
+            std::fs::write(sig_path(&file), &signed_sig).unwrap();
+        };
+        std::fs::write(
+            &file,
+            signed.replace("\"yanked\": true", "\"yanked\": false"),
+        )
+        .unwrap();
+        let e = sign_index(&s(&["--index", f, "--key", k])).unwrap_err();
+        assert!(e.contains("not signed by this key"), "{e}");
+        assert!(yank(&s(&["--index", f, "--version", "0.2.2", "--key", k])).is_err());
+        assert!(add("0.2.3", &[]).is_err());
+        restore();
+        let other = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let other_key = root.join("other.key");
+        std::fs::write(&other_key, other.sk.to_box(None).unwrap().into_string()).unwrap();
+        assert!(sign_index(&s(&["--index", f, "--key", other_key.to_str().unwrap()])).is_err());
+        let mut far: Value = serde_json::from_str(&signed).unwrap();
+        far["serial"] = json!(u64::MAX - 1);
+        let body = serde_json::to_string_pretty(&far).unwrap();
+        let sig = minisign::sign(None, &kp.sk, body.as_bytes(), None, None).unwrap();
+        std::fs::write(&file, &body).unwrap();
+        std::fs::write(sig_path(&file), sig.into_string()).unwrap();
+        let e = sign_index(&s(&["--index", f, "--key", k])).unwrap_err();
+        assert!(e.contains("ahead of now"), "{e}");
+        restore();
+        std::fs::remove_file(sig_path(&file)).unwrap();
+        let e = sign_index(&s(&["--index", f, "--key", k])).unwrap_err();
+        assert!(e.contains("nobody signed"), "{e}");
+        restore();
+
+        // 클라이언트가 읽는다. 묶음 URL은 base/<이름>이라 그곳에 두고 서명한다.
+        let linux = assets.join("sbx-linux-x86_64.tar.gz");
+        std::fs::copy(
+            assets.join("sbx-linux-x86_64/sbx-linux-x86_64.tar.gz"),
+            &linux,
+        )
+        .unwrap();
+        let sigs = sign_files(&s(&["--key", k, linux.to_str().unwrap()])).unwrap();
+        assert_eq!(sigs.len(), 1);
         let src = sbx_release_index::Source {
             url: url::Url::from_file_path(&file).unwrap(),
             keys: vec![kp.pk.to_base64()],
@@ -411,7 +459,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(std::fs::read(&dest).unwrap(), b"linux");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"linux-x86_64");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

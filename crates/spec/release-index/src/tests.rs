@@ -98,6 +98,10 @@ fn bad_indexes_are_refused_whole() {
     let mut r = release("0.2.1");
     r["protocol"] = json!({ "min": 3, "max": 2 });
     cases.push(("protocol", index_json(vec![r])));
+    cases.push((
+        "serial after expires",
+        json!({ "schema": 1, "serial": 10, "expires": 9, "releases": [] }),
+    ));
     for (what, case) in cases {
         assert!(parse(&case).is_err(), "{what}");
     }
@@ -242,7 +246,7 @@ async fn signed_index_is_checked_for_signature_expiry_and_rollback() {
     let e = fetch(&f, &s.source(), Some(&seen)).await.unwrap_err();
     assert!(e.to_string().contains("rollback"), "{e}");
 
-    s.publish(11, 1);
+    s.publish(11, 12);
     let e = fetch(&f, &s.source(), Some(&seen)).await.unwrap_err();
     assert!(e.to_string().contains("expired"), "{e}");
 

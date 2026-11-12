@@ -64,7 +64,10 @@ From v0.2.2, `sbx upgrade` installs only an archive whose minisign signature (`.
 signature as above. Two keys with different jobs sign releases: the **archive key** signs archives and exists only in
 the `release` environment (maintainer approval, tags only); the **index key** signs `releases.json` (versions, yanks,
 advisories), which is re-signed weekly and expires after 30 days, and `sbx` refuses an index older than one it has
-seen. Someone holding only the index key can fake a notice but can't make `sbx upgrade` install anything.
+seen. The weekly job only re-signs an index the index key already signed, so a push to `gh-pages` alone changes
+nothing. Someone holding only the index key can fake notices and choose among genuine releases (for example un-yank
+one), but can't make `sbx upgrade` install an archive the archive key didn't sign, and can't make it move to an older
+release without `--allow-downgrade`.
 
 Dependencies are checked on every push against the RustSec advisory database, an allow list of licenses and
 crates.io as the only source ([`deny.toml`](deny.toml)), and GitHub Actions are pinned to commit SHAs.

@@ -36,8 +36,28 @@ fn parse() -> Cli {
     Cli::from_arg_matches_mut(&mut matches).unwrap_or_else(|e| e.exit())
 }
 
-#[tokio::main]
-async fn run(cli: Cli) -> ExitCode {
+/// 명령을 비동기 런타임에서 돌린다. 끝나면 런타임을 기다리지 않고 닫는다([`SHUTDOWN_WAIT`]): 버린 새 버전 확인이
+/// 이름 풀이(`getaddrinfo`, 막는 스레드)에 걸려 있으면 런타임을 그냥 버릴 때 그것이 끝날 때까지 종료가 늦어진다.
+fn run(cli: Cli) -> ExitCode {
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("sbx: cannot start the async runtime: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let code = rt.block_on(command(cli));
+    rt.shutdown_timeout(SHUTDOWN_WAIT);
+    ExitCode::from(code)
+}
+
+/// 명령이 끝난 뒤 남은 막는 작업을 기다리는 한도. 명령이 기다려야 하는 것은 이미 다 기다렸다.
+const SHUTDOWN_WAIT: std::time::Duration = std::time::Duration::from_millis(200);
+
+async fn command(cli: Cli) -> u8 {
     let json = cli.format == Format::Json;
     let check = update::start(&cli);
     let code = match sbx_cli::run(cli).await {
@@ -53,5 +73,5 @@ async fn run(cli: Cli) -> ExitCode {
         }
     };
     update::finish(check).await;
-    ExitCode::from(code)
+    code
 }

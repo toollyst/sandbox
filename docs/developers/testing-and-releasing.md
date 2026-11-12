@@ -59,6 +59,7 @@ directory, version order is a total order. The doc comment at the top of each ta
 | `image_layer` | a layer blob (plain, gzip or zstd) | the `prepare` path: zstd and tar reading in `sbx-manage`, the merge and the EROFS writer in [`sbx-rootfs`](../../crates/port/rootfs/src/lib.rs) |
 | `rootfs_merge` | structured layers (whiteouts, opaque dirs, hard links, devices) and a kernel path | `MergedTree::apply_layer`, `resolve`, `ErofsBuilder` |
 | `executor_index` | an executor repository index | `Index::parse`, `available`, `pick` in [`sbx-executor-repo`](../../crates/spec/executor-repo/src/index.rs) |
+| `release_index` | the sbx release index (`releases.json`) | `Index::parse`, `status`, `target` in [`sbx-release-index`](../../crates/spec/release-index/src/index.rs): the notice and `sbx upgrade` pick the highest unyanked build for the platform and never downgrade by default |
 | `executor_spec` | `NAME@VERSION` (also what `.sbx-executor` holds), versions, repository URLs | `Spec`, `version_cmp`, `version_matches` in [`sbx-executor-install`](../../crates/spec/executor-install/src/lib.rs), `location::repository` |
 | `executor_unpack` | a package archive (the target gzips it) | `unpack::unpack` in [`sbx-executor-repo`](../../crates/spec/executor-repo/src/unpack.rs), into a temp dir next to one that must stay untouched |
 
@@ -176,8 +177,22 @@ is already up: copy `install.sh` and `install.ps1` to `gh-pages` by hand and fix
 
 **Release index and keys.** [`releases-resign.yml`](../../.github/workflows/releases-resign.yml) re-signs
 `releases.json` every Monday (it expires after 30 days) in the `release-index` environment (no approval, `main`
-only), which holds only the index key. Run it by hand to yank a release: `gh workflow run releases-resign.yml -f
-yank=0.2.2 -f advisory="data loss on stop; use 0.2.3"` (`-f undo=true` takes it back). A yanked release is skipped by
+only), which holds only the index key. It changes nothing but `serial` and `expires`, and refuses an index the index
+key didn't sign, so editing `gh-pages` by hand can't get anything signed. GitHub turns scheduled workflows off after
+60 days without repository activity; if that happens the index expires 30 days later and notices stop (`sbx info`
+says so), so run it by hand. A queue of more than one `gh-pages` job (publish, resign) keeps only the newest pending
+one; re-run whichever was dropped.
+
+To yank a release, a maintainer edits the index with the offline index key and pushes `gh-pages`:
+
+```sh
+git worktree add pages gh-pages
+cargo xtask release-yank --index pages/releases.json --version 0.2.2 --advisory "data loss on stop; use 0.2.3" --key index.key
+git -C pages commit -qam "releases.json: yank 0.2.2" && git -C pages push origin gh-pages
+```
+
+(`--undo` takes it back.) Every xtask command that edits or signs the index first checks that the current file is
+signed by that key and that its `serial` isn't more than a day ahead of now. A yanked release is skipped by
 `sbx upgrade` and the notice, and an `sbx` running it is told so on every command. The public keys are
 `ARCHIVE_KEYS` and `INDEX_KEYS` in [`update.rs`](../../crates/app/cli/src/update.rs); make each key pair offline with
 `cargo xtask repo-keygen --out <prefix>`, keep the secret key offline too, and put a spare public key in each list

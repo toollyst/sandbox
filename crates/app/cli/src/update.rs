@@ -7,7 +7,7 @@
 //!   비어 있고, `--format json`이 아니고, stderr가 터미널이고, 명령이 `mcp`·`completion`·`tui`·`upgrade`가 아닐 때.
 //!   마지막 확인에서 [`CHECK_EVERY`](실패했으면 [`RETRY_AFTER`])가 지났을 때만 네트워크에 닿는다.
 //! - **어떻게.** 명령과 함께 비동기 작업 하나가 색인을 받는다(연결 [`CONNECT_TIMEOUT`]). 명령이 먼저 끝나면 시작에서
-//!   [`WAIT`]가 될 때까지만 기다리고 버린다. 보내는 것은 요청과 `User-Agent: sbx/<버전> (<os>; <arch>)`뿐이다.
+//!   [`WAIT`]가 될 때까지만 기다리고 버린다(실패로 적는다). 프로세스는 버린 확인을 기다리지 않고 끝난다(`main`). 보내는 것은 요청과 `User-Agent: sbx/<버전> (<os>; <arch>)`뿐이다.
 //! - **무엇을 믿나.** 색인 키([`INDEX_KEYS`])의 서명, 기한, 본 serial(`<data_dir>/release-index.seen`)이 맞는 색인만.
 //!   틀리면 알리지 않는다(가짜 "보안 고침"을 막는다).
 //! - **기록.** `<cache_dir>/update-check.json`: 확인한 시각과 이 플랫폼의 릴리스 목록(버전, 보안 고침, 거둠, 알림). 캐시라
@@ -297,6 +297,26 @@ pub fn cached_summary(cache_dir: &Path) -> Option<String> {
     summary(&sbx_release_index::status(current(), &index, &platform))
 }
 
+/// 확인을 하는데 마지막 성공이 오래됐으면(7일 넘게) 그 날 수. `sbx info`가 알린다: 색인을 못 받는 것(막힘, 기한이 지난
+/// 색인)은 알림이 없어지는 것으로만 드러나기 때문이다.
+pub fn stale_days(cache_dir: &Path) -> Option<u64> {
+    if !checks_enabled() {
+        return None;
+    }
+    let c = Cache::load(cache_dir);
+    let now = now();
+    if c.checked_at == 0 || !c.failed {
+        return None;
+    }
+    let since = if c.fetched_at == 0 {
+        c.checked_at
+    } else {
+        c.fetched_at
+    };
+    let days = now.saturating_sub(since) / 86_400;
+    (days >= 7 || c.fetched_at == 0).then_some(days)
+}
+
 /// `sbx info --format json`의 `update`. 기록이 없으면 `None`.
 pub fn cached_info(cache_dir: &Path) -> Option<crate::output::UpdateInfo> {
     let platform = sbx_release_index::host_platform();
@@ -408,9 +428,8 @@ pub async fn finish(check: Option<Check>) {
         let left = WAIT.saturating_sub(c.started.elapsed());
         match tokio::time::timeout(left, task).await {
             Ok(Ok(Ok(index))) => cache.record(Ok(&index), now, &platform),
-            Ok(_) => cache.record(Err(()), now, &platform),
-            // 늦었다: 다음 명령이 다시 해 본다(기록하지 않는다).
-            Err(_) => {}
+            // 실패했거나 늦었다: 실패로 적어 [`RETRY_AFTER`] 뒤에 다시 한다(명령마다 3초씩 늦어지지 않게).
+            _ => cache.record(Err(()), now, &platform),
         }
     }
     if let Some(line) = notice(&mut cache, now, &platform) {
