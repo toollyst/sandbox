@@ -32,6 +32,7 @@ flowchart BT
     sbx_executor_proto[sbx-executor-proto]
     sbx_executor_repo[sbx-executor-repo]
     sbx_guest_proto[sbx-guest-proto]
+    sbx_release_index[sbx-release-index]
   end
   subgraph port
     sbx_events[sbx-events]
@@ -58,6 +59,7 @@ flowchart BT
     sbx_executor_firecracker[sbx-executor-firecracker]
   end
   sbx_executor_repo --> sbx_executor_install
+  sbx_release_index --> sbx_executor_repo
   sbx_executor --> sbx_model
   sbx_image --> sbx_model
   sbx_rootfs --> sbx_model
@@ -88,6 +90,7 @@ flowchart BT
   sbx_cli --> sbx_manage
   sbx_cli --> sbx_model
   sbx_cli --> sbx_oci
+  sbx_cli --> sbx_release_index
   sbx_cli --> sbx_rootfs
   sbx_cli --> sbx_runtime
   sbx_cli --> sbx_shim
@@ -110,8 +113,9 @@ flowchart BT
 | model | [`model`](../../crates/model) | `sbx-model` | – | `sbx-executor`, `sbx-image`, `sbx-rootfs`, `sbx-store`, `sbx-executor-process`, `sbx-oci`, `sbx-manage`, `sbx-runtime`, `sbx-cli`, `sbx-shim`, `sbx-executor-fake` |
 | spec | [`spec/executor-install`](../../crates/spec/executor-install) | `sbx-executor-install` | – | `sbx-executor-repo`, `sbx-cli` |
 | spec | [`spec/executor-proto`](../../crates/spec/executor-proto) | `sbx-executor-proto` | – | `sbx-executor-process`, `sbx-cli`, `sbx-shim`, `sbx-executor-fake`, `sbx-executor-firecracker` |
-| spec | [`spec/executor-repo`](../../crates/spec/executor-repo) | `sbx-executor-repo` | `sbx-executor-install` | `sbx-cli` |
+| spec | [`spec/executor-repo`](../../crates/spec/executor-repo) | `sbx-executor-repo` | `sbx-executor-install` | `sbx-release-index`, `sbx-cli` |
 | spec | [`spec/guest-proto`](../../crates/spec/guest-proto) | `sbx-guest-proto` | – | `sbx-runtime`, `sbx-cli`, `sbx-guest`, `sbx-executor-fake` |
+| spec | [`spec/release-index`](../../crates/spec/release-index) | `sbx-release-index` | `sbx-executor-repo` | `sbx-cli` |
 | port | [`port/events`](../../crates/port/events) | `sbx-events` | – | `sbx-manage`, `sbx-runtime`, `sbx-cli` |
 | port | [`port/executor`](../../crates/port/executor) | `sbx-executor` | `sbx-model` | `sbx-executor-process`, `sbx-runtime`, `sbx-cli`, `sbx-executor-fake` |
 | port | [`port/image`](../../crates/port/image) | `sbx-image` | `sbx-model` | `sbx-oci`, `sbx-manage`, `sbx-cli` |
@@ -121,7 +125,7 @@ flowchart BT
 | adapter | [`adapter/oci`](../../crates/adapter/oci) | `sbx-oci` | `sbx-image`, `sbx-model` | `sbx-cli` |
 | core | [`core/manage`](../../crates/core/manage) | `sbx-manage` | `sbx-events`, `sbx-image`, `sbx-model`, `sbx-rootfs`, `sbx-store` | `sbx-cli` |
 | core | [`core/runtime`](../../crates/core/runtime) | `sbx-runtime` | `sbx-events`, `sbx-executor`, `sbx-guest-proto`, `sbx-model`, `sbx-store` | `sbx-cli`, `sbx-shim` |
-| app | [`app/cli`](../../crates/app/cli) | `sbx-cli` (bin `sbx`) | `sbx-events`, `sbx-executor`, `sbx-executor-install`, `sbx-executor-process`, `sbx-executor-proto`, `sbx-executor-repo`, `sbx-guest-proto`, `sbx-image`, `sbx-manage`, `sbx-model`, `sbx-oci`, `sbx-rootfs`, `sbx-runtime`, `sbx-shim`, `sbx-store` | – |
+| app | [`app/cli`](../../crates/app/cli) | `sbx-cli` (bin `sbx`) | `sbx-events`, `sbx-executor`, `sbx-executor-install`, `sbx-executor-process`, `sbx-executor-proto`, `sbx-executor-repo`, `sbx-guest-proto`, `sbx-image`, `sbx-manage`, `sbx-model`, `sbx-oci`, `sbx-release-index`, `sbx-rootfs`, `sbx-runtime`, `sbx-shim`, `sbx-store` | – |
 | app | [`app/guest`](../../crates/app/guest) | `sbx-guest` (bin `sbx-guest`) | `sbx-guest-proto` | `sbx-executor-fake` |
 | app | [`app/shim`](../../crates/app/shim) | `sbx-shim` (bin `sbx-shim`) | `sbx-executor-process`, `sbx-executor-proto`, `sbx-model`, `sbx-runtime` | `sbx-cli` |
 | executor | [`executor/fake`](../../crates/executor/fake) | `sbx-executor-fake` (bin `sbx-executor-fake`) | `sbx-executor`, `sbx-executor-proto`, `sbx-guest`, `sbx-guest-proto`, `sbx-model` | – |

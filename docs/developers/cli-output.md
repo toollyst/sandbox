@@ -61,4 +61,5 @@ The JSON Schema (draft 2020-12) of every type is in [cli-output.schema.json](cli
 | `info` | value: `Info` |
 | `system df` | value: `[DiskUsage]` |
 | `system prune` | value: `PruneReport` |
+| `upgrade` | value: `Upgrade` |
 | `completion` | not supported: its output is a shell script |

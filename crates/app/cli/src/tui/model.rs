@@ -85,6 +85,8 @@ pub enum Msg {
     EventsEnded(String),
     /// 실행기 탭의 내용(`executor ls`, `executor adapter ls`, `executor current`).
     Executors(Result<Executors, String>),
+    /// 새 버전 알림: 머리줄 괄호 안의 글과 급한지(`update::short`).
+    Update(Option<(String, bool)>),
     /// [`Action::Run`]이 끝났다.
     Done {
         /// 실행한 인자.
@@ -253,6 +255,8 @@ pub struct Model {
     pub status: Option<Status>,
     /// 목록이나 이벤트를 못 받은 까닭.
     pub error: Option<String>,
+    /// 새 버전 알림(머리줄 괄호 안의 글, 급한지).
+    pub update: Option<(String, bool)>,
 }
 
 impl Model {
@@ -390,6 +394,7 @@ impl Model {
                     c.selected = c.selected.saturating_sub(1);
                 }
             }
+            Msg::Update(u) => self.update = u,
             Msg::Done { args, ok, message } => {
                 // 지금 보이는 상태가 그 명령의 것일 때만 바꾼다(뒤에 다른 명령을 냈으면 그것을 보인다).
                 if let Some(s) = &mut self.status
@@ -440,6 +445,7 @@ impl Model {
     fn other_key(&mut self, tab: Tab, key: KeyEvent) -> Option<Action> {
         match key.code {
             KeyCode::Char('?') => self.popup = Some(Popup::Help { scroll: 0 }),
+            KeyCode::Char('V') => return Some(Action::Handover(vec!["upgrade".into()])),
             KeyCode::Char('/') => {
                 // 새로 친다(lazygit, less와 같다). 치는 대로 거른다.
                 self.filter.clear();

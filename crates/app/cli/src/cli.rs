@@ -315,6 +315,15 @@ pub enum Command {
         command: SystemCommand,
     },
     #[command(
+        about = about("upgrade"),
+        long_about = "Replace sbx and sbx-shim with the newest release (or --version), after checking the release's \
+minisign signature with the key built into sbx (and its Sigstore signature when cosign is installed). Moving to \
+another minor version, or to one your installed executors don't speak, asks first (-y doesn't). Sandboxes keep \
+running. Package-manager installs are left to their manager. --check only looks: exit code 0 when this is the \
+newest, 10 when a newer one exists, 1 when it can't tell."
+    )]
+    Upgrade(UpgradeArgs),
+    #[command(
         about = about("completion"),
         long_about = "Print the shell script that enables tab completion. Besides commands and options, it completes \
 sandbox names and IDs, image references, and installed executors: on each TAB the shell runs \
@@ -531,6 +540,23 @@ pub struct LogsArgs {
     /// Sandbox name, ID, or unique ID prefix.
     #[arg(add = complete::sandbox())]
     pub id: String,
+}
+
+/// `upgrade`의 옵션.
+#[derive(Debug, Args)]
+pub struct UpgradeArgs {
+    /// Only check whether a newer release exists (exit code 10 if one does).
+    #[arg(long)]
+    pub check: bool,
+    /// Install this release instead of the newest, e.g. 0.2.2.
+    #[arg(long, value_name = "VERSION")]
+    pub version: Option<String>,
+    /// Don't ask before moving to another minor version or one your executors don't speak.
+    #[arg(short = 'y', long)]
+    pub yes: bool,
+    /// Allow --version to name an older release.
+    #[arg(long)]
+    pub allow_downgrade: bool,
 }
 
 /// `stop`과 `restart`의 옵션.

@@ -125,7 +125,13 @@ Completion offers subcommands and flags, and also sandbox names and IDs and imag
 
 ## Upgrade and uninstall
 
-Run the installer again to upgrade. Sandboxes, images and executors are kept.
+`sbx upgrade` replaces `sbx` and `sbx-shim` with the newest release, after checking its signature with the key built
+into `sbx` (and its Sigstore signature when `cosign` is installed). Sandboxes, images and executors are kept, and
+running sandboxes keep running. `sbx upgrade --check` only looks; `--version 0.2.2` picks a release. `sbx` also tells
+you about a newer release once a day after a command; `SBX_NO_UPDATE_CHECK=1` turns that off (it never runs in CI).
+
+Running the installer again works too, and is the way up from 0.2.1, which has no `sbx upgrade`. If a package
+manager installed `sbx`, upgrade with that manager.
 
 What changed in each release is in the [CHANGELOG](../../CHANGELOG.md). Releases before 0.2 are withdrawn and not
 supported; if you have one, remove it and its data (below) and install again.

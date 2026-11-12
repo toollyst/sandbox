@@ -55,8 +55,9 @@ virtualization. It is made for running code you don't trust: **AI agents** (with
   repository, and `sbx` treats them exactly like ours. Installed executors keep working if a repository goes away.
 - **Mechanism, not policy.** `sbx` holds the line you draw (the allow list, CPU and memory, which sandboxes an agent
   can see) and leaves the drawing to you.
-- **Checkable.** Releases from v0.2.0 on are signed with Sigstore and come with build provenance and an SBOM. Repository indexes are
-  signed with minisign, against tampering, rollbacks and frozen mirrors. The [threat model](SECURITY.md#threat-model)
+- **Checkable.** Releases from v0.2.0 on are signed with Sigstore and come with build provenance and an SBOM. From v0.2.2 they also
+  carry minisign signatures, which `sbx upgrade` requires. Repository and release indexes are signed with minisign,
+  against tampering, rollbacks and frozen mirrors. The [threat model](SECURITY.md#threat-model)
   says what is covered and what isn't yet.
 
 ## sbx next to a container
@@ -83,7 +84,8 @@ finish in **0.50 s**. Try it on your machine ([source](xtask/src/bench.rs)).
 
 The installer puts `sbx` and `sbx-shim` in your OS's place for user programs (`~/.local/bin`, or
 `%LOCALAPPDATA%\Programs\sbx` on Windows), never in the directory you run it from, after checking their SHA-256
-(and their Sigstore signature when `cosign` is installed). Then you pick an executor.
+(and their Sigstore signature when `cosign` is installed). Then you pick an executor. Later, `sbx upgrade` moves to
+the newest signed release, and `sbx` tells you when one is out (`SBX_NO_UPDATE_CHECK=1` turns that off).
 
 ### macOS
 

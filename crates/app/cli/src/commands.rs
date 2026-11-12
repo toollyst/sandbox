@@ -203,6 +203,11 @@ pub const COMMANDS: &[Command] = &[
         "Show disk usage and remove what nothing uses (df, prune)",
     ),
     cmd(
+        "upgrade",
+        Section::Setup,
+        "Replace sbx with the newest signed release (--check only looks)",
+    ),
+    cmd(
         "completion",
         Section::Setup,
         "Print a shell completion script (bash, zsh, fish, powershell, elvish)",

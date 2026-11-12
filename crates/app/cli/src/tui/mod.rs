@@ -56,6 +56,7 @@ pub fn run(cli: &Cli) -> AppResult<u8> {
     lists.refresh(List::Sandboxes, &sbx, &tx);
     lists.refresh(List::Images, &sbx, &tx);
     lists.refresh(List::Executors, &sbx, &tx);
+    update_notice(cli, &tx);
     // 넘긴 터미널에서 친 Ctrl+C로 TUI가 죽지 않게 처리기를 둔다(무시가 아니라서 자식은 exec 때 기본으로 돌아간다).
     // raw 모드인 동안 Ctrl+C는 키로 온다.
     let _sigint = interrupt_handler()?;
@@ -107,6 +108,28 @@ fn event_loop(
             }
             model.apply(msg);
         }
+    }
+}
+
+/// 머리줄의 새 버전 알림: 기록을 바로 보이고, 확인할 때가 됐으면 뒤에서 받아 다시 보인다([`crate::update`]).
+fn update_notice(cli: &Cli, tx: &Sender<Msg>) {
+    let (Some(cache), Some(data)) = (
+        cli.cache_dir.clone().or_else(crate::dirs::cache_dir),
+        cli.data_dir.clone().or_else(crate::dirs::data_dir),
+    ) else {
+        return;
+    };
+    let _ = tx.send(Msg::Update(crate::update::short(&cache)));
+    if !crate::update::checks_enabled() {
+        return;
+    }
+    let tx = tx.clone();
+    // 화면 루프는 block_in_place 안이라 런타임에 작업을 맡길 수 있다.
+    if let Ok(rt) = tokio::runtime::Handle::try_current() {
+        rt.spawn(async move {
+            crate::update::refresh(&cache, &data).await;
+            let _ = tx.send(Msg::Update(crate::update::short(&cache)));
+        });
     }
 }
 

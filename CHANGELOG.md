@@ -7,6 +7,35 @@ are in [COMPATIBILITY.md](COMPATIBILITY.md); fixes for vulnerabilities are liste
 Each release has a section `## vX.Y.Z`; the release workflow publishes that section as the release notes and refuses
 to release a tag without one. Changes land under `## Unreleased` first, and the section is renamed when tagging.
 
+## v0.2.2
+
+Only additions: `sbx` tells you about newer releases and upgrades itself, checking signatures.
+
+### Added
+
+- `sbx` tells you when a newer release is out: after a command, one line on stderr such as
+  `sbx 0.2.1 (0.2.2 available): run 'sbx upgrade'`, at most once a day (every command when the newer release fixes a
+  vulnerability or yours has been yanked). It reads a signed release index at most once a day, in the background, and
+  waits for it at most 3 seconds. It sends nothing but the request and `User-Agent: sbx/<version> (<os>; <arch>)`, and
+  never runs in CI, with `--format json`, without a terminal, or with `SBX_NO_UPDATE_CHECK=1`. `sbx --version` (in a
+  terminal), `sbx info` (first line, and `update` in its JSON) and the `sbx tui` header show the same.
+- `sbx upgrade [--check] [--version V] [-y] [--allow-downgrade]` replaces `sbx` and `sbx-shim` with a release whose
+  minisign signature matches the key built into `sbx` (and whose Sigstore signature verifies when `cosign` is
+  installed; `SBX_VERIFY` works as in the installer). It asks before changing minor version, installing a yanked
+  release or one your executors may not speak; it never moves to an older data layout; it leaves installs from a
+  package manager to that manager. `--check` exits 10 when a newer release exists. `V` in `sbx tui` runs it.
+- Releases ship `sbx-windows-x86_64.tar.gz` next to the zip, and a `.minisig` for every archive.
+
+### Notes
+
+- 0.2.1 doesn't have this yet: run the installer once more to get 0.2.2, then `sbx upgrade` from there on.
+- Release signing keys (minisign public keys built into `sbx`; the first of each pair is in use, the second is the
+  spare):
+  - archives: `RWSr7ktMwZC4t4vgBvqOe2Km++mDzKImzELNmRcj7LGgbEj5BpJGunRs`,
+    `RWT2l04k8kMiFHbILLsjw7ZNl613AmkjHaJO50zUuKQfFVfuJoCEzZ3r`
+  - release index: `RWQErLK0V41d0FB9dXtZKU7wcQrONLepSj9s4cq0wbKjWHmsti8NyKXD`,
+    `RWTX1Xl5hIj8pN0bOHaD/GizQjAN/H6IoznrKHINhT2dgNRe73NRGvoF`
+
 ## v0.2.1
 
 Nothing that worked in 0.2.0 stops working because of a contract change: commands, flags, JSON fields and MCP tools

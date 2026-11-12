@@ -183,6 +183,10 @@ mod unix {
             egress_limit_and_network_events,
         ),
         (
+            "new_version_notice_and_upgrade",
+            new_version_notice_and_upgrade,
+        ),
+        (
             "embedded_guest_init_is_unpacked_into_the_cache",
             embedded_guest_init_is_unpacked_into_the_cache,
         ),
@@ -577,6 +581,207 @@ mod unix {
             "printf %s \"$HTTP_PROXY\"",
         ]);
         assert_eq!(text(&o.stdout), "");
+    }
+
+    /// 가짜 릴리스(시험용 키로 서명한 file:// 색인과 묶음)로 새 버전 알림과 `sbx upgrade`를 본다.
+    fn new_version_notice_and_upgrade() {
+        use sha2::{Digest, Sha256};
+        let e = Env::new();
+        let cur = env!("CARGO_PKG_VERSION");
+        let mut parts: Vec<u64> = cur.split('.').map(|p| p.parse().unwrap()).collect();
+        parts[2] += 1;
+        let next = format!("{}.{}.{}", parts[0], parts[1], parts[2]);
+        let os = if std::env::consts::OS == "macos" {
+            "darwin"
+        } else {
+            std::env::consts::OS
+        };
+        let platform = format!("{os}-{}", std::env::consts::ARCH);
+        let index_key = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let archive_key = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let rel = e.path("rel");
+        std::fs::create_dir_all(&rel).unwrap();
+        let sign = |sk: &minisign::SecretKey, file: &Path, body: &[u8]| {
+            let sig = minisign::sign(None, sk, body, None, None).unwrap();
+            std::fs::write(file, body).unwrap();
+            let mut s = file.as_os_str().to_owned();
+            s.push(".minisig");
+            std::fs::write(s, sig.into_string()).unwrap();
+        };
+        // 새 "sbx"는 --version에 그 버전을 말하는 스크립트다.
+        let archive = {
+            let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            {
+                let mut t = tar::Builder::new(&mut gz);
+                for (name, body) in [
+                    ("sbx", format!("#!/bin/sh\necho \"sbx {next}\"\n")),
+                    ("sbx-shim", "#!/bin/sh\nexit 0\n".to_owned()),
+                ] {
+                    let mut h = tar::Header::new_gnu();
+                    h.set_size(body.len() as u64);
+                    h.set_mode(0o755);
+                    h.set_cksum();
+                    t.append_data(&mut h, format!("sbx-{platform}/{name}"), body.as_bytes())
+                        .unwrap();
+                }
+                t.finish().unwrap();
+            }
+            gz.finish().unwrap()
+        };
+        let archive_file = rel.join(format!("sbx-{platform}.tar.gz"));
+        sign(&archive_key.sk, &archive_file, &archive);
+        let sha: String = Sha256::digest(&archive)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let asset = serde_json::json!({ platform.clone(): {
+            "url": format!("file://{}", archive_file.display()), "sha256": sha, "size": archive.len() } });
+        let index = serde_json::json!({
+            "schema": 1, "serial": 1, "expires": 4_000_000_000u64,
+            "releases": [
+                { "version": cur, "assets": asset },
+                { "version": next, "assets": asset },
+            ]
+        });
+        let index_file = rel.join("releases.json");
+        sign(&index_key.sk, &index_file, index.to_string().as_bytes());
+
+        // 설치 디렉터리: 이 sbx의 사본과 sbx-shim.
+        let bin = e.path("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::copy(env!("CARGO_BIN_EXE_sbx"), bin.join("sbx")).unwrap();
+        std::fs::write(bin.join("sbx-shim"), "#!/bin/sh\n").unwrap();
+        let run = |program: &Path, args: &[&str], extra: &[(&str, &str)]| {
+            let mut c = Command::new(program);
+            c.args(args)
+                .env("SBX_DATA_DIR", e.path("data"))
+                .env("SBX_CACHE_DIR", e.path("cache"))
+                .env(
+                    "SBX_TEST_RELEASES_URL",
+                    format!("file://{}", index_file.display()),
+                )
+                .env("SBX_TEST_RELEASE_INDEX_KEY", index_key.pk.to_base64())
+                .env("SBX_TEST_RELEASE_ARCHIVE_KEY", archive_key.pk.to_base64())
+                .env("SBX_VERIFY", "off")
+                .env_remove("CI")
+                .env_remove("SBX_NO_UPDATE_CHECK")
+                .stdin(Stdio::null());
+            for (k, v) in extra {
+                c.env(k, v);
+            }
+            c.output().unwrap()
+        };
+        let sbx = Path::new(env!("CARGO_BIN_EXE_sbx"));
+
+        // 알림: 명령 출력 뒤 stderr에 한 줄, 하루 한 번.
+        let o = run(sbx, &["images", "-q"], &[]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let want = format!("sbx {cur} ({next} available): run 'sbx upgrade'");
+        assert!(text(&o.stderr).contains(&want), "{}", text(&o.stderr));
+        let o = run(sbx, &["images", "-q"], &[]);
+        assert!(
+            !text(&o.stderr).contains("available"),
+            "once a day: {}",
+            text(&o.stderr)
+        );
+        // json, 끈 환경에서는 없다.
+        let o = run(
+            sbx,
+            &["images", "--format", "json"],
+            &[("SBX_CACHE_DIR", e.path("c2").to_str().unwrap())],
+        );
+        assert!(
+            !text(&o.stderr).contains("available"),
+            "{}",
+            text(&o.stderr)
+        );
+        let o = run(
+            sbx,
+            &["images", "-q"],
+            &[
+                ("SBX_CACHE_DIR", e.path("c3").to_str().unwrap()),
+                ("SBX_NO_UPDATE_CHECK", "1"),
+            ],
+        );
+        assert!(
+            !text(&o.stderr).contains("available"),
+            "{}",
+            text(&o.stderr)
+        );
+        let o = run(
+            sbx,
+            &["images", "-q"],
+            &[
+                ("SBX_CACHE_DIR", e.path("c4").to_str().unwrap()),
+                ("CI", "true"),
+            ],
+        );
+        assert!(
+            !text(&o.stderr).contains("available"),
+            "{}",
+            text(&o.stderr)
+        );
+        // info는 기록을 본다.
+        let o = run(sbx, &["info", "--format", "json"], &[]);
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(v["update"]["latest"], serde_json::json!(next), "{v}");
+
+        // --check: 종료 코드 10.
+        let o = run(&bin.join("sbx"), &["upgrade", "--check"], &[]);
+        assert_eq!(o.status.code(), Some(10), "{}", text(&o.stderr));
+        assert!(
+            text(&o.stdout).contains(&format!("{next} available")),
+            "{}",
+            text(&o.stdout)
+        );
+
+        // 묶음 서명이 다른 내용의 것이면 아무것도 바꾸지 않는다.
+        let good_sig = std::fs::read(rel.join(format!("sbx-{platform}.tar.gz.minisig"))).unwrap();
+        let bad = minisign::sign(None, &archive_key.sk, &b"other"[..], None, None).unwrap();
+        std::fs::write(
+            rel.join(format!("sbx-{platform}.tar.gz.minisig")),
+            bad.into_string(),
+        )
+        .unwrap();
+        let o = run(&bin.join("sbx"), &["upgrade", "-y"], &[]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(text(&o.stderr).contains("untrusted"), "{}", text(&o.stderr));
+        let o = run(&bin.join("sbx"), &["--version"], &[]);
+        assert_eq!(text(&o.stdout).trim(), format!("sbx {cur}"));
+        // 다른 키로 서명한 묶음도.
+        std::fs::write(
+            rel.join(format!("sbx-{platform}.tar.gz.minisig")),
+            &good_sig,
+        )
+        .unwrap();
+        let other = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let o = run(
+            &bin.join("sbx"),
+            &["upgrade", "-y"],
+            &[("SBX_TEST_RELEASE_ARCHIVE_KEY", &other.pk.to_base64())],
+        );
+        assert_ne!(o.status.code(), Some(0), "{}", text(&o.stderr));
+
+        // 바꾼다.
+        let o = run(
+            &bin.join("sbx"),
+            &["upgrade", "-y", "--format", "json"],
+            &[],
+        );
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(v["installed"], serde_json::json!(next), "{v}");
+        let o = Command::new(bin.join("sbx"))
+            .arg("--version")
+            .output()
+            .unwrap();
+        assert_eq!(text(&o.stdout).trim(), format!("sbx {next}"));
+        let left: Vec<_> = std::fs::read_dir(&bin)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with('.') && !n.ends_with(".lock"))
+            .collect();
+        assert!(left.is_empty(), "leftovers: {left:?}");
     }
 
     fn egress_limit_and_network_events() {

@@ -8,6 +8,7 @@ This is the guide for working on `sbx` itself. If you only want to use it, the [
 | [crates.md](crates.md) | Know what each folder under `crates/` does, what it may depend on, and what it must not know |
 | [how-it-works.md](how-it-works.md) | Follow one `sbx run` from the command line into the VM and back |
 | [testing-and-releasing.md](testing-and-releasing.md) | Know which test catches what, what CI runs, and how a release is made |
+| [release-keys.md](release-keys.md) | Make the release signing keys `sbx upgrade` and the new-version notice trust, put them into GitHub, and switch them |
 | [cli-output.md](cli-output.md) | Read or change what `--format json` prints (the contract scripts and tools rely on) |
 | [osps-baseline.md](osps-baseline.md) | See how the project meets the OpenSSF OSPS Baseline, control by control, and what is still open |
 

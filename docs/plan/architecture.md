@@ -28,6 +28,7 @@
 | 이벤트 기록 장치 (덧붙이기, 세대, 따라 읽기) | `sbx-events`. 무엇을 기록하는지는 `sbx-runtime`, `sbx-manage` 문서 |
 | 셸 자동완성 후보 | `crates/app/cli/src/complete.rs` |
 | `sbx tui` 키와 동작 | `crates/app/cli/src/tui/keys.rs`(키 목록 정본), `crates/app/cli/src/tui/mod.rs`, 상세 창 `crates/app/cli/src/tui/detail.rs` |
+| 새 버전 알림과 `sbx upgrade` (방향) | [upgrade.md](upgrade.md). 구현하면 정본은 그 코드 |
 
 ## 1. 원칙
 

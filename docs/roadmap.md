@@ -1,6 +1,6 @@
 # 로드맵
 
-2026년 11월 11일 · 현재 릴리스 `v0.2.1`(유지는 0.2부터, 0.1.x는 거뒀다, 40. 0.2.1에 들어간 것은 [CHANGELOG](../CHANGELOG.md#v021)와 M7의 P 표) · 상위 문서: sandbox 기획서, [docs/plan/architecture.md](plan/architecture.md)
+2026년 11월 12일 · 현재 릴리스 `v0.2.2`(유지는 0.2부터, 0.1.x는 거뒀다, 40. 0.2.1에 들어간 것은 [CHANGELOG](../CHANGELOG.md#v021)와 M7의 P 표, 0.2.2는 [CHANGELOG](../CHANGELOG.md#v022)와 M8) · 상위 문서: sandbox 기획서, [docs/plan/architecture.md](plan/architecture.md)
 
 순서는 기획서의 성공 기준 1 "Linux에서 공개 OCI 이미지를 받아 microVM 안에서 명령을 실행하고 결과를 받는다"까지의 최단 경로다. 각 단계는 "어떻게 검증되면 끝인가"를 함께 적는다.
 
@@ -143,6 +143,24 @@ SLSA, TUF(색인 신선도), EU CRA. 범위는 sbx 자신이다. sbx는 실행�
 | P17 | 적대적 검토 1차(2026-11-11, 저장소·설치·MCP·install.sh·서명 도구): 고친 것은 대소문자만 다른 이름으로 출처 고정 피하기(이름·버전은 소문자), 앞 저장소가 실패하면 뒤 저장소로 이름이 넘어감(거부, `--repo`), 어댑터가 같은 이름의 다른 저장소로 넘어감, 이미지가 sbx 라벨(owner=mcp, 실행기 고정)을 줌, MCP 동시 create의 상한 경합, 원격 색인이 `file:`·loopback을 가리킴, redirect 중간 단계의 https→http, 색인 파싱 2차 시간(버전당 압축 파일 64개), install.sh에서 서명만 지우면 auto가 통과함·옛 서명본으로 바꿔치기(`SBX_VERSION`이면 그 태그), seen·목록 파일의 동시 쓰기(잠금), 설치의 검사–rename 경합(잠금), 받기 전 출처 검사, 저장소 이름 `local` 예약, Windows 장치 이름, `repo-sign`의 기한·serial 넘침, 키를 넣은 뒤 서명 없이 올리기(CI가 실패). 각각 회귀 테스트(잠금은 빼면 실패하는 동시성 테스트), install.sh는 가짜 릴리스·cosign으로 18가지 | 완료 |
 | P18 | 적대적 검토 2차(2026-11-11): 어댑터 이름도 첫 저장소의 것(이미 설치한 어댑터도 그 출처여야 함), VMM의 출처를 어댑터보다 먼저 봄, 클라이언트가 이름 붙일 수 없는 색인 항목은 색인 전체가 아니라 그 항목만 건너뜀, 끝이 `.`인 이름(Windows에서 `fake.`=`fake`), `repo-add`·executors.yml도 같은 이름 규칙, 본 serial 파일은 적을 때만 잠금(읽기 전용 데이터 디렉터리), MCP 한도 설명을 실제와 맞춤(서버 사이 동시 생성은 마지막 자리를 함께 얻을 수 있음), 실행기 `capabilities`에 30초·2MiB 상한(멈춘 실행기가 설치 잠금을 쥐지 못함), e2e가 실패 이유를 정확한 문구로 확인. 각각 회귀 테스트(읽기 전용 seen 테스트는 고치기 전 코드에서 실패함을 확인했다. MCP 동시 호출 e2e는 지금 코드에 await가 없어 예약 없이도 통과하며, 앞으로 끼어들 await를 지킨다) | 완료 |
 | P19 | 0.2.1에서 다른 도구(Docker, Podman, Apple container, E2B 등)와 견주어 채운 것: `-p` 포트 공개(게스트 규약 `Forward`, 기본 127.0.0.1, VM 전에 bind), `exec -d`·`exec --timeout`, `run --timeout`, `--storage-opt size=`, `stats`, `system df/prune`, 레지스트리 인증과 `login/logout`, 이미지 서명 정책(containers `policy.json`: cosign 키 서명 `sigstoreSigned`, `reject`, signedIdentity 6종, 확인할 수 없는 GPG·keyless는 그 이미지를 거절, `load`는 oci·oci-archive 전송, 실제 cosign 2.4로 서명한 이미지로 확인), 레지스트리 미러·이름 바꾸기·차단·insecure(containers `registries.conf` v2·v1과 drop-in, 미러가 실패하면 다음 곳, blob은 문서를 받은 곳에서, 레지스트리를 쓸 때만 읽음), `load`·`save`(OCI image layout tar·디렉터리, `docker load`가 읽는 `manifest.json`도 씀, 받은 문서 그대로라 같은 이미지 ID), 이미지의 `ExposedPorts`·`Volumes`를 정보로, MCP annotations·outputSchema·private-network 거부·`--max-disk`·`--max-lifetime` | 완료 |
+
+## M8. 새 버전 알림과 `sbx upgrade` (0.2.2, 2026-11-12~)
+
+시작할 때 더 높은 버전이 있으면 `sbx 0.2.1 (0.2.2 available)`처럼 알리고(하루 한 번, 뒤에서, `SBX_NO_UPDATE_CHECK=1`로
+끔), `sbx upgrade`가 서명을 확인한 새 버전으로 바꾼다. 버전은 gh-pages의 서명한 `releases.json`(serial·expires)에서
+알고, 묶음은 공식 minisign 키 서명이 필수, cosign이 있으면 Sigstore도 본다. 기획: [docs/plan/upgrade.md](plan/upgrade.md)
+
+| 단계 | 내용 | 상태 |
+|---|---|---|
+| U1 | `releases.json`과 서명, `xtask release-index`·`release-yank`·`release-sign`·`sign-files`, publish·`releases-resign.yml`, 묶음의 `.minisig`, Windows tar.gz | 완료: 크레이트 `sbx-release-index`(서명·기한·본 serial은 실행기 저장소 코드), 키 둘(묶음 키는 `release`에만) |
+| U2 | 시작할 때 확인과 알림, `--version`·`info`(JSON `update`) | 완료: `crates/app/cli/src/update.rs`, 릴리스 빌드(`SBX_RELEASE_BUILD`)에서만, e2e(가짜 서명 색인) |
+| U3 | `sbx upgrade`(Unix): 판별, 고르기, 받기, 확인, 시험 실행, 바꾸기, 되돌리기 | 완료: `crates/app/cli/src/app/upgrade.rs`, `--check` 종료 코드 10, e2e(틀린 서명·다른 키 거부, 바꾸기) |
+| U4 | Windows 바꾸기(`.old`) | 완료: `.old-<pid>`, 돌고 있는 exe를 바꾸는 Windows 단위 테스트 |
+| U5 | tui 머리줄과 `V`(`sbx upgrade`) | 완료 |
+| U6 | 문서(install, usage, SECURITY, COMPATIBILITY, testing-and-releasing, CHANGELOG, README) | 완료 |
+| U7 | 적대적 검토 | 완료(1차, 2026-11-12): 버린 확인이 이름 풀이에 걸려 종료가 늦어짐(런타임을 200 ms만 기다리고 닫음, 늦으면 실패로 적음), gh-pages에 넣은 내용을 색인 키가 서명해 줌(있던 서명 확인, 큰 serial 거부, 클라이언트는 `serial > expires` 거부, 주간 작업은 다시 서명만, 거두기는 오프라인 키), 서명 도구 빌드 중 비밀 값 노출(빌드를 비밀 없는 단계로), 보안 표시 오탐(`### Security` 아래만), 바꾸기 경합(Unix는 하드 링크와 rename으로 빈 순간 없음, 지우기는 잠금 아래, 끊긴 임시 디렉터리 정리), 배치 버전을 모르는 낮은 버전 거부, 읽기 전용 데이터 디렉터리, `info`의 오래된 확인 알림. 퍼징 대상 `release_index` |
+
+사람의 일: 묶음 키와 색인 키(각각 예비 하나 더)를 만들어 `SBX_RELEASE_SIGNING_KEY`(`release`), `SBX_RELEASE_INDEX_KEY`(`release`, `release-index`)에 넣기. 완료(2026-11-12): `.github/scripts/release-keys.sh`로 만들고 올림, 공개키는 `update.rs`·SECURITY.md·CHANGELOG. 비밀키는 메인테이너가 오프라인에 백업한다.
 
 ## 그 뒤
 

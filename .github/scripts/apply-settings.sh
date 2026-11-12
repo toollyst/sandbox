@@ -7,6 +7,8 @@
 # - ruleset-gh-pages.json: 설치 스크립트를 내는 gh-pages. 삭제·force-push 금지.
 # - ruleset-tags.json: 릴리스 태그 v*. 관리자만 만들고 바꾸고 지운다.
 # - environment-release.json: release.yml의 publish가 기다리는 승인. 승인자와, 태그 v*에서만.
+# - environment-release-index.json: releases-resign.yml이 releases.json을 다시 서명하는 곳. 승인 없이(매주 돈다),
+#   main에서만. 색인 키(SBX_RELEASE_INDEX_KEY)만 둔다. 묶음 키는 release에만 있다.
 # - security-and-analysis.json: 비밀 스캔과 push 보호(비밀이 든 커밋은 push가 거부된다), Dependabot 보안 업데이트.
 #   취약점 비공개 신고(private vulnerability reporting)도 켠다.
 set -eu
@@ -26,6 +28,10 @@ done
 gh api -X PUT "repos/$repo/environments/release" --input "$dir/environment-release.json" --jq '"environment \(.name)"'
 if ! gh api "repos/$repo/environments/release/deployment-branch-policies" --jq '.branch_policies[].name' | grep -qx 'v\*'; then
     gh api -X POST "repos/$repo/environments/release/deployment-branch-policies" -f name='v*' -f type=tag --jq '"deployment policy \(.name) (\(.type))"'
+fi
+gh api -X PUT "repos/$repo/environments/release-index" --input "$dir/environment-release-index.json" --jq '"environment \(.name)"'
+if ! gh api "repos/$repo/environments/release-index/deployment-branch-policies" --jq '.branch_policies[].name' | grep -qx 'main'; then
+    gh api -X POST "repos/$repo/environments/release-index/deployment-branch-policies" -f name=main -f type=branch --jq '"deployment policy \(.name) (\(.type))"'
 fi
 
 # 보안 업데이트는 Dependabot 경고가 켜져 있어야 한다.

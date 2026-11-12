@@ -71,10 +71,15 @@ impl Seen {
 
     /// 본 가장 큰 일련번호.
     pub fn get(&self, repo: &Repository) -> Result<Option<u64>, RepoError> {
+        self.get_named(&repo.name, repo.url.as_str())
+    }
+
+    /// 이름과 URL로 찾는 [`Seen::get`]. 저장소가 아닌 서명된 색인(예: sbx 릴리스 색인)이 쓴다.
+    pub fn get_named(&self, name: &str, key_url: &str) -> Result<Option<u64>, RepoError> {
         Ok(self
             .read()?
             .into_iter()
-            .find(|(n, _, u)| *n == repo.name && *u == repo.url.as_str())
+            .find(|(n, _, u)| n == name && u == key_url)
             .map(|(_, s, _)| s))
     }
 
@@ -88,13 +93,24 @@ impl Seen {
         serial: u64,
         url: &str,
     ) -> Result<(), RepoError> {
-        if let Some(seen) = self.get(repo)?
+        self.check_and_record_named(&repo.name, repo.url.as_str(), serial, url)
+    }
+
+    /// 이름과 URL로 찾는 [`Seen::check_and_record`]. `url`은 오류에 쓰는 색인 URL이다.
+    pub fn check_and_record_named(
+        &self,
+        name: &str,
+        key_url: &str,
+        serial: u64,
+        url: &str,
+    ) -> Result<(), RepoError> {
+        if let Some(seen) = self.get_named(name, key_url)?
             && serial <= seen
         {
             return Self::compare(serial, seen, url);
         }
         crate::file::locked(&self.path, || {
-            self.check_and_record_locked(repo, serial, url)
+            self.check_and_record_locked(name, key_url, serial, url)
         })
     }
 
@@ -112,14 +128,13 @@ impl Seen {
 
     fn check_and_record_locked(
         &self,
-        repo: &Repository,
+        name: &str,
+        key_url: &str,
         serial: u64,
         url: &str,
     ) -> Result<(), RepoError> {
         let mut all = self.read()?;
-        let i = all
-            .iter()
-            .position(|(n, _, u)| *n == repo.name && *u == repo.url.as_str());
+        let i = all.iter().position(|(n, _, u)| n == name && u == key_url);
         if let Some(i) = i {
             let seen = all[i].1;
             if serial <= seen {
@@ -127,7 +142,7 @@ impl Seen {
             }
             all[i].1 = serial;
         } else {
-            all.push((repo.name.clone(), serial, repo.url.to_string()));
+            all.push((name.to_owned(), serial, key_url.to_owned()));
         }
         let mut text = String::from(
             "# sbx: the highest index serial seen per repository: <name> <serial> <url>\n",

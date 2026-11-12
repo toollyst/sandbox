@@ -6,6 +6,7 @@ members = [
     "crates/spec/executor-proto",
     "crates/spec/executor-repo",
     "crates/spec/executor-install",
+    "crates/spec/release-index",
     "crates/port/executor",
     "crates/port/image",
     "crates/port/rootfs",
@@ -24,7 +25,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 rust-version = "1.89"
 publish = false
@@ -88,6 +89,7 @@ sbx-executor-proto = { path = "crates/spec/executor-proto" }
 sbx-executor-process = { path = "crates/adapter/executor-process" }
 sbx-executor-install = { path = "crates/spec/executor-install" }
 sbx-executor-repo = { path = "crates/spec/executor-repo" }
+sbx-release-index = { path = "crates/spec/release-index" }
 sbx-shim = { path = "crates/app/shim" }
 
 # 배포 빌드(`cargo xtask dist`, 게스트 init). fat LTO와 codegen-units 1로 한 덩어리로 최적화하고 기호를 지운다:

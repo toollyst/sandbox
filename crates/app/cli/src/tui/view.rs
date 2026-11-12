@@ -73,7 +73,18 @@ fn header(frame: &mut Frame, model: &Model, area: Rect) {
         model.visible_events().len(),
         model.visible_executor_rows().len(),
     ];
-    let mut spans = vec![Span::from(" sbx ").bold().cyan(), Span::from(" ")];
+    let mut spans = vec![
+        Span::from(format!(" sbx {}", env!("CARGO_PKG_VERSION")))
+            .bold()
+            .cyan(),
+    ];
+    // 새 버전: `sbx 0.2.1 (0.2.2)`. 보안 고침이거나 지금 버전을 거뒀으면 빨강.
+    match &model.update {
+        Some((text, true)) => spans.push(Span::from(format!(" ({text})")).bold().red()),
+        Some((text, false)) => spans.push(Span::from(format!(" ({text})")).yellow()),
+        None => {}
+    }
+    spans.extend([Span::from(" "), Span::from(" ")]);
     for (i, tab) in TABS.iter().enumerate() {
         let (n, title, count) = (
             format!(" {} ", i + 1),

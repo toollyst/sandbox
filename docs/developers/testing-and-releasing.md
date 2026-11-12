@@ -59,6 +59,7 @@ directory, version order is a total order. The doc comment at the top of each ta
 | `image_layer` | a layer blob (plain, gzip or zstd) | the `prepare` path: zstd and tar reading in `sbx-manage`, the merge and the EROFS writer in [`sbx-rootfs`](../../crates/port/rootfs/src/lib.rs) |
 | `rootfs_merge` | structured layers (whiteouts, opaque dirs, hard links, devices) and a kernel path | `MergedTree::apply_layer`, `resolve`, `ErofsBuilder` |
 | `executor_index` | an executor repository index | `Index::parse`, `available`, `pick` in [`sbx-executor-repo`](../../crates/spec/executor-repo/src/index.rs) |
+| `release_index` | the sbx release index (`releases.json`) | `Index::parse`, `status`, `target` in [`sbx-release-index`](../../crates/spec/release-index/src/index.rs): the notice and `sbx upgrade` pick the highest unyanked build for the platform and never downgrade by default |
 | `executor_spec` | `NAME@VERSION` (also what `.sbx-executor` holds), versions, repository URLs | `Spec`, `version_cmp`, `version_matches` in [`sbx-executor-install`](../../crates/spec/executor-install/src/lib.rs), `location::repository` |
 | `executor_unpack` | a package archive (the target gzips it) | `unpack::unpack` in [`sbx-executor-repo`](../../crates/spec/executor-repo/src/unpack.rs), into a temp dir next to one that must stay untouched |
 
@@ -132,16 +133,21 @@ usually after a new wick release.
 Pushing `v<version>` runs [`release.yml`](../../.github/workflows/release.yml):
 
 1. **`version`** fails unless the tag matches the workspace version in `Cargo.toml`.
-2. **`sbx`** builds `sbx-<os>-<arch>.tar.gz` (+ `.sha256`) for Linux x86_64 and aarch64 (static musl) and macOS
-   arm64, and `sbx-windows-x86_64.zip` (+ `.sha256`) for Windows, each with the guest init embedded.
+2. **`sbx`** builds `sbx-<os>-<arch>.tar.gz` (+ `.sha256`) for Linux x86_64 and aarch64 (static musl), macOS
+   arm64 and Windows x86_64, and `sbx-windows-x86_64.zip` (+ `.sha256`) for `install.ps1`, each with the guest init
+   embedded and built with `SBX_RELEASE_BUILD=1` (only such builds run the new-version check).
 3. **`smoke`** runs on Linux x86_64 with KVM, the same way as the CI `vm` job: it builds the adapter from this
    commit, makes a VMM package from upstream Firecracker, puts both in a local `file://` repository, and has the new
    `sbx` install `firecracker@<version>` from there before `cargo xtask smoke`. A `sbx` release depends on neither a
    wick release nor what the official repository holds, so `sbx` and the executors can be released in any order. If
    the protocol version changes, publish a matching adapter to the official repository afterwards
    ([Executors](#executors)).
-4. **`publish`** creates the GitHub release with the `sbx` archives and copies `install.sh` and `install.ps1` to the top of the
-   `gh-pages` branch. GitHub Pages serves that branch at <https://toollyst.github.io/sandbox/>.
+4. **`publish`** signs every tar.gz with the archive key (`.minisig`, secret `SBX_RELEASE_SIGNING_KEY`), creates the
+   GitHub release with the `sbx` archives, and copies `install.sh` and `install.ps1` to the top of the `gh-pages`
+   branch. It also adds the release to `gh-pages/releases.json` (`cargo xtask release-index`) and signs that with the
+   index key (`release-sign`, secret `SBX_RELEASE_INDEX_KEY`), marking it `security` when the CHANGELOG section names a
+   GHSA or CVE. Without the secrets those steps are skipped with a warning, and `sbx upgrade` and the new-version
+   notice don't see the release. GitHub Pages serves that branch at <https://toollyst.github.io/sandbox/>.
 
 To cut a release:
 
@@ -168,6 +174,27 @@ only be created by admins, and `main` and `gh-pages` can't be force-pushed or de
 A tag whose workflow fails publishes nothing, because `publish` only runs when every build succeeded. Fix the cause,
 bump the version and tag again rather than moving a pushed tag. If only the `gh-pages` push fails, the GitHub release
 is already up: copy `install.sh` and `install.ps1` to `gh-pages` by hand and fix the step on `main`.
+
+**Release index and keys.** [`releases-resign.yml`](../../.github/workflows/releases-resign.yml) re-signs
+`releases.json` every Monday (it expires after 30 days) in the `release-index` environment (no approval, `main`
+only), which holds only the index key. It changes nothing but `serial` and `expires`, and refuses an index the index
+key didn't sign, so editing `gh-pages` by hand can't get anything signed. GitHub turns scheduled workflows off after
+60 days without repository activity; if that happens the index expires 30 days later and notices stop (`sbx info`
+says so), so run it by hand. A queue of more than one `gh-pages` job (publish, resign) keeps only the newest pending
+one; re-run whichever was dropped.
+
+To yank a release, a maintainer edits the index with the offline index key and pushes `gh-pages`:
+
+```sh
+git worktree add pages gh-pages
+cargo xtask release-yank --index pages/releases.json --version 0.2.2 --advisory "data loss on stop; use 0.2.3" --key release-keys/index-1.key
+git -C pages commit -qam "releases.json: yank 0.2.2" && git -C pages push origin gh-pages
+```
+
+(`--undo` takes it back.) Every xtask command that edits or signs the index first checks that the current file is
+signed by that key and that its `serial` isn't more than a day ahead of now. A yanked release is skipped by
+`sbx upgrade` and the notice, and an `sbx` running it is told so on every command. Making the keys, putting them into GitHub and switching them is in
+[release-keys.md](release-keys.md).
 
 **Rehearsal.** `gh workflow run release.yml --ref <branch>` runs the same jobs on any branch without a tag. It builds,
 runs the smoke test, signs with Sigstore and uploads the result as the artifact `rehearsal`, with the notes from

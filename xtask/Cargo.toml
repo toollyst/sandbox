@@ -17,9 +17,13 @@ tar.workspace = true
 minisign.workspace = true
 # repo-add: 이름·버전을 클라이언트와 같은 규칙으로 본다.
 sbx-executor-install.workspace = true
+# release-index: 그 릴리스가 말하는 실행기 규약 범위.
+sbx-executor-proto.workspace = true
 
 [dev-dependencies]
 # repo-add가 만든 저장소를 클라이언트로 읽어 본다.
 sbx-executor-repo.workspace = true
+# release-index가 만든 색인을 클라이언트로 읽어 본다.
+sbx-release-index.workspace = true
 url = "2"
 tokio = { workspace = true, features = ["macros", "rt"] }

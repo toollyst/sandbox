@@ -30,6 +30,7 @@ sbx-model = { path = "../crates/model" }
 sbx-guest-proto = { path = "../crates/spec/guest-proto" }
 sbx-executor-install = { path = "../crates/spec/executor-install" }
 sbx-executor-repo = { path = "../crates/spec/executor-repo" }
+sbx-release-index = { path = "../crates/spec/release-index" }
 sbx-rootfs = { path = "../crates/port/rootfs", features = ["erofs"] }
 sbx-oci = { path = "../crates/adapter/oci" }
 sbx-runtime = { path = "../crates/core/runtime", features = ["fuzzing"] }
@@ -121,6 +122,13 @@ bench = false
 [[bin]]
 name = "mcp_args"
 path = "fuzz_targets/mcp_args.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "release_index"
+path = "fuzz_targets/release_index.rs"
 test = false
 doc = false
 bench = false
