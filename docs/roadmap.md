@@ -144,6 +144,24 @@ SLSA, TUF(색인 신선도), EU CRA. 범위는 sbx 자신이다. sbx는 실행�
 | P18 | 적대적 검토 2차(2026-11-11): 어댑터 이름도 첫 저장소의 것(이미 설치한 어댑터도 그 출처여야 함), VMM의 출처를 어댑터보다 먼저 봄, 클라이언트가 이름 붙일 수 없는 색인 항목은 색인 전체가 아니라 그 항목만 건너뜀, 끝이 `.`인 이름(Windows에서 `fake.`=`fake`), `repo-add`·executors.yml도 같은 이름 규칙, 본 serial 파일은 적을 때만 잠금(읽기 전용 데이터 디렉터리), MCP 한도 설명을 실제와 맞춤(서버 사이 동시 생성은 마지막 자리를 함께 얻을 수 있음), 실행기 `capabilities`에 30초·2MiB 상한(멈춘 실행기가 설치 잠금을 쥐지 못함), e2e가 실패 이유를 정확한 문구로 확인. 각각 회귀 테스트(읽기 전용 seen 테스트는 고치기 전 코드에서 실패함을 확인했다. MCP 동시 호출 e2e는 지금 코드에 await가 없어 예약 없이도 통과하며, 앞으로 끼어들 await를 지킨다) | 완료 |
 | P19 | 0.2.1에서 다른 도구(Docker, Podman, Apple container, E2B 등)와 견주어 채운 것: `-p` 포트 공개(게스트 규약 `Forward`, 기본 127.0.0.1, VM 전에 bind), `exec -d`·`exec --timeout`, `run --timeout`, `--storage-opt size=`, `stats`, `system df/prune`, 레지스트리 인증과 `login/logout`, 이미지 서명 정책(containers `policy.json`: cosign 키 서명 `sigstoreSigned`, `reject`, signedIdentity 6종, 확인할 수 없는 GPG·keyless는 그 이미지를 거절, `load`는 oci·oci-archive 전송, 실제 cosign 2.4로 서명한 이미지로 확인), 레지스트리 미러·이름 바꾸기·차단·insecure(containers `registries.conf` v2·v1과 drop-in, 미러가 실패하면 다음 곳, blob은 문서를 받은 곳에서, 레지스트리를 쓸 때만 읽음), `load`·`save`(OCI image layout tar·디렉터리, `docker load`가 읽는 `manifest.json`도 씀, 받은 문서 그대로라 같은 이미지 ID), 이미지의 `ExposedPorts`·`Volumes`를 정보로, MCP annotations·outputSchema·private-network 거부·`--max-disk`·`--max-lifetime` | 완료 |
 
+## M8. 새 버전 알림과 `sbx upgrade` (0.2.2, 2026-11-12~)
+
+시작할 때 더 높은 버전이 있으면 `sbx 0.2.1 (0.2.2 available)`처럼 알리고(하루 한 번, 뒤에서, `SBX_NO_UPDATE_CHECK=1`로
+끔), `sbx upgrade`가 서명을 확인한 새 버전으로 바꾼다. 버전은 gh-pages의 서명한 `releases.json`(serial·expires)에서
+알고, 묶음은 공식 minisign 키 서명이 필수, cosign이 있으면 Sigstore도 본다. 기획: [docs/plan/upgrade.md](plan/upgrade.md)
+
+| 단계 | 내용 | 상태 |
+|---|---|---|
+| U1 | `releases.json`과 서명, `xtask release-index`·`release-yank`, publish·`releases-resign.yml`, 묶음의 `.minisig` | 남음 |
+| U2 | 시작할 때 확인과 알림, `--version`·`info`(JSON `update`) | 남음 |
+| U3 | `sbx upgrade`(Unix): 판별, 고르기, 받기, 확인, 시험 실행, 바꾸기, 되돌리기 | 남음 |
+| U4 | Windows 바꾸기(`.old`) | 남음 |
+| U5 | tui 머리줄과 `:upgrade` | 남음 |
+| U6 | 문서(install, usage, SECURITY, COMPATIBILITY, testing-and-releasing, CHANGELOG) | 남음 |
+| U7 | 적대적 검토 | 남음 |
+
+사람의 일: 공식 minisign 키 둘(쓰는 것, 예비)을 만들어 비밀 값 `SBX_RELEASE_SIGNING_KEY`를 environment `release`에 넣기.
+
 ## 그 뒤
 
 - 다른 외부 실행기 (libkrun 등). 규약(`sbx-executor-proto`)만 지키면 된다.
