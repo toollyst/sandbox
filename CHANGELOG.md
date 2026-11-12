@@ -7,7 +7,9 @@ are in [COMPATIBILITY.md](COMPATIBILITY.md); fixes for vulnerabilities are liste
 Each release has a section `## vX.Y.Z`; the release workflow publishes that section as the release notes and refuses
 to release a tag without one. Changes land under `## Unreleased` first, and the section is renamed when tagging.
 
-## Unreleased
+## v0.2.2
+
+Only additions: `sbx` tells you about newer releases and upgrades itself, checking signatures.
 
 ### Added
 

@@ -55,8 +55,9 @@ virtualization. It is made for running code you don't trust: **AI agents** (with
   repository, and `sbx` treats them exactly like ours. Installed executors keep working if a repository goes away.
 - **Mechanism, not policy.** `sbx` holds the line you draw (the allow list, CPU and memory, which sandboxes an agent
   can see) and leaves the drawing to you.
-- **Checkable.** Releases from v0.2.0 on are signed with Sigstore and come with build provenance and an SBOM. Repository indexes are
-  signed with minisign, against tampering, rollbacks and frozen mirrors. The [threat model](SECURITY.md#threat-model)
+- **Checkable.** Releases from v0.2.0 on are signed with Sigstore and come with build provenance and an SBOM. From v0.2.2 they also
+  carry minisign signatures, which `sbx upgrade` requires. Repository and release indexes are signed with minisign,
+  against tampering, rollbacks and frozen mirrors. The [threat model](SECURITY.md#threat-model)
   says what is covered and what isn't yet.
 
 ## sbx next to a container
