@@ -148,9 +148,13 @@ pub const MIN_ID_PREFIX: usize = 12;
 /// | `run`, `exec`에서 명령을 시작하지 못함: 실행 권한 없음 | [`EXIT_CANNOT_INVOKE`] 126 |
 /// | `run`, `exec`에서 명령을 시작하지 못함: 실행 파일 없음 | [`EXIT_NOT_FOUND`] 127 |
 /// | `exec --timeout`이 넘어 명령을 죽임 | [`EXIT_TIMED_OUT`] 124 (`timeout(1)`과 같다) |
+/// | `upgrade --check`에서 더 높은 릴리스가 있음 | [`EXIT_UPDATE_AVAILABLE`] 10 |
 /// | 그 밖의 명령의 실패 | 1 |
 /// | 사용법 오류 | 2 (clap) |
 pub const EXIT_RUN_FAILED: u8 = 125;
+
+/// `upgrade --check`: 더 높은 릴리스가 있다(실패 1, 사용법 오류 2와 겹치지 않게).
+pub const EXIT_UPDATE_AVAILABLE: u8 = 10;
 
 /// 명령을 찾았지만 실행할 수 없음.
 pub const EXIT_CANNOT_INVOKE: u8 = 126;

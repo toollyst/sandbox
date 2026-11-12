@@ -51,6 +51,7 @@ mod load;
 mod login;
 mod stats;
 mod system;
+mod upgrade;
 
 /// `logs -f`, `events`가 새 기록을 보러 가는 간격.
 const FOLLOW_POLL: Duration = Duration::from_millis(100);
@@ -153,6 +154,7 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
         } => ctx.prepare(*rootfs_format, image).await,
         Command::Images { quiet, filter } => ctx.images(*quiet, filter),
         Command::Info => ctx.info().await,
+        Command::Upgrade(a) => ctx.upgrade(a).await,
         Command::Rmi { force, images } => ctx.rmi(*force, images).await,
         Command::Load {
             input,
@@ -738,10 +740,14 @@ impl Ctx {
                 sandboxes: sandboxes.len(),
                 running,
                 images,
+                update: crate::update::cached_info(&self.cache_dir),
             })?;
             return Ok(0);
         }
-        println!("sbx {}", env!("CARGO_PKG_VERSION"));
+        match crate::update::cached_summary(&self.cache_dir) {
+            Some(s) => println!("{s}"),
+            None => println!("sbx {}", env!("CARGO_PKG_VERSION")),
+        }
         println!(
             " Host:        {} ({}/{})",
             host::os(),

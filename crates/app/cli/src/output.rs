@@ -101,6 +101,7 @@ pub const JSON_OUTPUT: &[(&str, Form)] = &[
     ("info", Form::Value("Info")),
     ("system df", Form::Value("[DiskUsage]")),
     ("system prune", Form::Value("PruneReport")),
+    ("upgrade", Form::Value("Upgrade")),
     (
         "completion",
         Form::Unsupported("its output is a shell script"),
@@ -633,6 +634,47 @@ pub struct Info {
     pub running: usize,
     /// Number of images.
     pub images: usize,
+    /// What the last new-version check found, when there is a recent one (`sbx upgrade --check` makes one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update: Option<UpdateInfo>,
+}
+
+/// What the last new-version check found (`info`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UpdateInfo {
+    /// The newest release for this platform above this sbx, not yanked; null when this is the newest.
+    pub latest: Option<String>,
+    /// A release between this sbx and `latest` fixes a vulnerability.
+    pub security: bool,
+    /// This sbx's version has been withdrawn.
+    pub yanked: bool,
+    /// The release index's one-line advisory for this sbx's version.
+    pub advisory: Option<String>,
+    /// When the release index was read (Unix seconds).
+    pub checked_at: u64,
+}
+
+/// Result of `upgrade`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct Upgrade {
+    /// The version that was running.
+    pub current: String,
+    /// The newest release for this platform above `current`, not yanked; null when `current` is the newest.
+    pub latest: Option<String>,
+    /// A release between `current` and `latest` fixes a vulnerability.
+    pub security: bool,
+    /// `current` has been withdrawn.
+    pub yanked: bool,
+    /// The release index's one-line advisory for `current`.
+    pub advisory: Option<String>,
+    /// The version now installed; null with --check or when there was nothing to do.
+    pub installed: Option<String>,
+    /// Where sbx was replaced.
+    pub path: Option<String>,
 }
 
 /// Virtualization support.
@@ -1140,6 +1182,7 @@ mod tests {
         g.subschema_for::<Info>();
         g.subschema_for::<DiskUsage>();
         g.subschema_for::<PruneReport>();
+        g.subschema_for::<Upgrade>();
         g.subschema_for::<Stats>();
         g.subschema_for::<Login>();
         g.subschema_for::<Logout>();

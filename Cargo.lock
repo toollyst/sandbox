@@ -2443,6 +2443,7 @@ dependencies = [
  "sbx-manage",
  "sbx-model",
  "sbx-oci",
+ "sbx-release-index",
  "sbx-rootfs",
  "sbx-runtime",
  "sbx-shim",
@@ -2453,6 +2454,7 @@ dependencies = [
  "sha2 0.11.1",
  "tar",
  "tokio",
+ "url",
 ]
 
 [[package]]

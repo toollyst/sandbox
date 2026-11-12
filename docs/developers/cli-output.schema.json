@@ -543,6 +543,17 @@
           "minimum": 0,
           "type": "integer"
         },
+        "update": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UpdateInfo"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What the last new-version check found, when there is a recent one (`sbx upgrade --check` makes one)."
+        },
         "version": {
           "description": "sbx version.",
           "type": "string"
@@ -1364,6 +1375,98 @@
       },
       "required": [
         "signal"
+      ],
+      "type": "object"
+    },
+    "UpdateInfo": {
+      "additionalProperties": false,
+      "description": "What the last new-version check found (`info`).",
+      "properties": {
+        "advisory": {
+          "description": "The release index's one-line advisory for this sbx's version.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "checked_at": {
+          "description": "When the release index was read (Unix seconds).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "latest": {
+          "description": "The newest release for this platform above this sbx, not yanked; null when this is the newest.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "security": {
+          "description": "A release between this sbx and `latest` fixes a vulnerability.",
+          "type": "boolean"
+        },
+        "yanked": {
+          "description": "This sbx's version has been withdrawn.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "security",
+        "yanked",
+        "checked_at"
+      ],
+      "type": "object"
+    },
+    "Upgrade": {
+      "additionalProperties": false,
+      "description": "Result of `upgrade`.",
+      "properties": {
+        "advisory": {
+          "description": "The release index's one-line advisory for `current`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "current": {
+          "description": "The version that was running.",
+          "type": "string"
+        },
+        "installed": {
+          "description": "The version now installed; null with --check or when there was nothing to do.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "latest": {
+          "description": "The newest release for this platform above `current`, not yanked; null when `current` is the newest.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "Where sbx was replaced.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "security": {
+          "description": "A release between `current` and `latest` fixes a vulnerability.",
+          "type": "boolean"
+        },
+        "yanked": {
+          "description": "`current` has been withdrawn.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "current",
+        "security",
+        "yanked"
       ],
       "type": "object"
     }

@@ -28,7 +28,7 @@ clap.workspace = true
 clap_complete.workspace = true
 crossterm.workspace = true
 ratatui.workspace = true
-tokio = { workspace = true, features = ["signal", "time", "net", "io-util", "io-std", "sync"] }
+tokio = { workspace = true, features = ["signal", "time", "net", "io-util", "io-std", "sync", "process"] }
 serde_json.workspace = true
 serde.workspace = true
 jaq-core.workspace = true
@@ -43,6 +43,8 @@ sbx-rootfs = { workspace = true, features = ["erofs"] }
 sbx-executor-process.workspace = true
 sbx-executor-install.workspace = true
 sbx-executor-repo.workspace = true
+sbx-release-index.workspace = true
+url = "2"
 sbx-executor-proto.workspace = true
 # mcp: read_file/write_file의 바이너리 내용.
 base64 = "0.23"

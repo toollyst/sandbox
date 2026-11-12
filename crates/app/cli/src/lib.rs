@@ -6,6 +6,7 @@
 //! - 구현체 조립과 코어 호출 ([`app`]), 붙어서 실행하기 ([`attach`]), 실행기 설치와 저장소 ([`executors`])
 //! - AI 에이전트용 MCP 서버 ([`mcp`]): 같은 코어를 도구로 내보낸다
 //! - 셸 자동완성 ([`complete`]): 샌드박스 이름·ID와 이미지 참조를 읽기만 해서 후보로 낸다
+//! - 새 버전 알림 ([`update`]): 하루 한 번 서명한 릴리스 색인을 보고 알린다. 바꾸기는 `sbx upgrade`
 //! - 전체 화면 TUI ([`tui`]): 위 명령들을 같은 `sbx` 자식으로 불러 한 화면에 보이고 키로 낸다
 //! - `--format json` 출력의 모양 ([`output`]): 스크립트와 도구가 기대는 공개 규약
 //! - 관리 코어(`sbx-manage`)와 실행 코어(`sbx-runtime`)를 차례로 불러 Docker와 같은 동작을 만든다
@@ -36,6 +37,7 @@ pub mod output;
 pub mod parse;
 pub mod progress;
 pub mod tui;
+pub mod update;
 
 /// 명령을 실행한다. `mcp`는 [`mcp::serve`]로, `completion`은 [`complete::registration`]으로, 나머지는 [`app::run`]으로 간다.
 /// 자동완성 요청(`COMPLETE=<셸> sbx -- ...`)은 여기까지 오지 않는다(`main`이 먼저 받는다).
