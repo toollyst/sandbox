@@ -1,2 +1,4 @@
 /target
 .DS_Store
+# 릴리스 서명 비밀키(.github/scripts/release-keys.sh). 절대 커밋하지 않는다.
+/release-keys/

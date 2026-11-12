@@ -6,9 +6,28 @@ halves are compiled into `sbx` (`ARCHIVE_KEYS` and `INDEX_KEYS` in
 [`update.rs`](../../crates/app/cli/src/update.rs)); while those lists are empty, `sbx` shows no notice and
 `sbx upgrade` refuses to install anything.
 
-This page is the one-time setup a maintainer types by hand. You make four key pairs: one archive key in use and one
-spare, one index key in use and one spare. The spares are compiled into `sbx` too, so you can switch to one later
-without a release that only some users have.
+This page is the one-time setup. You make four key pairs: one archive key in use and one spare, one index key in use
+and one spare. The spares are compiled into `sbx` too, so you can switch to one later without a release that only
+some users have.
+
+## The short way: one script
+
+```sh
+.github/scripts/apply-settings.sh     # once, if the release-index environment doesn't exist yet
+.github/scripts/release-keys.sh       # steps 1, 2, 4 and 5 below
+```
+
+[`release-keys.sh`](../../.github/scripts/release-keys.sh) builds xtask and makes the four pairs in `release-keys/` at
+the repository root. That folder is in `.gitignore`, and the script refuses to run if git would not ignore it. Then it
+uploads `archive-1` and `index-1` as environment secrets and writes the four public keys into `update.rs`. It doesn't
+overwrite keys that are already in the folder, or secrets that are already set (`--force` replaces the secrets). With
+`--no-upload` it leaves GitHub alone. Afterwards:
+
+1. Back up the four `.key` files (step 3). Then you may delete `release-keys/`.
+2. Commit `update.rs`. Run step 6 if you want to check the keys.
+
+The script makes the keys on the machine you run it on, online. If you want them made offline, follow the steps
+below by hand.
 
 ## What you need
 
