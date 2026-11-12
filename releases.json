@@ -1,0 +1,40 @@
+{
+  "expires": 1797047202,
+  "releases": [
+    {
+      "advisory": null,
+      "assets": {
+        "darwin-aarch64": {
+          "sha256": "2a3c48d9f76be8a67e1e52acf6cc5ab8f65e5aaa50286ad1f243bfcf0739b2b5",
+          "size": 6094771,
+          "url": "https://github.com/toollyst/sandbox/releases/download/v0.2.2/sbx-darwin-aarch64.tar.gz"
+        },
+        "linux-aarch64": {
+          "sha256": "19355d6f65f4935f2f8c625f310179f9f2c19f656405abdcd96708cd469d732b",
+          "size": 6321285,
+          "url": "https://github.com/toollyst/sandbox/releases/download/v0.2.2/sbx-linux-aarch64.tar.gz"
+        },
+        "linux-x86_64": {
+          "sha256": "d5aeae651e890d727d0a6371148ed027343b7ceec6fdeb31e730b730192f913a",
+          "size": 6899298,
+          "url": "https://github.com/toollyst/sandbox/releases/download/v0.2.2/sbx-linux-x86_64.tar.gz"
+        },
+        "windows-x86_64": {
+          "sha256": "8f2f5542c551ab2dee35f1ca444340cb5274ea565276abf867f8a0c50564bc57",
+          "size": 6616896,
+          "url": "https://github.com/toollyst/sandbox/releases/download/v0.2.2/sbx-windows-x86_64.tar.gz"
+        }
+      },
+      "layout_version": 1,
+      "protocol": {
+        "max": 2,
+        "min": 2
+      },
+      "security": false,
+      "version": "0.2.2",
+      "yanked": false
+    }
+  ],
+  "schema": 1,
+  "serial": 1794455202
+}
