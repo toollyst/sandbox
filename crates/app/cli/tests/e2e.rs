@@ -74,6 +74,10 @@ mod unix {
         ("create_start_inspect_rm", create_start_inspect_rm),
         ("names_work_in_place_of_ids", names_work_in_place_of_ids),
         (
+            "docker_options_reach_the_sandbox",
+            docker_options_reach_the_sandbox,
+        ),
+        (
             "completion_offers_sandboxes_and_images",
             completion_offers_sandboxes_and_images,
         ),
@@ -1528,6 +1532,158 @@ mod unix {
         assert_eq!(
             e.sbx(&["create", "--name", "web", IMAGE]).status.code(),
             Some(0)
+        );
+    }
+
+    /// Docker 호환 표(`sbx_cli::compat`)가 되는 것이라고 적은 옵션 중 다른 테스트가 보지 않는 것들.
+    /// `run`·`create`의 프로세스·자원·파일 옵션, `start -i`, `exec`의 옵션, `attach --no-stdin`, `rmi -f`, `--version`.
+    fn docker_options_reach_the_sandbox() {
+        let e = Env::new();
+        let me = format!("{}:{}", id_output("-u"), id_output("-g"));
+        // 가짜 실행기의 게스트 경로는 호스트 경로다.
+        let work = e.path("work");
+        std::fs::create_dir(&work).unwrap();
+        let proj = e.path("proj");
+        std::fs::create_dir(&proj).unwrap();
+        std::fs::write(proj.join("in.txt"), b"copied in").unwrap();
+        let target = e.path("guest-proj");
+
+        // -w, -u, --entrypoint, --mount type=copy. 이미지에는 ENTRYPOINT가 없으므로 sh가 받는 -c는 --entrypoint 덕이다.
+        let o = e.sbx(&[
+            "run",
+            "--rm",
+            "-w",
+            work.to_str().unwrap(),
+            "-u",
+            &me,
+            "--entrypoint",
+            "sh",
+            "--mount",
+            &format!(
+                "type=copy,source={},target={}",
+                proj.display(),
+                target.display()
+            ),
+            IMAGE,
+            "-c",
+            &format!(
+                "id -u; cat {}/in.txt; echo here > rel.txt",
+                target.display()
+            ),
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), format!("{}\ncopied in", id_output("-u")));
+        assert_eq!(std::fs::read(work.join("rel.txt")).unwrap(), b"here\n");
+        // 빈 --entrypoint는 이미지의 것을 지운다(명령만 남는다).
+        let o = e.sbx(&["run", "--rm", "--entrypoint", "", IMAGE, "echo", "plain"]);
+        assert_eq!(text(&o.stdout), "plain\n", "{}", text(&o.stderr));
+
+        // --cpus, -m, --storage-opt, --hostname, -l는 샌드박스 설정에 남는다.
+        let o = e.sbx(&[
+            "create",
+            "--cpus",
+            "2",
+            "-m",
+            "1g",
+            "--storage-opt",
+            "size=2g",
+            "--hostname",
+            "box",
+            "-l",
+            "team=a",
+            IMAGE,
+            "cat",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let id = text(&o.stdout).trim().to_owned();
+        let o = e.sbx(&["--format", "json", "inspect", &id]);
+        let s: sbx_cli::output::Sandbox = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(
+            (
+                s.resources.vcpus,
+                s.resources.memory_mib,
+                s.resources.scratch_disk_mib
+            ),
+            (2, 1024, 2048)
+        );
+        assert_eq!(s.hostname.as_deref(), Some("box"));
+        assert_eq!(s.labels.get("team").map(String::as_str), Some("a"));
+        // start -i: create에 -i가 없어도 이번 시작에 입력을 보낸다.
+        let o = e.sbx_with_stdin(&["start", "-a", "-i", &id], b"typed");
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "typed");
+
+        // exec -e, --env-file, -w, -u.
+        let o = e.sbx(&["run", "-d", "--name", "ex", IMAGE, "sleep", "30"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let env_file = e.path("exec.env");
+        std::fs::write(&env_file, "B=from-file\n").unwrap();
+        let o = e.sbx(&[
+            "exec",
+            "-e",
+            "A=flag",
+            "--env-file",
+            env_file.to_str().unwrap(),
+            "-w",
+            work.to_str().unwrap(),
+            "-u",
+            &me,
+            "ex",
+            "sh",
+            "-c",
+            "echo $A $B; id -u; echo x > exec.txt",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(
+            text(&o.stdout),
+            format!("flag from-file\n{}\n", id_output("-u"))
+        );
+        assert!(work.join("exec.txt").exists());
+        assert_eq!(e.sbx(&["rm", "-f", "ex"]).status.code(), Some(0));
+
+        // attach --no-stdin: 그 쪽의 입력은 가지 않는다. 다른 쪽이 붙어 보낸 것만 간다.
+        let o = e.sbx(&[
+            "run",
+            "-d",
+            "-i",
+            "--name",
+            "at",
+            IMAGE,
+            "sh",
+            "-c",
+            "read a; echo got $a",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let mut quiet = e
+            .cmd(&["attach", "--no-stdin", "at"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        quiet.stdin.take().unwrap().write_all(b"ignored\n").unwrap();
+        let reader = Reader::start(&mut quiet);
+        // 먼저 붙은 쪽이 보냈다면 이미 끝났을 시간을 준다.
+        std::thread::sleep(Duration::from_millis(300));
+        let other = e.sbx_with_stdin(&["attach", "at"], b"sent\n");
+        assert_eq!(other.status.code(), Some(0), "{}", text(&other.stderr));
+        let quiet = wait_with_timeout(quiet, Duration::from_secs(20));
+        assert_eq!(quiet.status.code(), Some(0), "{}", text(&quiet.stderr));
+        assert_eq!(reader.text(), "got sent\n");
+        assert_eq!(e.sbx(&["rm", "at"]).status.code(), Some(0));
+
+        // rmi: 멈춘 샌드박스가 쓰는 이미지는 -f가 있어야 지운다.
+        let o = e.sbx(&["rmi", IMAGE]);
+        assert_ne!(o.status.code(), Some(0), "{}", text(&o.stdout));
+        let o = e.sbx(&["rmi", "-f", IMAGE]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&e.sbx(&["images", "-q"]).stdout), "");
+
+        // docker version 대신 sbx --version.
+        let o = e.sbx(&["--version"]);
+        assert_eq!(
+            text(&o.stdout),
+            format!("sbx {}\n", env!("CARGO_PKG_VERSION"))
         );
     }
 
