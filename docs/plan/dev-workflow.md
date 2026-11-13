@@ -50,6 +50,7 @@ Compose 명세, podman volume.
 | 빌더 | **직접 만든다.** Dockerfile을 읽고 스테이지마다 VM 하나를 띄워 `RUN`을 거기서 돌린다(4장) | BuildKit을 VM 안에서: Dockerfile 호환은 완벽하지만 게스트에 컨테이너 런타임(runc, cgroup, namespace)과 buildkitd 이미지가 필요하고, VM 안에 컨테이너를 또 띄우므로 빠르다는 이야기가 약해진다 |
 | 실시간 마운트 | **실행기의 virtio-fs**(wick에 넣는다). sbx 쪽에 동기화를 따로 만들지 않는다(7.3) | sbx 쪽 한 방향 sync: 양방향이 아니어서 `-v`와 다르게 동작하고, 감시와 지우기 처리를 sbx가 떠안는다 |
 | 릴리스 범위 | **0.3에 개발 흐름 전부**: build, push, 볼륨, `--connect`. compose는 그 뒤 | 0.3은 build와 push만: 빨리 내지만 "postgres까지 이어 쓰는" 데모가 안 된다 |
+| 빌드 결과와 저장 | **고른 대상의 형태 하나만 만든다**(4.1). 저장은 층 단위로, 같은 층은 한 번만(4.7) | 한 번 빌드해 OCI blob과 EROFS를 함께 두기: 디스크를 두 번 쓰고, 바탕 이미지가 이미지마다 되풀이된다 |
 | 홍보 문구 | 0.3에서 README의 첫 줄과 비교표를 바꾼다 | 지금 바꾸기: 아직 없는 기능을 말하게 된다 |
 
 ## 4. `sbx build`
@@ -70,11 +71,14 @@ sbx build -t app --output type=oci,dest=app.tar .    # OCI 아카이브(podman, 
 sbx build -t ghcr.io/me/app:1 --push .               # 레지스트리로
 ```
 
-- `--output`은 여러 번 줄 수 있다. 빌드는 한 번이고 결과만 여러 곳에 쓴다. 결과의 원본은 언제나 OCI 이미지이고,
-  EROFS 디스크는 지금처럼 sbx 안의 캐시 형식이다.
-- `type=sbx`(기본): sbx 저장소에 넣고 `prepare`까지 한다. 기록은 `sbx load`와 같은 길로 쓴다.
-- `type=docker`: `sbx save`와 같은 아카이브를 `docker load`에 넘긴다. `docker`가 없으면 오류다.
-- `type=oci,dest=…`: 파일이면 tar, 디렉터리면 OCI image layout.
+- **고른 대상의 형태 하나만 만든다.** 두 형태를 함께 만들어 두지 않는다. 디스크를 두 번 쓰지 않기 위해서다.
+  `--output`을 여러 번 주면 그만큼만 만든다.
+- `type=sbx`(기본): sbx에서 돌릴 형태만 둔다. 층마다 EROFS 하나이고 이미지끼리 같은 층은 한 번만 저장한다(4.7).
+  압축한 OCI 층 blob은 만들지 않는다.
+- `type=docker`: OCI 아카이브를 흘려 `docker load`에 넘긴다. sbx 저장소에는 이미지를 두지 않는다. `docker`가 없으면 오류다.
+- `type=oci,dest=…`: 파일이면 tar, 디렉터리면 OCI image layout. 마찬가지로 sbx 저장소에는 두지 않는다.
+- `type=sbx`로 만든 이미지를 나중에 `push`·`save`하면 그때 층을 OCI tar로 바꿔 내보낸다. 층의 digest는 처음 내보낼 때
+  정하고 기록해, 다시 내보내도 같다.
 - `--push`(`type=registry`): 6장의 push.
 - Firecracker에서 sbx 없이 바로 부팅되는 rootfs는 내지 않는다. 지금 EROFS 디스크는 sbx 게스트 init과 디스크
   구성에 묶인 내부 형식이고, 내보내면 공개 형식이 된다. 형식이 굳으면 그때 따로 정한다.
@@ -143,6 +147,22 @@ sbx build -t ghcr.io/me/app:1 --push .               # 레지스트리로
 - 빌드 코어(`sbx-build`)는 계획, 캐시 키, 층과 config 조립을 맡는다. VM을 띄우는 일과 저장소에 쓰는 일은 trait 뒤에
   두고, CLI가 `sbx-runtime`과 `sbx-manage`로 채운다. `run`이 관리와 실행을 차례로 부르는 것과 같은 모양이다. 그래서
   실행과 관리가 서로 모른다는 규칙은 그대로다. 정확한 규칙은 `RULES`에 더한다.
+
+### 4.7 저장: 층 하나는 한 번만
+
+지금은 이미지마다 압축한 층 blob(`save`용)과 층을 모두 합친 `rootfs.erofs`를 함께 둔다. 같은 바탕을 쓰는 이미지가
+다섯이면 바탕이 다섯 번 들어가고, 빌드가 들어오면 빌드마다 전체 크기의 디스크가 하나씩 는다. Docker보다 디스크를 더
+쓰게 되므로 0.3에서 고친다.
+
+- 저장 단위를 층으로 바꾼다. 층마다 EROFS 하나(`layers/<diff_id>/layer.erofs`), 이미지는 층의 목록이다. 같은 층은
+  이미지와 빌드 캐시가 함께 쓴다. 빌드 캐시가 따로 차지하는 공간은 없다.
+- VM에는 층들을 읽기 전용으로 붙이고 게스트가 overlay의 lower로 쌓는다. 빌드 모드의 층 쌓기(4.3)와 같은 방식이다.
+  실행기의 `max_disks`보다 층이 많으면 아래 층들을 하나로 합친 EROFS를 만들어 붙인다(합친 것은 캐시이고 지울 수 있다).
+- 받은(pull) 이미지의 압축 blob은 층 EROFS를 만든 뒤 지운다. `save`·`push`는 층을 다시 tar로 바꾼다. 받은 그대로의
+  digest가 필요하면(`save`가 같은 이미지 ID를 내는 지금 동작) 압축 전 tar의 digest(diff_id)는 그대로이므로 이미지 ID는
+  같고, 압축 blob의 digest만 달라질 수 있다. 이것은 `DOCKER_DIFFERENCES`에 적는다. `--keep-blobs`로 남길 수 있다.
+- 배치 버전(`layout-version`)을 올리고, 옛 `rootfs.erofs`는 다음 `prepare` 때 층으로 바꾼다.
+- `sbx system df`가 층을 몇 이미지가 함께 쓰는지 보여 준다.
 
 ## 5. 출력과 도구
 
@@ -327,6 +347,7 @@ VM에 네트워크 장치를 붙이지 않고, 이름 단위 허용 목록과 �
 |---|---|---|
 | D1 | `sbx-dockerfile`: 해석과 4.5의 처음 범위, 빌드 계획 자료형 | Docker 문서의 예제와 공개 저장소 Dockerfile 묶음을 읽고, 지원하지 않는 것은 줄 번호로 거부한다. 퍼징 대상 |
 | D2 | 게스트 빌드 모드: 층 쌓기, 층 내보내기(whiteout 바꾸기), 규약 버전 올리기 | 게스트 단독 테스트와 fake로, 파일 추가·바꾸기·지우기·디렉터리 비우기가 OCI 층으로 맞게 나온다 |
+| S1 | 층 단위 저장(4.7): 층 EROFS, 이미지는 층 목록, 게스트가 층을 쌓아 부팅, 배치 버전 올리기 | 같은 바탕의 이미지 둘이 바탕 층을 한 번만 차지한다(`system df`). 옛 캐시가 옮겨진다. `run` p50이 지금보다 느려지지 않는다 |
 | D3 | `sbx-build`와 `sbx build`: 스테이지당 VM 하나, COPY·RUN, 캐시, `type=sbx` | 다단계 Dockerfile(node, python, go 예제)이 빌드되고 `sbx run`으로 돈다. 두 번째 빌드는 VM 없이 끝난다 |
 | D4 | 출력 `type=docker`, `type=oci`, `SOURCE_DATE_EPOCH` | `docker run`으로 같은 결과. `COPY`와 결정적인 `RUN`만 있는 Dockerfile을 두 번 빌드하면 digest가 같다 |
 | D5 | `sbx push`, `build --push` | 로컬 레지스트리(`registry:2`)와 GHCR에 올리고 다른 도구로 받는다 |

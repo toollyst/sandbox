@@ -189,7 +189,8 @@ VM 안에서, 나가는 연결은 허용 목록으로만. 기획: [docs/plan/dev
 | P1 | 규약: `sbx-guest-proto`에 빌드 층(열기·내보내기), `Lookup`, 시각, 파일 변경 알림. `sbx-executor-proto` 3에 디스크 역할 `volume`(2도 계속 말한다) | 없음 | 계획 |
 | D1 | `sbx-dockerfile`: 해석, 처음 범위, 빌드 계획 자료형, 퍼징 | 없음 | 계획 |
 | D2 | 게스트 빌드 모드: 층 쌓기, 층 내보내기(whiteout 바꾸기) | 없음 | 계획 |
-| D3 | `sbx-build`와 `sbx build`: 스테이지당 VM 하나, COPY·RUN, 캐시, `type=sbx` | 없음 | 계획 |
+| S1 | 층 단위 저장: 층마다 EROFS, 같은 층은 한 번만, 게스트가 층을 쌓아 부팅, 압축 blob은 두지 않음, 배치 버전 | 없음(`max_disks`를 넘으면 합친다) | 계획 |
+| D3 | `sbx-build`와 `sbx build`: 스테이지당 VM 하나, COPY·RUN, 캐시, `type=sbx`(고른 대상의 형태 하나만) | 없음 | 계획 |
 | N1 | 투명 TCP: 가짜 주소 DNS, 게스트 리스너, `resolv.conf` 덮기, 막힌 이름 기록 | 없음 | 계획 |
 | V2 | `--connect NAME:PORT` (N1 위에) | 없음 | 계획 |
 | D4 | 빌드 출력 `type=docker`, `type=oci`, `SOURCE_DATE_EPOCH` | 없음 | 계획 |
