@@ -219,7 +219,29 @@ The VM has no network device. With `--network allow`:
    relaying at the limit and refuses new connections. Each decision goes to `data_dir/events/network` (`connect`,
    `refuse`, `close` with byte counts), apart from the lifecycle events so a busy sandbox can't push them out.
 
-UDP, and programs that ignore the proxy settings, simply have no way out.
+**Transparent TCP** is for programs that ignore the proxy. It needs nothing from the executor or the guest kernel
+beyond IPv4 loopback ([`transparent.rs`](../../crates/app/guest/src/transparent.rs) in the guest):
+
+4. Right after lending the connections, the runtime sends `Transparent` with the IPv4 rules the guest can listen
+   on. The guest adds one netlink route, `local 198.18.0.0/15 dev lo` (so it can listen on any address in that
+   range), rewrites `/etc/resolv.conf` to `nameserver 127.0.0.1` in the writable layer, and listens on each IP rule
+   (making that `/32` local too). Rules with a `*` port, IPv6 addresses and `localhost` are recorded as
+   `proxy_only`; the CLI warns about them when the sandbox is created.
+5. The guest's loopback DNS ([`dns.rs`](../../crates/app/guest/src/dns.rs)) answers `localhost` itself and asks the
+   host about any other name with `Lookup{name}` over a lent connection. The host
+   ([`lookup`](../../crates/core/runtime/src/egress.rs)) matches the name against the list and answers `Resolved`
+   with the open ports, without resolving it, so a name you didn't allow never leaves the machine, not even as a DNS
+   query. It records `lookup` or `refuse` (`via=dns`) once per name, up to 1024 names per start. The connection
+   goes back to the pool.
+6. For an allowed name the guest picks the next address in the range (stable for the VM's life; PTR maps it back),
+   opens a listener on it for each port, and only then answers. AAAA and other types get "no records", so programs
+   use IPv4. A name that isn't allowed is NXDOMAIN.
+7. A connection to a stand-in address is mapped back to the name and sent as the same `Connect{host, port}` the
+   proxy sends; from there step 3 is unchanged. The proxy does the same mapping if a program resolved first and then
+   asked the proxy for the address.
+
+UDP beyond DNS, rules with a `*` port for programs that ignore the proxy, and programs with their own DNS have no way
+out.
 
 ## Executors and their repositories
 

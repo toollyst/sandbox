@@ -62,8 +62,8 @@ and `sbx` says so instead of silently copying.
 
 ## Network
 
-The VM never gets a network interface. With `--network allow`, an HTTP proxy inside the guest hands each connection
-to the host over vsock, and the host checks it against your list:
+The VM never gets a network interface. With `--network allow`, every outgoing TCP connection is handed to the host
+over vsock, and the host checks it against your list:
 
 ```sh
 sbx run --rm --network allow \
@@ -73,11 +73,35 @@ sbx run --rm --network allow \
 
 A rule can be `host:port`, `*.example.com:443`, `10.0.0.5:*` or `[::1]:80`. A name that resolves to a loopback or
 private address is refused unless the rule names that IP, or `localhost`, explicitly. Without `--network allow`, name
-lookups fail at once instead of hanging.
+lookups fail at once instead of hanging, and nothing else changes.
+
+There are two ways out, and both go through the same list:
+
+- **The proxy.** Programs that follow `HTTP_PROXY`/`HTTPS_PROXY` (curl, pip, npm, apt, cargo) use an HTTP proxy
+  inside the guest, which sbx sets for every process.
+- **Transparent TCP.** Programs that ignore the proxy (`git` over ssh, `psql`, a Go binary that opens its own
+  sockets) still reach a `HOST:PORT` rule. The guest's DNS asks the host whether the name is on the list; the host
+  answers from the list alone and never resolves a name you didn't allow. An allowed name gets a stand-in address
+  from `198.18.0.0/15`, which the guest listens on for the rule's ports; the program connects to it and the host
+  dials the real name. A name that isn't allowed gets "no such name" at once, and the host records it, so you can see
+  what to add:
+
+```sh
+sbx run --rm --network allow --allow db.example.com:5432 postgres:17 psql -h db.example.com -U app -c 'select 1'
+sbx events --since 10m --until 0s --filter type=network --filter event=refuse
+```
+
+For this, sbx points the sandbox's `/etc/resolv.conf` at the guest's DNS (in the sandbox's writable layer; the image
+is untouched), like Docker does. Some rules can only be reached through the proxy, and `sbx run` warns about each:
+a `*` port (the guest can't listen on every port: write the port, e.g. `github.com:22`), an IPv6 address (the
+sandbox has no IPv6), and `localhost` or a loopback address (inside the sandbox that is the sandbox itself). UDP
+beyond DNS has no way out, and neither do programs that bring their own DNS (DNS over HTTPS, a hard-coded resolver).
 
 `--egress-limit SIZE` (e.g. `500m`) caps how many bytes all outgoing connections send and receive together in each
 start; at the limit the open ones are cut and new ones refused. Every decision is recorded as a `network` event:
-`connect` (with the address reached), `refuse` (with the reason) and `close` (bytes sent and received):
+`connect` (with the address reached), `refuse` (with the reason; `via=dns` and no port when the name was refused at
+lookup), `close` (bytes sent and received), `lookup` (an allowed name and its open ports), `proxy_only` (a rule only
+the proxy can reach, and why) and `notice` (transparent TCP could not be set up, or lookups stopped being recorded):
 
 ```sh
 sbx events --since 1h --until 0s --filter type=network --filter sandbox=web
