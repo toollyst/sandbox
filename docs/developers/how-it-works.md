@@ -1,7 +1,7 @@
 # How it works
 
 This page follows `sbx run --rm alpine echo hello` from the command line into a VM and back. Then it covers the
-detached path, `exec` and `cp` from another process, the network, and the image pipeline. Each step names the code
+detached path, `exec` and `cp` from another process, the network, `sbx build`, and the image pipeline. Each step names the code
 that does it. The doc comment there is the precise rule.
 
 ## The pieces at run time
@@ -10,7 +10,7 @@ that does it. The doc comment there is the precise rule.
  your terminal
      │
  sbx (sbx-cli) ──────────── cache_dir: blobs, images/<id>/, layers/<diff_id>/layer.erofs,       (sbx-manage writes)
-     │                                 merged/<chain_id>/rootfs.erofs, guest/…/initramfs, events/images/
+     │                                 merged/<chain_id>/rootfs.erofs, build/<key>, guest/…/initramfs, events/images/
      │  sbx-runtime ─────── data_dir:  sandboxes/<id>/{spec.json,state.json,scratch.img,owner.lock,logs/},
      │                                 events/sandboxes/, events/network/, executors/, adapters/ (the last two: sbx executor)
      │                      socket_dir: short paths for Unix sockets (macOS caps them at 104 bytes)
@@ -202,7 +202,7 @@ sandboxes. `cp` targets follow `docker cp` ([`cpplan.rs`](../../crates/core/runt
 
 There is no daemon to ask what changed, so the process that changes something writes it down.
 `sbx-runtime` appends a line to `data_dir/events/sandboxes` whenever it records a sandbox as created, running,
-stopped or removed, and `sbx-manage` appends to `cache_dir/events/images` after a pull, prepare, tag, untag, push or
+stopped or removed, and `sbx-manage` appends to `cache_dir/events/images` after a pull, build, prepare, tag, untag, push or
 delete.
 Both use [`sbx-events`](../../crates/port/events/src/lib.rs): one JSON object per line, appended under a file lock,
 two generations of 1 MiB. `sbx events` reads both directories and the outgoing-connection records in
@@ -262,6 +262,59 @@ beyond IPv4 loopback ([`transparent.rs`](../../crates/app/guest/src/transparent.
 
 UDP beyond DNS, rules with a `*` port for programs that ignore the proxy, and programs with their own DNS have no way
 out.
+
+## `sbx build`
+
+Four crates take part, and only the CLI knows all of them
+([`app/build.rs`](../../crates/app/cli/src/app/build.rs)):
+
+1. **Plan** ([`sbx-dockerfile`](../../crates/adapter/dockerfile/src/lib.rs)). The Dockerfile and the options
+   (`--build-arg`, `--target`, the host's architecture) become a `BuildPlan` (`sbx_model::build`): stages and
+   steps with every variable already expanded. Dockerfile types never leave that crate. A base image's `Env` changes
+   what `$PATH` expands to, so the CLI plans twice: once to learn the `FROM` images, which it then finds or pulls
+   through `sbx-manage`, and again with their `Env`.
+2. **Run the plan** ([`sbx-build`](../../crates/core/build/src/lib.rs)). The core walks the stages in order and
+   sees the world through three traits ([`ports.rs`](../../crates/core/build/src/ports.rs)): `Store` (images, the
+   cache, layers), `Machines` (start a build VM on a list of layers) and `Vm` (open a layer, run, export, put
+   files). For each step it computes a cache key ([`key.rs`](../../crates/core/build/src/key.rs)):
+   `sha256` over the key below, the step's text and its extras (the `ARG`s a `RUN` sees, the content hash of what a
+   `COPY` copies, the stage or image it copies from). A hit reuses the recorded layer and its time.
+3. **Layers.** A `RUN` that misses starts the stage's VM if it isn't running yet, on the stage's layers so far. In
+   the guest, `OpenLayer` stacks a new empty writable overlay layer on top, `ExecStep` runs the command there (with
+   the step's env, workdir and user; the guest ends whatever it left behind), and `ExportLayer` sends the layer's
+   changes back as entries, which the host writes as an uncompressed OCI layer tar
+   ([`runtime/src/layer.rs`](../../crates/core/runtime/src/layer.rs) checks them as hostile input). `COPY`, `ADD`
+   and `WORKDIR` never need the VM: [`source.rs`](../../crates/core/build/src/source.rs) finds the sources (context
+   or a merged tree of another stage's or image's layers), [`copy.rs`](../../crates/core/build/src/copy.rs) places
+   them by Docker's destination rules against the merged tree of the layers below, and
+   [`tarw.rs`](../../crates/core/build/src/tarw.rs) writes the tar. If the VM is running, the same entries are also
+   put into its open layer (`CopyIn`), so later `RUN`s see them.
+4. **Store** ([`sbx-manage`](../../crates/core/manage/src/build.rs)). `add_layer` reads each tar with the same
+   reader as a pulled layer and turns it into a layer disk under `layers/<diff_id>/`. There is no compressed blob:
+   a built layer is only its disk (a layer that can't stand alone, such as a hard link to a file in a lower layer,
+   keeps its tar as an uncompressed blob and is merged with the layers below). A tar with no entries is the well-known empty layer, which takes no disk
+   and is skipped when stacking. `commit_built` writes the OCI config the core assembled
+   ([`config.rs`](../../crates/core/build/src/config.rs), with BuildKit's history entries); the image ID is that
+   config's `sha256`, and the image is recorded with `source = "sbx build"`.
+
+The build VM is an ordinary sandbox with no main process (`hold`), the label `io.github.toollyst.sandbox.build=1`, a
+16 GiB sparse writable disk and the build's network policy. Its root is a hidden image record (`sbx build (working
+root)`) holding the stage's layers so far, removed with the VM when the stage ends, even on failure. Refused names for a failed
+step's `blocked:` lines come from the network log (`refuse` events of that sandbox).
+
+**Cache records** live in `cache_dir/build/<key>`, one small JSON file each (`layer` and `created`). They hold
+layers alive: the collector in `sbx-store` keeps every layer and blob a record names, so `sbx rmi` of the last
+image on a layer leaves the disk while the cache can reuse it. `sbx system prune` removes the records and stale
+build roots first, then collects. There is no size limit or age-based eviction yet; `system df` shows the cache.
+While a build runs it holds claims on the layers it has made or reused, so a concurrent prune doesn't delete them
+before the image or record is written.
+
+A built image has layer disks but no layer tars or manifest, so `save` and `push` refuse it
+(`ManageError::NotExportable`) until the export step that writes tars from the disks.
+
+The fake executor ([`sbx-executor-fake`](../../crates/executor/fake/src/lib.rs)) plays the build VM for tests: on
+the first `OpenLayer` it unpacks the EROFS layer disks into a directory on the host and moves every guest path under
+it, so the e2e tests run whole builds without a VM (commands run on the host, so they use relative paths).
 
 ## Executors and their repositories
 

@@ -344,9 +344,9 @@ pub enum HostMsg {
     ExecStep(Exec),
     /// 이미지의 프로그램 없이 기본 프로세스 자리를 채운다(빌드 VM, `FROM scratch`처럼 실행할 것이 없는 이미지).
     ///
-    /// 흐름: 게스트가 [`GuestMsg::Started`]를 `pid` 0으로 보내고(프로세스가 없다) 기다린다. [`SignalMain`]
-    /// (HostMsg::SignalMain)이나 이 연결로 온 [`Signal`](HostMsg::Signal)을 받으면 [`GuestMsg::Exited`]
-    /// (`ExitStatus::Signal`)를 보내고 닫는다. 호스트가 연결을 닫아도 끝난다. 모르는 게스트는 `Protocol` 오류로 답한다.
+    /// 흐름: 게스트가 [`GuestMsg::Started`]를 `pid` 0으로 보내고(프로세스가 없다) 기다린다.
+    /// [`SignalMain`](HostMsg::SignalMain)이나 이 연결로 온 [`Signal`](HostMsg::Signal)을 받으면
+    /// [`GuestMsg::Exited`]에 `ExitStatus::Signal`을 담아 보내고 닫는다. 호스트가 연결을 닫아도 끝난다. 모르는 게스트는 `Protocol` 오류로 답한다.
     Hold,
     /// 호스트가 붙인 층 디스크 수를 알린다. 게스트는 부팅 때 쌓은 층 디스크 수와 견준다. 같으면 [`GuestMsg::Done`]이다.
     /// 다르면 실행기가 디스크를 빠뜨렸거나 더 붙인 것이다. 게스트는 잘못된 뿌리 위에서 아무것도 하지 않도록

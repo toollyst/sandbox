@@ -23,6 +23,17 @@ to release a tag without one. Changes land under `## Unreleased` first, and the 
 
 ### Added
 
+- `sbx build` makes an image from a Dockerfile, with buildx's flag names (`-t`, `-f`, `--build-arg`, `--target`,
+  `--no-cache`, `--progress auto|plain`, `-q`). Each stage's `RUN` steps run in one microVM with the network closed
+  unless `--network allow --allow HOST:PORT` opens it; a failed step lists the names it was refused, with the
+  `--allow` to add. `COPY`, `ADD` and `WORKDIR` layers are made on the host, honoring `.dockerignore`, so a cached
+  rebuild or a `FROM scratch` stage of copies starts no VM. Every step that makes a layer is cached; built images
+  share layer disks with the images they are built on. `--format json` prints `BuildEvent` JSON Lines, and an
+  image event `build` is recorded. `ADD` of an archive, `ONBUILD`, `RUN --mount`, heredocs and other platforms are
+  errors for now, and a built image can't be saved or pushed yet. See the Build section of the usage guide and the
+  build rows of the Docker compatibility table.
+- `sbx system df` shows the build cache, and `sbx system prune` removes it (JSON `build_cache` in the prune
+  report).
 - `sbx images` shows `SIZE`, `SHARED` and `UNIQUE` (on disk), and `--format json` adds `disk_size`, `shared_size`
   and `unique_size`. `sbx system df` counts a shared layer once and shows the shared part (`SHARED`, JSON `shared`).
   The Images tab in `sbx tui` shows `SIZE` and `SHARED`.

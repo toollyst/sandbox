@@ -14,7 +14,7 @@ pub const BUILT_SOURCE: &str = "sbx build";
 /// 빌드 VM의 뿌리 기록의 `source`. 이미지 목록에 보이지 않는다.
 pub const BUILD_ROOT_SOURCE: &str = "sbx build (working root)";
 
-/// 층 하나의 파일 내용([`Manager::layer_entries`]). 작업 공간을 쥐고 있고, 버리면 지운다.
+/// 층 하나의 파일 내용([`Manager::layer_entries`](crate::Manager::layer_entries)). 작업 공간을 쥐고 있고, 버리면 지운다.
 pub struct LayerContents {
     /// 작업 공간(버리면 지운다).
     pub(crate) _work: WorkDir,
@@ -36,7 +36,7 @@ impl ContentSource for LayerContents {
     }
 }
 
-/// 빌드 캐시가 차지하는 것([`Manager::build_cache_usage`]).
+/// 빌드 캐시가 차지하는 것([`Manager::build_cache_usage`](crate::Manager::build_cache_usage)).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BuildCacheUsage {
     /// 캐시 기록 수.

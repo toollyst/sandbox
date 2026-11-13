@@ -84,6 +84,8 @@ flowchart BT
   sbx_runtime --> sbx_guest_proto
   sbx_runtime --> sbx_model
   sbx_runtime --> sbx_store
+  sbx_cli --> sbx_build
+  sbx_cli --> sbx_dockerfile
   sbx_cli --> sbx_events
   sbx_cli --> sbx_executor
   sbx_cli --> sbx_executor_install
@@ -127,13 +129,13 @@ flowchart BT
 | port | [`port/image`](../../crates/port/image) | `sbx-image` | `sbx-model` | `sbx-oci`, `sbx-manage`, `sbx-cli` |
 | port | [`port/rootfs`](../../crates/port/rootfs) | `sbx-rootfs` | `sbx-model` | `sbx-build`, `sbx-manage`, `sbx-cli`, `sbx-executor-fake` |
 | port | [`port/store`](../../crates/port/store) | `sbx-store` | `sbx-model` | `sbx-manage`, `sbx-runtime`, `sbx-cli` |
-| adapter | [`adapter/dockerfile`](../../crates/adapter/dockerfile) | `sbx-dockerfile` | `sbx-model` | – |
+| adapter | [`adapter/dockerfile`](../../crates/adapter/dockerfile) | `sbx-dockerfile` | `sbx-model` | `sbx-cli` |
 | adapter | [`adapter/executor-process`](../../crates/adapter/executor-process) | `sbx-executor-process` | `sbx-executor`, `sbx-executor-proto`, `sbx-model` | `sbx-cli`, `sbx-shim` |
 | adapter | [`adapter/oci`](../../crates/adapter/oci) | `sbx-oci` | `sbx-image`, `sbx-model` | `sbx-cli` |
-| core | [`core/build`](../../crates/core/build) | `sbx-build` | `sbx-model`, `sbx-rootfs` | – |
+| core | [`core/build`](../../crates/core/build) | `sbx-build` | `sbx-model`, `sbx-rootfs` | `sbx-cli` |
 | core | [`core/manage`](../../crates/core/manage) | `sbx-manage` | `sbx-events`, `sbx-image`, `sbx-model`, `sbx-rootfs`, `sbx-store` | `sbx-cli` |
 | core | [`core/runtime`](../../crates/core/runtime) | `sbx-runtime` | `sbx-events`, `sbx-executor`, `sbx-guest-proto`, `sbx-model`, `sbx-store` | `sbx-cli`, `sbx-shim` |
-| app | [`app/cli`](../../crates/app/cli) | `sbx-cli` (bin `sbx`) | `sbx-events`, `sbx-executor`, `sbx-executor-install`, `sbx-executor-process`, `sbx-executor-proto`, `sbx-executor-repo`, `sbx-guest-proto`, `sbx-image`, `sbx-manage`, `sbx-model`, `sbx-oci`, `sbx-release-index`, `sbx-rootfs`, `sbx-runtime`, `sbx-shim`, `sbx-store` | – |
+| app | [`app/cli`](../../crates/app/cli) | `sbx-cli` (bin `sbx`) | `sbx-build`, `sbx-dockerfile`, `sbx-events`, `sbx-executor`, `sbx-executor-install`, `sbx-executor-process`, `sbx-executor-proto`, `sbx-executor-repo`, `sbx-guest-proto`, `sbx-image`, `sbx-manage`, `sbx-model`, `sbx-oci`, `sbx-release-index`, `sbx-rootfs`, `sbx-runtime`, `sbx-shim`, `sbx-store` | – |
 | app | [`app/guest`](../../crates/app/guest) | `sbx-guest` (bin `sbx-guest`) | `sbx-guest-proto` | `sbx-executor-fake` |
 | app | [`app/shim`](../../crates/app/shim) | `sbx-shim` (bin `sbx-shim`) | `sbx-executor-process`, `sbx-executor-proto`, `sbx-model`, `sbx-runtime` | `sbx-cli` |
 | executor | [`executor/fake`](../../crates/executor/fake) | `sbx-executor-fake` (bin `sbx-executor-fake`) | `sbx-executor`, `sbx-executor-proto`, `sbx-guest`, `sbx-guest-proto`, `sbx-model`, `sbx-rootfs` | – |
@@ -143,8 +145,9 @@ flowchart BT
 
 ### Rules the map doesn't show
 
-- **The two cores don't know each other.** `sbx-runtime` never pulls an image, and `sbx-manage` never starts a
-  sandbox. `sbx run` is the CLI calling `manage` first and `runtime` second.
+- **The cores don't know each other.** `sbx-runtime` never pulls an image, and `sbx-manage` never starts a
+  sandbox. `sbx run` is the CLI calling `manage` first and `runtime` second. `sbx-build` knows neither: it sees
+  them through its own `Store` and `Machines` traits, which the CLI implements with the two.
 - **Only `sbx-manage` writes to the cache.** `sbx-store` keeps its write API behind the `write` feature, and
   `check-deps` fails if `sbx-runtime` or `sbx-shim` turns it on (`FORBIDDEN_FEATURES`).
 - **Cores never pick implementations.** `sbx-runtime` knows the `Executor` trait, not Firecracker. `sbx-manage`
@@ -314,6 +317,18 @@ The cache directory: layout, locks and reads. Writes are behind the `write` feat
 
 OCI types never leave this crate. They become `ImageConfig` and a layer list.
 
+### `sbx-dockerfile` · [`crates/adapter/dockerfile`](../../crates/adapter/dockerfile)
+
+Dockerfile in, `BuildPlan` (`sbx_model::build`) out, plus `.dockerignore` matching (`DockerIgnore`).
+
+- Dockerfile types (instructions, flags, words) never leave this crate. Only the plan, its errors and its warnings
+  do, so widening Dockerfile support only touches this crate.
+- No file system, registry or VM: the caller passes the base images' `Env` and reads the context itself.
+- Anything it doesn't support is an error with the line number, never ignored. `# syntax=`, `HEALTHCHECK` and
+  `MAINTAINER` build with a warning.
+- Modules: `lines` (lines, comments, continuations, directives), `syntax` and `instruction` (one instruction's
+  grammar), `shell` (variable expansion), `plan` (stages, `ARG` scope, `--target`, checks), `ignore`.
+
 ### `sbx-executor-process` · [`crates/adapter/executor-process`](../../crates/adapter/executor-process)
 
 `Executor` for any program that speaks the executor protocol. This is how `sbx` runs every real VMM.
@@ -364,7 +379,26 @@ Images and the cache: `pull` (with `pull_with` for progress), `prepare`, `images
   Whether a *stopped* sandbox's image may go is the caller's decision, because this crate doesn't know `data_dir`.
 - After a pull, a prepare that built something, an untag or a delete, it appends an event to
   `<cache_dir>/events/images`.
+- For `sbx build` (`build`): `add_layer` turns a layer tar into a layer disk with no compressed blob,
+  `commit_built` records the image (`source = "sbx build"`), and build cache records keep their layers alive until
+  `prune_build_cache`. `save` and `push` refuse a built image (`NotExportable`).
 - It never cleans up on its own.
+
+### `sbx-build` · [`crates/core/build`](../../crates/core/build)
+
+The builder: `build(Request, &dyn Store, &dyn Machines, Events)` runs a `BuildPlan` and returns the built image's ID.
+
+- **Ports, not implementations** (`ports`): `Store` (find or pull a base image, cache records, add and read layers,
+  commit), `Machines` and `Vm` (a build VM: open a layer, run, export, put entries, refused names). The CLI fills
+  them with `sbx-manage` and `sbx-runtime`; the unit tests with an in-memory store and a fake VM.
+- One VM per stage at most, started at the first uncached `RUN`; stages run one after another. `COPY`, `ADD` and
+  `WORKDIR` layers are tars made on the host (`source` finds sources, `copy` places them by Docker's rules, `tarw`
+  writes), so a fully cached build or a scratch stage of copies starts no VM.
+- `key`: cache keys (`sha256` over a version tag and length-prefixed parts). `config`: the OCI image config and
+  BuildKit-style history; the image ID is the config's `sha256`.
+- Progress is `Event`s (`Step` with `Started`, `Cached`, `Done`; `Output` chunks). A failed `RUN` is
+  `BuildError::RunFailed` with the last 16 KiB of output and the names the VM refused.
+- No registry, compression, cache layout or VM mechanics: those are behind the ports.
 
 ## app
 
@@ -456,6 +490,8 @@ so the runtime exchanges the real messages.
   testing a new executor against the protocol.
 - It differs from a VM in the obvious ways: processes run on the host as you, paths are host paths, and shares are
   symlinks. The list is in its `lib.rs`.
+- For build VMs, the first `OpenLayer` unpacks the EROFS layer disks into a host directory, and every guest path
+  after that is moved under it, so `sbx build` runs end to end in the CLI tests.
 
 ## Adding a crate
 

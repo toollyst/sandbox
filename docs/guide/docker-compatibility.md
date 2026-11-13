@@ -29,7 +29,7 @@ Counted from the 397 rows below. "What applies to sbx" leaves out ⚫, ⚪ and �
 | | |
 | --- | --- |
 | **Works (🟢 or 🟡), of what applies to sbx** | **`████░░░░░░` 44% (138 of 312)** |
-| **The Docker CLI alone** (without `build`, the Dockerfile and Compose, which come in 0.3 and after) | **`██████░░░░` 57% (109 of 189)** |
+| **The Docker CLI alone** (without `build`, the Dockerfile and Compose) | **`██████░░░░` 57% (109 of 189)** |
 | 🟢 Same as Docker | 66 |
 | 🟡 Works, with differences | 72 |
 | 🔴 Not yet | 174 (13 of them in 0.3) |
