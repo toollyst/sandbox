@@ -71,6 +71,10 @@ virtualization. It is made for running code you don't trust: **AI agents** (with
 | Images | OCI | The same OCI images, unmodified |
 | Commands | `docker …` | `sbx …`, with the same names and flags |
 
+<!-- docker-compat:begin -->
+**Docker compatibility:** 55% of the Docker CLI's commands and flags that apply to a VM work today (104 of 187); with `build`, the Dockerfile and Compose, which come in 0.3 and after, 33% (104 of 309). [The table](docs/guide/docker-compatibility.md) gives every row, its difference and its test, and CI keeps it in step with the code.
+<!-- docker-compat:end -->
+
 `cargo xtask bench` on an Apple Silicon Mac, 1 vCPU and 512 MiB per sandbox: `sbx run --rm alpine:3.20 true` (boot,
 run, shut down, delete) takes **121 ms** at p50, `sbx exec` into a running sandbox **8 ms**, and ten runs at once
 finish in **0.50 s**. Try it on your machine ([source](xtask/src/bench.rs)).
@@ -150,6 +154,7 @@ claude mcp add sbx -- sbx mcp                        # Claude Code; other client
 | Guide | |
 | --- | --- |
 | [Use it like Docker](docs/guide/usage.md) | Lifecycle, files, the network allow list, images, `--format json`, `--jq`, `events`, exit codes |
+| [Docker compatibility](docs/guide/docker-compatibility.md) | Every Docker command, flag, Dockerfile instruction and Compose key, and what sbx does with it |
 | [AI agents (MCP)](docs/guide/mcp.md) | Tools, limits, and what an agent can and can't reach |
 | [Executors](docs/guide/executors.md) | Versions the nvm way, adapters and VMM packages, bringing your own VMM, signed repositories |
 | [Install](docs/guide/install.md) | Per OS, installer options, from source, upgrade and uninstall |

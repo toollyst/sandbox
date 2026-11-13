@@ -1,4 +1,4 @@
-//! 옵션 값 해석. Docker와 같은 문법을 받는다. 다른 점은 [`DOCKER_DIFFERENCES`](crate::behavior::DOCKER_DIFFERENCES)에 있다.
+//! 옵션 값 해석. Docker와 같은 문법을 받는다. 다른 점은 [`crate::compat`]의 표에 있다.
 
 use std::path::{Path, PathBuf};
 

@@ -178,7 +178,7 @@ Both use [`sbx-events`](../../crates/port/events/src/lib.rs): one JSON object pe
 two generations of 1 MiB. `sbx events` reads both directories and the outgoing-connection records in
 `data_dir/events/network`, merges them by time, replays from `--since`, and
 keeps following until `--until` or Ctrl-C. A VM whose owner was killed has no `stop` event, because nobody was left
-to write it (it is listed in `DOCKER_DIFFERENCES`).
+to write it (the `events` row of [`compat.rs`](../../crates/app/cli/src/compat.rs) says so).
 
 `--format json` prints the public types in [`output.rs`](../../crates/app/cli/src/output.rs), never the on-disk
 records, so the storage format can change without breaking scripts. [cli-output.md](cli-output.md) is generated from

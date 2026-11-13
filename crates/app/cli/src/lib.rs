@@ -12,8 +12,8 @@
 //! - 관리 코어(`sbx-manage`)와 실행 코어(`sbx-runtime`)를 차례로 불러 Docker와 같은 동작을 만든다
 //!
 //! 동작은 Docker CLI를 기준으로 한다. 사람들이 이미 익숙하기 때문이다.
-//! 명령 목록은 [`commands`], 동작 규칙은 [`behavior`], Docker와 다른 점은
-//! [`behavior::DOCKER_DIFFERENCES`]에 있다. 기본 디렉터리는 [`dirs`]에, 디스크 배치 버전은 [`layout`]에 있다.
+//! 명령 목록은 [`commands`], 동작 규칙은 [`behavior`], Docker와 같은 점과 다른 점은
+//! [`compat::ROWS`]에 있다. 기본 디렉터리는 [`dirs`]에, 디스크 배치 버전은 [`layout`]에 있다.
 
 // 문서는 unix 전용 항목(붙기, 시그널 전달)을 가리킨다. 링크 검사는 Linux와 macOS의 `cargo doc`이 한다.
 #![cfg_attr(not(unix), allow(rustdoc::broken_intra_doc_links))]
@@ -24,6 +24,7 @@ pub mod behavior;
 pub mod choose;
 pub mod cli;
 pub mod commands;
+pub mod compat;
 pub mod complete;
 pub mod dirs;
 pub mod executors;
