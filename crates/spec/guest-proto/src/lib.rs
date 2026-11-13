@@ -7,8 +7,12 @@
 //!
 //! 1. 호스트가 [`HostMsg::Hello`]를 보낸다. 게스트는 버전이 같으면 [`GuestMsg::HelloAck`],
 //!    다르면 [`GuestMsg::Error`]를 보내고 연결을 닫는다. 1.0 전까지 호환 규칙은 "같아야 한다"이다.
-//! 2. 호스트가 요청 하나를 보낸다: [`HostMsg::Exec`], [`HostMsg::ExecDetached`], [`HostMsg::CopyIn`], [`HostMsg::CopyOut`], [`HostMsg::Stat`], [`HostMsg::Share`], [`HostMsg::EgressListen`], [`HostMsg::EgressSlot`], [`HostMsg::SignalMain`], [`HostMsg::Usage`], [`HostMsg::Forward`], [`HostMsg::Shutdown`].
+//! 2. 호스트가 요청 하나를 보낸다: [`HostMsg::Exec`], [`HostMsg::ExecDetached`], [`HostMsg::CopyIn`], [`HostMsg::CopyOut`], [`HostMsg::Stat`], [`HostMsg::Share`], [`HostMsg::EgressListen`], [`HostMsg::EgressSlot`], [`HostMsg::SignalMain`], [`HostMsg::Usage`], [`HostMsg::Forward`], [`HostMsg::OpenLayer`], [`HostMsg::ExportLayer`], [`HostMsg::Shutdown`].
 //! 3. 요청별 흐름은 각 메시지 문서에 있다. 실패는 언제든 [`GuestMsg::Error`] 하나로 끝난다.
+//!
+//! **버전**: 메시지를 더하거나 뜻을 바꾸면 [`PROTOCOL_VERSION`]을 올린다. 게스트 init은 `sbx`에 함께 들어 있으므로
+//! 새로 띄운 VM은 언제나 같은 버전이다. 올리기 전에 띄운 VM은 `Hello`에서 `Version` 오류로 답한다(다시 시작하면 된다).
+//! 3: 빌드 층([`HostMsg::OpenLayer`], [`HostMsg::ExportLayer`]).
 //!
 //! **인코딩**: 프레임([`frame`]) 하나에 메시지 하나. 본문의 첫 바이트가 메시지 종류이고,
 //! 필드는 정해진 순서로 이어진다. 정수는 big-endian, 바이트열과 문자열은 길이(u32) 다음에 내용,
@@ -28,7 +32,11 @@ pub use frame::{MAX_FRAME_LEN, read_frame, write_frame};
 pub use msg::*;
 
 /// 프로토콜 버전. [`HostMsg::Hello`]로 확인한다.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
+
+/// 한 VM에서 열 수 있는 빌드 층의 수. 층 n은 이미지 rootfs와 앞 층 n-1개, 모두 n개를 overlay 아래층으로 쓰고,
+/// Linux overlayfs는 아래층을 500개까지 받는다(`OVL_MAX_STACK`). 넘으면 [`HostMsg::OpenLayer`]가 오류다.
+pub const MAX_LAYERS: u32 = 500;
 
 /// 게스트가 듣는 vsock 포트.
 pub const GUEST_PORT: u32 = 1024;
