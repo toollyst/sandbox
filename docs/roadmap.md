@@ -188,7 +188,7 @@ VM 안에서, 나가는 연결은 허용 목록으로만. 기획: [docs/plan/dev
 |---|---|---|---|
 | X1 | Docker 호환 표(`docs/guide/docker-compatibility.md`, wick의 COMPATIBILITY.md와 같은 방식): Docker CLI 명령과 옵션, Dockerfile 명령, Compose 키마다 한 줄. 상태(🟢 Docker와 같다, 🟡 되지만 다르다, 🔴 아직 없다, ⚫ 하지 않는다, ⚪ VM에서 의미 없다), 다른 점, 근거 테스트 이름. 정본은 코드의 표(`crates/app/cli/src/compat.rs`, `DOCKER_DIFFERENCES`는 없애고 여기로 모았다)이고 문서와 진행률(되는 것 / 할 수 있는 것)은 테스트가 만든다(`SBX_BLESS=1`, `cli-output.md`와 같은 방식). 테스트가 🟢·🟡 줄의 명령·옵션이 clap에 있고 근거 테스트가 실제로 있는지, 🔴 줄의 옵션이 clap에 없는지 본다. 그래서 기능을 넣으면 표를 고치지 않고는 CI가 통과하지 않는다. README에 진행률 한 줄 | 없음 | 완료 (391줄. 되는 것: Docker CLI만 55%(104/187), build·Dockerfile·Compose까지 33%(104/309). `cargo test -p sbx-cli --lib compat`가 표와 clap·근거 테스트·문서를 맞춰 본다. 값 단위 줄(`-v NAME:/path` 등)과 글 줄은 clap과 맞춰 보지 못한다. 줄의 상태가 참인지는 근거 테스트가 본다) |
 | P1 | 규약: `sbx-guest-proto`에 빌드 층(열기·내보내기), `Lookup`, 시각, 파일 변경 알림. `sbx-executor-proto` 3에 디스크 역할 `volume`(2도 계속 말한다) | 없음 | 계획 |
-| D1 | `sbx-dockerfile`: 해석, 처음 범위, 빌드 계획 자료형, 퍼징 | 없음 | 계획 |
+| D1 | `sbx-dockerfile`: 해석, 처음 범위, 빌드 계획 자료형, 퍼징 | 없음 | 완료 (`sbx_dockerfile::plan`, `sbx_model::build`, `.dockerignore`, 퍼징 대상 `dockerfile`·`dockerignore`. 바탕 이미지의 `Env`는 호출자가 준다(D3). 남음: ARG·ENV 우선순위 등 기억으로 정한 Docker 규칙을 D3에서 실제 Docker와 같은 Dockerfile로 맞춰 본다. 바탕 이미지의 `OnBuild`는 D3가 거부한다) |
 | D2 | 게스트 빌드 모드: 층 쌓기, 층 내보내기(whiteout 바꾸기) | 없음 | 계획 |
 | S1 | 층 단위 저장: 층마다 EROFS, 같은 층은 한 번만, 게스트가 층을 쌓아 부팅, 압축 blob은 두지 않음, 배치 버전 | 없음(`max_disks`를 넘으면 합친다) | 계획 |
 | D3 | `sbx-build`와 `sbx build`: 스테이지당 VM 하나, COPY·RUN, 캐시, `type=sbx`(고른 대상의 형태 하나만) | 없음 | 계획 |
