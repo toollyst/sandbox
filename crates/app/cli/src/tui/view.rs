@@ -603,7 +603,13 @@ fn hints(model: &Model) -> Vec<(&'static str, &'static str)> {
         ]),
         Tab::Images => {
             if !model.visible_images().is_empty() {
-                h.extend([("D", "rmi"), ("O", "save"), ("enter", "details")]);
+                h.extend([
+                    ("D", "rmi"),
+                    ("t", "tag"),
+                    ("p", "push"),
+                    ("O", "save"),
+                    ("enter", "details"),
+                ]);
             }
             h.extend([("I", "load"), ("L", "login"), ("U", "usage")]);
         }

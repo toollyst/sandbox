@@ -63,6 +63,15 @@ neither. The CLI then calls the management core:
   writing and reports progress (the CLI draws the bar). The manifest and config are kept as pulled (for `sbx save`),
   and the image record and reference are written last.
   `sbx load` runs the same steps with an OCI image layout as the source ([`layout.rs`](../../crates/adapter/oci/src/layout.rs)).
+- **`push`** (the other way, `sbx push`): `sbx-manage` reads the stored manifest and config, checks that the
+  manifest still hashes to the image ID and each layer file has the size the manifest says, and hands the blobs to an
+  [`ImageDestination`](../../crates/port/image/src/lib.rs) one by one, the manifest last. `sbx-oci`
+  ([`push.rs`](../../crates/adapter/oci/src/push.rs)) speaks the Distribution push protocol for each: `HEAD` to skip a
+  blob the registry has, a cross-repository mount when the image was pulled from another repository of the same
+  registry, otherwise an upload session (`POST`, then one `PUT` with the whole blob, or `PATCH` chunks that follow the
+  registry's `Location` and `Range` if it answers 413), and finally `PUT` of the manifest bytes by tag. The token asks
+  for `pull,push`. The name alone picks the registry: no mirror, no `location` rewrite, and `blocked` refuses. Nothing
+  is tagged until every blob is there.
 - **`prepare`**: [`sbx-rootfs`](../../crates/port/rootfs) merges the layers in memory (whiteouts, opaque
   directories, hard links) and writes one EROFS image to `images/<id>/rootfs.erofs`. Nothing is unpacked onto your
   disk, so the result is the same on macOS, Linux and Windows. If the image carries its own kernel (label
@@ -173,7 +182,8 @@ sandboxes. `cp` targets follow `docker cp` ([`cpplan.rs`](../../crates/core/runt
 
 There is no daemon to ask what changed, so the process that changes something writes it down.
 `sbx-runtime` appends a line to `data_dir/events/sandboxes` whenever it records a sandbox as created, running,
-stopped or removed, and `sbx-manage` appends to `cache_dir/events/images` after a pull, prepare, untag or delete.
+stopped or removed, and `sbx-manage` appends to `cache_dir/events/images` after a pull, prepare, tag, untag, push or
+delete.
 Both use [`sbx-events`](../../crates/port/events/src/lib.rs): one JSON object per line, appended under a file lock,
 two generations of 1 MiB. `sbx events` reads both directories and the outgoing-connection records in
 `data_dir/events/network`, merges them by time, replays from `--since`, and

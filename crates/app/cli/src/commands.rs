@@ -138,6 +138,16 @@ pub const COMMANDS: &[Command] = &[
         "Download an image (only downloads)",
     ),
     cmd(
+        "push",
+        Section::Images,
+        "Upload an image to its registry (layers and config as pulled, then the manifest)",
+    ),
+    cmd(
+        "tag",
+        Section::Images,
+        "Add a reference to an image (TARGET can name another registry)",
+    ),
+    cmd(
         "prepare",
         Section::Images,
         "Build the root filesystem disk for an image (no-op if it exists)",

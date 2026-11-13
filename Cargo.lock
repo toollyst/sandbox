@@ -2586,7 +2586,9 @@ name = "sbx-oci"
 version = "0.2.2"
 dependencies = [
  "aws-lc-rs",
+ "bytes",
  "flate2",
+ "http-body",
  "reqwest",
  "sbx-image",
  "sbx-model",

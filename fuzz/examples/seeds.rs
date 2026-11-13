@@ -184,6 +184,18 @@ fn oci(out: &Path) {
             0,
             "RTMIN+2147483647\nRTMAX--2147483648\n4294967296:0",
         ),
+        // push: 레지스트리 오류 본문.
+        (
+            "push-errors",
+            0,
+            r#"{"errors":[{"code":"DIGEST_INVALID","message":"provided digest did not match uploaded content","detail":{}}]}"#,
+        ),
+        // push: 나눠 보내기 응답(Location, Range를 차례로). 크기 = 첫 바이트 × 3 = 30.
+        (
+            "push-chunks",
+            10,
+            "/v2/a/blobs/uploads/1?_state=7\n0-6\nhttps://reg.example/v2/a/blobs/uploads/1?_state=10\nbytes=0-9\n?_state=x\n0-16\n\n0-99",
+        ),
     ] {
         let mut b = vec![ct];
         b.extend_from_slice(body.as_bytes());

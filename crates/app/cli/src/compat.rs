@@ -19,7 +19,7 @@
 //!   clap에 옵션이 없는지는 보지 않는다.
 //! - [`Kind::Text`]: 아무 글. clap과 맞춰 보지 않는다(Dockerfile, Compose 파일, 동작).
 //!
-//! sbx의 이름이 Docker와 다르면 [`Row::sbx`]에 sbx의 이름을 같은 모양으로 적는다. ➕ 줄은 `docker`에 sbx의 이름을 적는다.
+//! sbx의 이름이 Docker와 다르면 [`Row`]의 `sbx`에 sbx의 이름을 같은 모양으로 적는다. ➕ 줄은 `docker`에 sbx의 이름을 적는다.
 
 /// 줄의 상태.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,6 +127,7 @@ pub enum Area {
     Events,
     Images,
     Pull,
+    Push,
     Rmi,
     Save,
     Load,
@@ -142,7 +143,7 @@ pub enum Area {
 
 impl Area {
     /// 문서의 순서.
-    pub const ALL: [Area; 28] = [
+    pub const ALL: [Area; 29] = [
         Area::Commands,
         Area::Global,
         Area::Run,
@@ -160,6 +161,7 @@ impl Area {
         Area::Events,
         Area::Images,
         Area::Pull,
+        Area::Push,
         Area::Rmi,
         Area::Save,
         Area::Load,
@@ -193,6 +195,7 @@ impl Area {
             Area::Events => "docker events",
             Area::Images => "docker images",
             Area::Pull => "docker pull",
+            Area::Push => "docker push",
             Area::Rmi => "docker rmi",
             Area::Save => "docker save",
             Area::Load => "docker load",
@@ -230,6 +233,7 @@ impl Area {
             Area::Events => flags(&[&["events"]]),
             Area::Images => flags(&[&["images"]]),
             Area::Pull => flags(&[&["pull"]]),
+            Area::Push => flags(&[&["push"]]),
             Area::Rmi => flags(&[&["rmi"]]),
             Area::Save => flags(&[&["save"]]),
             Area::Load => flags(&[&["load"]]),
@@ -462,8 +466,9 @@ pub const ROWS: &[Row] = &[
     same(Commands, "login", &["login_and_logout_use_dockers_config"])
         .note("Writes Docker's `config.json` or its credential helper, so `docker login` works too."),
     same(Commands, "logout", &["login_and_logout_use_dockers_config"]),
-    differs(Commands, "events", "Kinds `sandbox`, `image` and `network`; actions create, start, stop, remove, `exec_start`, `exec_die`, pull, prepare, untag, delete. RFC 3339 times with nanoseconds. Keeps the last 1-2 MiB (Docker: the last 256 events).", &[
+    differs(Commands, "events", "Kinds `sandbox`, `image` and `network`; actions create, start, stop, remove, `exec_start`, `exec_die`, pull, prepare, tag, untag, push, delete. RFC 3339 times with nanoseconds. Keeps the last 1-2 MiB (Docker: the last 256 events).", &[
         "events_replay_and_follow",
+        "tag_and_push_to_a_registry",
     ])
     .why("No daemon: the process that changes a state records it, so a sandbox whose owner dies suddenly has no stop event."),
     differs(Commands, "info", "Shows the host, the executor and the storage sbx uses.", &["commands_that_do_not_launch_need_no_executor"]),
@@ -479,8 +484,12 @@ pub const ROWS: &[Row] = &[
     not_yet(Commands, "build", "D3"),
     not_yet(Commands, "buildx build", "D3").note("`sbx build` takes buildx's flags."),
     not_yet(Commands, "builder", UNPLANNED).note("`sbx system prune` will clear the build cache (D3)."),
-    not_yet(Commands, "push", "D5"),
-    not_yet(Commands, "tag", "D5"),
+    differs(Commands, "push", "Sends the layers, config and manifest exactly as they were pulled, so the image keeps its digest; one blob at a time (Docker sends several at once). Only to the registry the name points at: never to a `registries.conf` mirror, and a blocked registry is refused.", &[
+        "tag_and_push_to_a_registry",
+        "app::push::tests::report_reads_like_docker_push",
+    ]),
+    same(Commands, "tag", &["tag_and_push_to_a_registry"])
+        .note("Moves a reference that pointed at another image, as Docker does, and records an image `tag` event."),
     not_yet(Commands, "volume", "V1").note("Named volumes: a sparse disk per volume."),
     not_yet(Commands, "volume create", "V1"),
     not_yet(Commands, "volume ls", "V1"),
@@ -762,6 +771,15 @@ pub const ROWS: &[Row] = &[
     not_yet(Pull, "-a, --all-tags", UNPLANNED),
     not_yet(Pull, "-q, --quiet", UNPLANNED),
     na(Pull, "--disable-content-trust", NO_DCT),
+    // ── push ─────────────────────────────────────────────────────────────
+    differs(Push, "-a, --all-tags", "Pushes the local tags of the repository one after another, in name order; one that fails doesn't stop the others.", &[
+        "tag_and_push_to_a_registry",
+        "app::push::tests::push_names_a_local_tag_or_all_tags_of_a_repository",
+    ]),
+    differs(Push, "-q, --quiet", "Prints only the pushed reference, one per line.", &["tag_and_push_to_a_registry"]),
+    not_yet(Push, "--platform", UNPLANNED)
+        .note("sbx keeps one platform per image and always pushes that single-platform manifest."),
+    na(Push, "--disable-content-trust", NO_DCT),
     // ── rmi ──────────────────────────────────────────────────────────────
     differs(Rmi, "-f, --force", "Also removes images used by stopped sandboxes in the same data directory, or with several references. Never those of running sandboxes.", &[
         "docker_options_reach_the_sandbox",

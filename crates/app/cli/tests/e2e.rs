@@ -128,6 +128,7 @@ mod unix {
             "login_and_logout_use_dockers_config",
             login_and_logout_use_dockers_config,
         ),
+        ("tag_and_push_to_a_registry", tag_and_push_to_a_registry),
         (
             "load_and_save_round_trip_an_oci_archive",
             load_and_save_round_trip_an_oci_archive,
@@ -1420,9 +1421,11 @@ mod unix {
         assert!(!complete(&e, &["exec", "web", ""]).contains(&"web".to_owned()));
         assert_eq!(complete(&e, &["cp", "we"]), ["web:"]);
         // 이미지: 줄인 참조. run과 create는 첫 인자만.
-        for cmd in ["run", "create", "rmi", "prepare", "pull"] {
+        for cmd in ["run", "create", "rmi", "prepare", "pull", "push", "tag"] {
             has(&[cmd, ""], &image);
         }
+        // tag는 둘째 인자(새 이름)도 이미지 참조에서 고쳐 쓴다.
+        has(&["tag", &image, ""], &image);
         assert_eq!(complete(&e, &["run", "--rm", "e2e"]), [image.as_str()]);
         assert!(!complete(&e, &["run", &image, ""]).contains(&image));
         // 줄에 친 --data-dir이 SBX_DATA_DIR보다 앞선다. 없는 디렉터리는 후보가 없고, 만들지도 않는다.
@@ -2492,6 +2495,349 @@ mod unix {
         std::fs::write(e.path("in.tar"), &archive).unwrap();
         let o = e.sbx(&["load", "-i", e.path("in.tar").to_str().unwrap()]);
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    }
+
+    /// 인증 없는 OCI 레지스트리 흉내(메모리): blob `HEAD`·`GET`, 올리기(`POST`, mount, 한 번에 `PUT`), manifest
+    /// `PUT`·`GET`. 받은 요청을 `메서드 경로?쿼리`로 남긴다.
+    struct Registry {
+        port: u16,
+        log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        manifests: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>>,
+    }
+
+    fn registry() -> Registry {
+        use std::collections::HashMap;
+        use std::io::{BufRead, BufReader, Read};
+        use std::sync::{Arc, Mutex};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let log: Arc<Mutex<Vec<String>>> = Arc::default();
+        let manifests: Arc<Mutex<HashMap<String, Vec<u8>>>> = Arc::default();
+        // (저장소, digest) → 내용. 올리는 중인 것은 id → 저장소.
+        type Blobs = Mutex<HashMap<(String, String), Vec<u8>>>;
+        let blobs: Arc<Blobs> = Arc::default();
+        let uploads: Arc<Mutex<HashMap<String, String>>> = Arc::default();
+        let (log2, man2) = (log.clone(), manifests.clone());
+        std::thread::spawn(move || {
+            for (n, c) in l.incoming().enumerate() {
+                let Ok(mut c) = c else { return };
+                let mut r = BufReader::new(c.try_clone().unwrap());
+                let mut first = String::new();
+                if r.read_line(&mut first).is_err() {
+                    continue;
+                }
+                let mut len = 0usize;
+                let mut ctype = String::new();
+                loop {
+                    let mut h = String::new();
+                    if r.read_line(&mut h).is_err() || h == "\r\n" || h.is_empty() {
+                        break;
+                    }
+                    if let Some((k, v)) = h.split_once(':') {
+                        match k.trim().to_ascii_lowercase().as_str() {
+                            "content-length" => len = v.trim().parse().unwrap_or(0),
+                            "content-type" => ctype = v.trim().to_owned(),
+                            _ => {}
+                        }
+                    }
+                }
+                let mut body = vec![0; len];
+                if r.read_exact(&mut body).is_err() {
+                    continue;
+                }
+                let mut parts = first.split_whitespace();
+                let (method, target) = (
+                    parts.next().unwrap_or("").to_owned(),
+                    parts.next().unwrap_or("").to_owned(),
+                );
+                log2.lock().unwrap().push(format!("{method} {target}"));
+                let (path, query) = target.split_once('?').unwrap_or((&target, ""));
+                let q = |key: &str| {
+                    query.split('&').find_map(|kv| {
+                        let (k, v) = kv.split_once('=')?;
+                        (k == key).then(|| v.replace("%3A", ":").replace("%2F", "/"))
+                    })
+                };
+                let send = |c: &mut std::net::TcpStream,
+                            status: &str,
+                            headers: &str,
+                            body: &[u8]| {
+                    let head = format!(
+                        "HTTP/1.1 {status}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = c.write_all(head.as_bytes());
+                    if method != "HEAD" {
+                        let _ = c.write_all(body);
+                    }
+                };
+                let rest = path.strip_prefix("/v2/").unwrap_or("");
+                let hex = |b: &[u8]| {
+                    use sha2::Digest as _;
+                    sha2::Sha256::digest(b)
+                        .iter()
+                        .map(|x| format!("{x:02x}"))
+                        .collect::<String>()
+                };
+                if let Some((repo, id)) = rest.split_once("/blobs/uploads/") {
+                    if method == "POST" {
+                        if let (Some(d), Some(from)) = (q("mount"), q("from")) {
+                            let have = blobs.lock().unwrap().get(&(from, d.clone())).cloned();
+                            if let Some(b) = have {
+                                blobs.lock().unwrap().insert((repo.to_owned(), d), b);
+                                send(&mut c, "201 Created", "", b"");
+                                continue;
+                            }
+                        }
+                        uploads
+                            .lock()
+                            .unwrap()
+                            .insert(n.to_string(), repo.to_owned());
+                        let loc = format!("Location: /v2/{repo}/blobs/uploads/{n}?_state=x\r\n");
+                        send(&mut c, "202 Accepted", &loc, b"");
+                    } else if method == "PUT" {
+                        let d = q("digest").unwrap_or_default();
+                        if uploads.lock().unwrap().remove(id).is_none()
+                            || format!("sha256:{}", hex(&body)) != d
+                        {
+                            send(
+                                &mut c,
+                                "400 Bad Request",
+                                "",
+                                br#"{"errors":[{"code":"DIGEST_INVALID"}]}"#,
+                            );
+                            continue;
+                        }
+                        blobs.lock().unwrap().insert((repo.to_owned(), d), body);
+                        send(&mut c, "201 Created", "", b"");
+                    } else {
+                        uploads.lock().unwrap().remove(id);
+                        send(&mut c, "204 No Content", "", b"");
+                    }
+                } else if let Some((repo, d)) = rest.split_once("/blobs/") {
+                    match blobs.lock().unwrap().get(&(repo.to_owned(), d.to_owned())) {
+                        Some(b) => send(&mut c, "200 OK", "", b),
+                        None => send(&mut c, "404 Not Found", "", b""),
+                    }
+                } else if let Some((repo, tag)) = rest.split_once("/manifests/") {
+                    let key = format!("{repo}:{tag}");
+                    if method == "PUT" {
+                        let d = format!("sha256:{}", hex(&body));
+                        let mut m = man2.lock().unwrap();
+                        m.insert(format!("{repo}:{d}"), body.clone());
+                        m.insert(key, body);
+                        let _ = ctype;
+                        send(
+                            &mut c,
+                            "201 Created",
+                            &format!("Docker-Content-Digest: {d}\r\n"),
+                            b"",
+                        );
+                    } else {
+                        match man2.lock().unwrap().get(&key) {
+                            Some(b) => send(
+                                &mut c,
+                                "200 OK",
+                                "Content-Type: application/vnd.oci.image.manifest.v1+json\r\n",
+                                b,
+                            ),
+                            None => send(&mut c, "404 Not Found", "", b""),
+                        }
+                    }
+                } else {
+                    send(&mut c, "404 Not Found", "", b"");
+                }
+            }
+        });
+        Registry {
+            port,
+            log,
+            manifests,
+        }
+    }
+
+    fn tag_and_push_to_a_registry() {
+        let e = Env::new();
+        let reg = registry();
+        let host = format!("127.0.0.1:{}", reg.port);
+        let (archive, id) = oci_archive("example.com/team/tool:1");
+        std::fs::write(e.path("in.tar"), &archive).unwrap();
+        let o = e.sbx(&["load", "-i", e.path("in.tar").to_str().unwrap()]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+
+        // tag: 출력 없음(Docker와 같다). 참조는 정규화한다. JSON이면 Tagged.
+        let target = format!("{host}/team/tool:2");
+        let o = e.sbx(&["tag", "example.com/team/tool:1", &target]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(o.stdout.is_empty(), "{}", text(&o.stdout));
+        let o = e.sbx(&["--format", "json", "tag", &id[7..19], "tool:copy"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let t: sbx_cli::output::Tagged = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(
+            (t.reference.as_str(), t.id.as_str()),
+            ("docker.io/library/tool:copy", id.as_str())
+        );
+        let o = e.sbx(&["--format", "json", "images"]);
+        let images: Vec<sbx_cli::output::Image> = serde_json::from_slice(&o.stdout).unwrap();
+        let img = images.iter().find(|i| i.id == id).unwrap();
+        assert!(img.references.contains(&target), "{img:?}");
+        // 없는 원본, digest 대상은 거부한다.
+        let o = e.sbx(&["tag", "nope:1", "x:1"]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("no such image"),
+            "{}",
+            text(&o.stderr)
+        );
+        let o = e.sbx(&["tag", "tool:copy", &format!("x@sha256:{}", "a".repeat(64))]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(text(&o.stderr).contains("digest"), "{}", text(&o.stderr));
+
+        // push: Docker 같은 줄. 받은 manifest 그대로라 레지스트리의 digest가 이미지 ID다.
+        let o = e.sbx(&["push", &target]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let out = text(&o.stdout);
+        assert!(
+            out.starts_with(&format!(
+                "The push refers to repository [{host}/team/tool]\n"
+            )),
+            "{out}"
+        );
+        assert!(out.contains(": Pushed\n"), "{out}");
+        assert!(out.contains(&format!("2: digest: {id} size: ")), "{out}");
+        let stored = reg
+            .manifests
+            .lock()
+            .unwrap()
+            .get("team/tool:2")
+            .cloned()
+            .unwrap();
+        {
+            use sha2::Digest as _;
+            let hex: String = sha2::Sha256::digest(&stored)
+                .iter()
+                .map(|x| format!("{x:02x}"))
+                .collect();
+            assert_eq!(format!("sha256:{hex}"), id);
+        }
+        // 다시 올리면 보내지 않는다.
+        let o = e.sbx(&["push", &target]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(
+            text(&o.stdout).contains(": Layer already exists\n"),
+            "{}",
+            text(&o.stdout)
+        );
+        // -q는 참조만, JSON은 Pushed 한 줄.
+        let o = e.sbx(&["push", "-q", &target]);
+        assert_eq!(text(&o.stdout), format!("{target}\n"));
+        let o = e.sbx(&["--format", "json", "push", "-q", &target]);
+        assert_eq!(text(&o.stdout), format!("{target}\n"));
+        let o = e.sbx(&["--format", "json", "push", &target]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let p: sbx_cli::output::Pushed = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(
+            (p.reference.as_str(), p.id.as_str()),
+            (target.as_str(), id.as_str())
+        );
+        assert_eq!(p.blobs.len(), 2, "{p:?}");
+        assert!(p.blobs.iter().all(|b| b.status == "exists"), "{p:?}");
+
+        // 다른 sbx(다른 캐시)가 그 레지스트리에서 받으면 같은 ID다.
+        let other = Env::new();
+        let o = other.sbx(&["--format", "json", "pull", &target]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let pulled: sbx_cli::output::Pulled = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(pulled.id, id);
+        // 같은 레지스트리의 다른 저장소로는 받아 온 저장소에서 끌어온다(mount).
+        let copy = format!("{host}/copies/tool:1");
+        assert_eq!(other.sbx(&["tag", &target, &copy]).status.code(), Some(0));
+        let o = other.sbx(&["push", &copy]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(
+            text(&o.stdout).contains(": Mounted from team/tool\n"),
+            "{}",
+            text(&o.stdout)
+        );
+        assert!(
+            reg.log
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|l| l.contains("from=team")),
+            "{:?}",
+            reg.log.lock().unwrap()
+        );
+
+        // -a: 그 저장소의 로컬 태그를 모두. 태그를 함께 주면 거부한다.
+        let three = format!("{host}/team/tool:3");
+        assert_eq!(e.sbx(&["tag", &target, &three]).status.code(), Some(0));
+        let o = e.sbx(&["push", "-a", "-q", &format!("{host}/team/tool")]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), format!("{target}\n{three}\n"));
+        assert!(reg.manifests.lock().unwrap().contains_key("team/tool:3"));
+        let o = e.sbx(&["push", "-a", &target]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("--all-tags"),
+            "{}",
+            text(&o.stderr)
+        );
+        // 로컬에 없는 태그, ID로는 올리지 않는다.
+        let o = e.sbx(&["push", &format!("{host}/team/tool:9")]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(text(&o.stderr).contains("sbx tag"), "{}", text(&o.stderr));
+
+        // registries.conf의 차단: 레지스트리에 가지 않는다. 미러는 push에 쓰지 않는다.
+        std::fs::write(
+            e.path("registries.conf"),
+            format!(
+                "[[registry]]\nprefix = \"{host}/blocked\"\nlocation = \"{host}/blocked\"\nblocked = true\n\
+                 [[registry]]\nprefix = \"{host}/team\"\nlocation = \"{host}/team\"\n\
+                 [[registry.mirror]]\nlocation = \"127.0.0.1:9/mirror\"\n"
+            ),
+        )
+        .unwrap();
+        let blocked = format!("{host}/blocked/tool:1");
+        assert_eq!(e.sbx(&["tag", &target, &blocked]).status.code(), Some(0));
+        let before = reg.log.lock().unwrap().len();
+        let o = e.sbx(&["--format", "json", "push", &blocked]);
+        assert_eq!(o.status.code(), Some(1));
+        assert!(
+            text(&o.stderr).contains("blocked by registries.conf"),
+            "{}",
+            text(&o.stderr)
+        );
+        assert_eq!(reg.log.lock().unwrap().len(), before);
+        let o = e.sbx(&["push", "-q", &target]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+
+        // 이벤트: tag와 push.
+        let o = e.sbx(&[
+            "events", "--since", "1h", "--until", "0s", "--format", "json",
+        ]);
+        let actions: Vec<(String, String)> = text(&o.stdout)
+            .lines()
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+            .filter(|v| v["type"] == "image")
+            .map(|v| {
+                (
+                    v["action"].as_str().unwrap().to_owned(),
+                    v["attributes"]["reference"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_owned(),
+                )
+            })
+            .collect();
+        assert!(
+            actions.contains(&("tag".into(), target.clone())),
+            "{actions:?}"
+        );
+        assert!(
+            actions.contains(&("push".into(), target.clone())),
+            "{actions:?}"
+        );
     }
 
     fn login_and_logout_use_dockers_config() {

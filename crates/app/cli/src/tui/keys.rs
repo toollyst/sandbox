@@ -74,6 +74,16 @@ pub const KEYS: &[KeyHelp] = &[
         "save -o: write the image as an OCI archive (fills in)",
     ),
     k(
+        "t",
+        "images",
+        "tag: add a reference, e.g. a registry name (fills in)",
+    ),
+    k(
+        "p",
+        "images",
+        "push to its registry (fills in; takes the terminal)",
+    ),
+    k(
         "u",
         "executors",
         "executor use (the default for new sandboxes)",

@@ -24,22 +24,22 @@ The table is code, [`compat.rs`](../../crates/app/cli/src/compat.rs), and a test
 ## Progress
 
 <!-- compat-progress:begin -->
-Counted from the 391 rows below. "What applies to sbx" leaves out ⚫, ⚪ and ➕ rows.
+Counted from the 395 rows below. "What applies to sbx" leaves out ⚫, ⚪ and ➕ rows.
 
 | | |
 | --- | --- |
-| **Works (🟢 or 🟡), of what applies to sbx** | **`███░░░░░░░` 33% (104 of 309)** |
-| **The Docker CLI alone** (without `build`, the Dockerfile and Compose, which come in 0.3 and after) | **`██████░░░░` 55% (104 of 187)** |
-| 🟢 Same as Docker | 45 |
-| 🟡 Works, with differences | 59 |
-| 🔴 Not yet | 205 (44 of them in 0.3) |
+| **Works (🟢 or 🟡), of what applies to sbx** | **`███░░░░░░░` 34% (108 of 312)** |
+| **The Docker CLI alone** (without `build`, the Dockerfile and Compose, which come in 0.3 and after) | **`██████░░░░` 56% (108 of 190)** |
+| 🟢 Same as Docker | 46 |
+| 🟡 Works, with differences | 62 |
+| 🔴 Not yet | 204 (42 of them in 0.3) |
 | ⚫ Will not do | 23 |
-| ⚪ Not applicable in a VM | 38 |
+| ⚪ Not applicable in a VM | 39 |
 | ➕ sbx only | 21 |
 
 | Area | Works, of what applies to sbx |
 | --- | --- |
-| [Commands](#commands) | `█████░░░░░` 48% (28 of 58) |
+| [Commands](#commands) | `█████░░░░░` 51% (30 of 58) |
 | [Global options](#global-options) | `███░░░░░░░` 25% (1 of 4) |
 | [docker run, docker create](#docker-run-docker-create) | `█████░░░░░` 46% (23 of 49) |
 | [docker exec](#docker-exec) | `█████████░` 87% (7 of 8) |
@@ -56,6 +56,7 @@ Counted from the 391 rows below. "What applies to sbx" leaves out ⚫, ⚪ and �
 | [docker events](#docker-events) | `██████████` 100% (4 of 4) |
 | [docker images](#docker-images) | `█████░░░░░` 50% (3 of 6) |
 | [docker pull](#docker-pull) | `███░░░░░░░` 33% (1 of 3) |
+| [docker push](#docker-push) | `███████░░░` 66% (2 of 3) |
 | [docker rmi](#docker-rmi) | `██████████` 100% (1 of 1) |
 | [docker save](#docker-save) | `█████░░░░░` 50% (1 of 2) |
 | [docker load](#docker-load) | `███████░░░` 66% (2 of 3) |
@@ -97,7 +98,7 @@ Every `docker` command and management command. The flags of the commands sbx has
 | `load` | 🟡 | Reads OCI image layout archives or directories: `docker save` from Docker 25 on, `podman save --format oci-archive`, skopeo. | `load_and_save_round_trip_an_oci_archive` |
 | `login` | 🟢 | Writes Docker's `config.json` or its credential helper, so `docker login` works too. | `login_and_logout_use_dockers_config` |
 | `logout` | 🟢 |  | `login_and_logout_use_dockers_config` |
-| `events` | 🟡 | Kinds `sandbox`, `image` and `network`; actions create, start, stop, remove, `exec_start`, `exec_die`, pull, prepare, untag, delete. RFC 3339 times with nanoseconds. Keeps the last 1-2 MiB (Docker: the last 256 events). *Why:* No daemon: the process that changes a state records it, so a sandbox whose owner dies suddenly has no stop event. | `events_replay_and_follow` |
+| `events` | 🟡 | Kinds `sandbox`, `image` and `network`; actions create, start, stop, remove, `exec_start`, `exec_die`, pull, prepare, tag, untag, push, delete. RFC 3339 times with nanoseconds. Keeps the last 1-2 MiB (Docker: the last 256 events). *Why:* No daemon: the process that changes a state records it, so a sandbox whose owner dies suddenly has no stop event. | `events_replay_and_follow`, `tag_and_push_to_a_registry` |
 | `info` | 🟡 | Shows the host, the executor and the storage sbx uses. | `commands_that_do_not_launch_need_no_executor` |
 | `version` | 🟡 | sbx: `--version`. There is no `version` command. | `docker_options_reach_the_sandbox` |
 | `system` | 🟡 | `df` and `prune`. | `system_df_and_prune_free_what_nothing_uses` |
@@ -108,8 +109,8 @@ Every `docker` command and management command. The flags of the commands sbx has
 | `build` | 🔴 |  | D3 (0.3) |
 | `buildx build` | 🔴 | `sbx build` takes buildx's flags. | D3 (0.3) |
 | `builder` | 🔴 | `sbx system prune` will clear the build cache (D3). | not planned yet |
-| `push` | 🔴 |  | D5 (0.3) |
-| `tag` | 🔴 |  | D5 (0.3) |
+| `push` | 🟡 | Sends the layers, config and manifest exactly as they were pulled, so the image keeps its digest; one blob at a time (Docker sends several at once). Only to the registry the name points at: never to a `registries.conf` mirror, and a blocked registry is refused. | `tag_and_push_to_a_registry`, `app::push::tests::report_reads_like_docker_push` |
+| `tag` | 🟢 | Moves a reference that pointed at another image, as Docker does, and records an image `tag` event. | `tag_and_push_to_a_registry` |
 | `volume` | 🔴 | Named volumes: a sparse disk per volume. | V1 (0.3) |
 | `volume create` | 🔴 |  | V1 (0.3) |
 | `volume ls` | 🔴 |  | V1 (0.3) |
@@ -389,6 +390,15 @@ Options that go before the command (`docker --debug ps`).
 | `--platform` | 🟡 | `linux/amd64` or `linux/arm64`; the host's by default. Only the host's architecture runs. | `parse::tests::platforms` |
 | `-a, --all-tags` | 🔴 |  | not planned yet |
 | `-q, --quiet` | 🔴 |  | not planned yet |
+| `--disable-content-trust` | ⚪ | *Why:* sbx has no Docker Content Trust. Signatures follow the containers `policy.json` (cosign). |  |
+
+## docker push
+
+| Docker | | Notes | Evidence or step |
+| --- | --- | --- | --- |
+| `-a, --all-tags` | 🟡 | Pushes the local tags of the repository one after another, in name order; one that fails doesn't stop the others. | `tag_and_push_to_a_registry`, `app::push::tests::push_names_a_local_tag_or_all_tags_of_a_repository` |
+| `-q, --quiet` | 🟡 | Prints only the pushed reference, one per line. | `tag_and_push_to_a_registry` |
+| `--platform` | 🔴 | sbx keeps one platform per image and always pushes that single-platform manifest. | not planned yet |
 | `--disable-content-trust` | ⚪ | *Why:* sbx has no Docker Content Trust. Signatures follow the containers `policy.json` (cosign). |  |
 
 ## docker rmi

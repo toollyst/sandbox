@@ -598,3 +598,291 @@ fn cache_changes_are_recorded_as_events() {
     );
     std::fs::remove_dir_all(root).unwrap();
 }
+
+/// 받은 문서가 있는 이미지(레이어 둘, 같은 레이어 한 번 더). manifest의 sha256이 이미지 ID다.
+fn with_documents() -> FakeSource {
+    let a = layer(&[T::File("a", b"1")]);
+    let b = layer(&[T::File("b", b"22")]);
+    let mut src = FakeSource::new(vec![a.clone(), b, a]);
+    let config = b"{\"config\": {}}".to_vec();
+    let manifest = b"{ \"kept\": \"as pulled\" }".to_vec();
+    src.image.id = ImageId::new(sha256(&manifest));
+    src.image.documents = Some(sbx_image::Documents {
+        manifest,
+        manifest_media_type: "application/vnd.oci.image.manifest.v1+json".into(),
+        config_digest: sha256(&config),
+        config,
+    });
+    src
+}
+
+/// 받은 것을 기록하는 올릴 곳. `fail_at`번째(0부터) blob에서 실패한다.
+#[derive(Default)]
+struct FakeDest {
+    calls: std::sync::Mutex<Vec<String>>,
+    blobs: std::sync::Mutex<HashMap<Digest, Vec<u8>>>,
+    manifest: std::sync::Mutex<Option<(String, String, Vec<u8>)>>,
+    fail_at: Option<usize>,
+    /// 이 digest는 이미 있다.
+    present: Vec<Digest>,
+}
+
+impl ImageDestination for FakeDest {
+    fn target(
+        &self,
+        reference: &str,
+        blobs_from: Option<&str>,
+    ) -> Result<sbx_image::PushTarget, ImageError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("target {reference} {blobs_from:?}"));
+        Ok(sbx_image::PushTarget {
+            reference: format!("normalized/{reference}"),
+            mount_from: None,
+        })
+    }
+
+    fn push_blob<'a>(
+        &'a self,
+        target: &'a sbx_image::PushTarget,
+        digest: &'a Digest,
+        content: &'a dyn sbx_image::BlobContent,
+        progress: &'a (dyn Fn(u64) + Sync),
+    ) -> BoxFuture<'a, Result<BlobPush, ImageError>> {
+        Box::pin(async move {
+            let n = {
+                let mut c = self.calls.lock().unwrap();
+                c.push(format!("blob {} {digest}", target.reference));
+                c.iter().filter(|l| l.starts_with("blob ")).count() - 1
+            };
+            if self.fail_at == Some(n) {
+                return Err(ImageError::Transport("connection reset".into()));
+            }
+            if self.present.contains(digest) {
+                return Ok(BlobPush::Exists);
+            }
+            let mut buf = Vec::new();
+            content.open(0)?.read_to_end(&mut buf)?;
+            progress(buf.len() as u64);
+            self.blobs.lock().unwrap().insert(digest.clone(), buf);
+            Ok(BlobPush::Uploaded)
+        })
+    }
+
+    fn push_manifest<'a>(
+        &'a self,
+        target: &'a sbx_image::PushTarget,
+        media_type: &'a str,
+        manifest: &'a [u8],
+    ) -> BoxFuture<'a, Result<(), ImageError>> {
+        Box::pin(async move {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("manifest {}", target.reference));
+            *self.manifest.lock().unwrap() = Some((
+                target.reference.clone(),
+                media_type.to_owned(),
+                manifest.to_vec(),
+            ));
+            Ok(())
+        })
+    }
+}
+
+#[test]
+fn push_sends_each_blob_once_as_stored_then_the_manifest() {
+    let root = temp_root("push");
+    let src = with_documents();
+    let docs = src.image.documents.clone().unwrap();
+    let layers = src.image.layers.clone();
+    let m = manager(&root, src);
+    let id = ready(m.pull("test", Platform { arch: Arch::X86_64 }))
+        .unwrap()
+        .record
+        .id;
+    let mut r = events_log(&root).reader(sbx_events::Start::End).unwrap();
+    let dest = FakeDest {
+        present: vec![layers[1].digest.clone()],
+        ..FakeDest::default()
+    };
+    let seen = std::sync::Mutex::new(Vec::new());
+    let pushed =
+        ready(m.push_with(&dest, &id, "reg/x:1", &|p| seen.lock().unwrap().push(p))).unwrap();
+    assert_eq!(pushed.reference, "normalized/reg/x:1");
+    assert_eq!(pushed.id, id);
+    assert_eq!(pushed.manifest_size, docs.manifest.len() as u64);
+    // 같은 레이어는 한 번, 그다음 config. 마지막이 manifest.
+    let order: Vec<&Digest> = pushed.blobs.iter().map(|b| &b.digest).collect();
+    assert_eq!(
+        order,
+        [&layers[0].digest, &layers[1].digest, &docs.config_digest]
+    );
+    assert_eq!(
+        pushed
+            .blobs
+            .iter()
+            .map(|b| b.how.clone())
+            .collect::<Vec<_>>(),
+        [BlobPush::Uploaded, BlobPush::Exists, BlobPush::Uploaded]
+    );
+    let calls = dest.calls.lock().unwrap().clone();
+    assert_eq!(
+        calls.first().unwrap(),
+        "target reg/x:1 Some(\"docker.io/library/test\")"
+    );
+    assert_eq!(calls.last().unwrap(), "manifest normalized/reg/x:1");
+    assert_eq!(
+        dest.manifest.lock().unwrap().clone().unwrap(),
+        (
+            "normalized/reg/x:1".to_owned(),
+            docs.manifest_media_type.clone(),
+            docs.manifest.clone()
+        )
+    );
+    assert_eq!(dest.blobs.lock().unwrap()[&docs.config_digest], docs.config);
+    // 진행: 처음 한 번(0), 끝에 모두.
+    let seen = seen.lock().unwrap();
+    let total: u64 = layers[0].size + layers[1].size + docs.config.len() as u64;
+    assert_eq!(
+        seen.first().copied(),
+        Some(PushProgress {
+            blobs: 3,
+            blobs_done: 0,
+            bytes: total,
+            bytes_done: 0
+        })
+    );
+    assert_eq!(
+        seen.last().copied(),
+        Some(PushProgress {
+            blobs: 3,
+            blobs_done: 3,
+            bytes: total,
+            bytes_done: total
+        })
+    );
+    let e = r.next_event().unwrap().unwrap();
+    assert_eq!(
+        (e.action.as_str(), e.id.as_str()),
+        ("push", id.to_string().as_str())
+    );
+    assert_eq!(e.attributes["reference"], "normalized/reg/x:1");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_failed_blob_means_no_manifest_and_no_event() {
+    let root = temp_root("push-fail");
+    let m = manager(&root, with_documents());
+    let id = ready(m.pull("test", Platform { arch: Arch::X86_64 }))
+        .unwrap()
+        .record
+        .id;
+    let mut r = events_log(&root).reader(sbx_events::Start::End).unwrap();
+    let dest = FakeDest {
+        fail_at: Some(1),
+        ..FakeDest::default()
+    };
+    let e = ready(m.push(&dest, &id, "reg/x:1")).unwrap_err();
+    assert!(e.to_string().contains("connection reset"), "{e}");
+    assert!(dest.manifest.lock().unwrap().is_none());
+    assert!(
+        !dest
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|c| c.starts_with("manifest"))
+    );
+    assert!(r.next_event().unwrap().is_none());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn push_checks_what_it_stored_before_sending_anything() {
+    let root = temp_root("push-check");
+    // 받은 문서가 없는 이미지(0.2.1 전).
+    let m = manager(&root, FakeSource::new(vec![layer(&[T::File("a", b"1")])]));
+    let old = ready(m.pull("test", Platform { arch: Arch::X86_64 }))
+        .unwrap()
+        .record
+        .id;
+    let dest = FakeDest::default();
+    let e = ready(m.push(&dest, &old, "reg/x:1")).unwrap_err();
+    assert!(matches!(e, ManageError::NoDocuments(_)), "{e}");
+    assert!(e.to_string().contains("pull it again"), "{e}");
+    std::fs::remove_dir_all(&root).unwrap();
+
+    let src = with_documents();
+    let layer0 = src.image.layers[0].clone();
+    let m = manager(&root, src);
+    let id = ready(m.pull("test", Platform { arch: Arch::X86_64 }))
+        .unwrap()
+        .record
+        .id;
+    let layout = m.store().layout();
+    // 잘린 blob.
+    let blob = layout.blob(&layer0.digest);
+    let good = std::fs::read(&blob).unwrap();
+    std::fs::write(&blob, &good[1..]).unwrap();
+    let e = ready(m.push(&dest, &id, "reg/x:1")).unwrap_err();
+    assert!(matches!(e, ManageError::Integrity(_)), "{e}");
+    std::fs::write(&blob, &good).unwrap();
+    // 바뀐 manifest.
+    let manifest = layout.image_manifest(&id);
+    std::fs::write(&manifest, b"{}").unwrap();
+    let e = ready(m.push(&dest, &id, "reg/x:1")).unwrap_err();
+    assert!(e.to_string().contains("hashes to"), "{e}");
+    assert!(dest.calls.lock().unwrap().is_empty());
+    // 없는 이미지.
+    let e = ready(m.push(&dest, &ImageId::new(sha256(b"none")), "reg/x:1")).unwrap_err();
+    assert!(matches!(e, ManageError::ImageNotFound(_)), "{e}");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn tag_adds_or_moves_a_reference_and_records_it() {
+    let root = temp_root("tag");
+    let m = manager(&root, FakeSource::new(vec![layer(&[T::File("a", b"1")])]));
+    let id = ready(m.pull("test", Platform { arch: Arch::X86_64 }))
+        .unwrap()
+        .record
+        .id;
+    let mut r = events_log(&root).reader(sbx_events::Start::End).unwrap();
+    assert_eq!(m.tag(&id, "example.com/a:1").unwrap(), None);
+    let refs = m.store().refs().unwrap();
+    assert_eq!(refs["example.com/a:1"], id);
+    assert_eq!(refs["docker.io/library/test:latest"], id);
+    // 다른 이미지를 가리키던 참조는 옮기고, 그 이미지는 남는다.
+    let mut other = FakeSource::new(vec![layer(&[T::File("b", b"2")])]);
+    other.image.id = ImageId::new(sha256(b"other"));
+    other.image.reference = "docker.io/library/other:latest".into();
+    let m2 = manager(&root, other);
+    let id2 = ready(m2.pull("other", Platform { arch: Arch::X86_64 }))
+        .unwrap()
+        .record
+        .id;
+    assert_eq!(m.tag(&id2, "example.com/a:1").unwrap(), Some(id.clone()));
+    assert_eq!(m.store().refs().unwrap()["example.com/a:1"], id2);
+    assert!(m.store().has_image(&id));
+    // 없는 이미지는 붙이지 않는다.
+    assert!(matches!(
+        m.tag(&ImageId::new(sha256(b"none")), "example.com/b:1"),
+        Err(ManageError::ImageNotFound(_))
+    ));
+    assert!(!m.store().refs().unwrap().contains_key("example.com/b:1"));
+    let got: Vec<_> = std::iter::from_fn(|| r.next_event().unwrap())
+        .filter(|e| e.action == "tag")
+        .map(|e| (e.id.clone(), e.attributes["reference"].clone()))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            (id.to_string(), "example.com/a:1".to_owned()),
+            (id2.to_string(), "example.com/a:1".to_owned()),
+        ]
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}

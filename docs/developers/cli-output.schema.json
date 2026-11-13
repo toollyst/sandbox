@@ -279,14 +279,14 @@
       "description": "Something that changed (`events`).",
       "properties": {
         "action": {
-          "description": "Sandbox: `create`, `start`, `stop`, `remove`. Image: `pull`, `prepare`, `untag`, `delete`.",
+          "description": "Sandbox: `create`, `start`, `stop`, `remove`. Image: `pull`, `prepare`, `tag`, `untag`, `push`, `delete`.",
           "type": "string"
         },
         "attributes": {
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Details. Sandbox: `image`, `name`; on `stop` also `exit_code` and `error`. Image: `reference` (`pull`,\n`untag`), `rootfs_format` (`prepare`).",
+          "description": "Details. Sandbox: `image`, `name`; on `stop` also `exit_code` and `error`. Image: `reference` (`pull`,\n`tag`, `untag`, `push`: the reference pushed to), `rootfs_format` (`prepare`).",
           "type": "object"
         },
         "id": {
@@ -995,6 +995,73 @@
       ],
       "type": "object"
     },
+    "Pushed": {
+      "additionalProperties": false,
+      "description": "An image pushed to a registry (`push`; one line per tag with `-a`).",
+      "properties": {
+        "blobs": {
+          "description": "Layers (each once), then the image config.",
+          "items": {
+            "$ref": "#/$defs/PushedBlob"
+          },
+          "type": "array"
+        },
+        "id": {
+          "description": "Image ID: the `sha256:…` of the manifest, the same as before the push (it is sent as it was pulled).",
+          "type": "string"
+        },
+        "reference": {
+          "description": "Normalized reference it was pushed to, e.g. `ghcr.io/me/app:1`.",
+          "type": "string"
+        },
+        "size": {
+          "description": "Size of the manifest in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "reference",
+        "id",
+        "size",
+        "blobs"
+      ],
+      "type": "object"
+    },
+    "PushedBlob": {
+      "additionalProperties": false,
+      "description": "One blob of a pushed image.",
+      "properties": {
+        "digest": {
+          "description": "Digest (`sha256:…`).",
+          "type": "string"
+        },
+        "mounted_from": {
+          "description": "For `mounted`: the repository it came from (`registry/repository`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "size": {
+          "description": "Size in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "status": {
+          "description": "`exists` (the registry had it, nothing sent), `mounted` (taken from another repository of the same\nregistry, nothing sent) or `uploaded`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "digest",
+        "size",
+        "status"
+      ],
+      "type": "object"
+    },
     "Removed": {
       "additionalProperties": false,
       "description": "The result for one image given to `rmi`.",
@@ -1375,6 +1442,25 @@
       },
       "required": [
         "signal"
+      ],
+      "type": "object"
+    },
+    "Tagged": {
+      "additionalProperties": false,
+      "description": "A reference added to an image (`tag`).",
+      "properties": {
+        "id": {
+          "description": "Image ID it now points at.",
+          "type": "string"
+        },
+        "reference": {
+          "description": "Normalized new reference, e.g. `docker.io/library/app:1`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reference",
+        "id"
       ],
       "type": "object"
     },
