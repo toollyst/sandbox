@@ -32,7 +32,7 @@
 //! 5. 그 안으로 chroot한다. 스레드는 뿌리를 함께 쓰므로 그 뒤의 요청과 그 요청이 띄운 프로세스는 층 n을 `/`로 본다.
 //!
 //! **상한**: 아래층은 상대 경로로 적어 마운트 옵션(한 페이지, 4096바이트) 안에 든다. 층 수는
-//! [`MAX_LAYERS`](sbx_guest_proto::MAX_LAYERS)까지다(overlayfs `OVL_MAX_STACK`). 넘으면 지금 층을 그대로 둔 채 오류다.
+//! [`MAX_LAYERS`]까지다(overlayfs `OVL_MAX_STACK`). 넘으면 지금 층을 그대로 둔 채 오류다.
 //!
 //! **내보내기**: 위층 `layers/n`을 [`export_upper`]로 보낸다. 연결 처리 프로세스의 뿌리는 층 안이므로 열어 둔
 //! `layers/`를 `/proc/self/fd/<fd>`로 찾아간다.

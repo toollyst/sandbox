@@ -14,7 +14,8 @@
 //!
 //! **내보내기** (overlay 위층 → 층 항목, [`export_upper`])
 //!
-//! - 위층 디렉터리를 이름 순서로 걷고, 디렉터리는 그 안의 항목보다 먼저 보낸다. 링크를 따라가지 않는다. 맨 위는 보내지 않는다.
+//! - 위층 디렉터리를 이름(바이트) 순서로 걷고, 디렉터리는 그 안의 항목보다 먼저 보낸다. xattr도 이름 순서다. 링크를 따라가지
+//!   않는다. 맨 위는 보내지 않는다. 그래서 같은 위층은 같은 항목 차례가 된다(층 tar의 결정성, 캐시).
 //! - 이름, 링크 대상, xattr 이름은 UTF-8이어야 한다. 아니면 오류다(OCI 층 tar의 PAX 기록에 담을 수 없다).
 //! - 문자 장치 0/0은 whiteout이다. `trusted.overlay.opaque`가 `y`인 디렉터리는 opaque다.
 //! - `trusted.overlay.*` xattr은 overlay 내부용이라 보내지 않는다. 그중 `redirect`, `metacopy`가 있으면 오류다.
@@ -221,6 +222,8 @@ impl Walk<'_> {
                 None => xattrs.push((name, value)),
             }
         }
+        // 파일 시스템이 주는 차례는 정해져 있지 않다. 같은 층이 같은 바이트가 되게 이름 순서로 보낸다.
+        xattrs.sort();
         let kind = if ft.is_dir() {
             LayerKind::Dir { opaque }
         } else if ft.is_symlink() {
