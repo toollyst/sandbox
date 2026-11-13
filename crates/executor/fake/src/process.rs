@@ -80,12 +80,10 @@ fn run() -> ExitCode {
         .iter()
         .map(|s| (s.tag.clone(), s.host_path.clone()))
         .collect();
-    let build = vm
-        .disks
-        .iter()
-        .find(|d| d.role == proto::DiskRole::Scratch)
-        .map(|d| (crate::build_root(&d.path), crate::net_dir(&d.path)));
-    let handle = match guest::start(&vm.control_socket, shares, build) {
+    let scratch = vm.disks.iter().find(|d| d.role == proto::DiskRole::Scratch);
+    let build = scratch.map(|d| (crate::build_root(&d.path), crate::net_dir(&d.path)));
+    let clock = scratch.map(|d| crate::clock_file(&d.path));
+    let handle = match guest::start(&vm.control_socket, shares, build, clock) {
         Ok(h) => h,
         Err(e) => return fail(&mut out, format!("cannot open control socket: {e}")),
     };

@@ -92,6 +92,11 @@ fn host_samples() -> Vec<HostMsg> {
             ports: vec![22, 443],
             any_port: true,
         },
+        HostMsg::ClockSync,
+        HostMsg::ClockNow {
+            unix_nanos: 1_763_000_000_123_456_789,
+        },
+        HostMsg::ClockNow { unix_nanos: -1 },
         HostMsg::ExecDetached(Exec {
             args: vec!["sleep".into(), "9".into()],
             env: vec![],
@@ -143,6 +148,7 @@ fn guest_samples() -> Vec<GuestMsg> {
         GuestMsg::Lookup {
             name: "github.com".into(),
         },
+        GuestMsg::ClockAsk,
     ]
     .into_iter()
     .chain(layer_samples().into_iter().map(GuestMsg::LayerEntry))

@@ -334,6 +334,19 @@ pub enum HostMsg {
         /// 포트가 `*`인 규칙이 맞았다(프록시로만 닿는다).
         any_port: bool,
     },
+    /// 게스트 시계를 호스트에 맞춘다. 연결을 연 소유 프로세스가 시작 직후, 주기적으로, 호스트 시계가 뛴 뒤 보낸다.
+    /// 규칙(재기, 바로 맞추기와 천천히 맞추기의 경계)은 `sbx-guest`의 `clock` 모듈과 `sbx-runtime`의 `clock` 모듈에 있다.
+    ///
+    /// 흐름: 게스트가 [`GuestMsg::ClockAsk`]를 보내면 호스트가 곧바로 [`HostMsg::ClockNow`]로 답한다. 이것을 많아야
+    /// [`CLOCK_ROUNDS`](crate::CLOCK_ROUNDS)번 한다. 게스트는 시계를 맞추고 [`GuestMsg::Done`], 맞추지 못하거나
+    /// 재지 못하면 [`GuestMsg::Error`]. 시계를 맞출 수 없는 게스트는 `InvalidArgument` 오류다.
+    /// 모르는 게스트는 답 없이 닫거나 `Protocol` 오류로 답한다. 호스트는 그 VM에서 맞추기를 그만둔다.
+    ClockSync,
+    /// [`GuestMsg::ClockAsk`]의 답: 호스트 벽시계(Unix 시각, 나노초, 1970년 앞이면 음수). 보내기 바로 전에 읽는다.
+    ClockNow {
+        /// Unix 시각(나노초).
+        unix_nanos: i64,
+    },
 }
 
 /// 게스트 → 호스트.
@@ -394,6 +407,8 @@ pub enum GuestMsg {
         /// 프로그램이 물은 이름.
         name: String,
     },
+    /// [`HostMsg::ClockSync`] 안에서 호스트 시각을 묻는다. 호스트는 [`HostMsg::ClockNow`]로 답한다.
+    ClockAsk,
 }
 
 /// 게스트 전체의 자원 사용량. 게스트가 보고하는 값이라 호스트는 표시에만 쓴다(믿고 결정하지 않는다).
@@ -469,6 +484,9 @@ mod tag {
     pub const EXPORT_LAYER: u8 = 0x18;
     pub const TRANSPARENT: u8 = 0x19;
     pub const RESOLVED: u8 = 0x1A;
+    // 0x20부터: 시계. 앞의 빈 번호는 다른 기능이 더할 자리로 둔다.
+    pub const CLOCK_SYNC: u8 = 0x20;
+    pub const CLOCK_NOW: u8 = 0x21;
 
     pub const HELLO_ACK: u8 = 0x81;
     pub const STARTED: u8 = 0x82;
@@ -487,6 +505,8 @@ mod tag {
     pub const LAYER_OPENED: u8 = 0x8F;
     pub const LAYER_ENTRY: u8 = 0x90;
     pub const LOOKUP: u8 = 0x91;
+    // 0xA0부터: 시계.
+    pub const CLOCK_ASK: u8 = 0xA0;
 }
 
 fn bad<T>(m: impl Into<String>) -> DecodeResult<T> {
@@ -765,6 +785,11 @@ impl HostMsg {
                 })
                 .bool(*any_port);
             }
+            HostMsg::ClockSync => e = Encoder::new(tag::CLOCK_SYNC),
+            HostMsg::ClockNow { unix_nanos } => {
+                e = Encoder::new(tag::CLOCK_NOW);
+                e.i64(*unix_nanos);
+            }
         }
         e.finish()
     }
@@ -834,6 +859,10 @@ impl HostMsg {
             tag::RESOLVED => HostMsg::Resolved {
                 ports: d.list(|d| d.u16())?,
                 any_port: d.bool()?,
+            },
+            tag::CLOCK_SYNC => HostMsg::ClockSync,
+            tag::CLOCK_NOW => HostMsg::ClockNow {
+                unix_nanos: d.i64()?,
             },
             t => return bad(format!("unknown host message {t:#04x}")),
         };
@@ -929,6 +958,7 @@ impl GuestMsg {
                 e = Encoder::new(tag::LOOKUP);
                 e.str(name);
             }
+            GuestMsg::ClockAsk => e = Encoder::new(tag::CLOCK_ASK),
         }
         e.finish()
     }
@@ -973,6 +1003,7 @@ impl GuestMsg {
             tag::LAYER_OPENED => GuestMsg::LayerOpened { layer: d.u32()? },
             tag::LAYER_ENTRY => GuestMsg::LayerEntry(dec_layer_entry(&mut d)?),
             tag::LOOKUP => GuestMsg::Lookup { name: d.string()? },
+            tag::CLOCK_ASK => GuestMsg::ClockAsk,
             t => return bad(format!("unknown guest message {t:#04x}")),
         };
         d.end()?;

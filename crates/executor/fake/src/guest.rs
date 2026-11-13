@@ -86,10 +86,12 @@ mod unix {
     /// 제어 소켓을 열고 게스트 처리를 돌린다. `shares`는 (태그, 호스트 경로)다.
     /// `dirs`(scratch 디스크 옆의 두 디렉터리)가 있으면 빌드 층을 첫째로 흉내 내고([`crate::layers`]),
     /// 루프백 DNS와 투명 TCP를 둘째로 흉내 낸다([`crate::netdir::net_dir`]).
+    /// `clock`(scratch 디스크 옆의 파일)이 있으면 게스트 시계를 그 파일로 흉내 낸다([`crate::clock`]).
     pub(crate) fn start(
         socket: &Path,
         shares: Vec<(String, PathBuf)>,
         dirs: Option<(PathBuf, PathBuf)>,
+        clock: Option<PathBuf>,
     ) -> Result<FakeVm, ExecutorError> {
         let (build_root, net) = dirs.unzip();
         let path: PathBuf = socket.to_owned();
@@ -151,6 +153,9 @@ mod unix {
             layers: build_root.map(|r| {
                 Box::new(crate::layers::DirLayers::new(r)) as Box<dyn sbx_guest::layer::Layers>
             }),
+            clock: clock.map(|p| {
+                Box::new(crate::clock::FileClock::new(p)) as Box<dyn sbx_guest::clock::Clock>
+            }),
         });
         {
             let life = life.clone();
@@ -207,6 +212,7 @@ mod other {
         _socket: &std::path::Path,
         _shares: Vec<(String, std::path::PathBuf)>,
         _dirs: Option<(std::path::PathBuf, std::path::PathBuf)>,
+        _clock: Option<std::path::PathBuf>,
     ) -> Result<FakeVm, ExecutorError> {
         Err(ExecutorError::Unsupported(
             "the fake guest needs Unix sockets".into(),
