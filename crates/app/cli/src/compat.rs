@@ -19,7 +19,7 @@
 //!   clap에 옵션이 없는지는 보지 않는다.
 //! - [`Kind::Text`]: 아무 글. clap과 맞춰 보지 않는다(Dockerfile, Compose 파일, 동작).
 //!
-//! sbx의 이름이 Docker와 다르면 [`Row::sbx`]에 sbx의 이름을 같은 모양으로 적는다. ➕ 줄은 `docker`에 sbx의 이름을 적는다.
+//! sbx의 이름이 Docker와 다르면 [`Row`]의 `sbx`에 sbx의 이름을 같은 모양으로 적는다. ➕ 줄은 `docker`에 sbx의 이름을 적는다.
 
 /// 줄의 상태.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
