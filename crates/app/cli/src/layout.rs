@@ -2,10 +2,15 @@
 //!
 //! 파일 내용은 십진수 하나와 줄바꿈이다. 지금 배치는 [`CURRENT`]다.
 //!
-//! - 파일이 없으면(0.2.0이 쓴 디렉터리, 또는 처음) 지금 배치로 본다. 디렉터리가 있으면 [`CURRENT`]를 적는다.
+//! - 파일이 없으면(0.2.0이 쓴 디렉터리, 또는 처음) 배치 1로 보고 옮긴다. 디렉터리가 있으면 [`CURRENT`]를 적는다.
 //!   적지 못해도(읽기 전용 디렉터리) 오류가 아니다. 디렉터리가 없으면 만들지 않는다(다음에 적는다).
 //! - [`CURRENT`]보다 크면 더 새 `sbx`가 배치를 바꾼 것이다. 짐작하지 않고 거부한다.
-//! - [`CURRENT`]보다 작으면 `migrate`가 제자리에서 옮긴 뒤 [`CURRENT`]를 적는다(지금은 옮길 것이 없다).
+//! - [`CURRENT`]보다 작으면 `migrate`가 제자리에서 옮긴 뒤 [`CURRENT`]를 적는다.
+//!
+//! | 배치 | 바뀐 것 | 옮기기 |
+//! |---|---|---|
+//! | 1 | 처음(0.2) | |
+//! | 2 | cache_dir: 층 단위 저장(`layers/`, `merged/`, `sbx-store`). 이미지별 `rootfs.<형식>`을 쓰지 않는다 | cache_dir의 이미지별 rootfs를 지운다(`sbx_manage::migrate_from_layout_1`). 다음 `run`·`start`·`prepare`가 받아 둔 blob에서 층 디스크를 만든다. blob이 없는 이미지는 그때 다시 받으라는 오류가 난다 |
 //! - 숫자가 아니면 거부한다(누가 무엇을 썼는지 모른다).
 //!
 //! 배치를 바꾸는 변경(파일 이름, 디렉터리 구조, 형식에 버전이 없는 파일의 모양)은 [`CURRENT`]를 올리고 `migrate`에
@@ -16,13 +21,32 @@ use std::io::{self, Write};
 use std::path::Path;
 
 /// 이 `sbx`가 쓰는 배치.
-pub const CURRENT: u32 = 1;
+pub const CURRENT: u32 = 2;
+
+/// 확인할 디렉터리의 종류. 옮기는 일이 다르다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dir {
+    /// data_dir.
+    Data,
+    /// cache_dir.
+    Cache,
+}
+
+impl Dir {
+    fn what(self) -> &'static str {
+        match self {
+            Dir::Data => "data directory",
+            Dir::Cache => "cache directory",
+        }
+    }
+}
 
 /// 파일 이름.
 pub const FILE: &str = "layout-version";
 
-/// `dir`(data_dir이나 cache_dir)을 확인한다. `what`은 오류 문구의 이름("data directory").
-pub fn check(dir: &Path, what: &str) -> Result<(), String> {
+/// `dir`(data_dir이나 cache_dir, `kind`)을 확인하고, 옛 배치면 옮긴다.
+pub fn check(dir: &Path, kind: Dir) -> Result<(), String> {
+    let what = kind.what();
     let path = dir.join(FILE);
     let found = match fs::read_to_string(&path) {
         Ok(s) => Some(parse(&s).ok_or_else(|| {
@@ -43,7 +67,7 @@ pub fn check(dir: &Path, what: &str) -> Result<(), String> {
         )),
         Some(v) if v == CURRENT => Ok(()),
         older => {
-            migrate(dir, older.unwrap_or(CURRENT))?;
+            migrate(dir, kind, older.unwrap_or(1))?;
             if dir.is_dir() {
                 write(&path);
             }
@@ -60,9 +84,13 @@ fn parse(s: &str) -> Option<u32> {
     t.parse().ok()
 }
 
-/// `from` 배치를 [`CURRENT`]로 옮긴다. 배치 1이 처음이라 아직 할 일이 없다.
-fn migrate(_dir: &Path, from: u32) -> Result<(), String> {
+/// `from` 배치를 [`CURRENT`]로 옮긴다(모듈 문서의 표). 디렉터리가 없으면 할 일이 없다.
+fn migrate(dir: &Path, kind: Dir, from: u32) -> Result<(), String> {
     debug_assert!(from <= CURRENT);
+    if from < 2 && kind == Dir::Cache && dir.is_dir() {
+        sbx_manage::migrate_from_layout_1(dir)
+            .map_err(|e| format!("cannot move the cache directory {} to layout 2: {e}", dir.display()))?;
+    }
     Ok(())
 }
 
@@ -116,28 +144,61 @@ mod tests {
     #[test]
     fn missing_file_is_written_with_the_current_layout() {
         let d = tmp();
-        check(d.path(), "data directory").unwrap();
+        check(d.path(), Dir::Data).unwrap();
         assert_eq!(
             fs::read_to_string(d.path().join(FILE)).unwrap(),
             format!("{CURRENT}\n")
         );
         // 다시 확인해도 그대로다.
-        check(d.path(), "data directory").unwrap();
+        check(d.path(), Dir::Data).unwrap();
     }
 
     #[test]
     fn a_missing_directory_is_not_created() {
         let d = tmp();
         let sub = d.path().join("nope");
-        check(&sub, "data directory").unwrap();
+        check(&sub, Dir::Data).unwrap();
         assert!(!sub.exists());
+    }
+
+    /// 배치 1(0.2)의 cache_dir: 이미지별 rootfs를 지운다. 이미지 기록과 blob은 남는다(다음 prepare가 층을 만든다).
+    /// data_dir에는 옮길 것이 없다.
+    #[test]
+    fn layout_1_caches_drop_the_per_image_rootfs() {
+        for old in [Some("1\n"), None] {
+            let d = tmp();
+            let image = d.path().join("images/ab");
+            fs::create_dir_all(&image).unwrap();
+            fs::write(image.join("image.json"), b"{}").unwrap();
+            fs::write(image.join("rootfs.erofs"), b"merged").unwrap();
+            fs::create_dir_all(d.path().join("blobs/sha256")).unwrap();
+            fs::write(d.path().join("blobs/sha256/cd"), b"blob").unwrap();
+            if let Some(v) = old {
+                fs::write(d.path().join(FILE), v).unwrap();
+            }
+            check(d.path(), Dir::Cache).unwrap();
+            assert!(!image.join("rootfs.erofs").exists(), "{old:?}");
+            assert!(image.join("image.json").is_file());
+            assert!(d.path().join("blobs/sha256/cd").is_file());
+            assert_eq!(
+                fs::read_to_string(d.path().join(FILE)).unwrap(),
+                format!("{CURRENT}\n")
+            );
+            // data_dir의 같은 이름 파일은 건드리지 않는다.
+            let data = tmp();
+            let file = data.path().join("images/ab/rootfs.erofs");
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(&file, b"x").unwrap();
+            check(data.path(), Dir::Data).unwrap();
+            assert!(file.is_file());
+        }
     }
 
     #[test]
     fn a_newer_layout_is_refused() {
         let d = tmp();
         fs::write(d.path().join(FILE), format!("{}\n", CURRENT + 1)).unwrap();
-        let e = check(d.path(), "cache directory").unwrap_err();
+        let e = check(d.path(), Dir::Cache).unwrap_err();
         assert!(e.contains("changed by a newer sbx"), "{e}");
         assert!(e.contains(&format!("layout {}", CURRENT + 1)), "{e}");
     }
@@ -147,7 +208,7 @@ mod tests {
         for bad in ["", "x", "-1", "1.0", "+1", "99999999999999999999"] {
             let d = tmp();
             fs::write(d.path().join(FILE), bad).unwrap();
-            let e = check(d.path(), "data directory").unwrap_err();
+            let e = check(d.path(), Dir::Data).unwrap_err();
             assert!(e.contains("unreadable"), "{bad:?}: {e}");
         }
     }
@@ -156,7 +217,7 @@ mod tests {
     fn surrounding_whitespace_is_fine() {
         let d = tmp();
         fs::write(d.path().join(FILE), format!(" {CURRENT}\r\n")).unwrap();
-        check(d.path(), "data directory").unwrap();
+        check(d.path(), Dir::Data).unwrap();
     }
 
     #[cfg(unix)]
@@ -165,7 +226,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let d = tmp();
         fs::set_permissions(d.path(), fs::Permissions::from_mode(0o555)).unwrap();
-        let r = check(d.path(), "data directory");
+        let r = check(d.path(), Dir::Data);
         fs::set_permissions(d.path(), fs::Permissions::from_mode(0o755)).unwrap();
         r.unwrap();
         // root는 모드와 상관없이 쓸 수 있다. 그 밖에는 쓰지 못했어야 한다.

@@ -92,7 +92,7 @@ fn guest_shutdown_request_ends_the_vm() {
 fn launch_rejects_unsupported_config() {
     let fake = FakeExecutor::basic();
     let mut cfg = vm("reject");
-    cfg.disks = vec![cfg.disks[0].clone(); 3];
+    cfg.disks = vec![cfg.disks[0].clone(); crate::MAX_DISKS + 1];
     assert!(matches!(
         ready(fake.launch(cfg)),
         Err(ExecutorError::Unsupported(_))

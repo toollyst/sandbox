@@ -184,8 +184,15 @@
           "minimum": 0,
           "type": "integer"
         },
+        "shared": {
+          "default": 0,
+          "description": "For images: the part of `size` that more than one image uses (shared layers). Always 0 for the others.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
         "size": {
-          "description": "Bytes they take on disk (a sandbox's writable disk counts what it wrote, not its size).",
+          "description": "Bytes they take on disk (a sandbox's writable disk counts what it wrote, not its size). A layer several images\nshare is counted once.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
@@ -441,6 +448,13 @@
           "minimum": 0,
           "type": "integer"
         },
+        "disk_size": {
+          "default": 0,
+          "description": "Bytes this image takes on disk: its record, its compressed layers, its layer disks and any merged disk it\nuses. Layers it shares with other images are counted in full here (like `SIZE` in `docker system df -v`).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
         "exposed_ports": {
           "default": [],
           "description": "Ports the image declares (`ExposedPorts`, e.g. `80/tcp`), for information: sbx opens no ports.",
@@ -461,7 +475,7 @@
           "type": "array"
         },
         "prepared": {
-          "description": "Root filesystem formats that are prepared.",
+          "description": "Root filesystem formats that are prepared (layer disks ready for some executor's disk count).",
           "items": {
             "type": "string"
           },
@@ -473,6 +487,20 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "shared_size": {
+          "default": 0,
+          "description": "The part of `disk_size` that other images also use (shared layers). Counted once in `system df`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "unique_size": {
+          "default": 0,
+          "description": "The part of `disk_size` only this image uses: what `rmi` frees.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
         },
         "volumes": {
           "default": [],

@@ -10,10 +10,10 @@
 //! ```text
 //! /run/sbx/scratch           /dev/vdb(scratch, ext4) 다시 마운트. upper/, work/는 처음 뿌리의 것이다
 //!   layers/                  층 디렉터리. 층을 열 때 작업 디렉터리를 여기로 두고 overlay 옵션에 상대 경로를 쓴다
-//!     lower/                 /dev/vda(rootfs, erofs) 읽기 전용 다시 마운트
+//!     lower/0 … lower/k      이미지의 층 디스크들(erofs, `crate::disks`) 읽기 전용 다시 마운트. 0이 맨 아래
 //!     1/ … n/                층마다의 위층
 //!     1.work/ … n.work/      overlay 작업 디렉터리
-//!     root/                  층 n: lowerdir=n-1:…:1:lower, upperdir=n, workdir=n.work
+//!     root/                  층 n: lowerdir=n-1:…:1:lower/k:…:lower/0, upperdir=n, workdir=n.work
 //! ```
 //!
 //! **층 n 열기**
@@ -32,7 +32,8 @@
 //! 5. 그 안으로 chroot한다. 스레드는 뿌리를 함께 쓰므로 그 뒤의 요청과 그 요청이 띄운 프로세스는 층 n을 `/`로 본다.
 //!
 //! **상한**: 아래층은 상대 경로로 적어 마운트 옵션(한 페이지, 4096바이트) 안에 든다. 층 수는
-//! [`MAX_LAYERS`]까지다(overlayfs `OVL_MAX_STACK`). 넘으면 지금 층을 그대로 둔 채 오류다.
+//! [`MAX_LAYERS`]까지이고, 이미지의 층 디스크와 앞 층을 합친 아래층 수는 overlayfs `OVL_MAX_STACK`(500)까지다.
+//! 넘으면 지금 층을 그대로 둔 채 오류다.
 //!
 //! **내보내기**: 위층 `layers/n`을 [`export_upper`]로 보낸다. 연결 처리 프로세스의 뿌리는 층 안이므로 열어 둔
 //! `layers/`를 `/proc/self/fd/<fd>`로 찾아간다.
@@ -59,13 +60,19 @@ pub const LAYERS: &str = "/run/sbx/scratch/layers";
 /// 층마다 만드는 마운트 자리(층의 맨 위 이름). 없으면 만들고 내보낼 때 뺀다.
 const STUBS: [&str; 3] = ["proc", "sys", "dev"];
 
-/// 처음 열 때 층 디렉터리를 준비한다: 빈 디렉터리로 만들고 그 안 `lower`에 이미지 rootfs를 보이게 한다.
+/// 처음 열 때 층 디렉터리를 준비한다: 빈 디렉터리로 만들고 그 안에 이미지 rootfs(아래층들, [`Overlay::with_base`])를
+/// 보이게 한다.
 pub type Prepare = Box<dyn Fn(&Path) -> io::Result<()> + Send + Sync>;
+
+/// overlay 아래층 수의 상한(Linux `OVL_MAX_STACK`).
+const OVL_MAX_STACK: usize = 500;
 
 /// overlay 층.
 pub struct Overlay {
     dir: PathBuf,
     prepare: Prepare,
+    /// 이미지 rootfs의 아래층들. 층 디렉터리 기준 상대 경로, 위가 앞이다. 기본은 `lower` 하나.
+    base: Vec<String>,
     /// 연 층 안으로 연결 처리 프로세스의 뿌리를 옮긴다. 테스트는 옮기지 않고 `dir/root`를 본다.
     enter: bool,
     state: Mutex<State>,
@@ -107,13 +114,24 @@ impl Overlay {
         Self {
             dir,
             prepare,
+            base: vec!["lower".into()],
             enter,
             state: Mutex::default(),
         }
     }
 
-    /// 게스트: scratch 장치와 rootfs 장치를 처음 뿌리 안에 다시 마운트한다.
-    pub fn guest(rootfs_dev: &'static str, scratch_dev: &'static str) -> Self {
+    /// 이미지 rootfs의 아래층들(층 디렉터리 기준 상대 경로, 위가 앞). `prepare`가 그 자리를 채운다.
+    pub fn with_base(mut self, base: Vec<String>) -> Self {
+        self.base = base;
+        self
+    }
+
+    /// 게스트: scratch 장치와 이미지의 층 장치들(아래부터, `crate::disks`)을 처음 뿌리 안에 다시 마운트한다.
+    pub fn guest(layer_devs: Vec<PathBuf>, scratch_dev: &'static str) -> Self {
+        let base = (0..layer_devs.len())
+            .rev()
+            .map(|i| format!("lower/{i}"))
+            .collect();
         Self::new(
             LAYERS.into(),
             true,
@@ -122,18 +140,24 @@ impl Overlay {
                 sys::mount(scratch_dev, SCRATCH, "ext4", libc::MS_NOATIME, "")
                     .map_err(|e| io::Error::new(e.kind(), format!("mount scratch: {e}")))?;
                 fresh_dir(dir)?;
-                let lower = dir.join("lower");
-                fs::create_dir(&lower)?;
-                sys::mount(
-                    rootfs_dev,
-                    &lower.to_string_lossy(),
-                    "erofs",
-                    libc::MS_RDONLY,
-                    "",
-                )
-                .map_err(|e| io::Error::new(e.kind(), format!("mount rootfs: {e}")))
+                for (i, dev) in layer_devs.iter().enumerate() {
+                    let lower = dir.join("lower").join(i.to_string());
+                    fs::create_dir_all(&lower)?;
+                    sys::mount(
+                        &dev.to_string_lossy(),
+                        &lower.to_string_lossy(),
+                        "erofs",
+                        libc::MS_RDONLY,
+                        "",
+                    )
+                    .map_err(|e| {
+                        io::Error::new(e.kind(), format!("mount {}: {e}", dev.display()))
+                    })?;
+                }
+                Ok(())
             }),
         )
+        .with_base(base)
     }
 
     fn open_locked(&self, st: &mut State, n: u32) -> Result<u32, Error> {
@@ -192,7 +216,7 @@ impl Overlay {
         let lower: Vec<String> = (1..n)
             .rev()
             .map(|i| i.to_string())
-            .chain(["lower".to_owned()])
+            .chain(self.base.iter().cloned())
             .collect();
         let opts = format!(
             "lowerdir={},upperdir={upper},workdir={work},redirect_dir=off,metacopy=off,index=off",
@@ -265,11 +289,21 @@ impl Layers for Overlay {
     fn open(&self) -> Result<u32, Error> {
         let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let n = st.count + 1;
+        // 지금 층을 건드리기 전에 본다. 열린 층은 그대로 쓸 수 있다.
         if n > MAX_LAYERS {
-            // 지금 층을 건드리기 전에 본다. 열린 층은 그대로 쓸 수 있다.
             return Err(Error::new(
                 ErrorKind::InvalidArgument,
                 format!("a build can have at most {MAX_LAYERS} layers"),
+            ));
+        }
+        if (n as usize - 1) + self.base.len() > OVL_MAX_STACK {
+            return Err(Error::new(
+                ErrorKind::InvalidArgument,
+                format!(
+                    "the image has {} layer disks; with the build layers that is more than the \
+                     {OVL_MAX_STACK} lower layers overlayfs takes",
+                    self.base.len()
+                ),
             ));
         }
         match self.open_locked(&mut st, n) {

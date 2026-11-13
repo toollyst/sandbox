@@ -333,8 +333,8 @@ impl Ctx {
             .or_else(dirs::data_dir)
             .ok_or_else(|| msg("cannot determine a data directory; use --data-dir"))?;
         // 더 새 sbx가 바꾼 배치는 짐작하지 않고 거부한다(COMPATIBILITY.md).
-        crate::layout::check(&data_dir, "data directory").map_err(msg)?;
-        crate::layout::check(&cache_dir, "cache directory").map_err(msg)?;
+        crate::layout::check(&data_dir, crate::layout::Dir::Data).map_err(msg)?;
+        crate::layout::check(&cache_dir, crate::layout::Dir::Cache).map_err(msg)?;
         Ok(Self {
             socket_dir: cli
                 .socket_dir
@@ -423,6 +423,21 @@ impl Ctx {
             .unwrap_or_else(|| PathBuf::from(name))
     }
 
+    /// 있는 샌드박스를 띄우기 전에: 그 이미지의 층 구성이 이 실행기의 디스크 수에 맞게 준비되어 있지 않으면 만든다.
+    /// 다른 실행기로 시작하거나, 합친 디스크(캐시)를 지웠거나, 캐시 배치를 옮긴 뒤(배치 1의 rootfs는 지운다)에 그렇다.
+    /// 이미지가 없으면 아무것도 하지 않는다(시작이 그 오류를 낸다).
+    async fn ensure_prepared(&self, rt: &Runtime, sandbox: &sbx_runtime::Sandbox) -> AppResult<()> {
+        let spec = &sandbox.info().spec;
+        let m = self.manager()?;
+        let disks = rt.layer_disks();
+        if m.store().has_image(&spec.image)
+            && !m.is_prepared(&spec.image, spec.rootfs_format, disks)
+        {
+            m.prepare(&spec.image, spec.rootfs_format, disks).await?;
+        }
+        Ok(())
+    }
+
     /// shim으로 시작한다(붙지 않는다). 시작이 끝나면 돌아온다.
     pub(crate) async fn start_detached(
         &self,
@@ -431,7 +446,9 @@ impl Ctx {
     ) -> AppResult<()> {
         // 실행기와 이미지를 먼저 확인한다(shim 안에서 실패하면 이유가 덜 분명하다).
         let chosen = self.choose_for(id).await?;
-        let sandbox = self.launcher_with(&chosen)?.get(id).await?;
+        let rt = self.launcher_with(&chosen)?;
+        let sandbox = rt.get(id).await?;
+        self.ensure_prepared(&rt, &sandbox).await?;
         let config = ShimConfig {
             runtime: self.runtime_config(true)?,
             executor: chosen.program.clone(),
@@ -647,12 +664,21 @@ impl Ctx {
         Ok(0)
     }
 
+    /// `prepare`: 쓸 실행기가 붙일 수 있는 디스크 수에 맞춰 층 디스크를 만든다(`sbx run`이 하는 것과 같다). 실행기를
+    /// 고를 수 없으면 층마다 디스크 하나(`MAX_LAYER_DISKS`까지)로 만든다.
     async fn prepare(&self, format: RootfsFormat, image: &str) -> AppResult<u8> {
         let m = self.manager()?;
         let found = self.require(&m, image)?;
+        let disks = match self.try_choose(None) {
+            Ok(Some(chosen)) => self
+                .launcher_with(&chosen)
+                .map(|rt| rt.layer_disks())
+                .unwrap_or(sbx_store::MAX_LAYER_DISKS),
+            _ => sbx_store::MAX_LAYER_DISKS,
+        };
         let status = Status::new();
         status.text(&format!("Preparing {format} rootfs for {image}…"));
-        let built = m.prepare(found.id(), format).await?;
+        let built = m.prepare(found.id(), format, disks).await?;
         status.clear();
         if self.json() {
             output::print_value(&output::Prepared {
@@ -795,8 +821,8 @@ impl Ctx {
 
     fn images(&self, quiet: bool, filters: &[String]) -> AppResult<u8> {
         let f = Filters::parse(filters, filter::IMAGES).map_err(msg)?;
-        let images: Vec<_> = self
-            .manager()?
+        let m = self.manager()?;
+        let images: Vec<_> = m
             .images()?
             .into_iter()
             .filter(|i| {
@@ -814,26 +840,34 @@ impl Ctx {
             }
             return Ok(0);
         }
+        let parts = system::measured_parts(&m)?;
         if self.json() {
             let list: Vec<_> = images
                 .iter()
-                .map(|i| output::Image {
+                .map(|i| {
+                    let (disk_size, shared_size, unique_size) =
+                        system::image_sizes(&parts, &i.record.id);
+                    output::Image {
                     id: i.record.id.to_string(),
                     references: i.refs.clone(),
                     arch: i.record.arch.oci_name().to_owned(),
                     prepared: i.prepared.iter().map(|f| f.to_string()).collect(),
                     compressed_size: i.record.compressed_size(),
+                    disk_size,
+                    shared_size,
+                    unique_size,
                     ignored_fields: i.record.ignored_fields.clone(),
                     exposed_ports: i.record.config.exposed_ports.clone(),
                     volumes: i.record.config.volumes.clone(),
+                }
                 })
                 .collect();
             output::print_value(&list)?;
             return Ok(0);
         }
         println!(
-            "{:<40} {:<14} {:<12} {:<10} SIZE",
-            "REFERENCE", "IMAGE ID", "PLATFORM", "ROOTFS"
+            "{:<40} {:<14} {:<12} {:<10} {:<10} {:<10} UNIQUE",
+            "REFERENCE", "IMAGE ID", "PLATFORM", "ROOTFS", "SIZE", "SHARED"
         );
         for i in &images {
             let rootfs: Vec<&str> = i.prepared.iter().map(|f| f.as_str()).collect();
@@ -847,14 +881,17 @@ impl Ctx {
             } else {
                 i.refs.iter().map(|r| behavior::familiar(r)).collect()
             };
+            let (size, shared, unique) = system::image_sizes(&parts, &i.record.id);
             for r in refs {
                 println!(
-                    "{:<40} {:<14} {:<12} {:<10} {}",
+                    "{:<40} {:<14} {:<12} {:<10} {:<10} {:<10} {}",
                     r,
                     short(&i.record.id),
                     format!("linux/{}", i.record.arch.oci_name()),
                     rootfs,
-                    behavior::human_size(i.record.compressed_size())
+                    behavior::human_size(size),
+                    behavior::human_size(shared),
+                    behavior::human_size(unique)
                 );
             }
         }
@@ -1010,9 +1047,10 @@ impl Ctx {
             )));
         }
         let found = self.lookup(&m, image_name)?;
+        let disks = self.launcher_with(&chosen)?.layer_disks();
         let rootfs_present = found
             .as_ref()
-            .is_some_and(|f| m.is_prepared(f.id(), format));
+            .is_some_and(|f| m.is_prepared(f.id(), format, disks));
         let steps = behavior::create_steps(a.pull, found.is_some(), rootfs_present)
             .map_err(|e| msg(format!("{image_name}: {e}")))?;
         let mut image = found.map(|f| f.id().clone());
@@ -1037,7 +1075,7 @@ impl Ctx {
                         .ok_or_else(|| msg("internal: prepare before pull"))?;
                     let status = Status::new();
                     status.text(&format!("Preparing {format} rootfs for {image_name}…"));
-                    let built = m.prepare(id, format).await?;
+                    let built = m.prepare(id, format, disks).await?;
                     status.clear();
                     if built {
                         eprintln!("{}: {format} rootfs prepared", short(id));
@@ -1129,6 +1167,7 @@ impl Ctx {
         let id = self.runtime()?.resolve(id).await?;
         let rt = self.launcher_for(&id).await?;
         let sandbox = rt.get(&id).await?;
+        self.ensure_prepared(&rt, &sandbox).await?;
         let spec = &sandbox.info().spec;
         let mut io = attach::io_mode(interactive, spec.tty)?;
         io.stdin |= spec.open_stdin;

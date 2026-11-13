@@ -355,10 +355,20 @@ pub struct Image {
     pub references: Vec<String>,
     /// Architecture in OCI terms.
     pub arch: String,
-    /// Root filesystem formats that are prepared.
+    /// Root filesystem formats that are prepared (layer disks ready for some executor's disk count).
     pub prepared: Vec<String>,
     /// Sum of the compressed layer sizes, in bytes.
     pub compressed_size: u64,
+    /// Bytes this image takes on disk: its record, its compressed layers, its layer disks and any merged disk it
+    /// uses. Layers it shares with other images are counted in full here (like `SIZE` in `docker system df -v`).
+    #[serde(default)]
+    pub disk_size: u64,
+    /// The part of `disk_size` that other images also use (shared layers). Counted once in `system df`.
+    #[serde(default)]
+    pub shared_size: u64,
+    /// The part of `disk_size` only this image uses: what `rmi` frees.
+    #[serde(default)]
+    pub unique_size: u64,
     /// Image config fields sbx does not apply.
     pub ignored_fields: Vec<String>,
     /// Ports the image declares (`ExposedPorts`, e.g. `80/tcp`), for information: sbx opens no ports.
@@ -476,8 +486,12 @@ pub struct DiskUsage {
     pub total: u64,
     /// Images some sandbox uses; sandboxes that are running. Always 0 for executors.
     pub active: u64,
-    /// Bytes they take on disk (a sandbox's writable disk counts what it wrote, not its size).
+    /// Bytes they take on disk (a sandbox's writable disk counts what it wrote, not its size). A layer several images
+    /// share is counted once.
     pub size: u64,
+    /// For images: the part of `size` that more than one image uses (shared layers). Always 0 for the others.
+    #[serde(default)]
+    pub shared: u64,
     /// Bytes `system prune -a` would free: unused images with the layers only they use, stopped sandboxes.
     pub reclaimable: u64,
 }

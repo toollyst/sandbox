@@ -1,6 +1,6 @@
 //! 게스트 init. VM 안에서 PID 1로 돈다 (Linux 전용, 정적 링크).
 //!
-//! 하는 일: rootfs(읽기 전용)와 scratch(쓰기 가능)를 overlay로 합친다, 제어 채널로 명령을 받아
+//! 하는 일: 이미지의 층 디스크들(읽기 전용, 규칙은 `disks`)과 scratch(쓰기 가능)를 overlay로 합친다, 제어 채널로 명령을 받아
 //! 프로세스를 실행한다, 파일을 주고받는다, 사용자 이름을 rootfs 기준으로 숫자로 바꾼다,
 //! 이미지 빌드를 위해 층을 쌓고 내보낸다(`layer`, `overlay`).
 //!
@@ -14,6 +14,7 @@
 //! server                        연결 하나: 버전 확인, 요청을 나눠 보냄
 //! exec   copy   egress  layer   요청별 처리 (egress: 나가는 연결 프록시, layer: 빌드 층 내보내기)
 //! wire   passwd  mkfs  cmdline  메시지 주고받기, 사용자 해석, scratch 포맷, 부팅 인자
+//! disks                         부팅 때 디스크 차례에서 이미지 층 찾기
 //! sys                           시스템 호출 (unsafe는 여기만)
 //! ```
 //!
@@ -26,6 +27,7 @@
 pub mod boot;
 pub mod cmdline;
 pub mod copy;
+pub mod disks;
 pub mod dns;
 pub mod egress;
 pub mod exec;

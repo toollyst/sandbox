@@ -1,12 +1,14 @@
 //! 부팅 (Linux, PID 1). 맨 위 층이다.
 //!
-//! 디스크는 실행기가 붙인 순서대로 `/dev/vda`가 rootfs(읽기 전용), `/dev/vdb`가 scratch다.
+//! 디스크는 실행기가 붙인 순서대로 `/dev/vda`가 이미지의 맨 아래 층, `/dev/vdb`가 scratch, 그 뒤 EROFS 디스크들이
+//! 위 층들이다. 규칙은 [`crate::disks`]에 있다.
 //!
 //! **PID 1** ([`pid1`])
 //! 1. `/dev`(devtmpfs), `/proc`, `/sys`를 마운트하고 커널 명령줄(`cmdline`)을 읽는다.
-//! 2. rootfs를 erofs로 읽기 전용 마운트한다.
+//! 2. 층 디스크마다 erofs로 읽기 전용 마운트한다(`/run/sbx/lower/0`이 맨 아래).
 //! 3. scratch에 파일 시스템이 없으면 포맷한다(`mkfs`). 있으면 그대로 쓴다(정지 뒤 다시 시작).
-//! 4. rootfs를 아래, scratch를 위로 overlay를 만들고, 그 안에 `/proc`, `/sys`, `/dev`, `/dev/pts`, `/dev/shm`을 마운트한다.
+//! 4. 층들을 아래(lowerdir, 맨 위 층이 앞), scratch를 위로 overlay를 만들고, 그 안에 `/proc`, `/sys`, `/dev`,
+//!    `/dev/pts`, `/dev/shm`을 마운트한다. 층이 하나면 지금까지와 같은 overlay다.
 //! 5. overlay를 `/`로 옮기고 chroot한다. 루프백을 올리고 호스트 이름을 정한다.
 //! 6. 자신을 `agent` 인자로 다시 실행해 연결 처리 프로세스를 띄운다.
 //! 7. 이후로는 고아 프로세스를 거두기만 한다. 연결 처리 프로세스가 끝나면 VM을 끝낸다.
@@ -32,7 +34,6 @@ use crate::mkfs;
 use crate::server::{self, Ctx};
 use crate::sys::linux as sys;
 
-const ROOTFS_DEV: &str = "/dev/vda";
 const SCRATCH_DEV: &str = "/dev/vdb";
 const LOWER: &str = "/run/sbx/lower";
 const SCRATCH: &str = "/run/sbx/scratch";
@@ -119,14 +120,31 @@ fn switch_root(cfg: &BootConfig) -> io::Result<()> {
         libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
         "",
     )?;
-    mount_dir(ROOTFS_DEV, LOWER, "erofs", libc::MS_RDONLY, "")?;
+    let layers = crate::disks::layer_devices(std::path::Path::new("/dev"))?;
+    let mut lowers = Vec::with_capacity(layers.len());
+    for (i, dev) in layers.iter().enumerate() {
+        let target = format!("{LOWER}/{i}");
+        mount_dir(
+            &dev.to_string_lossy(),
+            &target,
+            "erofs",
+            libc::MS_RDONLY,
+            "",
+        )?;
+        lowers.push(target);
+    }
+    // overlay는 lowerdir의 앞을 위로 본다.
+    lowers.reverse();
     prepare_scratch()?;
     mount_dir(
         "overlay",
         NEWROOT,
         "overlay",
         0,
-        &format!("lowerdir={LOWER},upperdir={SCRATCH}/upper,workdir={SCRATCH}/work"),
+        &format!(
+            "lowerdir={},upperdir={SCRATCH}/upper,workdir={SCRATCH}/work",
+            lowers.join(":")
+        ),
     )?;
     let nosuid = libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC;
     mount_dir("proc", &format!("{NEWROOT}/proc"), "proc", nosuid, "")?;
@@ -240,8 +258,11 @@ pub fn agent() -> ! {
         egress: Default::default(),
         main: Default::default(),
         // 첫 OpenLayer 전에는 아무것도 하지 않는다(보통의 run에는 비용이 없다).
+        // 층 디스크는 부팅 때와 같은 규칙으로 다시 찾는다(디스크 차례와 내용만 본다).
         layers: Some(Box::new(crate::overlay::Overlay::guest(
-            ROOTFS_DEV,
+            crate::disks::layer_devices(std::path::Path::new("/dev")).unwrap_or_else(|_| {
+                vec![std::path::Path::new("/dev").join(crate::disks::device(0))]
+            }),
             SCRATCH_DEV,
         ))),
     }));

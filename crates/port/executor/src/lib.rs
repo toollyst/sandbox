@@ -38,7 +38,7 @@ pub struct Capabilities {
     pub custom_kernel: bool,
     /// 스냅샷 지원 여부.
     pub snapshot: bool,
-    /// VM 하나에 붙일 수 있는 디스크 개수.
+    /// VM 하나에 붙일 수 있는 디스크 개수(scratch 포함). 층 디스크는 이것에서 하나를 뺀 만큼이다.
     pub max_disks: usize,
 }
 
@@ -52,7 +52,7 @@ impl Capabilities {
 /// 디스크 용도.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiskRole {
-    /// 이미지 rootfs. 항상 읽기 전용.
+    /// 이미지 rootfs의 층. 항상 읽기 전용. 여러 번 나올 수 있다(첫째 디스크가 맨 아래 층, 셋째부터가 위 층들).
     Rootfs,
     /// 샌드박스별 쓰기 가능 디스크.
     Scratch,

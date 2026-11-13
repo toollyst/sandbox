@@ -274,7 +274,7 @@ fn open_lock_file(path: &Path) -> io::Result<File> {
         .open(path)
 }
 
-/// 진행 중인 pull이 쓸 blob 목록. 살아 있는 동안 [`collect_blobs`]가 이 blob들을 지우지 않는다.
+/// 진행 중인 pull이 쓸 blob 목록. 살아 있는 동안 [`collect`]가 이 blob들을 지우지 않는다.
 #[derive(Debug)]
 pub struct BlobClaim {
     file: Option<File>,
@@ -316,20 +316,42 @@ pub fn claim_blobs(layout: &CacheLayout, blobs: &[Digest]) -> io::Result<BlobCla
     })
 }
 
-/// 어떤 이미지 기록도, 살아 있는 pull 표시도 가리키지 않는 blob을 지운다. 지운 blob을 돌려준다.
+/// [`collect`]가 지운 것.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Collected {
+    /// 지운 blob(digest).
+    pub blobs: Vec<Digest>,
+    /// 지운 층 디렉터리(diff_id).
+    pub layers: Vec<Digest>,
+    /// 지운 합친 것(chain ID).
+    pub merged: Vec<Digest>,
+}
+
+/// 어떤 이미지 기록도, 살아 있는 pull 표시도 가리키지 않는 blob, 층, 합친 것을 지운다.
 ///
 /// - `blobs/.lock`을 배타로 쥔 채 참조를 모으고 지운다.
-/// - 이미지 기록을 하나라도 읽지 못하면 아무것도 지우지 않고 오류를 낸다. 그 기록이 가리키는 blob을 모르기 때문이다.
+/// - 이미지 기록을 하나라도 읽지 못하면 아무것도 지우지 않고 오류를 낸다. 그 기록이 가리키는 것을 모르기 때문이다.
 /// - 배타 잠금을 잡을 수 있는 pull 표시는 죽은 pull이 남긴 것이다. 지우고 참조로 세지 않는다.
 /// - 이름이 `.`으로 시작하는 파일(받는 중인 임시 파일)은 건드리지 않는다.
-/// - prepare 중인 이미지는 이미지 기록이 있으므로 그 blob이 남는다.
-pub fn collect_blobs(layout: &CacheLayout) -> Result<Vec<Digest>, StoreError> {
+/// - prepare 중인 이미지는 이미지 기록이 있으므로 그 blob과 층이 남는다.
+/// - 층(`layers/<diff_id>`)은 어느 이미지 기록의 층 목록에도 없으면 지운다. 합친 것(`merged/<chain_id>`)은 어느
+///   이미지 기록의 아래 층들의 chain ID도 아니면 지운다(층 없는 이미지가 있으면 빈 rootfs는 남긴다).
+pub fn collect(layout: &CacheLayout) -> Result<Collected, StoreError> {
     let gate = open_lock_file(&layout.blobs_lock())?;
     gate.lock()?;
 
     let mut keep = std::collections::BTreeSet::new();
+    let mut keep_layers = std::collections::BTreeSet::new();
+    let mut keep_merged = std::collections::BTreeSet::new();
     for record in Store::open(layout.root()).images()? {
-        keep.extend(record.layers.into_iter().map(|l| l.digest));
+        if record.layers.is_empty() {
+            keep_merged.insert(crate::stack::empty_chain());
+        }
+        keep_merged.extend(crate::stack::chain_ids(&record.layers));
+        for l in record.layers {
+            keep.insert(l.digest);
+            keep_layers.insert(l.diff_id);
+        }
     }
     if let Some(entries) = read_dir_if_exists(&layout.pulls_dir())? {
         for entry in entries {
@@ -358,21 +380,110 @@ pub fn collect_blobs(layout: &CacheLayout) -> Result<Vec<Digest>, StoreError> {
         }
     }
 
+    let mut out = Collected {
+        blobs: remove_unkept(&layout.blobs_dir(), &keep, false)?,
+        layers: remove_unkept(&layout.layers_dir(), &keep_layers, true)?,
+        merged: remove_unkept(&layout.merged_dir(), &keep_merged, true)?,
+    };
+    out.blobs.sort();
+    out.layers.sort();
+    out.merged.sort();
+    Ok(out)
+}
+
+/// `dir` 안에서 이름이 digest hex이고 `keep`에 없는 것을 지운다. `dirs`면 디렉터리를 통째로 지운다.
+fn remove_unkept(
+    dir: &Path,
+    keep: &std::collections::BTreeSet<Digest>,
+    dirs: bool,
+) -> Result<Vec<Digest>, StoreError> {
     let mut removed = Vec::new();
-    if let Some(entries) = read_dir_if_exists(&layout.blobs_dir())? {
-        for entry in entries {
-            let entry = entry?;
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if name.starts_with('.') {
-                continue;
-            }
-            let Ok(digest) = Digest::parse(&format!("sha256:{name}")) else {
-                continue;
-            };
-            if !keep.contains(&digest) {
-                fs::remove_file(entry.path())?;
-                removed.push(digest);
+    let Some(entries) = read_dir_if_exists(dir)? else {
+        return Ok(removed);
+    };
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with('.') {
+            continue;
+        }
+        let Ok(digest) = Digest::parse(&format!("sha256:{name}")) else {
+            continue;
+        };
+        if keep.contains(&digest) {
+            continue;
+        }
+        if dirs {
+            fs::remove_dir_all(entry.path())?;
+        } else {
+            fs::remove_file(entry.path())?;
+        }
+        removed.push(digest);
+    }
+    Ok(removed)
+}
+
+/// prepare를 시작할 때 부른다. 지금 돌고 있는 [`collect`]가 끝나기를 기다린다(잠깐 `blobs/.lock`을 공유로 쥔다).
+///
+/// 순서가 보장하는 것: prepare할 이미지의 기록은 이미 있다. 그 기록을 쓰기 전에 시작한 정리는 그 기록을 못 보고
+/// 이미지가 쓸 층을 지울 수 있다. 그런 정리는 `blobs/.lock`을 배타로 쥐고 있으므로 이 함수가 그것을 기다린다. 그 뒤에
+/// 시작하는 정리는 기록을 보고 층을 남긴다. 그래서 이 뒤에 본 층은 prepare 동안 지워지지 않는다.
+pub fn wait_for_collect(layout: &CacheLayout) -> io::Result<()> {
+    let gate = open_lock_file(&layout.blobs_lock())?;
+    gate.lock_shared()?;
+    drop(gate);
+    Ok(())
+}
+
+/// 층이나 합친 것을 만드는 동안의 배타 잠금([`lock_build`]).
+#[derive(Debug)]
+pub struct BuildLock {
+    _file: File,
+}
+
+/// `dir`(층이나 합친 것의 디렉터리)을 만들고 그 잠금을 배타로 잡는다. 다른 프로세스가 같은 것을 만드는 중이면 끝날 때까지
+/// 기다린다. 잡은 뒤에는 있는지 다시 보고, 없을 때만 만든다(그래서 한 번만 만든다).
+///
+/// 잡으면 죽은 빌드가 남긴 임시 파일(`.`으로 시작하는 이름, 잠금 파일 말고)을 지운다. 잠금을 쥔 동안 그 디렉터리에
+/// 쓰는 쪽은 없다.
+pub fn lock_build(dir: &Path) -> io::Result<BuildLock> {
+    fs::create_dir_all(dir)?;
+    let lock_path = CacheLayout::build_lock(dir);
+    let file = open_lock_file(&lock_path)?;
+    file.lock()?;
+    for entry in fs::read_dir(dir)? {
+        let path = entry?.path();
+        let leftover = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with('.') && n != ".lock");
+        if leftover {
+            let _ = fs::remove_file(&path);
+        }
+    }
+    Ok(BuildLock { _file: file })
+}
+
+/// 층이 혼자 설 수 없다는 표시를 쓴다. 내용은 그 이유다.
+pub fn write_needs_lower(layout: &CacheLayout, diff_id: &Digest, reason: &str) -> io::Result<()> {
+    atomic_write(&layout.layer_needs_lower(diff_id), reason.as_bytes())
+}
+
+/// 배치 1의 이미지별 rootfs(`images/<hex>/rootfs.<형식>`)를 모두 지운다. 지운 파일. 실행 중인 VM이 연 파일이라도
+/// Unix에서는 그 VM이 끝날 때까지 내용이 남는다. 지우지 못한 것(Windows에서 열린 파일)은 건너뛴다.
+pub fn remove_legacy_rootfs(layout: &CacheLayout) -> io::Result<Vec<PathBuf>> {
+    let mut removed = Vec::new();
+    let Some(entries) = read_dir_if_exists(&layout.images_dir())? else {
+        return Ok(removed);
+    };
+    for entry in entries {
+        let dir = entry?.path();
+        for format in sbx_model::RootfsFormat::ALL {
+            let name = format!("rootfs.{}", format.as_str());
+            let path = dir.join(&name);
+            if path.is_file() && fs::remove_file(&path).is_ok() {
+                removed.push(path);
             }
         }
     }
@@ -410,7 +521,13 @@ mod tests {
         let id = image();
         create_image_dir(store.layout(), &id).unwrap();
         write_image_record(store.layout(), &record_with(&[])).unwrap();
-        atomic_write(&store.layout().rootfs(&id, RootfsFormat::Erofs), b"fs").unwrap();
+        // 층 없는 이미지의 층 구성은 빈 rootfs 하나다.
+        let empty = crate::stack::empty_chain();
+        atomic_write(
+            &store.layout().merged_disk(&empty, RootfsFormat::Erofs),
+            b"fs",
+        )
+        .unwrap();
         (store, id)
     }
 
@@ -501,7 +618,7 @@ mod tests {
     fn lease_blocks_exclusive_lock() {
         let root = temp_root("lease");
         let (store, id) = prepared(&root);
-        let lease = store.lease(&id, RootfsFormat::Erofs).unwrap();
+        let lease = store.lease(&id, RootfsFormat::Erofs, 1).unwrap();
         assert!(try_lock_image(store.layout(), &id).unwrap().is_none());
         drop(lease);
         assert!(try_lock_image(store.layout(), &id).unwrap().is_some());
@@ -513,7 +630,7 @@ mod tests {
         let root = temp_root("kernel");
         let (store, id) = prepared(&root);
         assert_eq!(
-            store.lease(&id, RootfsFormat::Erofs).unwrap().kernel(),
+            store.lease(&id, RootfsFormat::Erofs, 1).unwrap().kernel(),
             None
         );
         let mut r = record_with(&[]);
@@ -523,11 +640,11 @@ mod tests {
         );
         write_image_record(store.layout(), &r).unwrap();
         assert!(matches!(
-            store.lease(&id, RootfsFormat::Erofs),
+            store.lease(&id, RootfsFormat::Erofs, 1),
             Err(LeaseError::KernelNotFound)
         ));
         atomic_write(&store.layout().kernel(&id), b"k").unwrap();
-        let lease = store.lease(&id, RootfsFormat::Erofs).unwrap();
+        let lease = store.lease(&id, RootfsFormat::Erofs, 1).unwrap();
         assert_eq!(lease.kernel(), Some(store.layout().kernel(&id).as_path()));
         drop(lease);
         fs::remove_dir_all(root).unwrap();
@@ -541,7 +658,7 @@ mod tests {
         remove_image(store.layout(), &id, lock).unwrap();
         assert!(!store.layout().image_dir(&id).exists());
         assert!(matches!(
-            store.lease(&id, RootfsFormat::Erofs),
+            store.lease(&id, RootfsFormat::Erofs, 1),
             Err(LeaseError::ImageNotFound)
         ));
         fs::remove_dir_all(root).unwrap();
@@ -584,10 +701,10 @@ mod tests {
         let unused = put_blob(&layout, b"unused");
         write_image_record(&layout, &record_with(&[&used])).unwrap();
 
-        assert_eq!(collect_blobs(&layout).unwrap(), vec![unused.clone()]);
+        assert_eq!(collect(&layout).unwrap().blobs, vec![unused.clone()]);
         assert!(layout.blob(&used).is_file());
         assert!(!layout.blob(&unused).exists());
-        assert!(collect_blobs(&layout).unwrap().is_empty());
+        assert!(collect(&layout).unwrap().blobs.is_empty());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -599,12 +716,12 @@ mod tests {
 
         // pull이 "이미 있다"고 보고 받기를 건너뛴 상태. 아직 이미지 기록은 없다.
         let claim = claim_blobs(&layout, std::slice::from_ref(&blob)).unwrap();
-        assert!(collect_blobs(&layout).unwrap().is_empty());
+        assert!(collect(&layout).unwrap().blobs.is_empty());
         assert!(layout.blob(&blob).is_file());
 
         drop(claim);
         assert_eq!(fs::read_dir(layout.pulls_dir()).unwrap().count(), 0);
-        assert_eq!(collect_blobs(&layout).unwrap(), vec![blob]);
+        assert_eq!(collect(&layout).unwrap().blobs, vec![blob]);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -618,7 +735,7 @@ mod tests {
         let stale = layout.pulls_dir().join(".pull.tmp-1-0");
         fs::write(&stale, serde_json::to_vec(&[&blob]).unwrap()).unwrap();
 
-        assert_eq!(collect_blobs(&layout).unwrap(), vec![blob]);
+        assert_eq!(collect(&layout).unwrap().blobs, vec![blob]);
         assert!(!stale.exists());
         fs::remove_dir_all(root).unwrap();
     }
@@ -629,7 +746,7 @@ mod tests {
         let layout = CacheLayout::new(&root);
         let mut w = BlobWriter::create(&layout).unwrap();
         w.write_all(b"half").unwrap();
-        assert!(collect_blobs(&layout).unwrap().is_empty());
+        assert!(collect(&layout).unwrap().blobs.is_empty());
         assert_eq!(fs::read_dir(layout.blobs_dir()).unwrap().count(), 1);
         drop(w);
         fs::remove_dir_all(root).unwrap();
@@ -643,10 +760,7 @@ mod tests {
         create_image_dir(&layout, &image()).unwrap();
         atomic_write(&layout.image_record(&image()), b"not json").unwrap();
 
-        assert!(matches!(
-            collect_blobs(&layout),
-            Err(StoreError::Corrupt { .. })
-        ));
+        assert!(matches!(collect(&layout), Err(StoreError::Corrupt { .. })));
         assert!(layout.blob(&blob).is_file());
         fs::remove_dir_all(root).unwrap();
     }
@@ -657,11 +771,200 @@ mod tests {
         let store = Store::open(&root);
         let id = image();
         create_image_dir(store.layout(), &id).unwrap();
-        atomic_write(&store.layout().image_record(&id), b"{}").unwrap();
+        write_image_record(store.layout(), &record_with(&[])).unwrap();
         assert!(matches!(
-            store.lease(&id, RootfsFormat::Erofs),
+            store.lease(&id, RootfsFormat::Erofs, 1),
             Err(LeaseError::RootfsNotFound)
         ));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn other_image() -> ImageId {
+        ImageId::new(Digest::parse(&format!("sha256:{}", "ef".repeat(32))).unwrap())
+    }
+
+    /// 층 디스크를 둔다(관리 쪽이 prepare로 했을 일).
+    fn put_layer(layout: &CacheLayout, diff_id: &Digest) {
+        atomic_write(&layout.layer_disk(diff_id, RootfsFormat::Erofs), b"layer").unwrap();
+    }
+
+    #[test]
+    fn layers_are_kept_while_any_image_uses_them() {
+        let root = temp_root("gc-layers");
+        let layout = CacheLayout::new(&root);
+        let base = put_blob(&layout, b"base");
+        let only_a = put_blob(&layout, b"a");
+        let only_b = put_blob(&layout, b"b");
+        let a = record_with(&[&base, &only_a]);
+        let mut b = record_with(&[&base, &only_b]);
+        b.id = other_image();
+        write_image_record(&layout, &a).unwrap();
+        write_image_record(&layout, &b).unwrap();
+        for d in [&base, &only_a, &only_b] {
+            put_layer(&layout, d);
+        }
+        // a의 아래 층들을 합친 것(실행기의 디스크가 모자랄 때)과 아무도 쓰지 않는 합친 것.
+        let chain_a = crate::stack::chain_ids(&a.layers)[1].clone();
+        atomic_write(&layout.merged_disk(&chain_a, RootfsFormat::Erofs), b"m").unwrap();
+        let stray = crate::digest::sha256(b"stray");
+        atomic_write(&layout.merged_disk(&stray, RootfsFormat::Erofs), b"m").unwrap();
+        // 만드는 중인 임시 디렉터리는 건드리지 않는다.
+        fs::create_dir_all(layout.layers_dir().join(".tmp-x")).unwrap();
+
+        let c = collect(&layout).unwrap();
+        assert_eq!((c.blobs.len(), c.layers.len()), (0, 0));
+        assert_eq!(c.merged, [stray]);
+
+        // a를 지우면 a만 쓰던 층과 합친 것이 지워지고 함께 쓰던 바탕 층은 남는다.
+        let lock = try_lock_image(&layout, &a.id).unwrap().unwrap();
+        remove_image(&layout, &a.id, lock).unwrap();
+        let c = collect(&layout).unwrap();
+        assert_eq!(c.layers, std::slice::from_ref(&only_a));
+        assert_eq!(c.blobs, std::slice::from_ref(&only_a));
+        assert_eq!(c.merged, [chain_a]);
+        assert!(layout.layer_disk(&base, RootfsFormat::Erofs).is_file());
+        assert!(!layout.layer_dir(&only_a).exists());
+
+        // b도 지우면 모두 지워진다.
+        let lock = try_lock_image(&layout, &b.id).unwrap().unwrap();
+        remove_image(&layout, &b.id, lock).unwrap();
+        let c = collect(&layout).unwrap();
+        let mut both = vec![base, only_b];
+        both.sort();
+        assert_eq!(c.layers, both);
+        assert_eq!(
+            fs::read_dir(layout.layers_dir()).unwrap().count(),
+            1,
+            ".tmp-x"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_empty_rootfs_is_kept_while_an_image_without_layers_exists() {
+        let root = temp_root("gc-empty");
+        let (store, id) = prepared(&root);
+        let layout = store.layout();
+        let empty = crate::stack::empty_chain();
+        assert!(collect(layout).unwrap().merged.is_empty());
+        let lock = try_lock_image(layout, &id).unwrap().unwrap();
+        remove_image(layout, &id, lock).unwrap();
+        assert_eq!(collect(layout).unwrap().merged, [empty]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lease_gives_the_stack_for_the_disks_the_executor_has() {
+        let root = temp_root("lease-stack");
+        let layout = CacheLayout::new(&root);
+        let l: Vec<Digest> = (0..3).map(|i| put_blob(&layout, &[i])).collect();
+        let r = record_with(&l.iter().collect::<Vec<_>>());
+        write_image_record(&layout, &r).unwrap();
+        let store = Store::open(&root);
+        for d in &l {
+            put_layer(&layout, d);
+        }
+        let lease = store.lease(&r.id, RootfsFormat::Erofs, 8).unwrap();
+        let want: Vec<PathBuf> = l
+            .iter()
+            .map(|d| layout.layer_disk(d, RootfsFormat::Erofs))
+            .collect();
+        assert_eq!(lease.disks(), want.as_slice());
+        drop(lease);
+        // 디스크 둘이면 아래 둘을 합친 것이 있어야 한다.
+        assert!(matches!(
+            store.lease(&r.id, RootfsFormat::Erofs, 2),
+            Err(LeaseError::RootfsNotFound)
+        ));
+        assert!(!store.is_prepared(&r.id, RootfsFormat::Erofs, 2));
+        let chain = crate::stack::chain_ids(&r.layers)[1].clone();
+        atomic_write(&layout.merged_disk(&chain, RootfsFormat::Erofs), b"m").unwrap();
+        let lease = store.lease(&r.id, RootfsFormat::Erofs, 2).unwrap();
+        assert_eq!(
+            lease.disks(),
+            [
+                layout.merged_disk(&chain, RootfsFormat::Erofs),
+                layout.layer_disk(&l[2], RootfsFormat::Erofs)
+            ]
+        );
+        assert!(store.is_prepared(&r.id, RootfsFormat::Erofs, 2));
+        assert!(store.is_prepared_for_some(&r, RootfsFormat::Erofs));
+        // 혼자 설 수 없는 층은 그 아래와 합친다.
+        fs::remove_file(layout.layer_disk(&l[1], RootfsFormat::Erofs)).unwrap();
+        write_needs_lower(&layout, &l[1], "test").unwrap();
+        assert_eq!(
+            store.layer_state(&l[1], RootfsFormat::Erofs),
+            crate::LayerState::NeedsLower
+        );
+        assert_eq!(store.stack(&r, RootfsFormat::Erofs, 8).unwrap().len(), 2);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_layer_is_built_by_one_process_at_a_time() {
+        let root = temp_root("build-lock");
+        let dir = root.join("layers/x");
+        let first = lock_build(&dir).unwrap();
+        fs::write(dir.join(".layer.erofs.tmp-1-0"), b"half").unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let d = dir.clone();
+        let t = std::thread::spawn(move || {
+            let _second = lock_build(&d).unwrap();
+            tx.send(()).unwrap();
+        });
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(200))
+                .is_err(),
+            "the second builder waits"
+        );
+        drop(first);
+        rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+        t.join().unwrap();
+        // 잡은 쪽이 죽은 빌드의 임시 파일을 지웠다.
+        let names: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, [".lock"]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn prepare_waits_for_a_running_collect() {
+        let root = temp_root("gate");
+        let layout = CacheLayout::new(&root);
+        let gate = open_lock_file(&layout.blobs_lock()).unwrap();
+        gate.lock().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let l = layout.clone();
+        let t = std::thread::spawn(move || {
+            wait_for_collect(&l).unwrap();
+            tx.send(()).unwrap();
+        });
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(200))
+                .is_err()
+        );
+        drop(gate);
+        rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+        t.join().unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_rootfs_files_are_removed() {
+        let root = temp_root("legacy");
+        let layout = CacheLayout::new(&root);
+        write_image_record(&layout, &record_with(&[])).unwrap();
+        let old = layout.legacy_rootfs(&image(), RootfsFormat::Erofs);
+        atomic_write(&old, b"merged").unwrap();
+        assert_eq!(
+            remove_legacy_rootfs(&layout).unwrap(),
+            std::slice::from_ref(&old)
+        );
+        assert!(!old.exists());
+        assert!(layout.image_record(&image()).is_file());
+        assert!(remove_legacy_rootfs(&layout).unwrap().is_empty());
         fs::remove_dir_all(root).unwrap();
     }
 }

@@ -234,6 +234,50 @@ fn base(lower: &Path) {
     symlink("target", lower.join("lib/link")).unwrap();
 }
 
+/// 이미지가 층 디스크 둘로 왔을 때(부팅이 쌓는 것과 같이 `lower/1`이 `lower/0` 위): 빌드 층은 그 둘 위에 쌓이고,
+/// 이미지의 위 층이 지운 것(whiteout, 문자 장치 0/0)은 빌드 층에서도 보이지 않는다.
+#[test]
+fn privileged_build_layers_stack_on_an_image_of_several_layer_disks() {
+    let Some(_serial) = privileged() else {
+        return;
+    };
+    let s = Scratch::new("multi");
+    let o = Overlay::new(
+        s.layers(),
+        false,
+        Box::new(|dir| {
+            fresh_dir(dir)?;
+            let (bottom, top) = (dir.join("lower/0"), dir.join("lower/1"));
+            fs::create_dir_all(bottom.join("etc"))?;
+            fs::write(bottom.join("etc/hosts"), "bottom\n")?;
+            fs::write(bottom.join("etc/gone"), "x\n")?;
+            fs::create_dir_all(top.join("etc"))?;
+            fs::write(top.join("etc/hosts"), "top\n")?;
+            sh(&format!("mknod {}/etc/gone c 0 0", top.display()));
+            Ok(())
+        }),
+    )
+    .with_base(vec!["lower/1".into(), "lower/0".into()]);
+    let r = s.root();
+    assert_eq!(o.open().unwrap(), 1);
+    assert_eq!(fs::read_to_string(r.join("etc/hosts")).unwrap(), "top\n");
+    assert!(!r.join("etc/gone").exists());
+    fs::write(r.join("etc/new"), "n\n").unwrap();
+    let l1 = export(&o);
+    let k = kinds(&l1);
+    // 이미지의 층은 내보내지 않는다. 빌드 층의 변경만 나간다.
+    assert_eq!(
+        k,
+        [
+            ("etc", &LayerKind::Dir { opaque: false }),
+            ("etc/new", &LayerKind::File { size: 2 })
+        ]
+    );
+    assert_eq!(o.open().unwrap(), 2);
+    assert_eq!(fs::read_to_string(r.join("etc/new")).unwrap(), "n\n");
+    assert_eq!(fs::read_to_string(r.join("etc/hosts")).unwrap(), "top\n");
+}
+
 #[test]
 fn privileged_three_stacked_layers_export_what_the_guest_saw() {
     let Some(_serial) = privileged() else {

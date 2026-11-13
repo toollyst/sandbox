@@ -3,6 +3,7 @@
 //! 테스트를 위한 환경 변수:
 //! - `SBX_FAKE_FAIL_LAUNCH=<메시지>`: `Launch`에 그 메시지로 `Error`를 보내고 끝난다.
 //! - `SBX_FAKE_RECORD=<파일>`: 받은 `Launch`의 VM 설정을 JSON으로 그 파일에 쓴다.
+//! - `SBX_FAKE_MAX_DISKS=<수>`: `capabilities`가 알리는 `max_disks`(기본 [`crate::MAX_DISKS`]). 더 많이 받으면 거부한다.
 
 use std::io::{self, BufReader, Write};
 use std::process::ExitCode;
@@ -29,7 +30,10 @@ pub fn capabilities() -> proto::Capabilities {
         live_share: true,
         custom_kernel: true,
         snapshot: false,
-        max_disks: 2,
+        max_disks: std::env::var("SBX_FAKE_MAX_DISKS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(crate::MAX_DISKS as u32),
     }
 }
 

@@ -19,12 +19,17 @@ mod layers;
 struct Env {
     root: PathBuf,
     rt: Runtime,
+    fake: FakeExecutor,
     uid: u32,
     gid: u32,
 }
 
 impl Env {
     fn new(name: &str) -> Self {
+        Self::with(name, FakeExecutor::basic())
+    }
+
+    fn with(name: &str, fake: FakeExecutor) -> Self {
         // Unix 소켓 길이 제한 때문에 짧은 경로를 쓴다.
         let root = PathBuf::from(format!("/tmp/sbx-rt-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -37,7 +42,7 @@ impl Env {
                 guest_init: root.join("initramfs"),
                 socket_dir: root.join("s"),
             },
-            Arc::new(FakeExecutor::basic()),
+            Arc::new(fake.clone()),
         )
         .unwrap();
         // fake 게스트는 지금 사용자로 돈다. 디렉터리 소유 그룹은 부모를 따를 수 있으므로(macOS) id로 구한다.
@@ -51,7 +56,13 @@ impl Env {
                 .unwrap_or(0)
         };
         let (uid, gid) = (id("-u"), id("-g"));
-        Self { root, rt, uid, gid }
+        Self {
+            root,
+            rt,
+            fake,
+            uid,
+            gid,
+        }
     }
 
     fn image() -> ImageId {
@@ -72,13 +83,15 @@ impl Env {
         .unwrap()
     }
 
-    /// 관리 쪽이 해 두었을 일: 이미지 기록, rootfs, 잠금 파일.
+    /// 관리 쪽이 해 두었을 일: 이미지 기록, rootfs(층 없는 이미지는 빈 rootfs 하나), 잠금 파일.
     fn prepare_image(&self) {
         let layout = self.rt.inner.store.layout();
         let id = Self::image();
         std::fs::create_dir_all(layout.image_dir(&id)).unwrap();
         std::fs::write(layout.image_record(&id), Env::record(&id)).unwrap();
-        std::fs::write(layout.rootfs(&id, RootfsFormat::Erofs), b"fs").unwrap();
+        let empty = layout.merged_disk(&sbx_store::stack::empty_chain(), RootfsFormat::Erofs);
+        std::fs::create_dir_all(empty.parent().unwrap()).unwrap();
+        std::fs::write(empty, b"fs").unwrap();
         std::fs::write(layout.image_lock(&id), b"").unwrap();
     }
 
@@ -203,6 +216,81 @@ fn create_writes_records_and_sparse_scratch() {
     let list = block_on(e.rt.list()).unwrap();
     assert_eq!(list.len(), 1);
     assert_eq!(list[0].spec, e.spec(&["sh"]));
+}
+
+/// 층이 `n`개인 이미지를 둔다. 층 디스크도 모두 둔다(관리 쪽이 prepare로 했을 일). 층 디스크 경로, 아래부터.
+fn layered_image(e: &Env, n: u8) -> Vec<PathBuf> {
+    let layout = e.rt.inner.store.layout();
+    let id = Env::image();
+    let layers: Vec<sbx_model::Layer> = (0..n)
+        .map(|i| {
+            let d = sbx_store::digest::sha256(&[i]);
+            sbx_model::Layer {
+                digest: d.clone(),
+                diff_id: d,
+                size: 1,
+                compression: sbx_model::Compression::Gzip,
+            }
+        })
+        .collect();
+    let mut record: sbx_store::ImageRecord = serde_json::from_slice(&Env::record(&id)).unwrap();
+    record.layers = layers.clone();
+    std::fs::create_dir_all(layout.image_dir(&id)).unwrap();
+    std::fs::write(
+        layout.image_record(&id),
+        serde_json::to_vec(&record).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(layout.image_lock(&id), b"").unwrap();
+    layers
+        .iter()
+        .map(|l| {
+            let p = layout.layer_disk(&l.diff_id, RootfsFormat::Erofs);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, b"layer").unwrap();
+            p
+        })
+        .collect()
+}
+
+#[cfg(unix)]
+#[test]
+fn start_attaches_the_bottom_layer_then_scratch_then_the_upper_layers() {
+    let e = Env::new("stack3");
+    let disks = layered_image(&e, 3);
+    assert_eq!(e.rt.layer_disks(), 7);
+    let s = block_on(e.rt.create(e.spec(&["true"]))).unwrap();
+    let main = block_on(s.start(IoMode::default())).unwrap();
+    assert_eq!(block_on(main.wait()).unwrap(), 0);
+    let got = &e.fake.launches()[0].disks;
+    let roles: Vec<(PathBuf, DiskRole, bool)> = got
+        .iter()
+        .map(|d| (d.path.clone(), d.role, d.readonly))
+        .collect();
+    let scratch = e.rt.paths(s.id()).scratch();
+    assert_eq!(
+        roles,
+        [
+            (disks[0].clone(), DiskRole::Rootfs, true),
+            (scratch, DiskRole::Scratch, false),
+            (disks[1].clone(), DiskRole::Rootfs, true),
+            (disks[2].clone(), DiskRole::Rootfs, true),
+        ]
+    );
+}
+
+#[test]
+fn create_needs_the_stack_for_the_disks_the_executor_has() {
+    // 디스크 둘(층 하나와 scratch)인 실행기에는 층 셋을 합친 것이 있어야 한다. 관리 쪽이 만들지 않았으면 만들지 못한다.
+    let mut caps = FakeExecutor::basic().capabilities();
+    caps.max_disks = 2;
+    let e = Env::with("stack1", FakeExecutor::new(caps));
+    layered_image(&e, 3);
+    assert_eq!(e.rt.layer_disks(), 1);
+    assert!(matches!(
+        block_on(e.rt.create(e.spec(&["true"]))),
+        Err(RuntimeError::RootfsNotPrepared { .. })
+    ));
 }
 
 #[cfg(unix)]

@@ -91,7 +91,7 @@ Every `docker` command and management command. The flags of the commands sbx has
 | `logs` | 🟡 | Only for detached sandboxes. Up to 256 MiB per sandbox; past that, output is dropped and one line says so (Docker's json-file has no limit). *Why:* No daemon collects the output: the shim writes it. An attached `run` shows it directly and keeps nothing. | `detached_run_outlives_sbx_and_keeps_logs`, `detached_rm_and_logs_follow` |
 | `cp` | 🟡 | Only with a running sandbox. Copying out never writes outside the destination you name. *Why:* The guest reads and writes its disk, so it has to be running. | `exec_cp_stop_on_a_running_sandbox` |
 | `pull` | 🟡 | Also follows the containers `registries.conf` (mirrors, blocked registries) and `policy.json` (cosign signatures). | `registries_conf_is_read_for_pulls`, `policy_json_is_followed` |
-| `images` | 🟡 | Also lists which root filesystem disks are prepared. | `names_work_in_place_of_ids`, `json_output_contract` |
+| `images` | 🟡 | Also lists which root filesystem disks are prepared, and SIZE / SHARED / UNIQUE on disk (layers several images use are shared, as in `docker system df -v`). | `names_work_in_place_of_ids`, `json_output_contract`, `images_on_one_base_store_it_once` |
 | `rmi` | 🟡 | Never removes the image of a running sandbox, even with `-f`. | `json_output_contract`, `docker_options_reach_the_sandbox`, `behavior::tests::rmi_table` |
 | `save` | 🟡 | One image per archive, written as an OCI image layout (with Docker's `manifest.json`), exactly as it was pulled. | `load_and_save_round_trip_an_oci_archive` |
 | `load` | 🟡 | Reads OCI image layout archives or directories: `docker save` from Docker 25 on, `podman save --format oci-archive`, skopeo. | `load_and_save_round_trip_an_oci_archive` |
@@ -101,8 +101,8 @@ Every `docker` command and management command. The flags of the commands sbx has
 | `info` | 🟡 | Shows the host, the executor and the storage sbx uses. | `commands_that_do_not_launch_need_no_executor` |
 | `version` | 🟡 | sbx: `--version`. There is no `version` command. | `docker_options_reach_the_sandbox` |
 | `system` | 🟡 | `df` and `prune`. | `system_df_and_prune_free_what_nothing_uses` |
-| `system df` | 🟡 | Images, sandboxes and executors, by what is actually on disk. | `system_df_and_prune_free_what_nothing_uses` |
-| `system prune` | 🟡 | Stopped sandboxes, unused layers and leftovers of interrupted pulls older than an hour. | `system_df_and_prune_free_what_nothing_uses` |
+| `system df` | 🟡 | Images, sandboxes and executors, by what is actually on disk. A layer several images use is counted once; `SHARED` is that part. | `system_df_and_prune_free_what_nothing_uses`, `images_on_one_base_store_it_once` |
+| `system prune` | 🟡 | Stopped sandboxes, unused layers (blobs and layer disks) and leftovers of interrupted pulls older than an hour. | `system_df_and_prune_free_what_nothing_uses` |
 | `system events` | 🔴 | `sbx events` does this. | not planned yet |
 | `system info` | 🔴 | `sbx info` does this. | not planned yet |
 | `build` | 🔴 |  | D3 (0.3) |
@@ -143,7 +143,7 @@ Every `docker` command and management command. The flags of the commands sbx has
 | `stack` | ⚫ | *Why:* Swarm is out of scope. |  |
 | `secret` | ⚫ | *Why:* Swarm is out of scope. |  |
 | `config` | ⚫ | *Why:* Swarm is out of scope. |  |
-| `prepare` | ➕ | Builds an image's root filesystem disk ahead of time (`run` does it on first use). |  |
+| `prepare` | ➕ | Builds an image's layer disks ahead of time, one per layer and shared between images, for the executor `run` would use (`run` does it on first use). |  |
 | `tui` | ➕ | Sandboxes, images, events and executors on one screen, like Docker Desktop or lazydocker. Every key runs an `sbx` command and shows its command line. |  |
 | `mcp` | ➕ | Serves sandboxes to AI agents over the Model Context Protocol ([guide](mcp.md)). |  |
 | `executor` | ➕ | Installs and picks executors, the programs that run the VMs ([guide](executors.md)). |  |

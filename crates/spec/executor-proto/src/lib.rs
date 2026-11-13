@@ -52,9 +52,14 @@
 //!   그 실행기로 띄우지 않는다. 받은 커널의 형식(VMM이 읽는 형식인지)과 아래 기능은 이미지를 만든 쪽의 책임이다.
 //! - 커널 기능: virtio-blk, vsock(virtio), erofs, ext4(ext2 형식 포함), overlay, devtmpfs, proc, sysfs, tmpfs, devpts(Unix98 pty), 루프백 네트워크.
 //!   커널은 4.7 이상이어야 한다(`newinstance`로 마운트한 `/dev/pts`를 `/dev/ptmx`가 찾는다).
-//! - 디스크는 [`VmSpec::disks`] 순서대로 붙인다. 게스트에서 첫째가 `/dev/vda`(rootfs, 읽기 전용), 둘째가 `/dev/vdb`(scratch)다.
-//!   디스크 파일은 받은 그대로 붙인다(내용을 바꾸지 않는다). 게스트는 처음 보는 scratch가 0으로 채워져 있다고 믿는다
-//!   (sbx가 새 sparse 파일로 만든다).
+//! - 디스크는 [`VmSpec::disks`] 순서대로 virtio-blk 장치로 붙인다. 게스트에서 n번째 디스크가 n번째 장치 이름이다
+//!   (`/dev/vda`, `/dev/vdb`, …). 첫째는 이미지의 맨 아래 층(`rootfs`, 읽기 전용), 둘째는 scratch다. 셋째부터의
+//!   `rootfs` 디스크는 이미지의 위 층들이고 아래부터 차례다(sbx 0.3부터. 이미지를 층 단위로 저장해 같은 층을 이미지끼리
+//!   한 번만 둔다). sbx는 [`Capabilities::max_disks`]보다 많이 보내지 않는다. `max_disks`가 2인 실행기에는 지금처럼
+//!   모든 층을 합친 rootfs 하나와 scratch만 간다. 그래서 규약 버전은 그대로 2다. 실행기는 디스크의 역할을 보고
+//!   다르게 붙이지 않는다. 역할은 진단과 이름(설정 파일의 drive id 같은 것)에만 쓴다.
+//!   디스크 파일은 받은 그대로 붙인다(내용을 바꾸지 않는다). 받은 디스크를 빼거나 순서를 바꾸면 게스트가 다른 rootfs로
+//!   부팅한다. 게스트는 처음 보는 scratch가 0으로 채워져 있다고 믿는다(sbx가 새 sparse 파일로 만든다).
 //! - 커널 명령줄에 `sbx.hostname=<hostname>`과 `sbx.halt=poweroff|reboot`을 넣는다. `sbx.halt`는 그 VMM에서
 //!   게스트가 VM을 끝내는 방법이다(Firecracker처럼 재시작 요청을 VM 종료로 다루면 `reboot`).
 //! - 공유 폴더([`VmSpec::shares`])는 virtio-fs 장치 하나씩으로 붙이고, 그 태그를 [`ShareSpec::tag`]로 한다.
@@ -139,7 +144,8 @@ pub struct Capabilities {
     pub custom_kernel: bool,
     /// 스냅샷 지원 여부.
     pub snapshot: bool,
-    /// VM 하나에 붙일 수 있는 디스크 개수.
+    /// VM 하나에 붙일 수 있는 디스크 개수(scratch 포함, 2 이상). sbx는 그만큼까지 보낸다: 이미지의 층이 그보다 많으면
+    /// 아래 층들을 합친 디스크 하나로 보낸다.
     pub max_disks: u32,
 }
 
@@ -161,7 +167,8 @@ pub struct CapabilitiesHeader {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DiskRole {
-    /// 이미지 rootfs.
+    /// 이미지 rootfs의 층(읽기 전용). 여러 번 나올 수 있다: 첫째 디스크가 맨 아래 층, 셋째부터가 위 층들이다
+    /// (크레이트 문서의 "게스트에 대한 약속").
     Rootfs,
     /// 샌드박스별 쓰기 가능 디스크.
     Scratch,
@@ -200,7 +207,7 @@ pub struct VmSpec {
     /// 이 커널로 부팅한다. 없으면(필드가 없으면) 실행기의 기본 커널이다. `custom_kernel`인 실행기에만 보낸다.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kernel: Option<PathBuf>,
-    /// 붙일 디스크. 순서가 게스트 장치 이름을 정한다.
+    /// 붙일 디스크. 순서가 게스트 장치 이름을 정한다(크레이트 문서의 "게스트에 대한 약속"). `max_disks`개 이하다.
     pub disks: Vec<DiskSpec>,
     /// vCPU 개수 (1 이상).
     pub vcpus: u8,
