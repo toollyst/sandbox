@@ -435,6 +435,44 @@ pub mod linux {
         check(unsafe { libc::sethostname(name.as_ptr().cast(), name.len()) })
     }
 
+    /// `CLOCK_MONOTONIC_RAW`: 시계 맞추기(천천히 맞추기 포함)가 빠르기를 바꾸지 않는 단조 시계.
+    pub fn monotonic_raw() -> std::time::Duration {
+        // SAFETY: timespec은 정수 필드뿐이라 0으로 채운 값이 올바르다.
+        let mut t: libc::timespec = unsafe { std::mem::zeroed() };
+        // SAFETY: t는 이 호출 동안 살아 있는 timespec이다. 이 시계는 2.6.28부터 있어 실패하지 않는다.
+        unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC_RAW, &mut t) };
+        std::time::Duration::new(
+            t.tv_sec.max(0) as u64,
+            t.tv_nsec.clamp(0, 999_999_999) as u32,
+        )
+    }
+
+    /// 벽시계(`CLOCK_REALTIME`)에 `secs`초 + `nanos`나노초를 바로 더한다(`ADJ_SETOFFSET`). `nanos`는 `0..1e9`여야 한다
+    /// (음수 차이는 초를 내려 나타낸다). 읽고 쓰는 사이의 틈이 없다(커널이 한 번에 더한다).
+    pub fn clock_step(secs: i64, nanos: i64) -> io::Result<()> {
+        // SAFETY: timex는 정수 필드뿐이라 0으로 채운 값이 올바르다.
+        let mut t: libc::timex = unsafe { std::mem::zeroed() };
+        t.modes = libc::ADJ_SETOFFSET | libc::ADJ_NANO;
+        // 게스트는 64비트뿐이라(x86_64, aarch64) 필드가 모두 i64다. 다른 크기면 여기서 컴파일되지 않는다.
+        t.time.tv_sec = secs;
+        // ADJ_NANO에서는 tv_usec이 나노초다.
+        t.time.tv_usec = nanos;
+        // SAFETY: t는 이 호출 동안 살아 있는 timex다.
+        check(unsafe { libc::adjtimex(&mut t) })
+    }
+
+    /// 벽시계를 `micros` 마이크로초만큼 천천히 옮긴다(`ADJ_OFFSET_SINGLESHOT`, `adjtime(3)`과 같다). 커널은 1초에
+    /// 0.5ms까지 고친다. 남은 몫이 있으면 이 값으로 바꾼다. 0이면 진행 중인 것을 취소한다.
+    pub fn clock_slew_micros(micros: i64) -> io::Result<()> {
+        // SAFETY: timex는 정수 필드뿐이라 0으로 채운 값이 올바르다.
+        let mut t: libc::timex = unsafe { std::mem::zeroed() };
+        // 이 방식은 다른 비트와 함께 쓰지 않는다(커널이 EINVAL).
+        t.modes = libc::ADJ_OFFSET_SINGLESHOT;
+        t.offset = micros;
+        // SAFETY: t는 이 호출 동안 살아 있는 timex다.
+        check(unsafe { libc::adjtimex(&mut t) })
+    }
+
     /// 아무 자식이나 끝나면 거둔다. (pid, 종료 상태). 자식이 없으면 `ECHILD` 오류.
     pub fn wait_any() -> io::Result<(u32, libc::c_int)> {
         let mut status = 0;

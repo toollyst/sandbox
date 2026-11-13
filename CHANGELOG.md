@@ -26,6 +26,12 @@ to release a tag without one. Changes land under `## Unreleased` first, and the 
 - `sbx images` shows `SIZE`, `SHARED` and `UNIQUE` (on disk), and `--format json` adds `disk_size`, `shared_size`
   and `unique_size`. `sbx system df` counts a shared layer once and shows the shared part (`SHARED`, JSON `shared`).
   The Images tab in `sbx tui` shows `SIZE` and `SHARED`.
+- The clock inside a sandbox follows the host's. The process that owns the VM (`sbx`, or `sbx-shim` for `-d`) sets
+  the guest clock right after it boots, corrects it every minute (slowly, so it never runs backwards), and steps it as soon as the host's clock jumps, such
+  as after the host wakes from sleep (until now the guest fell behind by the time the host slept). It needs nothing
+  from the image or the executor and never delays the start. A clock set inside with `date -s` is put back at the
+  next correction. Sandboxes started before upgrading keep their old behaviour until restarted. The guest protocol
+  gains `ClockSync`, `ClockAsk` and `ClockNow`; its version stays 2.
 
 ## v0.2.2
 

@@ -1338,3 +1338,45 @@ fn transparent_tcp_resolves_from_the_list_and_passes_names_to_the_host_check() {
     block_on(s.stop(None, Duration::from_secs(5))).unwrap();
     let _ = std::fs::remove_dir_all(&e.root);
 }
+
+/// fake 게스트의 시계 파일(호스트 시계는 건드리지 않는다).
+fn clock_file(e: &Env, s: &Sandbox) -> PathBuf {
+    sbx_executor_fake::clock_file(&e.rt.paths(s.id()).scratch())
+}
+
+/// 게스트 시계가 호스트와 `within` 안으로 맞을 때까지 기다린다.
+fn wait_clock(file: &Path, within: Duration) -> sbx_executor_fake::clock::State {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let st = sbx_executor_fake::clock::read(file).unwrap();
+        if u128::from(st.offset.unsigned_abs()) <= within.as_nanos() {
+            return st;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the guest clock is still off: {st:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn the_guest_clock_is_set_from_the_host_without_holding_up_the_start() {
+    let e = Env::new("clock");
+    let s = e.sandbox(&["sh", "-c", "echo up; sleep 30"]);
+    let file = clock_file(&e, &s);
+    // 부팅한 게스트 시계가 한 시간 늦다.
+    sbx_executor_fake::clock::skew(&file, -3_600_000_000_000).unwrap();
+    let mut main = block_on(s.start(IoMode::default())).unwrap();
+    let st = wait_clock(&file, Duration::from_millis(50));
+    assert_eq!(st.steps, 1, "{st:?}");
+    // 기본 프로세스는 아무것도 보지 못한다.
+    assert_eq!(
+        block_on(main.next()),
+        Some(Output::Stdout(b"up\n".to_vec()))
+    );
+    block_on(s.stop(None, Duration::from_secs(5))).unwrap();
+    let log = std::fs::read_to_string(s.log_dir().join("executor.log")).unwrap_or_default();
+    assert!(!log.contains("guest clock"), "{log}");
+}

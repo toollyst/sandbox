@@ -44,6 +44,11 @@ command's own code otherwise. `exec --timeout` exits 124 when it had to kill the
 `exec -d` discards the command's output; redirect it to a file inside the sandbox to keep it. A sandbox started by
 an older `sbx` needs a restart before `exec -d` works in it.
 
+The clock inside a sandbox follows the host's, as it does in a container: `sbx` sets it at start, keeps it within
+milliseconds while it runs, and corrects it within about a second after the host wakes from sleep. Setting it
+inside (`date -s`) only lasts until the next correction, at most a minute later. No setting or image change is
+needed. Clock problems, if any, are noted in the sandbox's `logs/executor.log`.
+
 ## Files
 
 Copy a project in when the sandbox starts, and copy results out:

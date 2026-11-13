@@ -447,6 +447,7 @@ fn the_whole_path_over_the_guest_protocol() {
         egress: egress.clone(),
         main: Default::default(),
         layers: None,
+        clock: None,
     });
     let conn = || {
         let (mut host, guest) = UnixStream::pair().unwrap();

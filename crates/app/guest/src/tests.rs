@@ -53,6 +53,7 @@ impl Fixture {
                     egress: Default::default(),
                     main,
                     layers: None,
+                    clock: None,
                 },
             )
         });
@@ -148,6 +149,7 @@ fn version_mismatch_is_reported() {
                 egress: Default::default(),
                 main: Default::default(),
                 layers: None,
+                clock: None,
             },
         )
     });
@@ -168,6 +170,7 @@ fn request_before_hello_is_a_protocol_error() {
                 egress: Default::default(),
                 main: Default::default(),
                 layers: None,
+                clock: None,
             },
         )
     });
@@ -530,6 +533,7 @@ fn shutdown_syncs_replies_then_calls_back() {
                 egress: Default::default(),
                 main: Default::default(),
                 layers: None,
+                clock: None,
             },
         )
     });
@@ -780,4 +784,12 @@ fn stat_follows_links_and_reports_missing() {
     assert_eq!((l.path.as_str(), l.kind), ("l", FileKind::Dir));
     assert_eq!(stat(&f.dir.join("nope")), None);
     assert_eq!(stat(Path::new("/")).unwrap().path, "/");
+}
+
+#[test]
+fn a_guest_without_a_clock_refuses_clock_sync() {
+    let f = Fixture::new("noclock");
+    let mut c = f.connect();
+    send(&mut c, HostMsg::ClockSync);
+    assert_eq!(error_kind(&mut c), ErrorKind::InvalidArgument);
 }

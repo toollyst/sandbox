@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use sbx_executor::{ChannelSpec, Executor, GuestConn};
-use sbx_guest_proto::{Entry, Exec, GuestMsg, HostMsg, PROTOCOL_VERSION};
+use sbx_guest_proto::{CLOCK_ROUNDS, Entry, Exec, GuestMsg, HostMsg, PROTOCOL_VERSION};
 
 use crate::error::RuntimeError;
 use crate::{hostfs, layer};
@@ -361,6 +361,45 @@ impl Guest {
         layer::receive(sink, limit, &mut || recv(&mut *c))
     }
 
+    /// 게스트 시계를 맞춘다([`HostMsg::ClockSync`], 규칙은 [`crate::clock`]). `now`는 호스트 벽시계(Unix 나노초)이고
+    /// 묻는 때마다 새로 읽는다. 게스트의 묻기에는 [`CLOCK_ROUNDS`]번까지만 답한다.
+    /// 이 메시지를 모르는 게스트(첫 답 없이 닫음)는 `Guest(Protocol)` 오류다.
+    pub fn clock_sync(&self, now: &dyn Fn() -> i64) -> Result<(), RuntimeError> {
+        let mut c = self.open()?;
+        send(&mut *c, &HostMsg::ClockSync)?;
+        let mut answered = 0;
+        loop {
+            let m = GuestMsg::read_from(&mut *c).map_err(|e| match e.kind() {
+                io::ErrorKind::UnexpectedEof if answered == 0 => {
+                    RuntimeError::Guest(sbx_guest_proto::Error::new(
+                        sbx_guest_proto::ErrorKind::Protocol,
+                        "the guest closed the connection without answering ClockSync",
+                    ))
+                }
+                io::ErrorKind::InvalidData => proto_err(e.to_string()),
+                _ => lost(&e),
+            })?;
+            match m {
+                GuestMsg::ClockAsk if answered < CLOCK_ROUNDS => {
+                    send(&mut *c, &HostMsg::ClockNow { unix_nanos: now() })?;
+                    answered += 1;
+                }
+                GuestMsg::ClockAsk => {
+                    return Err(proto_err(format!(
+                        "the guest asked for the time more than {CLOCK_ROUNDS} times"
+                    )));
+                }
+                GuestMsg::Done => return Ok(()),
+                GuestMsg::Error(e) => return Err(RuntimeError::Guest(e)),
+                other => {
+                    return Err(proto_err(format!(
+                        "expected ClockAsk or Done, got {other:?}"
+                    )));
+                }
+            }
+        }
+    }
+
     /// 게스트에 종료를 요청한다. `Done`을 받으면 돌아온다.
     pub fn shutdown(&self) -> Result<(), RuntimeError> {
         let mut c = self.open()?;
@@ -401,6 +440,113 @@ mod tests {
             self.peers.lock().unwrap().push(b);
             Ok(Box::new(a))
         }
+    }
+
+    /// 연결마다 짝의 다른 끝에서 `guest`를 돌리는 실행기(Hello는 대신 받아 준다).
+    struct Scripted(Arc<dyn Fn(UnixStream) + Send + Sync>);
+
+    impl Executor for Scripted {
+        fn capabilities(&self) -> Capabilities {
+            unimplemented!()
+        }
+        fn launch(&self, _: VmConfig) -> BoxFuture<'_, Result<Box<dyn VmHandle>, ExecutorError>> {
+            unimplemented!()
+        }
+        fn connect(&self, _: &ChannelSpec) -> io::Result<Box<dyn GuestConn>> {
+            let (a, mut b) = UnixStream::pair()?;
+            let guest = self.0.clone();
+            std::thread::spawn(move || {
+                let ack = GuestMsg::HelloAck {
+                    version: PROTOCOL_VERSION,
+                };
+                if HostMsg::read_from(&mut b).is_ok() && ack.write_to(&mut b).is_ok() {
+                    guest(b)
+                }
+            });
+            Ok(Box::new(a))
+        }
+    }
+
+    fn scripted(guest: impl Fn(UnixStream) + Send + Sync + 'static) -> Guest {
+        Guest::new(
+            Arc::new(Scripted(Arc::new(guest))),
+            ChannelSpec {
+                host_endpoint: "x".into(),
+                guest_port: 1024,
+            },
+        )
+        .with_timeout(Duration::from_secs(2))
+    }
+
+    #[test]
+    fn clock_sync_answers_each_ask_with_a_fresh_time() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let g = {
+            let seen = seen.clone();
+            scripted(move |mut c| {
+                assert_eq!(HostMsg::read_from(&mut c).unwrap(), HostMsg::ClockSync);
+                for _ in 0..CLOCK_ROUNDS {
+                    GuestMsg::ClockAsk.write_to(&mut c).unwrap();
+                    seen.lock()
+                        .unwrap()
+                        .push(HostMsg::read_from(&mut c).unwrap());
+                }
+                GuestMsg::Done.write_to(&mut c).unwrap();
+            })
+        };
+        let n = std::sync::atomic::AtomicI64::new(100);
+        g.clock_sync(&|| n.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
+            .unwrap();
+        let want: Vec<HostMsg> = (100..100 + i64::from(CLOCK_ROUNDS))
+            .map(|unix_nanos| HostMsg::ClockNow { unix_nanos })
+            .collect();
+        assert_eq!(*seen.lock().unwrap(), want);
+    }
+
+    #[test]
+    fn an_older_guest_that_closes_is_reported_as_not_knowing_clock_sync() {
+        // 0.2.x 게스트는 모르는 요청을 해석하지 못하고 답 없이 닫는다.
+        let g = scripted(|mut c| {
+            let _ = HostMsg::read_from(&mut c);
+        });
+        let e = g.clock_sync(&|| 0).unwrap_err();
+        assert!(
+            matches!(&e, RuntimeError::Guest(g) if g.kind == sbx_guest_proto::ErrorKind::Protocol),
+            "{e:?}"
+        );
+        assert_eq!(crate::clock::kind(&e), crate::clock::Kind::Unsupported);
+    }
+
+    #[test]
+    fn a_guest_that_keeps_asking_gets_only_so_many_answers() {
+        let answers = Arc::new(Mutex::new(0u32));
+        let g = {
+            let answers = answers.clone();
+            scripted(move |mut c| {
+                let _ = HostMsg::read_from(&mut c);
+                loop {
+                    if GuestMsg::ClockAsk.write_to(&mut c).is_err() {
+                        return;
+                    }
+                    match HostMsg::read_from(&mut c) {
+                        Ok(HostMsg::ClockNow { .. }) => *answers.lock().unwrap() += 1,
+                        _ => return,
+                    }
+                }
+            })
+        };
+        let e = g.clock_sync(&|| 0).unwrap_err();
+        assert!(matches!(e, RuntimeError::Protocol(_)), "{e:?}");
+        assert_eq!(*answers.lock().unwrap(), CLOCK_ROUNDS);
+        // 엉뚱한 답도 규약 위반이다.
+        let g = scripted(|mut c| {
+            let _ = HostMsg::read_from(&mut c);
+            GuestMsg::Stdout(vec![1; 10]).write_to(&mut c).unwrap();
+        });
+        assert!(matches!(
+            g.clock_sync(&|| 0).unwrap_err(),
+            RuntimeError::Protocol(_)
+        ));
     }
 
     #[test]

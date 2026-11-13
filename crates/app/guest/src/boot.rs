@@ -17,6 +17,7 @@
 //!
 //! **연결 처리** ([`agent`]): vsock [`GUEST_PORT`]에서 연결마다 스레드 하나로 `server::serve`를 돌린다.
 //! 루프백 DNS([`crate::dns`])도 띄운다: 이름 풀기가 시간 초과(5초)를 기다리지 않고 곧바로 실패하게 한다.
+//! 시계는 호스트가 `ClockSync`를 보낼 때 커널 시계를 맞춘다([`crate::clock`]).
 //! `Shutdown` 요청이면 sync 뒤 `sbx.halt` 방법으로 VM을 끝낸다.
 //! 빌드 층(`OpenLayer`)은 이 프로세스의 뿌리를 층 안으로 옮긴다. 규칙은 `overlay` 모듈에 있다. PID 1은 처음 뿌리에 남는다.
 //!
@@ -270,6 +271,8 @@ pub fn agent() -> ! {
             }),
             SCRATCH_DEV,
         ))),
+        // 시계 맞추기: 호스트가 보낼 때만 한다. 규칙은 clock 모듈에 있다.
+        clock: Some(Box::new(crate::clock::Kernel)),
     }));
     loop {
         match sys::accept(&listener) {
