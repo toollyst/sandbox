@@ -102,7 +102,9 @@ fn build_layers_export_tars_that_merge_into_what_the_guest_saw() {
     let s = e.sandbox(&["sh", "-c", "sleep 30"]);
     let root = sbx_executor_fake::build_root(&e.rt.paths(s.id()).scratch());
     let _main = block_on(s.start(IoMode::default())).unwrap();
-    let r = root.display().to_string();
+    // 가짜 실행기는 층을 연 뒤 연결의 경로를 뿌리 아래로 옮긴다. 명령은 호스트에서 도므로 작업 디렉터리(뿌리) 기준
+    // 상대 경로를 쓴다.
+    let r = ".";
     let sh = |script: &str| {
         let p = block_on(s.exec(exec(&["sh", "-ec", script]))).unwrap();
         let (out, err, code) = collect(p);
@@ -120,7 +122,7 @@ fn build_layers_export_tars_that_merge_into_what_the_guest_saw() {
     let src = e.root.join("src");
     std::fs::create_dir_all(src.join("app")).unwrap();
     std::fs::write(src.join("app/main.py"), "print(1)\n").unwrap();
-    block_on(s.copy_in(&src.join("app"), &format!("{r}/srv"))).unwrap();
+    block_on(s.copy_in(&src.join("app"), "/srv")).unwrap();
     let (l1, stats) = export(&s);
     assert_eq!(stats.tar_bytes, l1.len() as u64);
     let names = tar_names(&l1);
@@ -289,7 +291,7 @@ fn a_build_vm_holds_without_a_program_and_steps_end_what_they_leave() {
 
     let r = "x";
     std::fs::create_dir_all(root.join(r)).unwrap();
-    let dest = root.display().to_string();
+    let dest = "/".to_owned();
     let entries = vec![
         Placed {
             path: format!("{r}/app"),
@@ -315,7 +317,7 @@ fn a_build_vm_holds_without_a_program_and_steps_end_what_they_leave() {
     let m = std::fs::metadata(root.join("x/app/a.txt")).unwrap();
     assert_eq!((m.mode() & 0o7777, m.mtime()), (0o640, 1_000_000_000));
     assert_eq!(std::fs::read(root.join("x/app/a.txt")).unwrap(), b"abc");
-    let st = block_on(s.stat(&format!("{dest}/x/app"))).unwrap().unwrap();
+    let st = block_on(s.stat("/x/app")).unwrap().unwrap();
     assert_eq!(st.mode, 0o750);
     // 내용이 알린 크기보다 짧으면 오류다.
     let short = vec![Placed {

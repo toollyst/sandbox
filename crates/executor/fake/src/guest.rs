@@ -133,6 +133,8 @@ mod unix {
             let resolver = egress.resolver();
             thread::spawn(move || sbx_guest::dns::serve(&sock, resolver));
         }
+        let opened: Arc<std::sync::atomic::AtomicBool> = Arc::default();
+        let rebase_root = build_root.clone();
         let ctx = Arc::new(Ctx {
             root: "/".into(),
             on_shutdown: {
@@ -152,7 +154,11 @@ mod unix {
             egress,
             main: Default::default(),
             layers: build_root.map(|r| {
-                Box::new(crate::layers::DirLayers::new(r)) as Box<dyn sbx_guest::layer::Layers>
+                Box::new(crate::layers::DirLayers::new(
+                    r,
+                    layer_disks.clone(),
+                    opened.clone(),
+                )) as Box<dyn sbx_guest::layer::Layers>
             }),
             // 호스트에서 돈다: 단계의 프로세스 그룹만 끝낸다.
             sweep: sbx_guest::exec::Sweep::Group,
@@ -168,6 +174,8 @@ mod unix {
                     let Ok(mut conn) = conn else { continue };
                     let ctx = ctx.clone();
                     let open = open.clone();
+                    let opened = opened.clone();
+                    let rebase_root = rebase_root.clone();
                     thread::spawn(move || {
                         match vsock::accept(&mut conn) {
                             Ok(port) if port == sbx_guest_proto::GUEST_PORT => {}
@@ -178,14 +186,29 @@ mod unix {
                         if let Ok(c) = conn.try_clone() {
                             open.lock().unwrap_or_else(|e| e.into_inner()).push(c);
                         }
-                        if vsock::ack(&mut conn, port_ack()).is_ok() {
-                            server::serve(conn, &ctx);
+                        if vsock::ack(&mut conn, port_ack()).is_err() {
+                            return;
+                        }
+                        match rebase_root {
+                            Some(root) => serve_rebased(conn, &ctx, root, opened),
+                            None => server::serve(conn, &ctx),
                         }
                     });
                 }
             });
         }
         Ok(FakeVm { life, stop })
+    }
+
+    /// 연결 하나를 처리한다. 빌드 층이 열린 뒤에는 호스트가 보낸 메시지의 경로를 뿌리 아래로 옮긴다
+    /// ([`crate::rootdir::Rebased`]). 답은 그대로 같은 연결에 쓴다.
+    fn serve_rebased(
+        conn: UnixStream,
+        ctx: &Ctx,
+        root: PathBuf,
+        opened: Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        server::serve(crate::rootdir::Rebased::new(conn, root, opened), ctx);
     }
 
     /// `OK` 뒤의 숫자. 규약은 아무 숫자나 허용한다. 호스트 쪽 임시 포트를 흉내 낸다.

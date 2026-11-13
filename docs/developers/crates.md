@@ -110,6 +110,7 @@ flowchart BT
   sbx_executor_fake --> sbx_guest
   sbx_executor_fake --> sbx_guest_proto
   sbx_executor_fake --> sbx_model
+  sbx_executor_fake --> sbx_rootfs
   sbx_executor_firecracker --> sbx_executor_proto
 ```
 
@@ -124,7 +125,7 @@ flowchart BT
 | port | [`port/events`](../../crates/port/events) | `sbx-events` | – | `sbx-manage`, `sbx-runtime`, `sbx-cli` |
 | port | [`port/executor`](../../crates/port/executor) | `sbx-executor` | `sbx-model` | `sbx-executor-process`, `sbx-runtime`, `sbx-cli`, `sbx-executor-fake` |
 | port | [`port/image`](../../crates/port/image) | `sbx-image` | `sbx-model` | `sbx-oci`, `sbx-manage`, `sbx-cli` |
-| port | [`port/rootfs`](../../crates/port/rootfs) | `sbx-rootfs` | `sbx-model` | `sbx-build`, `sbx-manage`, `sbx-cli` |
+| port | [`port/rootfs`](../../crates/port/rootfs) | `sbx-rootfs` | `sbx-model` | `sbx-build`, `sbx-manage`, `sbx-cli`, `sbx-executor-fake` |
 | port | [`port/store`](../../crates/port/store) | `sbx-store` | `sbx-model` | `sbx-manage`, `sbx-runtime`, `sbx-cli` |
 | adapter | [`adapter/dockerfile`](../../crates/adapter/dockerfile) | `sbx-dockerfile` | `sbx-model` | – |
 | adapter | [`adapter/executor-process`](../../crates/adapter/executor-process) | `sbx-executor-process` | `sbx-executor`, `sbx-executor-proto`, `sbx-model` | `sbx-cli`, `sbx-shim` |
@@ -135,7 +136,7 @@ flowchart BT
 | app | [`app/cli`](../../crates/app/cli) | `sbx-cli` (bin `sbx`) | `sbx-events`, `sbx-executor`, `sbx-executor-install`, `sbx-executor-process`, `sbx-executor-proto`, `sbx-executor-repo`, `sbx-guest-proto`, `sbx-image`, `sbx-manage`, `sbx-model`, `sbx-oci`, `sbx-release-index`, `sbx-rootfs`, `sbx-runtime`, `sbx-shim`, `sbx-store` | – |
 | app | [`app/guest`](../../crates/app/guest) | `sbx-guest` (bin `sbx-guest`) | `sbx-guest-proto` | `sbx-executor-fake` |
 | app | [`app/shim`](../../crates/app/shim) | `sbx-shim` (bin `sbx-shim`) | `sbx-executor-process`, `sbx-executor-proto`, `sbx-model`, `sbx-runtime` | `sbx-cli` |
-| executor | [`executor/fake`](../../crates/executor/fake) | `sbx-executor-fake` (bin `sbx-executor-fake`) | `sbx-executor`, `sbx-executor-proto`, `sbx-guest`, `sbx-guest-proto`, `sbx-model` | – |
+| executor | [`executor/fake`](../../crates/executor/fake) | `sbx-executor-fake` (bin `sbx-executor-fake`) | `sbx-executor`, `sbx-executor-proto`, `sbx-guest`, `sbx-guest-proto`, `sbx-model`, `sbx-rootfs` | – |
 | executor | [`executor/firecracker`](../../crates/executor/firecracker) | `sbx-executor-firecracker` (bin `sbx-executor-firecracker`) | `sbx-executor-proto` | – |
 
 <!-- END GENERATED -->

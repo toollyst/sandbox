@@ -2501,6 +2501,7 @@ dependencies = [
  "sbx-guest",
  "sbx-guest-proto",
  "sbx-model",
+ "sbx-rootfs",
  "serde",
  "serde_json",
 ]
