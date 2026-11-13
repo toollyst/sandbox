@@ -175,10 +175,6 @@ impl OciImageSource {
         self
     }
 
-    fn chunk_bytes(&self) -> u64 {
-        self.chunk.unwrap_or(push::CHUNK_BYTES)
-    }
-
     fn state(&self) -> Result<&State, ImageError> {
         if let Some(s) = self.state.get() {
             return Ok(s);

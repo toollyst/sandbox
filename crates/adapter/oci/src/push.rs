@@ -722,6 +722,10 @@ impl OciImageSource {
         Ok((r, s))
     }
 
+    fn chunk_bytes(&self) -> u64 {
+        self.chunk.unwrap_or(CHUNK_BYTES)
+    }
+
     fn mount_refused(&self, key: &str) -> bool {
         self.no_mount.lock().is_ok_and(|n| n.contains(key))
     }
