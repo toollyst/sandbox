@@ -392,6 +392,25 @@ impl DiskContents {
     }
 }
 
+impl DiskContents {
+    /// [`ContentSource::open`]과 같고, 돌려받은 것이 이것을 빌리지 않는다(다른 스레드로 넘길 수 있다).
+    pub fn open_owned(&self, c: &ContentRef) -> io::Result<Box<dyn Read + Send>> {
+        if c.size == 0 {
+            return Ok(Box::new(io::empty()));
+        }
+        let (path, offsets) = self
+            .disks
+            .get(&c.layer)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no such layer disk"))?;
+        let at = *offsets
+            .get(&c.index)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no such file in the disk"))?;
+        let mut f = File::open(path)?;
+        f.seek(SeekFrom::Start(at))?;
+        Ok(Box::new(io::BufReader::new(f).take(c.size)))
+    }
+}
+
 impl ContentSource for DiskContents {
     fn open(&self, c: &ContentRef) -> io::Result<Box<dyn Read + '_>> {
         if c.size == 0 {

@@ -72,7 +72,7 @@ virtualization. It is made for running code you don't trust: **AI agents** (with
 | Commands | `docker …` | `sbx …`, with the same names and flags |
 
 <!-- docker-compat:begin -->
-**Docker compatibility:** 56% of the Docker CLI's commands and flags that apply to a VM work today (108 of 190); with `build`, the Dockerfile and Compose, which come in 0.3 and after, 34% (108 of 312). [The table](docs/guide/docker-compatibility.md) gives every row, its difference and its test, and CI keeps it in step with the code.
+**Docker compatibility:** 57% of the Docker CLI's commands and flags that apply to a VM work today (109 of 189); with `build`, the Dockerfile and Compose, which come in 0.3 and after, 44% (138 of 312). [The table](docs/guide/docker-compatibility.md) gives every row, its difference and its test, and CI keeps it in step with the code.
 <!-- docker-compat:end -->
 
 `cargo xtask bench` on an Apple Silicon Mac, 1 vCPU and 512 MiB per sandbox: `sbx run --rm alpine:3.20 true` (boot,

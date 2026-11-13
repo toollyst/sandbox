@@ -22,6 +22,14 @@ pub struct LayerContents {
     pub(crate) contents: layer::Contents,
 }
 
+impl LayerContents {
+    /// 내용을 연다. 돌려받은 것이 이것을 빌리지 않는다(다른 스레드로 넘길 수 있다). 이것을 버리면 작업 공간이
+    /// 지워지므로 다 읽을 때까지 쥐고 있는다.
+    pub fn open_owned(&self, content: &ContentRef) -> io::Result<Box<dyn Read + Send>> {
+        self.contents.open_owned(content)
+    }
+}
+
 impl ContentSource for LayerContents {
     fn open(&self, content: &ContentRef) -> io::Result<Box<dyn Read + '_>> {
         self.contents.open(content)

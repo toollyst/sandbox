@@ -24,22 +24,22 @@ The table is code, [`compat.rs`](../../crates/app/cli/src/compat.rs), and a test
 ## Progress
 
 <!-- compat-progress:begin -->
-Counted from the 395 rows below. "What applies to sbx" leaves out ⚫, ⚪ and ➕ rows.
+Counted from the 397 rows below. "What applies to sbx" leaves out ⚫, ⚪ and ➕ rows.
 
 | | |
 | --- | --- |
-| **Works (🟢 or 🟡), of what applies to sbx** | **`███░░░░░░░` 34% (108 of 312)** |
-| **The Docker CLI alone** (without `build`, the Dockerfile and Compose, which come in 0.3 and after) | **`██████░░░░` 56% (108 of 190)** |
-| 🟢 Same as Docker | 46 |
-| 🟡 Works, with differences | 62 |
-| 🔴 Not yet | 204 (42 of them in 0.3) |
+| **Works (🟢 or 🟡), of what applies to sbx** | **`████░░░░░░` 44% (138 of 312)** |
+| **The Docker CLI alone** (without `build`, the Dockerfile and Compose, which come in 0.3 and after) | **`██████░░░░` 57% (109 of 189)** |
+| 🟢 Same as Docker | 66 |
+| 🟡 Works, with differences | 72 |
+| 🔴 Not yet | 174 (13 of them in 0.3) |
 | ⚫ Will not do | 23 |
 | ⚪ Not applicable in a VM | 39 |
-| ➕ sbx only | 21 |
+| ➕ sbx only | 23 |
 
 | Area | Works, of what applies to sbx |
 | --- | --- |
-| [Commands](#commands) | `█████░░░░░` 51% (30 of 58) |
+| [Commands](#commands) | `█████░░░░░` 54% (31 of 57) |
 | [Global options](#global-options) | `███░░░░░░░` 25% (1 of 4) |
 | [docker run, docker create](#docker-run-docker-create) | `█████░░░░░` 46% (23 of 49) |
 | [docker exec](#docker-exec) | `█████████░` 87% (7 of 8) |
@@ -64,8 +64,8 @@ Counted from the 395 rows below. "What applies to sbx" leaves out ⚫, ⚪ and �
 | [docker system df](#docker-system-df) | `█████░░░░░` 50% (1 of 2) |
 | [docker system prune](#docker-system-prune) | `████████░░` 75% (3 of 4) |
 | [Behavior](#behavior) | `██████████` 100% (6 of 6) |
-| [docker build](#docker-build) | `░░░░░░░░░░` 0% (0 of 27) |
-| [Dockerfile](#dockerfile) | `░░░░░░░░░░` 0% (0 of 33) |
+| [docker build](#docker-build) | `███░░░░░░░` 32% (9 of 28) |
+| [Dockerfile](#dockerfile) | `██████░░░░` 60% (20 of 33) |
 | [docker compose](#docker-compose) | `░░░░░░░░░░` 0% (0 of 28) |
 | [compose.yaml](#composeyaml) | `░░░░░░░░░░` 0% (0 of 34) |
 <!-- compat-progress:end -->
@@ -106,9 +106,9 @@ Every `docker` command and management command. The flags of the commands sbx has
 | `system prune` | 🟡 | Stopped sandboxes, unused layers (blobs and layer disks) and leftovers of interrupted pulls older than an hour. | `system_df_and_prune_free_what_nothing_uses` |
 | `system events` | 🔴 | `sbx events` does this. | not planned yet |
 | `system info` | 🔴 | `sbx info` does this. | not planned yet |
-| `build` | 🔴 |  | D3 (0.3) |
-| `buildx build` | 🔴 | `sbx build` takes buildx's flags. | D3 (0.3) |
-| `builder` | 🔴 | `sbx system prune` will clear the build cache (D3). | not planned yet |
+| `build` | 🟡 | Each stage's `RUN` steps run in one microVM with the network closed unless `--allow` opens it; `COPY`, `ADD` and `WORKDIR` layers are made on the host, so a `FROM scratch` stage of copies needs no VM. The image goes to the sbx image store (`--output type=sbx`); `save` and `push` of a built image come with the layer export step. | `build_runs_stages_and_caches_steps`, `build_scratch_without_a_vm_and_shared_base_layers` |
+| `buildx build` | ⚫ | *Why:* `sbx build` is the builder and takes buildx's flag names; there is no builder plugin to call. |  |
+| `builder` | 🔴 | `sbx system prune` clears the build cache; `sbx system df` shows it. | not planned yet |
 | `push` | 🟡 | Sends the layers, config and manifest exactly as they were pulled, so the image keeps its digest; one blob at a time (Docker sends several at once). Only to the registry the name points at: never to a `registries.conf` mirror, and a blocked registry is refused. | `tag_and_push_to_a_registry`, `app::push::tests::report_reads_like_docker_push` |
 | `tag` | 🟢 | Moves a reference that pointed at another image, as Docker does, and records an image `tag` event. | `tag_and_push_to_a_registry` |
 | `volume` | 🔴 | Named volumes: a sparse disk per volume. | V1 (0.3) |
@@ -466,24 +466,24 @@ How sbx behaves where no single flag is involved.
 
 ## docker build
 
-`sbx build` comes in 0.3 (roadmap D3), with buildx's flag names. It builds inside a VM per stage, with the network closed unless `--allow` opens it.
+`sbx build` takes buildx's flag names. It builds inside one VM per stage, with the network closed unless `--allow` opens it, and caches every step that makes a layer.
 
 | Docker | | Notes | Evidence or step |
 | --- | --- | --- | --- |
-| `-t, --tag` | 🔴 |  | D3 (0.3) |
-| `-f, --file` | 🔴 | `-f -` reads the Dockerfile from stdin. | D3 (0.3) |
-| `--build-arg` | 🔴 |  | D3 (0.3) |
-| `--target` | 🔴 |  | D3 (0.3) |
-| `--no-cache` | 🔴 |  | D3 (0.3) |
-| `--platform` | 🔴 | The host's architecture only. | D3 (0.3) |
-| `--progress` | 🔴 |  | D3 (0.3) |
-| `-o, --output` | 🔴 | `type=sbx` (the default) in D3; `type=docker` and `type=oci` in D4. | D3 (0.3) |
+| `-t, --tag` | 🟢 |  | `build_runs_stages_and_caches_steps` |
+| `-f, --file` | 🟡 | A file only: `-f -` (the Dockerfile on stdin) is refused. `FILE.dockerignore` next to it is read before the context's `.dockerignore`, as in BuildKit. | `build_runs_stages_and_caches_steps` |
+| `--build-arg` | 🟢 |  | `build_failures_targets_and_build_args` |
+| `--target` | 🟢 |  | `build_failures_targets_and_build_args` |
+| `--no-cache` | 🟢 |  | `build_runs_stages_and_caches_steps` |
+| `--platform` | 🔴 | Images are built for the host's architecture. | after 0.3 |
+| `--progress` | 🟡 | `auto` (the default) prints one line per step and shows a `RUN` step's output only when it fails; `plain` streams it too. There is no `tty` or `rawjson`; `--format json` prints JSON Lines. | `build_runs_stages_and_caches_steps` |
+| `-o, --output` | 🔴 | Without it the image goes to the sbx store (`type=sbx`); `type=docker` and `type=oci` come in D4. | D4 (0.3) |
 | `--load` | 🔴 |  | D4 (0.3) |
 | `--push` | 🔴 |  | D5 (0.3) |
 | `--secret` | 🔴 |  | after 0.3 |
 | `--ssh` | 🔴 |  | after 0.3 |
 | `--add-host` | 🔴 |  | after 0.3 |
-| `--network` | 🔴 | A build's network is closed; `--allow HOST:PORT` opens it, as with `run` (D3). | not planned yet |
+| `--network` | 🟡 | `none` (the default; Docker's default is the full network) or `allow` with `--allow` destinations, as with `run`. | `build_shows_blocked_names` |
 | `--annotation` | 🔴 |  | not planned yet |
 | `--attest, --provenance, --sbom` | 🔴 |  | not planned yet |
 | `--build-context` | 🔴 |  | not planned yet |
@@ -494,52 +494,54 @@ How sbx behaves where no single flag is involved.
 | `--metadata-file` | 🔴 |  | not planned yet |
 | `--no-cache-filter` | 🔴 |  | not planned yet |
 | `--pull` | 🔴 |  | not planned yet |
-| `-q, --quiet` | 🔴 |  | not planned yet |
+| `-q, --quiet` | 🟢 |  | `build_runs_stages_and_caches_steps` |
 | `--shm-size` | 🔴 |  | not planned yet |
 | `--ulimit` | 🔴 |  | not planned yet |
-| `--allow` | ⚫ | *Why:* buildx's entitlements (`network.host`, `security.insecure`) mean nothing in a build VM. sbx's `--allow` will name network destinations, as with `run`. |  |
+| `--allow` | 🟡 | Names a network destination `HOST:PORT` that `RUN` steps may reach, as with `run --allow`. buildx's entitlements (`network.host`, `security.insecure`) mean nothing in a build VM. A failed step lists the names it was refused, with the `--allow` to add. | `build_shows_blocked_names` |
+| `--cpus` | ➕ | vCPUs of the build VM (default 1). |  |
+| `-m, --memory` | ➕ | Memory of the build VM (default 512m). |  |
 | `--builder` | ⚪ | *Why:* There are no builder instances: each build stage gets its own VM. |  |
 | `--cgroup-parent` | ⚪ | *Why:* A cgroup knob for a process on a shared kernel. The VM's size (`--cpus`, `-m`) is the limit. |  |
 
 ## Dockerfile
 
-Comes with `sbx build`. An instruction or flag it doesn't support is an error with the line number, never silently ignored.
+What `sbx build` reads. An instruction or flag it doesn't support is an error with the line number, never silently ignored. Behaviors were checked against Docker 29 (BuildKit).
 
 | Docker | | Notes | Evidence or step |
 | --- | --- | --- | --- |
-| `FROM` | 🔴 | With `AS name`, `scratch`, and `ARG` before `FROM`. The host's architecture only. | D3 (0.3) |
-| `RUN` | 🔴 | Shell and exec forms, in the stage's VM; the network is closed unless `--allow` opens it. | D3 (0.3) |
+| `FROM` | 🟡 | With `AS name`, `scratch`, another stage, and `ARG` before `FROM`; `--platform` only for the host's platform. A base image with `ONBUILD` triggers is refused. | `build_runs_stages_and_caches_steps`, `build_scratch_without_a_vm_and_shared_base_layers` |
+| `RUN` | 🟡 | Shell and exec forms, in the stage's VM; the network is closed unless `--allow` opens it. Processes a step leaves running are ended when it finishes (BuildKit ends them with the step's container). | `build_failures_targets_and_build_args` |
 | `RUN --mount=type=cache` | 🔴 | On top of named volumes. | after 0.3 |
 | `RUN --mount=type=secret` | 🔴 |  | after 0.3 |
 | `RUN --mount=type=ssh` | 🔴 |  | after 0.3 |
 | `RUN --mount=type=bind`, `type=tmpfs` | 🔴 |  | not planned yet |
 | `RUN --network` | 🔴 |  | not planned yet |
 | `RUN --security=insecure` | ⚪ | *Why:* A build step already runs as root in its own VM; there is no container sandbox to loosen. |  |
-| `COPY` | 🔴 | Files picked from the context with `.dockerignore`. | D3 (0.3) |
-| `COPY --from` | 🔴 | From another stage, without a VM. | D3 (0.3) |
-| `COPY --chown`, `--chmod` | 🔴 |  | D3 (0.3) |
+| `COPY` | 🟢 |  | `build_runs_stages_and_caches_steps` |
+| `COPY --from` | 🟢 |  | `build_runs_stages_and_caches_steps` |
+| `COPY --chown`, `--chmod` | 🟢 |  | `build_writes_the_image_config` |
 | `COPY --link` | 🔴 |  | after 0.3 |
-| `ADD` (local files, local tar archives) | 🔴 |  | D3 (0.3) |
+| `ADD` (local files, local tar archives) | 🔴 | `ADD` of a local file that is not an archive copies it like `COPY`. A tar or compressed file, which Docker would extract, is refused for now. | after 0.3 |
 | `ADD <URL>` | 🔴 | Through the same allow list, since the host downloads it. | after 0.3 |
 | `ADD <git repository>` | 🔴 |  | after 0.3 |
-| `ENV` | 🔴 |  | D3 (0.3) |
-| `ARG` | 🔴 |  | D3 (0.3) |
-| `WORKDIR` | 🔴 |  | D3 (0.3) |
-| `USER` | 🔴 |  | D3 (0.3) |
-| `LABEL` | 🔴 |  | D3 (0.3) |
-| `EXPOSE` | 🔴 |  | D3 (0.3) |
-| `VOLUME` | 🔴 |  | D3 (0.3) |
-| `ENTRYPOINT` | 🔴 |  | D3 (0.3) |
-| `CMD` | 🔴 |  | D3 (0.3) |
-| `STOPSIGNAL` | 🔴 |  | D3 (0.3) |
-| `SHELL` | 🔴 |  | D3 (0.3) |
-| `HEALTHCHECK` | 🔴 | Written to the image config; sbx says it doesn't run health checks. | D3 (0.3) |
-| `ONBUILD` | 🔴 |  | after 0.3 |
-| `MAINTAINER` | 🔴 | Deprecated in Docker; use `LABEL`. | not planned yet |
+| `ENV` | 🟢 |  | `build_runs_stages_and_caches_steps` |
+| `ARG` | 🟡 | As in BuildKit, except that a `--build-arg` nothing declares is reported, and `--build-arg` cannot set the platform arguments (`TARGETARCH`). | `build_failures_targets_and_build_args` |
+| `WORKDIR` | 🟢 |  | `build_runs_stages_and_caches_steps` |
+| `USER` | 🟢 |  | `build_writes_the_image_config` |
+| `LABEL` | 🟢 |  | `build_writes_the_image_config` |
+| `EXPOSE` | 🟢 |  | `build_writes_the_image_config` |
+| `VOLUME` | 🟢 |  | `build_writes_the_image_config` |
+| `ENTRYPOINT` | 🟢 |  | `build_writes_the_image_config` |
+| `CMD` | 🟢 |  | `build_runs_stages_and_caches_steps` |
+| `STOPSIGNAL` | 🟢 |  | `build_writes_the_image_config` |
+| `SHELL` | 🟢 |  | `build_writes_the_image_config` |
+| `HEALTHCHECK` | 🟡 | Written to the image config; sbx says it doesn't run health checks. | `build_writes_the_image_config` |
+| `ONBUILD` | 🔴 | An `ONBUILD` line is an error, and so is a base image with `ONBUILD` triggers. | after 0.3 |
+| `MAINTAINER` | 🟡 | Deprecated in Docker. Written to the image's `author`, with a warning. | `build_writes_the_image_config` |
 | Here-documents (`RUN <<EOF`) | 🔴 |  | after 0.3 |
-| Parser directive `# escape=` | 🔴 |  | D3 (0.3) |
+| Parser directive `# escape=` | 🟢 |  | `build_writes_the_image_config` |
 | Parser directive `# syntax=` (another frontend) | ⚫ | *Why:* Another frontend needs BuildKit. sbx reports the line instead of ignoring it. |  |
-| `.dockerignore` | 🔴 |  | D3 (0.3) |
+| `.dockerignore` | 🟢 |  | `build_runs_stages_and_caches_steps` |
 | A git repository as the build context | 🔴 |  | after 0.3 |
 | `SOURCE_DATE_EPOCH` (fixed times in layers) | 🔴 |  | D4 (0.3) |
 

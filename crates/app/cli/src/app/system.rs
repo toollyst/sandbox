@@ -159,6 +159,11 @@ impl Ctx {
                 .list()
                 .map(|v| v.len())
                 .unwrap_or(0);
+        // 빌드 캐시: 캐시 기록만 쥔 층(이미지도 쓰는 층은 images에서 센다).
+        let cache = m.build_cache_usage()?;
+        let cache_only: u64 = cache.only_cache.iter().map(|p| disk_usage(p)).sum();
+        let cache_shared: u64 = cache.shared.iter().map(|p| disk_usage(p)).sum();
+        let cache_records = disk_usage(&m.store().layout().build_cache_dir());
         let ex_size = disk_usage(&dirs::executors_dir(&self.data_dir))
             + disk_usage(&dirs::adapters_dir(&self.data_dir));
         let rows = [
@@ -172,6 +177,14 @@ impl Ctx {
                 size,
                 shared,
                 reclaimable,
+            },
+            output::DiskUsage {
+                kind: "build cache".into(),
+                total: cache.records as u64,
+                active: 0,
+                size: cache_only + cache_records,
+                shared: cache_shared,
+                reclaimable: cache_only + cache_records,
             },
             output::DiskUsage {
                 kind: "sandboxes".into(),
@@ -225,9 +238,9 @@ impl Ctx {
             .collect::<AppResult<Vec<u64>>>()?;
         if !force {
             let what = if all {
-                "all stopped sandboxes, images no sandbox uses, unused layers and leftovers"
+                "all stopped sandboxes, images no sandbox uses, the build cache, unused layers and leftovers"
             } else {
-                "all stopped sandboxes, unused layers and leftovers"
+                "all stopped sandboxes, the build cache, unused layers and leftovers"
             };
             if !std::io::stdin().is_terminal() {
                 return Err(msg(format!(
@@ -293,6 +306,15 @@ impl Ctx {
                 }
             }
         }
+        // 빌드 캐시 기록(캐시가 쥔 층은 그다음 정리가 지운다)과 끝나지 않은 빌드의 뿌리 기록.
+        let records = disk_usage(&layout.build_cache_dir());
+        match m.prune_build_cache() {
+            Ok(n) => {
+                report.build_cache = n as u64;
+                report.reclaimed += records.saturating_sub(disk_usage(&layout.build_cache_dir()));
+            }
+            Err(e) => self.target_error("build cache", &msg(e.to_string())),
+        }
         // 어느 이미지도 쓰지 않는 레이어 blob, 층 디스크, 합친 디스크(지우다 멈춘 rmi가 남긴 것 포함).
         let stored = |l: &sbx_store::CacheLayout| {
             disk_usage(&l.blobs_dir()) + disk_usage(&l.layers_dir()) + disk_usage(&l.merged_dir())
@@ -315,6 +337,9 @@ impl Ctx {
         if self.json() {
             output::print_value(&report)?;
             return Ok(0);
+        }
+        if report.build_cache > 0 {
+            println!("Deleted Build Cache: {} steps\n", report.build_cache);
         }
         for (title, list) in [
             ("Deleted Sandboxes", &report.sandboxes),

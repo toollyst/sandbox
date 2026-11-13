@@ -191,6 +191,22 @@ impl Contents {
     }
 }
 
+impl Contents {
+    /// [`ContentSource::open`]과 같고, 돌려받은 것이 이것을 빌리지 않는다.
+    pub fn open_owned(&self, content: &ContentRef) -> io::Result<Box<dyn Read + Send>> {
+        if self.disks.has(content.layer) {
+            self.disks.open_owned(content)
+        } else {
+            let file = File::open(
+                self.spool
+                    .dir
+                    .join(spool_name(content.layer, content.index)),
+            )?;
+            Ok(Box::new(BufReader::new(file)))
+        }
+    }
+}
+
 impl ContentSource for Contents {
     fn open(&self, content: &ContentRef) -> io::Result<Box<dyn Read + '_>> {
         if self.disks.has(content.layer) {

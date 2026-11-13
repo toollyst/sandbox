@@ -2443,6 +2443,8 @@ dependencies = [
  "jaq-std",
  "minisign",
  "ratatui",
+ "sbx-build",
+ "sbx-dockerfile",
  "sbx-events",
  "sbx-executor",
  "sbx-executor-fake",

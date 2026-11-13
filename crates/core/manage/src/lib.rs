@@ -56,7 +56,7 @@ use sbx_store::digest::HashingReader;
 use sbx_store::write::{self, BlobWriter, WorkDir};
 use sbx_store::{ImageRecord, LayerState, LeaseError, Part, Plan, Store};
 
-pub use sbx_store::write::Collected;
+pub use sbx_store::write::{BlobClaim, Collected};
 
 mod build;
 mod built;
@@ -833,7 +833,12 @@ impl Manager {
                 users.push(id.clone());
             }
         };
-        for r in self.store.images()? {
+        for r in self
+            .store
+            .images()?
+            .into_iter()
+            .filter(|r| r.source != BUILD_ROOT_SOURCE)
+        {
             add(PartKind::Image, layout.image_dir(&r.id), &r.id);
             for l in &r.layers {
                 add(PartKind::Blob, layout.blob(&l.digest), &r.id);

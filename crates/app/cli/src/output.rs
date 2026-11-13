@@ -66,6 +66,7 @@ pub const JSON_OUTPUT: &[(&str, Form)] = &[
     ("attach", Form::Unsupported(PROCESS_BYTES)),
     ("logs", Form::Lines("LogLine")),
     ("cp", Form::Empty),
+    ("build", Form::Lines("BuildEvent")),
     ("pull", Form::Value("Pulled")),
     ("push", Form::Lines("Pushed")),
     ("tag", Form::Value("Tagged")),
@@ -523,20 +524,23 @@ pub struct Pruned {
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct DiskUsage {
-    /// `images`, `sandboxes` or `executors`.
+    /// `images`, `build cache`, `sandboxes` or `executors`.
     #[serde(rename = "type")]
     pub kind: String,
-    /// How many there are (executors count installed executors and adapters).
+    /// How many there are (executors count installed executors and adapters; the build cache counts cached
+    /// steps).
     pub total: u64,
-    /// Images some sandbox uses; sandboxes that are running. Always 0 for executors.
+    /// Images some sandbox uses; sandboxes that are running. Always 0 for the build cache and executors.
     pub active: u64,
     /// Bytes they take on disk (a sandbox's writable disk counts what it wrote, not its size). A layer several images
     /// share is counted once.
     pub size: u64,
-    /// For images: the part of `size` that more than one image uses (shared layers). Always 0 for the others.
+    /// For images: the part of `size` that more than one image uses (shared layers). For the build cache: layers
+    /// that images use too (counted under images, not in `size`). Always 0 for the others.
     #[serde(default)]
     pub shared: u64,
-    /// Bytes `system prune -a` would free: unused images with the layers only they use, stopped sandboxes.
+    /// Bytes `system prune -a` would free: unused images with the layers only they use, stopped sandboxes, the
+    /// layers only the build cache holds (`system prune` frees those too).
     pub reclaimable: u64,
 }
 
@@ -602,8 +606,113 @@ pub struct PruneReport {
     pub layers: Vec<String>,
     /// Paths of removed leftovers (unfinished pulls and builds, half-removed sandboxes).
     pub leftovers: Vec<String>,
+    /// How many build cache entries (cached steps) were removed. Their layers are in `layers` when no image uses
+    /// them.
+    #[serde(default)]
+    pub build_cache: u64,
     /// Bytes freed on disk.
     pub reclaimed: u64,
+}
+
+/// One line of `build` (JSON Lines): a step's progress (`step`), a piece of `RUN` output (`output`), and last the
+/// image (`built`). A failed build ends with the error line instead.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct BuildEvent {
+    /// `step`, `output` or `built`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// `step`: the stage's `AS` name, or `null`.
+    pub stage: Option<String>,
+    /// `step`: the stage's number (0 is the first stage in the Dockerfile that the build needs).
+    pub stage_index: Option<usize>,
+    /// `step`: the step's number in its stage (1 is `FROM`).
+    pub step: Option<usize>,
+    /// `step`: how many steps the stage has (with `FROM`).
+    pub steps: Option<usize>,
+    /// `step`: the Dockerfile line.
+    pub line: Option<usize>,
+    /// `step`: the instruction with its variables expanded.
+    pub text: Option<String>,
+    /// `step`: `started`, `cached` or `done`.
+    pub status: Option<String>,
+    /// `step` with `done`: how long it took (milliseconds).
+    pub millis: Option<u64>,
+    /// `output`: `stdout` or `stderr`.
+    pub stream: Option<String>,
+    /// `output`: the bytes as text (invalid UTF-8 replaced).
+    pub data: Option<String>,
+    /// `built`: the image ID.
+    pub id: Option<String>,
+    /// `built`: the references from `-t`, normalized.
+    pub tags: Option<Vec<String>>,
+}
+
+impl BuildEvent {
+    fn empty(kind: &str) -> Self {
+        Self {
+            kind: kind.into(),
+            stage: None,
+            stage_index: None,
+            step: None,
+            steps: None,
+            line: None,
+            text: None,
+            status: None,
+            millis: None,
+            stream: None,
+            data: None,
+            id: None,
+            tags: None,
+        }
+    }
+
+    /// 단계의 진행.
+    pub fn step(
+        stage: Option<String>,
+        stage_index: usize,
+        step: usize,
+        steps: usize,
+        line: usize,
+        text: String,
+        status: &sbx_build::StepStatus,
+    ) -> Self {
+        let (status, millis) = match status {
+            sbx_build::StepStatus::Started => ("started", None),
+            sbx_build::StepStatus::Cached => ("cached", None),
+            sbx_build::StepStatus::Done { millis } => ("done", Some(*millis)),
+        };
+        Self {
+            stage,
+            stage_index: Some(stage_index),
+            step: Some(step),
+            steps: Some(steps),
+            line: Some(line),
+            text: Some(text),
+            status: Some(status.into()),
+            millis,
+            ..Self::empty("step")
+        }
+    }
+
+    /// `RUN`의 출력.
+    pub fn output(stream: &str, data: &[u8]) -> Self {
+        Self {
+            stream: Some(stream.into()),
+            data: Some(String::from_utf8_lossy(data).into_owned()),
+            ..Self::empty("output")
+        }
+    }
+
+    /// 만든 이미지.
+    pub fn built(id: &str, tags: &[String]) -> Self {
+        Self {
+            id: Some(id.into()),
+            tags: Some(tags.to_vec()),
+            ..Self::empty("built")
+        }
+    }
 }
 
 /// An executor or adapter by name and version (`executor install`, `use`, `rm`, `adapter install`, `adapter rm`).
@@ -827,12 +936,13 @@ pub struct Event {
     /// `sandbox` or `image`.
     #[serde(rename = "type")]
     pub kind: String,
-    /// Sandbox: `create`, `start`, `stop`, `remove`. Image: `pull`, `prepare`, `tag`, `untag`, `push`, `delete`.
+    /// Sandbox: `create`, `start`, `stop`, `remove`. Image: `pull`, `build`, `prepare`, `tag`, `untag`, `push`,
+    /// `delete`.
     pub action: String,
     /// Sandbox ID or image ID.
     pub id: String,
     /// Details. Sandbox: `image`, `name`; on `stop` also `exit_code` and `error`. Image: `reference` (`pull`,
-    /// `tag`, `untag`, `push`: the reference pushed to), `rootfs_format` (`prepare`).
+    /// `tag`, `untag`, `push`: the reference pushed to; `build`: the first `-t`), `rootfs_format` (`prepare`).
     pub attributes: BTreeMap<String, String>,
 }
 
@@ -1252,6 +1362,7 @@ mod tests {
         g.subschema_for::<Sandbox>();
         g.subschema_for::<Event>();
         g.subschema_for::<LogLine>();
+        g.subschema_for::<BuildEvent>();
         g.take_definitions(true)
     }
 
