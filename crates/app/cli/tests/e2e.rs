@@ -33,6 +33,11 @@ fn main() -> ExitCode {
     if args.get(1).map(String::as_str) == Some(sbx_shim::config::START) {
         return sbx_shim::main();
     }
+    // 샌드박스 안에서 프록시를 모르는 프로그램 노릇(투명 TCP). `transparent_tcp_reaches_allowed_names`가 부른다.
+    #[cfg(unix)]
+    if args.get(1).map(String::as_str) == Some("net-probe") {
+        return unix::net_probe(&args[2..]);
+    }
     #[cfg(unix)]
     {
         unix::run_all(&args[1..])
@@ -184,6 +189,10 @@ mod unix {
         ("volume_is_shared_live", volume_is_shared_live),
         ("network_allow_list", network_allow_list),
         (
+            "transparent_tcp_reaches_allowed_names",
+            transparent_tcp_reaches_allowed_names,
+        ),
+        (
             "egress_limit_and_network_events",
             egress_limit_and_network_events,
         ),
@@ -234,6 +243,57 @@ mod unix {
     }
 
     const IMAGE: &str = "e2e-fake";
+
+    /// `net-probe ROOT NAME PORT`: fake 실행기의 투명 TCP 흉내(`sbx_executor_fake::probe`)로 `NAME`의 A를 묻고,
+    /// 주소가 있으면 `PORT`로 붙어 한 줄 보내고 받은 것을 적는다. `net-probe ROOT --resolv`: 게스트가 쓴 `resolv.conf`.
+    /// `ROOT`는 데이터 디렉터리다(그 아래에서 흉내 디렉터리를 찾는다).
+    pub fn net_probe(args: &[String]) -> ExitCode {
+        use sbx_executor_fake::probe;
+        use std::io::Read;
+        let Some(dir) = args.first().and_then(|r| probe::find(Path::new(r))) else {
+            println!("no fake net directory");
+            return ExitCode::FAILURE;
+        };
+        if args.get(1).map(String::as_str) == Some("--resolv") {
+            match std::fs::read_to_string(dir.join("etc/resolv.conf")) {
+                Ok(t) => print!("{t}"),
+                Err(_) => println!("no resolv.conf"),
+            }
+            return ExitCode::SUCCESS;
+        }
+        let (Some(name), Some(port)) =
+            (args.get(1), args.get(2).and_then(|p| p.parse::<u16>().ok()))
+        else {
+            println!("usage: net-probe ROOT NAME PORT");
+            return ExitCode::FAILURE;
+        };
+        let r = match probe::lookup(&dir, name, 1) {
+            Ok(r) => r,
+            Err(e) => {
+                println!("{name}: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let addrs: Vec<String> = r.addrs.iter().map(|a| a.to_string()).collect();
+        print!("{name}: rcode {} [{}]", r.rcode, addrs.join(","));
+        if let Some(ip) = r.addrs.first() {
+            match probe::route(&dir, std::net::SocketAddrV4::new(*ip, port)) {
+                None => print!(" port {port}: nothing listens"),
+                Some(to) => {
+                    let mut c = std::net::TcpStream::connect(to).unwrap();
+                    let _ = c.write_all(b"hello\n");
+                    let _ = c.shutdown(std::net::Shutdown::Write);
+                    let mut got = String::new();
+                    match c.read_to_string(&mut got) {
+                        Ok(_) if !got.is_empty() => print!(" port {port}: got {got:?}"),
+                        _ => print!(" port {port}: closed"),
+                    }
+                }
+            }
+        }
+        println!();
+        ExitCode::SUCCESS
+    }
 
     fn id_output(flag: &str) -> String {
         let o = Command::new("id").arg(flag).output().unwrap();
@@ -588,6 +648,178 @@ mod unix {
         assert_eq!(text(&o.stdout), "");
     }
 
+    /// 투명 TCP: 프록시를 모르는 프로그램(`net-probe`)이 이름을 묻고 붙는다. 이름은 `.invalid`라 호스트가 풀 수 없다.
+    /// 그래서 허용된 이름의 연결은 호스트의 이름 확인에서 거부되고("cannot resolve"), 그 기록이 연결이 이름으로
+    /// 넘어갔다는 증거다(데이터가 오가는 것은 게스트 테스트와 같은 splice다). 허용하지 않은 이름은 DNS에서 거부되고
+    /// 호스트는 풀지 않는다(거부 이유가 이름 풀기가 아니라 목록이다. 풀지 않았다는 직접 증거는 실행 코어 테스트
+    /// `transparent_tcp_resolves_from_the_list_and_passes_names_to_the_host_check`).
+    fn transparent_tcp_reaches_allowed_names() {
+        let e = Env::new();
+        let me = std::env::current_exe().unwrap();
+        let data = e.path("data");
+        let probe = |name: &str, port: u16| {
+            format!(
+                "{} net-probe {} {name} {port}",
+                me.display(),
+                data.display()
+            )
+        };
+        let script = [
+            format!("{} net-probe {} --resolv", me.display(), data.display()),
+            probe("blocked.invalid", 22),
+            probe("ok.invalid", 5432),
+            probe("a.wild.invalid", 443),
+            probe("b.wild.invalid", 443),
+            probe("wild.invalid", 443),
+            probe("any.invalid", 80),
+            "curl -s -o /dev/null -w 'proxy %{http_code}' -x \"$HTTP_PROXY\" --noproxy '' http://any.invalid/"
+                .into(),
+        ]
+        .join("; ");
+        let o = e.sbx(&[
+            "run",
+            "--rm",
+            "--network",
+            "allow",
+            "--allow",
+            "ok.invalid:5432",
+            "--allow",
+            "*.wild.invalid:443",
+            "--allow",
+            "any.invalid:*",
+            IMAGE,
+            "sh",
+            "-c",
+            &script,
+        ]);
+        let out = text(&o.stdout);
+        let err = text(&o.stderr);
+        assert_eq!(o.status.code(), Some(0), "{out}\n{err}");
+        assert!(
+            err.contains(
+                "warning: --allow any.invalid:*: a rule for every port (*) cannot be listened for"
+            ),
+            "{err}"
+        );
+        assert!(!err.contains("ok.invalid:5432:"), "{err}");
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(
+            lines,
+            [
+                "# Written by sbx (--network allow): names are answered by the sandbox's loopback DNS.",
+                "nameserver 127.0.0.1",
+                "blocked.invalid: rcode 3 []",
+                "ok.invalid: rcode 0 [198.18.0.1] port 5432: closed",
+                "a.wild.invalid: rcode 0 [198.18.0.2] port 443: closed",
+                "b.wild.invalid: rcode 0 [198.18.0.3] port 443: closed",
+                "wild.invalid: rcode 3 []",
+                "any.invalid: rcode 0 [198.18.0.4] port 80: nothing listens",
+                "proxy 403",
+            ],
+            "{out}\n{err}"
+        );
+
+        let o = e.sbx(&[
+            "--format",
+            "json",
+            "events",
+            "--since",
+            "1h",
+            "--until",
+            "0s",
+            "--filter",
+            "type=network",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let events: Vec<serde_json::Value> = text(&o.stdout)
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let find = |action: &str, host: &str, port: Option<&str>| {
+            events
+                .iter()
+                .find(|ev| {
+                    let a = &ev["attributes"];
+                    ev["action"] == action
+                        && a["host"] == host
+                        && a.get("port").and_then(|p| p.as_str()) == port
+                })
+                .unwrap_or_else(|| panic!("no {action} {host} {port:?} in {events:?}"))
+        };
+        assert!(
+            find("proxy_only", "any.invalid", Some("*"))["attributes"]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("HTTP_PROXY")
+        );
+        let blocked = find("refuse", "blocked.invalid", None);
+        assert_eq!(blocked["attributes"]["via"], "dns");
+        assert!(
+            blocked["attributes"]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("not allowed by the network policy")
+        );
+        assert_eq!(
+            find("refuse", "wild.invalid", None)["attributes"]["via"],
+            "dns"
+        );
+        assert_eq!(
+            find("lookup", "ok.invalid", None)["attributes"]["ports"],
+            "5432"
+        );
+        assert_eq!(
+            find("lookup", "b.wild.invalid", None)["attributes"]["ports"],
+            "443"
+        );
+        assert_eq!(
+            find("lookup", "any.invalid", None)["attributes"]["any_port"],
+            "true"
+        );
+        // 가짜 주소로 온 연결은 이름으로 호스트 확인을 지났다.
+        for (host, port) in [
+            ("ok.invalid", "5432"),
+            ("a.wild.invalid", "443"),
+            ("any.invalid", "80"),
+        ] {
+            let r = find("refuse", host, Some(port));
+            assert!(
+                r["attributes"]["reason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("resolve"),
+                "{r}"
+            );
+        }
+        assert!(
+            !events.iter().any(|ev| ev["action"] == "notice"),
+            "{events:?}"
+        );
+        // 이름 묻기 기록은 동작으로도 고를 수 있다.
+        let o = e.sbx(&[
+            "events",
+            "--since",
+            "1h",
+            "--until",
+            "0s",
+            "--filter",
+            "event=lookup",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout).lines().count(), 4, "{}", text(&o.stdout));
+
+        // --network allow가 아니면 지금과 같다: DNS는 모두 NXDOMAIN이고 resolv.conf를 쓰지 않는다.
+        let script = format!(
+            "{} net-probe {} --resolv; {}",
+            me.display(),
+            data.display(),
+            probe("ok.invalid", 5432)
+        );
+        let o = e.sbx(&["run", "--rm", IMAGE, "sh", "-c", &script]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "no resolv.conf\nok.invalid: rcode 3 []\n");
+    }
+
     /// 가짜 릴리스(시험용 키로 서명한 file:// 색인과 묶음)로 새 버전 알림과 `sbx upgrade`를 본다.
     fn new_version_notice_and_upgrade() {
         use sha2::{Digest, Sha256};
@@ -858,8 +1090,13 @@ mod unix {
             .iter()
             .map(|e| e["action"].as_str().unwrap())
             .collect();
-        assert_eq!(actions, ["connect", "close", "refuse"], "{events:?}");
-        let attrs = |i: usize| &events[i]["attributes"];
+        // 루프백 주소 규칙은 프록시로만 닿는다(시작할 때 한 번 기록한다).
+        assert_eq!(
+            actions,
+            ["proxy_only", "connect", "close", "refuse"],
+            "{events:?}"
+        );
+        let attrs = |i: usize| &events[i + 1]["attributes"];
         assert_eq!(attrs(0)["host"], "127.0.0.1");
         assert_eq!(attrs(0)["addr"], allow.as_str());
         assert_eq!(attrs(1)["limit"], "1024");

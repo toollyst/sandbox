@@ -964,6 +964,9 @@ impl Ctx {
         // 실행기를 먼저 고른다. 없으면 이미지를 받기 전에 실패한다.
         let chosen = self.choose(None)?;
         let network = behavior::network_policy(&a.network, &a.allow)?;
+        for w in behavior::proxy_only_warnings(&network) {
+            eprintln!("warning: {w}");
+        }
         let user = a.user.as_deref().map(str::parse::<UserSpec>).transpose()?;
         let stop_signal = a
             .stop_signal

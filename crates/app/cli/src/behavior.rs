@@ -228,6 +228,21 @@ pub fn network_policy(mode: &str, allow: &[String]) -> Result<NetworkPolicy, Str
     }
 }
 
+/// 프록시를 모르는 프로그램(투명 TCP)이 닿지 못하는 규칙마다 경고 한 줄. 규칙은 [`AllowRule::reach`].
+/// 그 규칙도 `HTTP_PROXY`를 따르는 프로그램에는 그대로 열린다. 조용히 넘어가지 않으려고 만들 때 알린다.
+pub fn proxy_only_warnings(policy: &NetworkPolicy) -> Vec<String> {
+    let NetworkPolicy::Allow(rules) = policy else {
+        return Vec::new();
+    };
+    rules
+        .iter()
+        .filter_map(|r| match r.reach() {
+            sbx_model::Reach::ProxyOnly(why) => Some(format!("--allow {r}: {}", why.why())),
+            _ => None,
+        })
+        .collect()
+}
+
 /// 이미지 이름이 무엇으로 맞았는지.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImageMatch {
@@ -629,6 +644,31 @@ mod tests {
                 "*.b.org:*".parse().unwrap()
             ]))
         );
+    }
+
+    #[test]
+    fn rules_only_the_proxy_reaches_are_warned() {
+        let v = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let p = network_policy(
+            "allow",
+            &v(&[
+                "github.com:22",
+                "github.com:*",
+                "[::1]:80",
+                "10.0.0.5:5432",
+                "localhost:8080",
+            ]),
+        )
+        .unwrap();
+        let w = proxy_only_warnings(&p);
+        assert_eq!(w.len(), 3, "{w:?}");
+        assert!(
+            w[0].starts_with("--allow github.com:*: ") && w[0].contains("HOST:22"),
+            "{w:?}"
+        );
+        assert!(w[1].starts_with("--allow [::1]:80: "), "{w:?}");
+        assert!(w[2].starts_with("--allow localhost:8080: "), "{w:?}");
+        assert!(proxy_only_warnings(&NetworkPolicy::Disabled).is_empty());
     }
 
     #[test]

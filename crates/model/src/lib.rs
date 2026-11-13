@@ -536,7 +536,8 @@ pub struct Mount {
 pub enum NetworkPolicy {
     /// 네트워크 없음.
     Disabled,
-    /// 허용 목록에 맞는 TCP 연결만 호스트가 대신 연다(게스트 안의 HTTP 프록시를 거친다).
+    /// 허용 목록에 맞는 TCP 연결만 호스트가 대신 연다. 게스트 안의 HTTP 프록시를 거치거나, 프록시를 모르는
+    /// 프로그램은 투명 TCP(게스트 DNS의 가짜 주소, [`AllowRule::reach`])를 거친다. 어느 쪽이든 같은 목록이다.
     /// 목록은 비어 있지 않다. 규칙은 [`AllowRule`].
     Allow(Vec<AllowRule>),
 }

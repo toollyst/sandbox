@@ -54,6 +54,9 @@ pub const ACTIONS: &[&str] = &[
     "connect",
     "refuse",
     "close",
+    "lookup",
+    "proxy_only",
+    "notice",
 ];
 
 /// `ps --filter`. `status`나 `exited`가 있으면 `-a`가 없어도 멈춘 것까지 본다(Docker와 같다).

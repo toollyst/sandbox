@@ -466,7 +466,7 @@ pub const ROWS: &[Row] = &[
     same(Commands, "login", &["login_and_logout_use_dockers_config"])
         .note("Writes Docker's `config.json` or its credential helper, so `docker login` works too."),
     same(Commands, "logout", &["login_and_logout_use_dockers_config"]),
-    differs(Commands, "events", "Kinds `sandbox`, `image` and `network`; actions create, start, stop, remove, `exec_start`, `exec_die`, pull, prepare, tag, untag, push, delete. RFC 3339 times with nanoseconds. Keeps the last 1-2 MiB (Docker: the last 256 events).", &[
+    differs(Commands, "events", "Kinds `sandbox`, `image` and `network`; actions create, start, stop, remove, `exec_start`, `exec_die`, pull, prepare, tag, untag, push, delete, and for `network` connect, close, refuse, lookup, `proxy_only`, notice. RFC 3339 times with nanoseconds. Keeps the last 1-2 MiB (Docker: the last 256 events).", &[
         "events_replay_and_follow",
         "tag_and_push_to_a_registry",
     ])
@@ -575,11 +575,12 @@ pub const ROWS: &[Row] = &[
         "names_work_in_place_of_ids",
     ])
     .why("A made-up name shows up for people who don't use names and only adds clashes. A caller that wants one picks it."),
-    differs(Run, "--network", "`none` (the default; Docker's is `bridge`) or `allow`: TCP to the `--allow` destinations only, through an HTTP proxy in the guest that the host checks.", &[
+    differs(Run, "--network", "`none` (the default; Docker's is `bridge`) or `allow`: TCP to the `--allow` destinations only, checked by the host by name. Programs that use `HTTP_PROXY` go through a proxy in the guest; others reach `HOST:PORT` rules through the guest's DNS, which answers from the allow list with stand-in addresses the guest listens on. `HOST:*` rules, IPv6 and UDP (beyond DNS) go through the proxy only or not at all.", &[
         "network_allow_list",
+        "transparent_tcp_reaches_allowed_names",
         "behavior::tests::network_policy_table",
     ])
-    .why("The network is closed by default and opened by name. The allow list is enforced on every OS without help from the executor."),
+    .why("The network is closed by default and opened by name. The allow list is enforced on every OS without help from the executor, and the VM still has no network interface."),
     wont(Run, "--network bridge, host, container:NAME, NAME", NO_NETWORKS),
     differs(Run, "-p, --publish", "Without an IP it listens on 127.0.0.1 (Docker: every address). TCP only. The process that owns the VM listens, and connects to 127.0.0.1:PORT in the guest.", &[
         "published_ports_reach_the_sandbox",
@@ -667,7 +668,7 @@ pub const ROWS: &[Row] = &[
         .why("Different executors and kernels read different formats."),
     only(Run, "--mount type=copy", "Copies a host directory in when the sandbox starts; take results out with `sbx cp`.")
         .why("Works on every executor, including those without live sharing."),
-    only(Run, "--allow", "With `--network allow`: a `HOST:PORT` the sandbox may connect to (`*.example.com:443`, `10.0.0.5:*`)."),
+    only(Run, "--allow", "With `--network allow`: a `HOST:PORT` the sandbox may connect to (`*.example.com:443`, `10.0.0.5:*`). A `*` port, an IPv6 address or `localhost` works only for programs that use `HTTP_PROXY`; `run` warns about each."),
     only(Run, "--egress-limit", "With `--network allow`: the most bytes all connections may move in each start."),
     only(Run, "--timeout", "Stops the sandbox this long after each start (like podman's `--timeout`)."),
     // ── exec ─────────────────────────────────────────────────────────────
