@@ -39,7 +39,7 @@ pub enum ManageError {
     },
     /// rootfs 생성 오류.
     Rootfs(RootfsError),
-    /// 0.2.1 전에 받아 원래 문서가 없는 이미지(`sbx save`). 다시 받으면 된다.
+    /// 0.2.1 전에 받아 원래 문서가 없는 이미지(`sbx save`, `sbx push`). 다시 받으면 된다.
     NoDocuments(ImageId),
     /// 레이어 합계가 상한([`crate::Manager::with_max_image_bytes`])을 넘는다.
     TooLarge {
@@ -78,7 +78,7 @@ impl fmt::Display for ManageError {
             ),
             ManageError::NoDocuments(id) => write!(
                 f,
-                "image {id} was pulled by an sbx older than 0.2.1, which didn't keep its manifest; pull it again to save it"
+                "image {id} was pulled by an sbx older than 0.2.1, which didn't keep its manifest; pull it again to save or push it"
             ),
             ManageError::Store(e) => e.fmt(f),
             ManageError::Io(e) => write!(f, "io: {e}"),

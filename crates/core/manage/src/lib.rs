@@ -1,7 +1,7 @@
 //! 관리 코어: 이미지와 캐시.
 //!
-//! 이미지를 받고(pull), rootfs를 만들고(prepare), 목록을 보여주고, 지운다(remove, untag).
-//! cache_dir에 쓰는 것은 이 크레이트뿐이다. data_dir과 샌드박스 실행은 모른다.
+//! 이미지를 받고(pull), rootfs를 만들고(prepare), 목록을 보여주고, 이름을 붙이고(tag), 올리고(push), 지운다
+//! (remove, untag). cache_dir에 쓰는 것은 이 크레이트뿐이다. data_dir과 샌드박스 실행은 모른다.
 //!
 //! **명시적 동작**
 //!
@@ -14,14 +14,22 @@
 //! - 자동 정리는 없다. 무엇을 언제 지울지는 관리하는 쪽(임베드한 앱이나 사람)이 정하고 `remove`를 부른다.
 //! - `remove`는 이미지를 지운 뒤 다른 이미지도, 진행 중인 pull도 쓰지 않는 레이어 blob을 지운다(Docker `rmi`와 같다).
 //!   동시에 같은 레이어를 쓰는 이미지를 받고 있어도 그 blob은 남는다([`write::claim_blobs`]).
+//! - `tag`는 참조 하나를 이미지에 붙인다. 그 참조가 다른 이미지를 가리키고 있었으면 옮긴다(Docker `tag`와 같다).
+//!   참조의 정규화는 부르는 쪽이 한다(OCI 이름 규칙은 이 크레이트가 모른다).
+//! - `push`는 받은 문서(manifest, config)와 레이어 blob을 저장된 바이트 그대로 올린다. 그래서 받은 이미지를 다른 곳에
+//!   올려도 digest(이미지 ID)가 같다. 순서는 레이어(같은 것은 한 번), config, 마지막에 manifest다. blob 하나라도
+//!   실패하면 manifest를 올리지 않으므로 올릴 곳의 태그는 바뀌지 않는다. 올리는 동안 이미지를 쥔다. 보내기 전에
+//!   manifest의 sha256이 이미지 ID인지, blob 파일의 크기가 manifest의 것인지 본다. 올릴 곳은 부르는 쪽이
+//!   [`ImageDestination`]으로 준다.
 //! - `remove`는 실행 중인 샌드박스가 쓰는 이미지를 지우지 않는다. 강제할 수도 없다.
 //!   실행 중인지는 cache_dir의 잠금으로 알 수 있으므로 어느 data_dir의 샌드박스든 보호된다.
 //! - 정지된 샌드박스가 쓰는 이미지를 지울지는 이 크레이트가 판단하지 않는다. data_dir을 모르기 때문이다.
 //!   표현 계층이 실행 코어에서 샌드박스 목록을 보고 판단한다.
 //!
 //! - **이벤트**: 캐시를 바꾼 뒤 `<cache_dir>/events/images`([`events_log`])에 덧붙인다. 종류는 [`EVENT_KIND`],
-//!   동작은 `pull`(속성 `reference`), `prepare`(무언가 만들었을 때만, `rootfs_format`), `untag`(`reference`),
-//!   `delete`(이미지를 지웠을 때)이다. ID는 이미지 ID다. 기록하지 못해도 동작은 계속한다(알림이다).
+//!   동작은 `pull`(속성 `reference`), `prepare`(무언가 만들었을 때만, `rootfs_format`), `tag`(`reference`),
+//!   `untag`(`reference`), `push`(`reference`, 올릴 곳의 참조), `delete`(이미지를 지웠을 때)이다. ID는 이미지 ID다.
+//!   기록하지 못해도 동작은 계속한다(알림이다).
 //!
 //! - 의존: `sbx-model`, `sbx-image`(trait), `sbx-rootfs`(trait), `sbx-store`(`write`), `sbx-events`
 
@@ -34,6 +42,8 @@ use std::sync::Arc;
 use flate2::read::GzDecoder;
 
 use sbx_image::{ImageSource, Platform};
+
+pub use sbx_image::{BlobPush, ImageDestination};
 use sbx_model::{Arch, Compression, Digest, ImageId, RootfsFormat};
 use sbx_rootfs::{ContentSource, MergedTree, NodeKind, RootfsBuilder};
 use sbx_store::digest::HashingReader;
@@ -42,6 +52,7 @@ use sbx_store::{ImageRecord, LeaseError, Store};
 
 mod error;
 mod layer;
+mod push;
 mod tarlimit;
 mod zstd;
 pub use error::ManageError;
@@ -109,6 +120,43 @@ pub struct PullProgress {
     pub bytes: u64,
     /// 받은 바이트.
     pub bytes_done: u64,
+}
+
+/// 올리기 진행. blob(레이어와 config) 단위다. 이미 있거나 끌어온 blob도 끝난 것으로 센다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PushProgress {
+    /// 올릴 blob 수(같은 레이어는 한 번).
+    pub blobs: usize,
+    /// 끝난 blob 수.
+    pub blobs_done: usize,
+    /// 모든 blob의 바이트 합.
+    pub bytes: u64,
+    /// 끝났거나 보낸 바이트.
+    pub bytes_done: u64,
+}
+
+/// 올린 blob 하나.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushedBlob {
+    /// digest.
+    pub digest: Digest,
+    /// 바이트 수.
+    pub size: u64,
+    /// 어떻게 올렸는지.
+    pub how: BlobPush,
+}
+
+/// `push`의 결과.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pushed {
+    /// 올린 곳의 정규화된 참조(태그 포함).
+    pub reference: String,
+    /// 이미지 ID(올린 manifest의 digest).
+    pub id: ImageId,
+    /// manifest의 바이트 수.
+    pub manifest_size: u64,
+    /// 레이어(같은 것은 한 번), 그다음 config.
+    pub blobs: Vec<PushedBlob>,
 }
 
 /// 쓴 바이트를 세어 알리는 `Write`.
@@ -318,18 +366,7 @@ impl Manager {
         })?;
         let record = self.store.image(image)?;
         let layout = self.store.layout();
-        let read = |p: PathBuf| match std::fs::read(&p) {
-            Ok(b) => Ok(b),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                Err(ManageError::NoDocuments(image.clone()))
-            }
-            Err(e) => Err(ManageError::Io(e)),
-        };
-        let manifest = read(layout.image_manifest(image))?;
-        let config = read(layout.image_config(image))?;
-        let info: sbx_store::DocumentsInfo =
-            serde_json::from_slice(&read(layout.image_documents(image))?)
-                .map_err(|e| ManageError::Io(io::Error::other(e)))?;
+        let (manifest, config, info) = self.documents(image)?;
         let mut annotations = serde_json::Map::new();
         if let Some(r) = reference {
             annotations.insert("io.containerd.image.name".into(), r.into());
@@ -389,6 +426,27 @@ impl Manager {
         }
         tar.finish()?;
         Ok(())
+    }
+
+    /// 받은 문서: manifest, config, 그 정보. 0.2.1 전에 받은 이미지는 [`ManageError::NoDocuments`].
+    fn documents(
+        &self,
+        image: &ImageId,
+    ) -> Result<(Vec<u8>, Vec<u8>, sbx_store::DocumentsInfo), ManageError> {
+        let layout = self.store.layout();
+        let read = |p: PathBuf| match std::fs::read(&p) {
+            Ok(b) => Ok(b),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                Err(ManageError::NoDocuments(image.clone()))
+            }
+            Err(e) => Err(ManageError::Io(e)),
+        };
+        let manifest = read(layout.image_manifest(image))?;
+        let config = read(layout.image_config(image))?;
+        let info: sbx_store::DocumentsInfo =
+            serde_json::from_slice(&read(layout.image_documents(image))?)
+                .map_err(|e| ManageError::Io(io::Error::other(e)))?;
+        Ok((manifest, config, info))
     }
 
     /// 이미지 이벤트를 덧붙인다. 실패해도 동작은 계속한다(알림이다).
@@ -522,6 +580,21 @@ impl Manager {
             refs,
             prepared,
         })
+    }
+
+    /// 참조 하나(정규화한 것)를 이미지에 붙인다. 그 참조가 다른 이미지를 가리키고 있었으면 옮기고, 그 이미지를
+    /// 돌려준다(그 이미지는 지우지 않는다. Docker `tag`와 같다). 이벤트 `tag`를 남긴다.
+    pub fn tag(&self, image: &ImageId, reference: &str) -> Result<Option<ImageId>, ManageError> {
+        if !self.store.has_image(image) {
+            return Err(ManageError::ImageNotFound(image.clone()));
+        }
+        let before = self.store.refs()?.remove(reference);
+        write::set_ref(self.store.layout(), reference, image)?;
+        self.emit(
+            sbx_events::Event::new(EVENT_KIND, "tag", image.to_string())
+                .with("reference", reference),
+        );
+        Ok(before.filter(|b| b != image))
     }
 
     /// 참조 하나를 지운다. 이미지는 지우지 않는다(Docker `rmi`로 태그만 지울 때와 같다).
