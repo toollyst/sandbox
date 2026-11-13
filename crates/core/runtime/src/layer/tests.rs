@@ -322,11 +322,35 @@ fn xattr_names_and_sizes_are_checked() {
         })];
         assert!(is_protocol(&rejected(m)), "{name:?}");
     }
+    let bad = |xattrs: Vec<(String, Vec<u8>)>| {
+        rejected(vec![GuestMsg::LayerEntry(LayerEntry {
+            xattrs,
+            ..entry("f", LayerKind::Fifo)
+        })])
+    };
+    assert!(is_protocol(&bad(vec![(
+        "user.big".into(),
+        vec![0; MAX_XATTR_VALUE + 1]
+    )])));
+    // 같은 이름 두 번, 값의 줄바꿈(퍼징이 찾았다: 관리 쪽의 레이어 읽기가 그 PAX 기록을 읽지 못한다).
+    assert!(is_protocol(&bad(vec![
+        ("user.a".into(), b"1".to_vec()),
+        ("user.a".into(), b"2".to_vec())
+    ])));
+    assert!(is_protocol(&bad(vec![(
+        "user.a".into(),
+        vec![0, 255, 255, 255, 10]
+    )])));
+    // 바이너리 값(NUL, 0xff)은 된다.
     let m = vec![GuestMsg::LayerEntry(LayerEntry {
-        xattrs: vec![("user.big".into(), vec![0; MAX_XATTR_VALUE + 1])],
+        xattrs: vec![("user.bin".into(), vec![0, 59, 255])],
         ..entry("f", LayerKind::Fifo)
     })];
-    assert!(is_protocol(&rejected(m)));
+    let (b, _) = tar_of(m, 0).unwrap();
+    assert_eq!(
+        read_tar(&b)[0].4,
+        vec![("user.bin".into(), vec![0, 59, 255])]
+    );
 }
 
 #[test]

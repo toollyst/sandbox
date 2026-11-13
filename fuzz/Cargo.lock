@@ -2342,7 +2342,7 @@ dependencies = [
 
 [[package]]
 name = "sbx-cli"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "base64 0.23.1",
  "clap",
@@ -2376,7 +2376,7 @@ dependencies = [
 
 [[package]]
 name = "sbx-events"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -2384,18 +2384,18 @@ dependencies = [
 
 [[package]]
 name = "sbx-executor"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "sbx-model",
 ]
 
 [[package]]
 name = "sbx-executor-install"
-version = "0.2.1"
+version = "0.2.2"
 
 [[package]]
 name = "sbx-executor-process"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "sbx-executor",
  "sbx-executor-proto",
@@ -2404,7 +2404,7 @@ dependencies = [
 
 [[package]]
 name = "sbx-executor-proto"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -2412,7 +2412,7 @@ dependencies = [
 
 [[package]]
 name = "sbx-executor-repo"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "flate2",
  "minisign-verify",
@@ -2452,7 +2452,7 @@ dependencies = [
 
 [[package]]
 name = "sbx-guest"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "libc",
  "sbx-guest-proto",
@@ -2460,18 +2460,18 @@ dependencies = [
 
 [[package]]
 name = "sbx-guest-proto"
-version = "0.2.1"
+version = "0.2.2"
 
 [[package]]
 name = "sbx-image"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "sbx-model",
 ]
 
 [[package]]
 name = "sbx-manage"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "flate2",
  "ruzstd",
@@ -2486,14 +2486,14 @@ dependencies = [
 
 [[package]]
 name = "sbx-model"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "sbx-oci"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "aws-lc-rs",
  "flate2",
@@ -2510,7 +2510,7 @@ dependencies = [
 
 [[package]]
 name = "sbx-release-index"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "sbx-executor-repo",
  "serde",
@@ -2520,14 +2520,14 @@ dependencies = [
 
 [[package]]
 name = "sbx-rootfs"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "sbx-model",
 ]
 
 [[package]]
 name = "sbx-runtime"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "libc",
  "rustix",
@@ -2542,7 +2542,7 @@ dependencies = [
 
 [[package]]
 name = "sbx-shim"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "sbx-executor-process",
  "sbx-executor-proto",
@@ -2553,7 +2553,7 @@ dependencies = [
 
 [[package]]
 name = "sbx-store"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "sbx-model",
  "serde",

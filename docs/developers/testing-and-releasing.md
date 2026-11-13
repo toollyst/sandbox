@@ -8,10 +8,10 @@ fake executor serves it over the same protocol. Real VMs are the last check, not
 | Level | Where | Needs | Catches |
 | --- | --- | --- | --- |
 | Unit tests | `src/**` in every crate (`tests.rs` or `mod tests`) | nothing | the rules in each doc comment: parsing, merge rules, state transitions, locks, wire encoding, Docker behavior |
-| Guest handling on the host | [`crates/app/guest`](../../crates/app/guest) unit tests | Unix | exec, copy, egress proxy and DNS over plain sockets |
-| Privileged guest tests | `cargo test -p sbx-guest --lib privileged` with `SANDBOX_PRIVILEGED_TESTS=1` | root, loop devices (CI runs them in a privileged container) | the kernel mounting scratch and using it as the overlay upper layer |
+| Guest handling on the host | [`crates/app/guest`](../../crates/app/guest) unit tests | Unix | exec, copy, egress proxy and DNS over plain sockets; turning an overlay upper directory into build-layer entries |
+| Privileged guest tests | `cargo test -p sbx-guest --lib privileged` with `SANDBOX_PRIVILEGED_TESTS=1` | root, loop devices (CI runs them in a privileged container) | the kernel mounting scratch and using it as the overlay upper layer; build layers stacked by the real overlayfs (whiteouts, opaque directories, `redirect_dir=off`, a busy layer, the 500-layer limit), exported and replayed with the OCI rules |
 | Filesystem checkers | `SANDBOX_REQUIRE_FSCK_EROFS=1`, `SANDBOX_REQUIRE_E2FSCK=1` | `erofs-utils`, `e2fsprogs` | the EROFS and ext2 images we write, validated by the official `fsck` tools |
-| Runtime with the in-process fake | [`crates/core/runtime/src/tests.rs`](../../crates/core/runtime/src/tests.rs) | Unix | lifecycle, ownership, names, records, egress, `cp` targets |
+| Runtime with the in-process fake | [`crates/core/runtime/src/tests.rs`](../../crates/core/runtime/src/tests.rs) | Unix | lifecycle, ownership, names, records, egress, `cp` targets, build layers exported as OCI tars and merged by `sbx-rootfs` |
 | Executor protocol conformance | [`crates/executor/fake/tests/conformance.rs`](../../crates/executor/fake/tests/conformance.rs) | Unix | `sbx-executor-process` against a protocol-speaking binary, including misbehaving ones |
 | Firecracker adapter sessions | [`crates/executor/firecracker/tests/session.rs`](../../crates/executor/firecracker/tests/session.rs) | Unix | the protocol session and Firecracker config, with a shell script standing in for `firecracker` |
 | Event log | [`crates/port/events/src/tests.rs`](../../crates/port/events/src/tests.rs) | nothing | concurrent appends, rotation, following across generations, half-written and broken lines |
@@ -51,6 +51,7 @@ directory, version order is a total order. The doc comment at the top of each ta
 | --- | --- | --- |
 | `guest_msg` | a message body and a stream of frames from the guest | [`sbx-guest-proto`](../../crates/spec/guest-proto/src/lib.rs) decoders, both directions |
 | `copy_from_guest` | a hostile guest's answer to `sbx cp` | `hostfs::receive`, `receive_bytes` in [`sbx-runtime`](../../crates/core/runtime/src/hostfs.rs), into a temp dir next to a directory that must stay untouched |
+| `layer_from_guest` | a hostile guest's build layer entries | `layer::receive` in [`sbx-runtime`](../../crates/core/runtime/src/layer.rs): accepted layers are whole tars that the `prepare` path reads and merges, and `.wh.` names come only from whiteouts and opaque directories |
 | `copy_into_guest` | the host's side of `sbx cp` into a sandbox | `copy::receive` in [`sbx-guest`](../../crates/app/guest/src/copy.rs), into a temp dir next to a directory that must stay untouched; exactly one `Done` or `Error` |
 | `mcp_args` | an agent's tool arguments (JSON) | `mcp::run_args` in [`sbx-cli`](../../crates/app/cli/src/mcp.rs): accepted input becomes only the options it names, never `-v`, `--mount`, `--env-file`, `--entrypoint` or another label |
 | `egress_rules` | `--network allow=` rules and a guest's `Connect { host, port }` | `AllowRule` in `sbx-model`, [`egress::check`](../../crates/core/runtime/src/egress.rs) (IP hosts only, so no DNS), `is_public_ip` |
@@ -85,7 +86,7 @@ owns the code (the fixes found so far each have one) and fix it there.
 The checked-in seeds in `fuzz/seeds/` are made by [`fuzz/examples/seeds.rs`](../../fuzz/examples/seeds.rs) with the
 real encoders (`encode`, `tar::Builder`, gzip, zstd, the shapes the unit tests use), which also checks that each seed
 gets past the first parser. Regenerate them with `cargo xtask fuzz --seeds` after changing a format; CI fails when they
-differ from the generator. Targets that take structured input (`copy_from_guest`, `copy_into_guest`, `rootfs_merge`, `shim_log`) and
+differ from the generator. Targets that take structured input (`copy_from_guest`, `copy_into_guest`, `layer_from_guest`, `rootfs_merge`, `shim_log`) and
 `mcp_args` (JSON, guided by its dictionary) have no seeds; libFuzzer grows them from nothing within seconds. When you add a parser that reads untrusted bytes, add a
 target (a file in `fuzz/fuzz_targets/` and a `[[bin]]` in `fuzz/Cargo.toml`); CI picks it up by file name.
 

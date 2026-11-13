@@ -10,7 +10,9 @@
 //! - 하드 링크 대상은 앞서 일반 파일로 온 경로다. 링크 대상(심볼릭 링크 포함)은 비어 있지 않고 NUL이 없고
 //!   [`MAX_PATH`] 안이다.
 //! - xattr 이름은 비어 있지 않고 [`MAX_XATTR_NAME`] 안이며 `=`, NUL, 줄바꿈이 없고(PAX 기록에 담을 수 없다)
-//!   `trusted.overlay.`로 시작하지 않는다. 값은 [`MAX_XATTR_VALUE`] 안이다(Linux의 한도와 같다).
+//!   `trusted.overlay.`로 시작하지 않고, 한 항목에 한 번만 온다. 값은 [`MAX_XATTR_VALUE`] 안이다(Linux의 한도와 같다).
+//!   값에 줄바꿈(0x0a)이 있으면 오류다: PAX 기록은 길이로 끝을 알리므로 담을 수는 있지만, sbx가 이미지 레이어를
+//!   읽는 쪽(`sbx-manage`, `tar` 크레이트)이 PAX 기록을 줄바꿈에서 나누어 그 층을 읽지 못한다. 조용히 빼지 않고 알린다.
 //! - 장치 번호는 ustar 필드(8진 7자리) 안이다.
 //! - 일반 파일 내용의 합계는 부르는 쪽이 준 한도 안이다. 알린 크기가 남은 한도보다 크면 내용을 받기 전에 오류다.
 //!   `Data`는 알린 크기를 넘지 않고, 다음 항목이나 `End` 전에 정확히 그만큼 온다.
@@ -226,7 +228,16 @@ fn check(e: &LayerEntry, seen: &HashMap<String, Seen>) -> Result<usize, RuntimeE
         }
         _ => {}
     }
+    let mut names = std::collections::HashSet::new();
     for (name, value) in &e.xattrs {
+        if !names.insert(name.as_str()) {
+            return Err(proto_err(format!("{p:?}: xattr {name:?} was sent twice")));
+        }
+        if value.contains(&b'\n') {
+            return Err(proto_err(format!(
+                "{p:?}: xattr {name} has a newline byte in its value, which sbx's layer reader cannot read back"
+            )));
+        }
         if name.is_empty()
             || name.len() > MAX_XATTR_NAME
             || name.contains(['=', '\0', '\n'])
