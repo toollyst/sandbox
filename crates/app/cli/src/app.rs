@@ -1123,6 +1123,8 @@ impl Ctx {
                         ports: a.publish.clone(),
                         egress_limit_bytes: a.egress_limit,
                         hold: false,
+                        connect: Vec::new(),
+                        connect_scope: Default::default(),
                     };
                     let sandbox = self.launcher_with(&chosen)?.create(spec).await?;
                     return Ok(sandbox.id().clone());

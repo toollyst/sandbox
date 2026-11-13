@@ -14,7 +14,9 @@
 //! | `MountKind::Copy` + `readonly` | [`RuntimeError::Invalid`] (복사본이라 읽기 전용을 강제할 수 없다) |
 //! | `NetworkPolicy::Allow`에 규칙이 없음 | [`RuntimeError::Invalid`] (차단이면 `Disabled`다) |
 //! | `-p` 게스트 포트 0, 같은 호스트 주소·포트(0이 아닌)를 두 번 | [`RuntimeError::Invalid`] |
-//! | 나가는 연결이 없는데(`NetworkPolicy::Disabled`) `egress_limit_bytes` | [`RuntimeError::Invalid`] |
+//! | 나가는 연결도 잇기도 없는데(`NetworkPolicy::Disabled`, `connect` 없음) `egress_limit_bytes` | [`RuntimeError::Invalid`] |
+//! | `connect`가 [`sbx_model::check_connect`]에 걸림(이름, 겹침, 허용 목록과 같은 이름, 자기 자신) | [`RuntimeError::Invalid`] |
+//! | `connect` 없이 `connect_scope` | [`RuntimeError::Invalid`] |
 
 use sbx_executor::Capabilities;
 use sbx_model::{MountKind, NetworkPolicy, SandboxSpec};
@@ -67,9 +69,23 @@ pub fn check(spec: &SandboxSpec, caps: &Capabilities) -> Result<(), RuntimeError
             )));
         }
     }
-    if spec.network == NetworkPolicy::Disabled && spec.egress_limit_bytes.is_some() {
+    if spec.network == NetworkPolicy::Disabled
+        && spec.connect.is_empty()
+        && spec.egress_limit_bytes.is_some()
+    {
         return Err(RuntimeError::Invalid(
-            "an egress limit needs network access (--network allow:...)".into(),
+            "an egress limit needs network access (--network allow or --connect)".into(),
+        ));
+    }
+    let allow = match &spec.network {
+        NetworkPolicy::Allow(rules) => &rules[..],
+        NetworkPolicy::Disabled => &[],
+    };
+    sbx_model::check_connect(&spec.connect, allow, spec.name.as_deref())
+        .map_err(RuntimeError::Invalid)?;
+    if spec.connect.is_empty() && !spec.connect_scope.is_empty() {
+        return Err(RuntimeError::Invalid(
+            "a connect scope needs --connect".into(),
         ));
     }
     if spec.network == NetworkPolicy::Allow(Vec::new()) {
@@ -128,6 +144,8 @@ mod tests {
             ports: Vec::new(),
             egress_limit_bytes: None,
             hold: false,
+            connect: Vec::new(),
+            connect_scope: BTreeMap::new(),
         }
     }
 
@@ -167,6 +185,33 @@ mod tests {
             check(&spec(vec![m]), &c),
             Err(RuntimeError::Invalid(_))
         ));
+    }
+
+    #[test]
+    fn connect_is_checked_and_opens_the_egress_limit() {
+        use sbx_model::ConnectRule;
+        let c = caps(vec![RootfsFormat::Erofs], false);
+        let db = ConnectRule {
+            name: "db".into(),
+            target: "db".into(),
+            port: 5432,
+        };
+        let mut s = spec(vec![]);
+        s.egress_limit_bytes = Some(10);
+        assert!(check(&s, &c).is_err(), "a limit with nothing to limit");
+        s.connect = vec![db.clone()];
+        assert!(check(&s, &c).is_ok(), "--connect alone counts its bytes");
+        s.network = NetworkPolicy::Allow(vec!["db:443".parse().unwrap()]);
+        let e = check(&s, &c).unwrap_err().to_string();
+        assert!(e.contains("also allowed by --allow db:443"), "{e}");
+        s.network = NetworkPolicy::Disabled;
+        s.name = Some("db".into());
+        assert!(check(&s, &c).unwrap_err().to_string().contains("itself"));
+        let mut s = spec(vec![]);
+        s.connect_scope.insert("k".into(), "v".into());
+        assert!(check(&s, &c).is_err());
+        s.connect = vec![db];
+        assert!(check(&s, &c).is_ok());
     }
 
     #[test]
