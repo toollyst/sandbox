@@ -10,9 +10,12 @@
 //! 2. 호스트가 요청 하나를 보낸다: [`HostMsg::Exec`], [`HostMsg::ExecDetached`], [`HostMsg::CopyIn`], [`HostMsg::CopyOut`], [`HostMsg::Stat`], [`HostMsg::Share`], [`HostMsg::EgressListen`], [`HostMsg::EgressSlot`], [`HostMsg::SignalMain`], [`HostMsg::Usage`], [`HostMsg::Forward`], [`HostMsg::OpenLayer`], [`HostMsg::ExportLayer`], [`HostMsg::Shutdown`].
 //! 3. 요청별 흐름은 각 메시지 문서에 있다. 실패는 언제든 [`GuestMsg::Error`] 하나로 끝난다.
 //!
-//! **버전**: 메시지를 더하거나 뜻을 바꾸면 [`PROTOCOL_VERSION`]을 올린다. 게스트 init은 `sbx`에 함께 들어 있으므로
-//! 새로 띄운 VM은 언제나 같은 버전이다. 올리기 전에 띄운 VM은 `Hello`에서 `Version` 오류로 답한다(다시 시작하면 된다).
-//! 3: 빌드 층([`HostMsg::OpenLayer`], [`HostMsg::ExportLayer`]).
+//! **버전**: 메시지를 **더하는 것**으로는 [`PROTOCOL_VERSION`]을 올리지 않는다. 있던 메시지의 모양이나 뜻을 바꿀 때만 올린다.
+//! 게스트 init은 `sbx`에 함께 들어 있으므로 새로 띄운 VM은 언제나 호스트와 같은 메시지를 안다. `sbx`를 올리기 전에
+//! 띄워 아직 도는 VM은 새 메시지를 모르고, 받으면 [`ErrorKind::Protocol`] 오류로 답한다. 그 VM에서도 있던 메시지
+//! (`exec`, `cp`, `stop`)는 그대로 된다. 버전을 올리면 그런 VM은 `Hello`에서 막혀 멈추는 것조차 정상 경로로 못 한다.
+//! 그래서 새 메시지를 쓰는 쪽은 모르는 게스트의 오류를 "이 샌드박스를 다시 시작하라"로 알린다.
+//! 2 뒤에 더한 것: 빌드 층([`HostMsg::OpenLayer`], [`HostMsg::ExportLayer`]).
 //!
 //! **인코딩**: 프레임([`frame`]) 하나에 메시지 하나. 본문의 첫 바이트가 메시지 종류이고,
 //! 필드는 정해진 순서로 이어진다. 정수는 big-endian, 바이트열과 문자열은 길이(u32) 다음에 내용,
@@ -32,7 +35,7 @@ pub use frame::{MAX_FRAME_LEN, read_frame, write_frame};
 pub use msg::*;
 
 /// 프로토콜 버전. [`HostMsg::Hello`]로 확인한다.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// 한 VM에서 열 수 있는 빌드 층의 수. 층 n은 이미지 rootfs와 앞 층 n-1개, 모두 n개를 overlay 아래층으로 쓰고,
 /// Linux overlayfs는 아래층을 500개까지 받는다(`OVL_MAX_STACK`). 넘으면 [`HostMsg::OpenLayer`]가 오류다.

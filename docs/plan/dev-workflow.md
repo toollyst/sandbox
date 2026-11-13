@@ -103,24 +103,28 @@ sbx build -t ghcr.io/me/app:1 --push .               # 레지스트리로
    - `COPY`, `ADD`: 호스트가 컨텍스트에서 골라(`.dockerignore` 적용) 그 층에 넣는다. 지금의 `CopyIn`이다.
      `--from=스테이지`는 그 스테이지의 층을 호스트에서 메모리로 합쳐 원하는 경로만 꺼낸다. VM이 필요 없다.
    - `ENV`, `WORKDIR`, `USER`, `LABEL`, `EXPOSE`, `ENTRYPOINT`, `CMD` 같은 것은 이미지 config만 바꾸고 층을 만들지 않는다.
-6. **층 내보내기.** 단계가 끝나면 게스트가 그 위층을 OCI 층 tar로 보낸다. overlay의 whiteout(문자 장치 0/0,
+6. **층 내보내기.** 단계가 끝나면 게스트가 그 위층을 항목의 열로 보내고 호스트가 OCI 층 tar로 쓴다(4.3). overlay의 whiteout(문자 장치 0/0,
    opaque xattr)은 OCI의 `.wh.` 파일로 바꾼다. 호스트는 압축하고 diff_id와 digest를 계산해 blob으로 저장한다.
 7. **조립.** config와 manifest를 쓰고 4.1의 출력으로 보낸다. 독립된 스테이지들은 동시에 빌드한다.
 
 받은 층 tar는 게스트가 만든 것이므로 믿지 않는 입력이다. 지금 `CopyOut`과 레이어 병합이 지키는 규칙(경로 탈출 거부,
 크기 상한, scratch 크기 `--storage-opt size=`)을 그대로 적용한다.
 
-### 4.3 게스트 쪽: 빌드 모드
+### 4.3 게스트 쪽: 빌드 층
 
-지금 게스트 init은 rootfs(EROFS)와 scratch를 overlay로 합쳐 그 안으로 chroot한다. 빌드 모드에서는 chroot하지 않고
-이렇게 한다.
+부팅은 바꾸지 않는다(실행기 규약과 커널 명령줄을 건드리지 않는다). 게스트 init은 지금처럼 rootfs와 scratch의 overlay
+안으로 chroot한다. 호스트가 층을 열라고 하면(`OpenLayer`) 게스트가 그 처음 뿌리로 돌아가 앞 층을 내리고, 새 overlay
+(lower = rootfs와 앞 층들, upper = scratch의 새 디렉터리)를 마운트해 그 안으로 chroot한다. 그래서 `Exec`와 `CopyIn`은
+고치지 않아도 새 층 위에서 돈다. 보통의 `run`은 새 코드를 지나지 않는다.
 
-- 층 n: overlay(lower = EROFS, 위층 1…n-1을 읽기 전용으로; upper = scratch의 `layers/n`)를 `build/n`에 마운트한다.
-- `Exec`는 `build/n` 안으로 들어가 실행한다. `CopyIn`도 `build/n`에 쓴다.
-- 층을 닫으면 `layers/n`을 tar로 흘려보낸다.
-
-`sbx-guest-proto`에 층 열기, 층 내보내기를 더하고 규약 버전을 올린다. 게스트 init은 `sbx` 안에 함께 들어 있으므로
-버전이 언제나 같이 간다. 실행기 규약은 바뀌지 않는다.
+- 층을 내보내라고 하면(`ExportLayer`) 게스트가 위층을 항목의 열로 보낸다(whiteout과 opaque는 종류로). tar는 호스트가
+  쓴다. 게스트가 보낸 것은 믿지 않는 입력이므로 호스트에 tar 파서를 새로 두지 않고, digest와 시각을 한 곳에서 정한다.
+- 내보내도 층은 열린 채로 남는다. 다음 `OpenLayer`가 앞 층을 내린다. 앞 단계의 프로세스가 층을 쥐고 있으면 오류다.
+  그래서 빌더는 단계가 끝나면 남은 프로세스를 끝낸다(D3).
+- 층은 500개까지다(overlayfs의 상한).
+- 게스트 규약에는 메시지를 더하기만 하고 버전은 올리지 않는다. `sbx`를 올리기 전에 띄운 VM은 새 메시지만 모르고
+  `exec`, `cp`, `stop`은 그대로 된다.
+- 규칙의 정본: `crates/app/guest/src/overlay.rs`, `layer.rs`, `crates/core/runtime/src/layer.rs`.
 
 ### 4.4 캐시
 
