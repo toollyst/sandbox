@@ -171,6 +171,8 @@ impl Ctx {
                 Ok(p) if quiet => println!("{}", p.reference),
                 Ok(p) if self.json() => output::print_line(&json(&p))?,
                 Ok(p) => report(&p).iter().for_each(|l| println!("{l}")),
+                // 하나만 올리면 그 오류가 명령의 오류다.
+                Err(e) if !all_tags => return Err(e.into()),
                 Err(e) => {
                     self.target_error(reference, &e);
                     failed += 1;
