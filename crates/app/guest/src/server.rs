@@ -32,7 +32,13 @@ pub struct Ctx {
     pub layer_disks: Option<u32>,
     /// 맞출 시계(`ClockSync`). 없으면 그 요청은 `InvalidArgument` 오류다. 규칙은 [`clock`] 모듈에 있다.
     pub clock: Option<Box<dyn clock::Clock>>,
+    /// `Volume` 요청을 처리한다: (디스크 차례, 대상 경로, 읽기 전용, 채우기). 게스트에서는 [`crate::volume`]의
+    /// 붙이기다. 없으면 `Volume`은 `InvalidArgument` 오류다.
+    pub volume: Option<VolumeFn>,
 }
+
+/// 볼륨을 붙이는 방법.
+pub type VolumeFn = Box<dyn Fn(u32, &str, bool, bool) -> io::Result<()> + Send + Sync>;
 
 /// 공유 폴더를 붙이는 방법.
 pub type ShareFn = Box<dyn Fn(&str, &str, bool) -> io::Result<()> + Send + Sync>;
@@ -134,6 +140,30 @@ pub fn serve<C: Conn>(conn: C, ctx: &Ctx) {
             None => out.error(Error::new(
                 ErrorKind::InvalidArgument,
                 "shares are not supported by this guest",
+            )),
+        },
+        Ok(HostMsg::Volume {
+            disk,
+            target,
+            readonly,
+            copy,
+        }) => match &ctx.volume {
+            _ if !target.starts_with('/') => out.error(Error::new(
+                ErrorKind::InvalidArgument,
+                format!("volume target must be absolute: {target:?}"),
+            )),
+            Some(f) => match f(disk, &target, readonly, copy) {
+                Ok(()) => {
+                    let _ = out.send(&GuestMsg::Done);
+                }
+                Err(e) => out.error(crate::wire::io_error(
+                    &format!("volume on disk {disk} at {target}"),
+                    &e,
+                )),
+            },
+            None => out.error(Error::new(
+                ErrorKind::InvalidArgument,
+                "volumes are not supported by this guest",
             )),
         },
         Ok(HostMsg::EgressListen) => match ctx.egress.listen() {

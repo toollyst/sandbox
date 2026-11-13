@@ -56,6 +56,7 @@ impl Fixture {
                     sweep: crate::exec::Sweep::Group,
                     layer_disks: None,
                     clock: None,
+                    volume: None,
                 },
             )
         });
@@ -154,6 +155,7 @@ fn version_mismatch_is_reported() {
                 sweep: crate::exec::Sweep::Group,
                 layer_disks: None,
                 clock: None,
+                volume: None,
             },
         )
     });
@@ -177,6 +179,7 @@ fn request_before_hello_is_a_protocol_error() {
                 sweep: crate::exec::Sweep::Group,
                 layer_disks: None,
                 clock: None,
+                volume: None,
             },
         )
     });
@@ -542,6 +545,7 @@ fn shutdown_syncs_replies_then_calls_back() {
                 sweep: crate::exec::Sweep::Group,
                 layer_disks: None,
                 clock: None,
+                volume: None,
             },
         )
     });
@@ -834,6 +838,7 @@ fn connect_with(
                 sweep: crate::exec::Sweep::Group,
                 layer_disks,
                 clock: None,
+                volume: None,
             },
         )
     });
@@ -974,6 +979,7 @@ fn privileged_pid1_a_build_step_ends_even_detached_daemons() {
                 sweep: crate::exec::Sweep::Everything,
                 layer_disks: None,
                 clock: None,
+                volume: None,
             },
         )
     });

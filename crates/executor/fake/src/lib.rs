@@ -25,6 +25,9 @@
 //! - 루프백 DNS는 53번 대신 `127.0.0.1`의 빈 포트에서 듣고, 투명 TCP(`Transparent`)는 경로 표를 바꾸지 않는다.
 //!   가짜 주소에서 듣는 대신 `127.0.0.1`의 빈 포트에서 듣는다. 어디서 듣는지는 [`net_dir`]의 파일에 적는다.
 //!   호스트에서 도는 프로그램은 그 DNS와 가짜 주소를 모르므로, 테스트가 그 파일을 읽고 직접 묻고 붙는다.
+//! - 볼륨 디스크(`Volume`)는 포맷하지 않고 디스크 파일 옆 디렉터리([`volume_content`])로 흉내 낸다. 대상 경로에 그
+//!   디렉터리를 가리키는 링크를 둔다. 빈 볼륨이면 그 전에 대상 경로의 내용(이미지 내용 노릇)으로 채우고 대상을
+//!   지운다. 읽기 전용은 강제하지 않는다(디스크를 읽기 전용으로 받았는지만 본다).
 //! - 게스트 시계(`ClockSync`)는 호스트 시계를 건드리지 않고 scratch 디스크 옆 파일 하나([`clock_file`])의 "호스트와의
 //!   차이"를 바꾼다. 테스트는 그 파일로 게스트 시계를 틀고 맞았는지 본다. 규칙은 [`clock`] 모듈에 있다.
 //!
@@ -55,6 +58,7 @@ mod rootdir;
 mod vm;
 
 pub use clock::clock_file;
+pub use guest::volume_content;
 pub use netdir::{NET_DNS, NET_ROUTES, net_dir};
 pub use vm::{FakeVm, REASON_GUEST_SHUTDOWN, REASON_KILLED};
 
@@ -95,6 +99,7 @@ impl FakeExecutor {
             custom_kernel: true,
             snapshot: false,
             max_disks: MAX_DISKS,
+            volumes: true,
         })
     }
 
@@ -132,12 +137,22 @@ impl Executor for FakeExecutor {
                 .filter(|d| d.role == sbx_executor::DiskRole::Rootfs)
                 .map(|d| d.path.clone())
                 .collect();
+            let disks = vm
+                .disks
+                .iter()
+                .map(|d| guest::FakeDisk {
+                    path: d.path.clone(),
+                    volume: d.role == sbx_executor::DiskRole::Volume,
+                    readonly: d.readonly,
+                })
+                .collect();
             guest::start(
                 &vm.control_channel.host_endpoint,
                 shares,
                 dirs,
                 layer_disks,
                 clock,
+                disks,
             )
             .map(|v| Box::new(v) as Box<dyn VmHandle>)
         })

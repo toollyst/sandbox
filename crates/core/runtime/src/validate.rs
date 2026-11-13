@@ -98,6 +98,7 @@ mod tests {
             custom_kernel: false,
             snapshot: false,
             max_disks: 2,
+            volumes: true,
         }
     }
 

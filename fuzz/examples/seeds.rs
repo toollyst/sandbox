@@ -103,6 +103,12 @@ fn guest_msgs(out: &Path) {
         HostMsg::ClockNow {
             unix_nanos: 1_763_000_000_123_456_789,
         },
+        HostMsg::Volume {
+            disk: 2,
+            target: "/var/lib/postgresql/data".into(),
+            readonly: false,
+            copy: true,
+        },
     ];
     let mut stream = Vec::new();
     for (i, m) in guest.iter().enumerate() {

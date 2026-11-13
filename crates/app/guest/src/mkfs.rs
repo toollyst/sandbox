@@ -1,17 +1,23 @@
-//! scratch 디스크 포맷. 빈 ext2 파일 시스템을 만든다.
+//! scratch 디스크와 볼륨 디스크 포맷. 빈 ext2(scratch)나 저널이 있는 ext4(볼륨) 파일 시스템을 만든다.
 //!
-//! 게스트가 첫 부팅 때 scratch 디스크에 superblock이 없으면 부른다. 호스트는 빈 파일만 만들고
-//! 게스트가 쓴 디스크를 해석하지 않는다. 그래서 이 형식은 게스트만 안다.
+//! 게스트가 첫 부팅 때 scratch 디스크에, 처음 붙인 볼륨 디스크에 superblock이 없으면 부른다. 호스트는 빈 파일만
+//! 만들고 게스트가 쓴 디스크를 해석하지 않는다. 그래서 이 형식은 게스트만 안다.
 //!
-//! 형식 (커널의 ext4 드라이버가 ext2로 마운트한다)
+//! 형식 (커널의 ext4 드라이버가 마운트한다)
 //! - 블록 4096바이트, 그룹당 32768블록, inode 256바이트, 16KiB당 inode 하나.
 //! - 기능: `filetype`(overlay가 요구하는 d_type), `ext_attr`(overlay가 쓰는 xattr), `sparse_super`, `large_file`.
-//! - 저널이 없다. VM이 강제로 꺼지면 다음 마운트 때 정리되지 않은 상태일 수 있다. 정상 종료는 sync 뒤에 끈다.
+//! - scratch([`Journal::None`])는 저널이 없다. VM이 강제로 꺼지면 다음 마운트 때 정리되지 않은 상태일 수 있다.
+//!   정상 종료는 sync 뒤에 끈다. scratch는 샌드박스와 함께 버리는 쓰기 층이라 그것으로 된다.
+//! - 볼륨([`Journal::Internal`])은 저널(jbd2, inode 8, 그룹 0의 데이터 맨 앞에 이어진 블록들)과 `extents`를 더한다.
+//!   볼륨은 VM이 강제로 꺼져도 남아야 하는 데이터(DB)를 담는다. 저널이 없으면 `fsync`가 파일 내용과 inode만 쓰고
+//!   블록 비트맵은 쓰지 않아서, 강제로 꺼진 뒤 같은 블록을 두 파일이 쓰게 될 수 있다(fsck 없이는 고칠 수 없다).
+//!   저널이 있으면 커널이 마운트할 때 저널을 다시 적용해 일관된 상태로 돌아온다. 저널 크기는 mke2fs의 기본표를
+//!   따르되 64MiB(16384블록)까지다(한 extent, 그룹 0 안).
 //! - 메타데이터를 직접 쓴다. inode 테이블은 [`Disk::Zeroed`]면 쓰지 않는다(이미 0이다). 1GiB면 16MiB를
 //!   쓰지 않으므로 첫 부팅이 빨라지고, 호스트의 sparse 파일도 그만큼 작게 남는다. [`Disk::Unknown`]이면 모두 쓴다.
 //!   어느 쪽이든 결과 바이트는 같다.
 //! - 같은 크기와 `uuid`면 같은 바이트가 나온다. 시각은 모두 0이다.
-//! - 루트(inode 2, 0755)와 `lost+found`(inode 11, 0700)만 있다.
+//! - 루트(inode 2, 0755)와 `lost+found`(inode 11, 0700)만 있다. 볼륨에는 저널 inode(8)도 있다.
 
 use std::io::{self, Seek, SeekFrom, Write};
 
@@ -34,8 +40,38 @@ pub const MAGIC_OFFSET: u64 = 1024 + 56;
 /// 포맷할 수 있는 가장 작은 크기.
 pub const MIN_BYTES: u64 = 1024 * 1024;
 
+const COMPAT_HAS_JOURNAL: u32 = 0x0004;
 const COMPAT_EXT_ATTR: u32 = 0x0008;
 const INCOMPAT_FILETYPE: u32 = 0x0002;
+const INCOMPAT_EXTENTS: u32 = 0x0040;
+const JOURNAL_INO: u32 = 8;
+const EXTENTS_FL: u32 = 0x0008_0000;
+const EXTENT_MAGIC: u16 = 0xF30A;
+const JBD2_MAGIC: u32 = 0xC03B_3998;
+const JBD2_SUPERBLOCK_V2: u32 = 4;
+/// 저널의 가장 큰 블록 수(한 extent에 들고 그룹 0에 들어간다).
+const MAX_JOURNAL_BLOCKS: u64 = 16384;
+
+/// 저널을 둘지.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Journal {
+    /// 저널 없음(ext2, scratch).
+    None,
+    /// 같은 장치 안의 저널(ext4, 볼륨). 모듈 문서의 "형식".
+    Internal,
+}
+
+/// mke2fs의 기본 저널 크기(블록)를 [`MAX_JOURNAL_BLOCKS`]로 자른 것. 너무 작은 파일 시스템이면 `None`.
+fn journal_blocks(blocks: u64) -> Option<u64> {
+    let j = match blocks {
+        0..2048 => return None,
+        2048..32768 => 1024,
+        32768..262_144 => 4096,
+        262_144..524_288 => 8192,
+        _ => 16384,
+    };
+    Some(j.min(MAX_JOURNAL_BLOCKS))
+}
 const RO_COMPAT_SPARSE_SUPER: u32 = 0x0001;
 const RO_COMPAT_LARGE_FILE: u32 = 0x0002;
 
@@ -60,6 +96,9 @@ struct Layout {
     itable_blocks: u64,
     root_block: u64,
     lost_found_block: u64,
+    /// 저널의 첫 블록과 블록 수(없으면 0). 그룹 0에서 lost+found 다음에 이어진다.
+    journal_block: u64,
+    journal_blocks: u64,
 }
 
 fn is_power_of(mut n: u64, base: u64) -> bool {
@@ -75,7 +114,7 @@ fn has_super(g: u64) -> bool {
 }
 
 impl Layout {
-    fn plan(bytes: u64) -> io::Result<Self> {
+    fn plan(bytes: u64, journal: Journal) -> io::Result<Self> {
         if bytes < MIN_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -122,6 +161,22 @@ impl Layout {
                 ));
             }
             let first = groups[0].data;
+            let journal_blocks = match journal {
+                Journal::None => 0,
+                Journal::Internal => {
+                    let j = journal_blocks(blocks);
+                    let room = (groups[0].start + groups[0].blocks).saturating_sub(first + 2);
+                    match j {
+                        Some(j) if j + 16 <= room => j,
+                        _ => {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "disk too small for a journal",
+                            ));
+                        }
+                    }
+                }
+            };
             return Ok(Self {
                 blocks,
                 groups,
@@ -130,6 +185,8 @@ impl Layout {
                 itable_blocks,
                 root_block: first,
                 lost_found_block: first + 1,
+                journal_block: first + 2,
+                journal_blocks,
             });
         }
     }
@@ -143,7 +200,7 @@ impl Layout {
         let gr = &self.groups[g];
         let mut used = gr.data - gr.start;
         if g == 0 {
-            used += 2; // 루트와 lost+found의 디렉터리 블록
+            used += 2 + self.journal_blocks; // 루트와 lost+found의 디렉터리 블록, 저널
         }
         used
     }
@@ -168,6 +225,7 @@ fn u32_of(v: u64) -> u32 {
 }
 
 fn superblock(l: &Layout, uuid: [u8; 16], group: u64) -> [u8; 1024] {
+    let journal = l.journal_blocks > 0;
     let mut s = [0u8; 1024];
     let used_inodes = u64::from(FIRST_INO); // 1..=11
     put32(&mut s, 0, u32_of(l.inodes()));
@@ -191,14 +249,79 @@ fn superblock(l: &Layout, uuid: [u8; 16], group: u64) -> [u8; 1024] {
     put32(&mut s, 84, FIRST_INO);
     put16(&mut s, 88, INODE_SIZE as u16);
     put16(&mut s, 90, u16::try_from(group).unwrap_or(u16::MAX));
-    put32(&mut s, 92, COMPAT_EXT_ATTR);
-    put32(&mut s, 96, INCOMPAT_FILETYPE);
+    let (compat, incompat) = if journal {
+        (
+            COMPAT_EXT_ATTR | COMPAT_HAS_JOURNAL,
+            INCOMPAT_FILETYPE | INCOMPAT_EXTENTS,
+        )
+    } else {
+        (COMPAT_EXT_ATTR, INCOMPAT_FILETYPE)
+    };
+    put32(&mut s, 92, compat);
+    put32(&mut s, 96, incompat);
     put32(&mut s, 100, RO_COMPAT_SPARSE_SUPER | RO_COMPAT_LARGE_FILE);
     s[104..120].copy_from_slice(&uuid);
-    s[120..131].copy_from_slice(b"sbx-scratch");
+    let label: &[u8] = if journal {
+        b"sbx-volume"
+    } else {
+        b"sbx-scratch"
+    };
+    s[120..120 + label.len()].copy_from_slice(label);
+    if journal {
+        put32(&mut s, 224, JOURNAL_INO); // s_journal_inum
+        // s_jnl_blocks: 저널 inode의 i_block과 크기 사본. e2fsck가 저널 inode를 견준다.
+        let inode = journal_inode(l);
+        s[268..268 + 60].copy_from_slice(&inode[40..100]);
+        put32(&mut s, 268 + 15 * 4, 0); // i_size_high
+        put32(&mut s, 268 + 16 * 4, u32_of(l.journal_blocks * BLOCK));
+        s[253] = 1; // s_jnl_backup_type: EXT3_JNL_BACKUP_BLOCKS
+    }
     put16(&mut s, 348, EXTRA_ISIZE); // min_extra_isize
     put16(&mut s, 350, EXTRA_ISIZE); // want_extra_isize
     s
+}
+
+/// 저널 inode: 일반 파일 0600, extent 하나가 저널 블록 전체를 가리킨다.
+fn journal_inode(l: &Layout) -> [u8; INODE_SIZE as usize] {
+    let mut i = [0u8; INODE_SIZE as usize];
+    put16(&mut i, 0, 0o100600);
+    put32(&mut i, 4, u32_of(l.journal_blocks * BLOCK));
+    put16(&mut i, 26, 1);
+    put32(&mut i, 28, u32_of(l.journal_blocks * (BLOCK / 512)));
+    put32(&mut i, 32, EXTENTS_FL);
+    // extent 머리: 매직, 항목 1, 최대 4, 깊이 0.
+    put16(&mut i, 40, EXTENT_MAGIC);
+    put16(&mut i, 42, 1);
+    put16(&mut i, 44, 4);
+    put16(&mut i, 46, 0);
+    // extent 하나: 논리 블록 0부터 journal_blocks개, 물리 블록 journal_block부터.
+    put32(&mut i, 52, 0);
+    put16(
+        &mut i,
+        56,
+        u16::try_from(l.journal_blocks).expect("journal fits one extent"),
+    );
+    put16(&mut i, 58, 0);
+    put32(&mut i, 60, u32_of(l.journal_block));
+    put16(&mut i, 128, EXTRA_ISIZE);
+    i
+}
+
+/// jbd2 superblock(v2, big-endian). `s_start`가 0이라 비어 있는(다시 적용할 것이 없는) 저널이다.
+fn journal_superblock(l: &Layout, uuid: [u8; 16]) -> Vec<u8> {
+    let mut b = vec![0u8; BLOCK as usize];
+    let be = |b: &mut [u8], at: usize, v: u32| b[at..at + 4].copy_from_slice(&v.to_be_bytes());
+    be(&mut b, 0, JBD2_MAGIC);
+    be(&mut b, 4, JBD2_SUPERBLOCK_V2);
+    be(&mut b, 8, 0); // h_sequence
+    be(&mut b, 12, BLOCK as u32); // s_blocksize
+    be(&mut b, 16, u32_of(l.journal_blocks)); // s_maxlen
+    be(&mut b, 20, 1); // s_first
+    be(&mut b, 24, 1); // s_sequence
+    be(&mut b, 28, 0); // s_start: 비었다
+    b[48..64].copy_from_slice(&uuid);
+    be(&mut b, 64, 1); // s_nr_users
+    b
 }
 
 fn group_descriptors(l: &Layout) -> Vec<u8> {
@@ -270,14 +393,25 @@ pub enum Disk {
     Unknown,
 }
 
-/// `bytes` 크기의 장치에 빈 ext2를 만든다. 쓴 파일 시스템 크기(바이트)를 돌려준다.
+/// `bytes` 크기의 장치에 빈 ext2(저널 없음, scratch)를 만든다. 쓴 파일 시스템 크기(바이트)를 돌려준다.
 pub fn format(
     w: &mut (impl Write + Seek),
     bytes: u64,
     uuid: [u8; 16],
     disk: Disk,
 ) -> io::Result<u64> {
-    let l = Layout::plan(bytes)?;
+    format_with(w, bytes, uuid, disk, Journal::None)
+}
+
+/// [`format`]과 같고, `journal`이면 저널이 있는 ext4(볼륨)를 만든다(모듈 문서의 "형식").
+pub fn format_with(
+    w: &mut (impl Write + Seek),
+    bytes: u64,
+    uuid: [u8; 16],
+    disk: Disk,
+    journal: Journal,
+) -> io::Result<u64> {
+    let l = Layout::plan(bytes, journal)?;
     let gdt = group_descriptors(&l);
     let zero = vec![0u8; BLOCK as usize];
     for (g, gr) in l.groups.iter().enumerate() {
@@ -336,6 +470,10 @@ pub fn format(
         0,
         &dir_block(&[(LOST_FOUND_INO, "."), (ROOT_INO, "..")]),
     )?;
+    if l.journal_blocks > 0 {
+        write_at(w, itable, slot(JOURNAL_INO), &journal_inode(&l))?;
+        write_at(w, l.journal_block, 0, &journal_superblock(&l, uuid))?;
+    }
     w.flush()?;
     Ok(l.blocks * BLOCK)
 }

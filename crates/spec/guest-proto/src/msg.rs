@@ -365,6 +365,28 @@ pub enum HostMsg {
     /// 재지 못하면 [`GuestMsg::Error`]. 시계를 맞출 수 없는 게스트는 `InvalidArgument` 오류다.
     /// 모르는 게스트는 답 없이 닫거나 `Protocol` 오류로 답한다. 호스트는 그 VM에서 맞추기를 그만둔다.
     ClockSync,
+    /// 이름 붙은 볼륨 디스크 하나를 `target`에 마운트한다. 호스트는 시작할 때, 기본 프로세스보다 먼저, 볼륨마다
+    /// 하나씩 보낸다. 규칙(포맷, 처음 채우기, 층과 가르기)은 `sbx-guest`의 `volume` 모듈에 있다.
+    ///
+    /// - `disk`는 실행기에 준 디스크 차례(0부터)다. 층 디스크 뒤여야 한다. 층 디스크나 scratch를 가리키면 오류다.
+    /// - 쓰기로 붙인 디스크에 파일 시스템이 없으면(처음 쓰는 볼륨, 0으로 채운 새 파일) 게스트가 포맷한다.
+    ///   읽기 전용인데 파일 시스템이 없으면 오류다.
+    /// - `copy`이고 볼륨이 비어 있으면, 마운트하기 전의 `target` 내용(이미지에 있던 것)을 소유자와 권한째 볼륨에
+    ///   먼저 채운다(Docker와 같다). 읽기 전용이면 채우지 않는다.
+    /// - `target`이 없으면 만든다(쓰기 층에).
+    ///
+    /// 흐름: 게스트가 [`GuestMsg::Done`]. 실패하면 [`GuestMsg::Error`]. 모르는 게스트는 `Protocol` 오류로 답한다
+    /// (볼륨은 시작할 때만 보내므로 언제나 같은 판의 게스트가 받는다).
+    Volume {
+        /// 디스크 차례(0부터).
+        disk: u32,
+        /// 게스트 절대 경로.
+        target: String,
+        /// 읽기 전용으로 마운트한다(실행기도 읽기 전용으로 붙였다).
+        readonly: bool,
+        /// 빈 볼륨을 이미지의 `target` 내용으로 채운다.
+        copy: bool,
+    },
     /// [`GuestMsg::ClockAsk`]의 답: 호스트 벽시계(Unix 시각, 나노초, 1970년 앞이면 음수). 보내기 바로 전에 읽는다.
     ClockNow {
         /// Unix 시각(나노초).
@@ -513,6 +535,8 @@ mod tag {
     // 0x20부터: 시계. 앞의 빈 번호는 다른 기능이 더할 자리로 둔다.
     pub const CLOCK_SYNC: u8 = 0x20;
     pub const CLOCK_NOW: u8 = 0x21;
+    // 0x28부터: 볼륨.
+    pub const VOLUME: u8 = 0x28;
 
     pub const HELLO_ACK: u8 = 0x81;
     pub const STARTED: u8 = 0x82;
@@ -821,6 +845,15 @@ impl HostMsg {
                 e = Encoder::new(tag::CLOCK_NOW);
                 e.i64(*unix_nanos);
             }
+            HostMsg::Volume {
+                disk,
+                target,
+                readonly,
+                copy,
+            } => {
+                e = Encoder::new(tag::VOLUME);
+                e.u32(*disk).str(target).bool(*readonly).bool(*copy);
+            }
         }
         e.finish()
     }
@@ -896,6 +929,12 @@ impl HostMsg {
             tag::CLOCK_SYNC => HostMsg::ClockSync,
             tag::CLOCK_NOW => HostMsg::ClockNow {
                 unix_nanos: d.i64()?,
+            },
+            tag::VOLUME => HostMsg::Volume {
+                disk: d.u32()?,
+                target: d.string()?,
+                readonly: d.bool()?,
+                copy: d.bool()?,
             },
             t => return bad(format!("unknown host message {t:#04x}")),
         };

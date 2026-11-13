@@ -5,6 +5,22 @@ pub(crate) use other::{connect, start};
 #[cfg(unix)]
 pub(crate) use unix::{connect, start};
 
+/// 받은 디스크 하나(받은 차례). 볼륨 흉내에 쓴다.
+#[derive(Debug, Clone)]
+pub(crate) struct FakeDisk {
+    pub(crate) path: std::path::PathBuf,
+    pub(crate) volume: bool,
+    #[cfg_attr(not(unix), allow(dead_code))]
+    pub(crate) readonly: bool,
+}
+
+/// 볼륨 디스크 흉내의 내용 디렉터리: 디스크 파일 이름 뒤에 `.content`. 없으면 포맷하지 않은(처음 쓰는) 볼륨이다.
+pub fn volume_content(disk: &std::path::Path) -> std::path::PathBuf {
+    let mut s = disk.as_os_str().to_owned();
+    s.push(".content");
+    s.into()
+}
+
 #[cfg(unix)]
 mod unix {
     use std::io;
@@ -83,18 +99,78 @@ mod unix {
         }
     }
 
+    /// 볼륨 흉내: 디스크 옆 내용 디렉터리([`super::volume_content`])를 대상 경로에 링크로 둔다. 실제 게스트처럼
+    /// 처음 쓰는 볼륨은 쓰기로만 붙고(내용 디렉터리를 만든다), 빈 볼륨이면 대상 경로의 지금 내용으로 채운다. 그 뒤
+    /// 대상(디렉터리면 지우고, 앞 샌드박스가 둔 링크면 바꾼다)을 링크로 바꾼다. 읽기 전용은 강제하지 않는다.
+    fn link_volume(
+        disk: &super::FakeDisk,
+        target: &Path,
+        readonly: bool,
+        copy: bool,
+    ) -> io::Result<()> {
+        if !disk.volume {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{} is not a volume disk", disk.path.display()),
+            ));
+        }
+        if readonly && !disk.readonly {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a read-only volume must be attached read-only",
+            ));
+        }
+        let content = super::volume_content(&disk.path);
+        if !content.is_dir() {
+            if readonly {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "the volume has never been used, so there is nothing to read; attach it writable once first",
+                ));
+            }
+            std::fs::create_dir(&content)?;
+        }
+        let image = match std::fs::symlink_metadata(target) {
+            Ok(m) if m.is_dir() => Some(target),
+            Ok(m) if m.file_type().is_symlink() => {
+                std::fs::remove_file(target)?;
+                None
+            }
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("volume target {} is not a directory", target.display()),
+                ));
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e),
+        };
+        if let Some(dir) = image {
+            if copy && !readonly && sbx_guest::volume::is_empty(&content)? {
+                sbx_guest::volume::copy_up(dir, &content)?;
+            }
+            std::fs::remove_dir_all(dir)?;
+        }
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::os::unix::fs::symlink(&content, target)
+    }
+
     /// 제어 소켓을 열고 게스트 처리를 돌린다. `shares`는 (태그, 호스트 경로)다.
     /// `dirs`(scratch 디스크 옆의 두 디렉터리)가 있으면 빌드 층을 첫째로 흉내 내고([`crate::layers`]),
     /// 루프백 DNS와 투명 TCP를 둘째로 흉내 낸다([`crate::netdir::net_dir`]).
     /// `layer_disks`는 받은 층 디스크(역할 `rootfs`, 받은 차례)다. 게스트가 부팅 때 센 층 수 노릇을 한다
     /// (`CheckLayers`).
     /// `clock`(scratch 디스크 옆의 파일)이 있으면 게스트 시계를 그 파일로 흉내 낸다([`crate::clock`]).
+    /// `disks`는 받은 디스크 전부(받은 차례)다. 볼륨(`Volume`)은 [`link_volume`]으로 흉내 낸다.
     pub(crate) fn start(
         socket: &Path,
         shares: Vec<(String, PathBuf)>,
         dirs: Option<(PathBuf, PathBuf)>,
         layer_disks: Vec<PathBuf>,
         clock: Option<PathBuf>,
+        disks: Vec<super::FakeDisk>,
     ) -> Result<FakeVm, ExecutorError> {
         let (build_root, net) = dirs.unzip();
         let path: PathBuf = socket.to_owned();
@@ -168,6 +244,14 @@ mod unix {
             clock: clock.map(|p| {
                 Box::new(crate::clock::FileClock::new(p)) as Box<dyn sbx_guest::clock::Clock>
             }),
+            volume: Some(Box::new(
+                move |disk: u32, target: &str, readonly: bool, copy: bool| {
+                    let d = disks.get(disk as usize).ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::NotFound, format!("no disk {disk}"))
+                    })?;
+                    link_volume(d, Path::new(target), readonly, copy)
+                },
+            )),
         });
         {
             let life = life.clone();
@@ -243,6 +327,7 @@ mod other {
         _dirs: Option<(std::path::PathBuf, std::path::PathBuf)>,
         _layer_disks: Vec<std::path::PathBuf>,
         _clock: Option<std::path::PathBuf>,
+        _disks: Vec<super::FakeDisk>,
     ) -> Result<FakeVm, ExecutorError> {
         Err(ExecutorError::Unsupported(
             "the fake guest needs Unix sockets".into(),

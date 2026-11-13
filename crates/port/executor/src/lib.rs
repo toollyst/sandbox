@@ -38,8 +38,11 @@ pub struct Capabilities {
     pub custom_kernel: bool,
     /// 스냅샷 지원 여부.
     pub snapshot: bool,
-    /// VM 하나에 붙일 수 있는 디스크 개수(scratch 포함). 층 디스크는 이것에서 하나를 뺀 만큼이다.
+    /// VM 하나에 붙일 수 있는 디스크 개수(scratch 포함). 층 디스크와 볼륨 디스크가 scratch 하나를 뺀 만큼을 나눠 쓴다.
     pub max_disks: usize,
+    /// 볼륨 디스크([`DiskRole::Volume`])를 붙일 수 있는지. 붙이는 실행기는 게스트의 flush를 호스트 저장 장치까지
+    /// 넘긴다(`sbx-executor-proto` 규약 3).
+    pub volumes: bool,
 }
 
 impl Capabilities {
@@ -56,6 +59,9 @@ pub enum DiskRole {
     Rootfs,
     /// 샌드박스별 쓰기 가능 디스크.
     Scratch,
+    /// 이름 붙은 볼륨. 층 디스크 뒤에 온다. 게스트의 flush가 호스트 저장 장치까지 가야 한다.
+    /// `Capabilities::volumes`일 때만 쓴다.
+    Volume,
 }
 
 /// VM에 붙일 디스크.
@@ -130,6 +136,12 @@ impl VmConfig {
                 self.disks.len(),
                 caps.name,
                 caps.max_disks
+            )));
+        }
+        if !caps.volumes && self.disks.iter().any(|d| d.role == DiskRole::Volume) {
+            return Err(ExecutorError::Unsupported(format!(
+                "{} cannot attach volumes (it speaks an executor protocol older than 3)",
+                caps.name
             )));
         }
         if self.kernel.is_some() && !caps.custom_kernel {
@@ -255,6 +267,7 @@ mod tests {
             custom_kernel: false,
             snapshot: false,
             max_disks,
+            volumes: false,
         }
     }
 
@@ -319,6 +332,23 @@ mod tests {
         ));
         let mut c = caps(false, 2);
         c.custom_kernel = true;
+        assert!(v.check(&c).is_ok());
+    }
+
+    #[test]
+    fn volume_disks_need_volume_support() {
+        let mut v = vm();
+        v.disks.push(Disk {
+            path: "v".into(),
+            role: DiskRole::Volume,
+            readonly: false,
+        });
+        assert!(matches!(
+            v.check(&caps(false, 2)),
+            Err(ExecutorError::Unsupported(m)) if m.contains("cannot attach volumes")
+        ));
+        let mut c = caps(false, 2);
+        c.volumes = true;
         assert!(v.check(&c).is_ok());
     }
 

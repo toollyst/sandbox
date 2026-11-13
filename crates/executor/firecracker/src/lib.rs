@@ -21,6 +21,8 @@
 //! # VM ([`config`])
 //!
 //! - initrd는 sbx가 준 게스트 init, `root=`는 없다. 디스크는 받은 순서대로(rootfs `vda` 읽기 전용, scratch `vdb`).
+//!   볼륨 디스크(규약 3, 역할 `volume`)는 `cache_type: "Writeback"`으로 붙인다. 그래야 게스트가 flush 기능을 보고,
+//!   게스트의 flush가 호스트 파일의 fsync로 간다(기본값 `Unsafe`는 flush를 보이지 않는다). 규약 2와 3을 말한다.
 //! - vsock: guest CID 3, `uds_path`는 규약의 `control_socket`. 남아 있는 파일은 지운다(Firecracker는 있으면 실패한다).
 //!   경로는 [`config::MAX_SOCKET_PATH`] 바이트 이하여야 한다(macOS Unix 소켓 한도).
 //! - 커널 명령줄: `console=ttyS0 quiet reboot=k panic=1`(x86_64는 `pci=off`도), `sbx.hostname=`, `sbx.halt=reboot`

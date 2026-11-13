@@ -50,7 +50,7 @@ fn superblock_fields() {
 #[test]
 fn group_layout_and_backups() {
     // 3 그룹을 넘게: 그룹 0, 1에는 superblock 사본이 있고 2에는 없다.
-    let l = Layout::plan(400 << 20).unwrap();
+    let l = Layout::plan(400 << 20, Journal::None).unwrap();
     assert_eq!(l.groups.len(), 4);
     let sup: Vec<bool> = l.groups.iter().map(|g| g.has_super).collect();
     assert_eq!(sup, vec![true, true, false, true]);
@@ -67,14 +67,50 @@ fn group_layout_and_backups() {
 #[test]
 fn tiny_trailing_group_is_dropped() {
     // 그룹 하나 + 4블록: 마지막 그룹은 메타데이터도 담지 못한다.
-    let l = Layout::plan((BLOCKS_PER_GROUP + 4) * BLOCK).unwrap();
+    let l = Layout::plan((BLOCKS_PER_GROUP + 4) * BLOCK, Journal::None).unwrap();
     assert_eq!(l.groups.len(), 1);
     assert_eq!(l.blocks, BLOCKS_PER_GROUP);
 }
 
 #[test]
 fn too_small_is_an_error() {
-    assert!(Layout::plan(MIN_BYTES - 1).is_err());
+    assert!(Layout::plan(MIN_BYTES - 1, Journal::None).is_err());
+}
+
+fn volume_image(bytes: u64) -> Vec<u8> {
+    let mut c = Cursor::new(vec![0xA5u8; bytes as usize]);
+    format_with(&mut c, bytes, UUID, Disk::Unknown, Journal::Internal).unwrap();
+    c.into_inner()
+}
+
+#[test]
+fn volumes_get_a_journal_in_group_zero() {
+    let bytes = 64 << 20;
+    let img = volume_image(bytes);
+    let sb = &img[1024..2048];
+    assert_eq!(le32(sb, 92) & COMPAT_HAS_JOURNAL, COMPAT_HAS_JOURNAL);
+    assert_eq!(le32(sb, 96) & INCOMPAT_EXTENTS, INCOMPAT_EXTENTS);
+    assert_eq!(le32(sb, 224), JOURNAL_INO);
+    let l = Layout::plan(bytes, Journal::Internal).unwrap();
+    assert_eq!(l.journal_blocks, 1024);
+    assert_eq!(l.journal_block, l.lost_found_block + 1);
+    let j = (l.journal_block * BLOCK) as usize;
+    assert_eq!(&img[j..j + 4], &JBD2_MAGIC.to_be_bytes());
+    // 저널 블록은 쓰는 중으로 센다.
+    let free_before = Layout::plan(bytes, Journal::None).unwrap().free_blocks();
+    assert_eq!(l.free_blocks() + 1024, free_before);
+    // 0으로 채운 디스크에도 같은 바이트가 나온다.
+    let mut z = Cursor::new(vec![0u8; bytes as usize]);
+    format_with(&mut z, bytes, UUID, Disk::Zeroed, Journal::Internal).unwrap();
+    let mut u = Cursor::new(vec![0u8; bytes as usize]);
+    format_with(&mut u, bytes, UUID, Disk::Unknown, Journal::Internal).unwrap();
+    assert!(z.into_inner() == u.into_inner());
+    // 크기는 mke2fs의 표를 따르되 64MiB까지.
+    assert_eq!(journal_blocks(2047), None);
+    assert_eq!(journal_blocks(16384), Some(1024));
+    assert_eq!(journal_blocks(1 << 22), Some(MAX_JOURNAL_BLOCKS));
+    // 저널을 둘 수 없을 만큼 작으면 오류다.
+    assert!(Layout::plan(4 << 20, Journal::Internal).is_err());
 }
 
 #[test]
@@ -113,6 +149,22 @@ fn e2fsck_accepts_image() {
         assert!(
             out.status.success(),
             "e2fsck failed for {size} bytes:\n{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        std::fs::remove_file(&path).unwrap();
+    }
+    for size in [64 << 20, (1 << 30) + (5 << 20)] {
+        let path = dir.join(format!("volume-{size}.img"));
+        std::fs::write(&path, volume_image(size)).unwrap();
+        let out = Command::new("e2fsck")
+            .args(["-f", "-n"])
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "e2fsck failed for a {size}-byte volume:\n{}\n{}",
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );

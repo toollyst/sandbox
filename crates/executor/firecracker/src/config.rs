@@ -58,13 +58,21 @@ pub fn firecracker_config(
             let id = match d.role {
                 DiskRole::Rootfs => format!("rootfs{i}"),
                 DiskRole::Scratch => format!("scratch{i}"),
+                DiskRole::Volume => format!("volume{i}"),
             };
-            Ok(json!({
+            let mut drive = json!({
                 "drive_id": id,
                 "path_on_host": utf8(&d.path, "disk")?,
                 "is_root_device": false,
                 "is_read_only": d.readonly,
-            }))
+            });
+            // 볼륨은 게스트의 flush가 호스트 파일의 fsync까지 가야 한다(규약 3). Firecracker는 `Writeback`일 때만
+            // 게스트에 flush 기능을 보이고 받은 flush를 fsync로 넘긴다. 기본값 `Unsafe`는 flush를 보이지 않는다.
+            // 층과 scratch는 VM과 함께 버려도 되므로 기본값 그대로다.
+            if d.role == DiskRole::Volume {
+                drive["cache_type"] = json!("Writeback");
+            }
+            Ok(drive)
         })
         .collect::<Result<Vec<_>, String>>()?;
     Ok(json!({
@@ -190,6 +198,32 @@ mod tests {
             ]
         );
         assert!(d.iter().all(|x| x["is_root_device"] == false));
+    }
+
+    /// 볼륨 디스크는 `Writeback`으로 붙여 게스트의 flush가 호스트에 닿게 한다. 다른 디스크는 `cache_type`이 없다.
+    #[test]
+    fn volume_disks_pass_flushes_to_the_host() {
+        let mut v = vm();
+        v.disks.push(DiskSpec {
+            path: "/d/volumes/pg/disk.img".into(),
+            role: DiskRole::Volume,
+            readonly: false,
+        });
+        v.disks.push(DiskSpec {
+            path: "/d/volumes/ro/disk.img".into(),
+            role: DiskRole::Volume,
+            readonly: true,
+        });
+        let c = firecracker_config(&v, Path::new("/k/kernel"), false).unwrap();
+        let d = c["drives"].as_array().unwrap();
+        assert!(d[..2].iter().all(|x| x.get("cache_type").is_none()));
+        assert_eq!(d[2]["drive_id"], "volume2");
+        assert_eq!(d[2]["cache_type"], "Writeback");
+        assert_eq!(d[2]["is_read_only"], false);
+        assert_eq!(
+            (d[3]["cache_type"].as_str(), d[3]["is_read_only"].as_bool()),
+            (Some("Writeback"), Some(true))
+        );
     }
 
     #[test]
