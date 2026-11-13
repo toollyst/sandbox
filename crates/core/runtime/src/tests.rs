@@ -13,6 +13,9 @@ use sbx_model::{Digest, ImageId, Mount, NetworkPolicy, Resources, RootfsFormat};
 
 use crate::chan::block_on;
 
+#[cfg(unix)]
+mod layers;
+
 struct Env {
     root: PathBuf,
     rt: Runtime,

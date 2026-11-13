@@ -2622,9 +2622,11 @@ dependencies = [
  "sbx-executor-fake",
  "sbx-guest-proto",
  "sbx-model",
+ "sbx-rootfs",
  "sbx-store",
  "serde",
  "serde_json",
+ "tar",
 ]
 
 [[package]]
