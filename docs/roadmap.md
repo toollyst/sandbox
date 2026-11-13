@@ -186,6 +186,7 @@ VM 안에서, 나가는 연결은 허용 목록으로만. 기획: [docs/plan/dev
 
 | 단계 | 내용 | 실행기에 바라는 것 | 상태 |
 |---|---|---|---|
+| X1 | Docker 호환 표(`docs/guide/docker-compatibility.md`, wick의 COMPATIBILITY.md와 같은 방식): Docker CLI 명령과 옵션, Dockerfile 명령, Compose 키마다 한 줄. 상태(🟢 Docker와 같다, 🟡 되지만 다르다, 🔴 아직 없다, ⚫ 하지 않는다, ⚪ VM에서 의미 없다), 다른 점, 근거 테스트 이름. 정본은 코드의 표(`crates/app/cli/src/compat.rs`, `DOCKER_DIFFERENCES`를 여기로 모은다)이고 문서와 진행률(되는 것 / 할 수 있는 것)은 테스트가 만든다(`SBX_BLESS=1`, `cli-output.md`와 같은 방식). 테스트가 🟢·🟡 줄의 명령·옵션이 clap에 있고 근거 테스트가 실제로 있는지, 🔴 줄의 옵션이 clap에 없는지 본다. 그래서 기능을 넣으면 표를 고치지 않고는 CI가 통과하지 않는다. README에 진행률 한 줄 | 없음 | 계획 |
 | P1 | 규약: `sbx-guest-proto`에 빌드 층(열기·내보내기), `Lookup`, 시각, 파일 변경 알림. `sbx-executor-proto` 3에 디스크 역할 `volume`(2도 계속 말한다) | 없음 | 계획 |
 | D1 | `sbx-dockerfile`: 해석, 처음 범위, 빌드 계획 자료형, 퍼징 | 없음 | 계획 |
 | D2 | 게스트 빌드 모드: 층 쌓기, 층 내보내기(whiteout 바꾸기) | 없음 | 계획 |
