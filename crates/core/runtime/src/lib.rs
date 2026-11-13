@@ -129,8 +129,8 @@ struct Owned {
     ended_by: Option<String>,
     /// `-p`의 듣기. 버리면(정리할 때) 멈춘다.
     _ports: Option<ports::Forwarding>,
-    /// 게스트 시계 맞추기. 버리면 멈춘다.
-    _clock: clock::Running,
+    /// 게스트 시계 맞추기. 버리면 멈춘다. 끝낼 때 VM에 종료를 요청하기 전에 먼저 버린다.
+    clock: Option<clock::Running>,
     _lease: RootfsLease,
     _lock: OwnerLock,
 }
@@ -486,6 +486,8 @@ impl Runtime {
             return;
         };
         let error = owned.ended_by.take().or(error);
+        // 꺼지는 VM과 시계를 맞추다 실패를 기록하지 않게 먼저 멈춘다.
+        owned.clock.take();
         let _ = self.guest(&owned.control).shutdown();
         if !chan::block_on(owned.vm.wait(grace)).unwrap_or(false) {
             let _ = owned.vm.kill();
@@ -858,7 +860,7 @@ impl Sandbox {
                 started,
                 ended_by: None,
                 _ports: forwarding,
-                _clock: clock,
+                clock: Some(clock),
                 _lease: lease,
                 _lock: owner,
             },
