@@ -128,7 +128,7 @@ fn capabilities_are_read_once() {
     let caps = ex.capabilities();
     assert_eq!(caps.name, "fake");
     assert_eq!(caps.rootfs_formats, vec![RootfsFormat::Erofs]);
-    assert_eq!(caps.max_disks, 2);
+    assert_eq!(caps.max_disks, sbx_executor_fake::MAX_DISKS);
 }
 
 #[test]

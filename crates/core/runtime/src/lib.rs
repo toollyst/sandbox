@@ -259,6 +259,16 @@ impl Runtime {
         Ok(path)
     }
 
+    /// 이 실행기로 붙일 수 있는 층 디스크 수: 실행기의 `max_disks`에서 scratch 하나를 뺀 것. 관리 쪽의 prepare에 그대로
+    /// 넘긴다(`sbx_store::stack`). 그보다 층이 많은 이미지는 아래 층들을 합친 디스크로 뜬다.
+    pub fn layer_disks(&self) -> usize {
+        self.inner
+            .executor
+            .capabilities()
+            .max_disks
+            .saturating_sub(1)
+    }
+
     /// 샌드박스를 만든다. 아직 시작하지 않는다.
     ///
     /// 검사 순서: 실행기 기능([`validate::check`]) → 이미지 존재 → rootfs 존재.
@@ -279,7 +289,11 @@ impl Runtime {
         if !store.has_image(&spec.image) {
             return Err(RuntimeError::ImageNotPulled(spec.image));
         }
-        if !store.has_rootfs(&spec.image, spec.rootfs_format) {
+        let ready = store
+            .image(&spec.image)
+            .ok()
+            .and_then(|r| store.stack(&r, spec.rootfs_format, self.layer_disks()));
+        if ready.is_none() {
             return Err(RuntimeError::RootfsNotPrepared {
                 image: spec.image,
                 format: spec.rootfs_format,
@@ -514,6 +528,24 @@ fn to_proto_user(u: &UserSpec) -> sbx_guest_proto::User {
     }
 }
 
+/// VM에 붙일 디스크: 맨 아래 층, scratch, 그 위 층들 차례(실행기 규약의 "게스트에 대한 약속", 게스트의 부팅 규칙).
+/// 층은 모두 `Rootfs` 역할, 읽기 전용이다.
+fn vm_disks(layers: &[PathBuf], scratch: PathBuf) -> Vec<Disk> {
+    let layer = |p: &PathBuf| Disk {
+        path: p.clone(),
+        role: DiskRole::Rootfs,
+        readonly: true,
+    };
+    let mut disks: Vec<Disk> = layers.iter().take(1).map(layer).collect();
+    disks.push(Disk {
+        path: scratch,
+        role: DiskRole::Scratch,
+        readonly: false,
+    });
+    disks.extend(layers.iter().skip(1).map(layer));
+    disks
+}
+
 /// bind 마운트 `i`번째(0부터)의 공유 태그.
 fn share_tag(i: usize) -> String {
     format!("sbx{i}")
@@ -674,7 +706,7 @@ impl Sandbox {
         let lease = rt
             .inner
             .store
-            .lease(&spec.image, spec.rootfs_format)
+            .lease(&spec.image, spec.rootfs_format, rt.layer_disks())
             .map_err(|e| match e {
                 LeaseError::ImageNotFound => RuntimeError::ImageNotPulled(spec.image.clone()),
                 LeaseError::RootfsNotFound => RuntimeError::RootfsNotPrepared {
@@ -687,18 +719,7 @@ impl Sandbox {
         let vm_config = VmConfig {
             guest_init,
             kernel: lease.kernel().map(Path::to_path_buf),
-            disks: vec![
-                Disk {
-                    path: lease.rootfs().to_owned(),
-                    role: DiskRole::Rootfs,
-                    readonly: true,
-                },
-                Disk {
-                    path: paths.scratch(),
-                    role: DiskRole::Scratch,
-                    readonly: false,
-                },
-            ],
+            disks: vm_disks(lease.disks(), paths.scratch()),
             vcpus: spec.resources.vcpus,
             memory_mib: spec.resources.memory_mib,
             shares: spec

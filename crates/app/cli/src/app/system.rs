@@ -1,7 +1,8 @@
 //! `system df`, `system prune`: 디스크 사용량과 쓰지 않는 것 지우기(Docker `system df`, `system prune`).
 //!
 //! 크기는 파일이 디스크에서 실제로 차지하는 바이트다(Unix는 할당된 블록). 쓰기 디스크(`scratch.img`)는 sparse라서
-//! 정한 크기가 아니라 게스트가 쓴 만큼이다.
+//! 정한 크기가 아니라 게스트가 쓴 만큼이다. 이미지는 층 단위로 저장하므로(같은 층은 한 번) 여러 이미지가 함께 쓰는
+//! 층은 한 번만 센다. `SHARED`는 그중 둘 이상이 쓰는 것이다.
 //!
 //! `prune`이 지우는 것(명시적 동작):
 //!
@@ -9,7 +10,8 @@
 //!   `label=K[=V]`로 좁힌다.
 //! - `-a`면 남은 샌드박스 어느 것도 쓰지 않는 이미지(참조와 함께). 없으면 이미지는 지우지 않는다(sbx에는 Docker의
 //!   "dangling" 이미지가 없다: 받은 이미지에는 늘 참조가 있다).
-//! - 어느 이미지도 쓰지 않는 레이어 blob, 끝내지 못한 받기·만들기가 남긴 임시 파일, 지우다 멈춘 샌드박스 디렉터리.
+//! - 어느 이미지도 쓰지 않는 레이어 blob·층 디스크·합친 디스크, 끝내지 못한 받기·만들기가 남긴 임시 파일, 지우다
+//!   멈춘 샌드박스 디렉터리.
 //!   임시 것은 [`LEFTOVER_AGE`]보다 오래된 것만 지운다(다른 프로세스가 지금 쓰는 중일 수 있다).
 //!
 //! 지우기 전에 묻는다. 터미널이 아니면 `-f`가 있어야 한다.
@@ -80,42 +82,63 @@ fn remove_leftovers(dir: &Path, pick: impl Fn(&str) -> bool, out: &mut Vec<Strin
     freed
 }
 
+/// 캐시에서 이미지들이 차지하는 것과 그 디스크 크기([`sbx_manage::Manager::stored_parts`]). 여럿이 쓰는 것도 한 번.
+fn measured_parts(m: &sbx_manage::Manager) -> AppResult<Vec<(sbx_manage::StoredPart, u64)>> {
+    Ok(m.stored_parts()?
+        .into_iter()
+        .map(|p| {
+            let b = disk_usage(&p.path);
+            (p, b)
+        })
+        .collect())
+}
+
+/// 이미지 하나의 디스크 크기: 그것이 쓰는 것 모두, 그중 다른 이미지도 쓰는 것, 그 이미지만 쓰는 것(`rmi`가 비우는 것).
+fn image_sizes(
+    parts: &[(sbx_manage::StoredPart, u64)],
+    id: &sbx_model::ImageId,
+) -> (u64, u64, u64) {
+    let mut out = (0, 0, 0);
+    for (p, b) in parts.iter().filter(|(p, _)| p.users.contains(id)) {
+        out.0 += b;
+        if p.users.len() > 1 {
+            out.1 += b;
+        } else {
+            out.2 += b;
+        }
+    }
+    out
+}
+
 impl Ctx {
+    /// 이미지 ID마다 (SIZE, SHARED, UNIQUE)를 주는 함수([`image_sizes`]). `images`가 쓴다.
+    pub(super) fn image_disk_sizes(
+        &self,
+        m: &sbx_manage::Manager,
+    ) -> AppResult<impl Fn(&sbx_model::ImageId) -> (u64, u64, u64)> {
+        let parts = measured_parts(m)?;
+        Ok(move |id: &sbx_model::ImageId| image_sizes(&parts, id))
+    }
+
     pub(super) async fn system_df(&self) -> AppResult<u8> {
         let m = self.manager()?;
-        let layout = m.store().layout().clone();
         let images = m.images()?;
         let sandboxes = self.runtime()?.list().await?;
         let used: std::collections::BTreeSet<_> =
             sandboxes.iter().map(|s| s.spec.image.clone()).collect();
-        // 이미지 크기: 이미지 디렉터리(rootfs 등)와 그 레이어. 같은 레이어를 쓰는 이미지가 여럿이면 한 번만 센다.
-        let mut counted = std::collections::BTreeSet::new();
-        let (mut size, mut reclaimable) = (0u64, 0u64);
-        let layer_users = |d: &sbx_model::Digest| {
-            images
-                .iter()
-                .filter(|i| i.record.layers.iter().any(|l| l.digest == *d))
-                .map(|i| i.record.id.clone())
-                .collect::<Vec<_>>()
-        };
-        for i in &images {
-            let dir = disk_usage(&layout.image_dir(&i.record.id));
-            let free = !used.contains(&i.record.id);
-            size += dir;
-            if free {
-                reclaimable += dir;
-            }
-            for l in &i.record.layers {
-                if !counted.insert(l.digest.clone()) {
-                    continue;
-                }
-                let b = disk_usage(&layout.blob(&l.digest));
-                size += b;
-                if layer_users(&l.digest).iter().all(|u| !used.contains(u)) {
-                    reclaimable += b;
-                }
-            }
-        }
+        // 이미지 크기: 이미지 디렉터리, blob, 층 디스크, 합친 디스크. 여러 이미지가 함께 쓰는 것은 한 번만 센다.
+        let parts = measured_parts(&m)?;
+        let size: u64 = parts.iter().map(|(_, b)| b).sum();
+        let shared: u64 = parts
+            .iter()
+            .filter(|(p, _)| p.users.len() > 1)
+            .map(|(_, b)| b)
+            .sum();
+        let reclaimable: u64 = parts
+            .iter()
+            .filter(|(p, _)| p.users.iter().all(|u| !used.contains(u)))
+            .map(|(_, b)| b)
+            .sum();
         let running = sandboxes
             .iter()
             .filter(|s| s.state == State::Running)
@@ -147,6 +170,7 @@ impl Ctx {
                     .filter(|i| used.contains(&i.record.id))
                     .count() as u64,
                 size,
+                shared,
                 reclaimable,
             },
             output::DiskUsage {
@@ -154,6 +178,7 @@ impl Ctx {
                 total: sandboxes.len() as u64,
                 active: running,
                 size: sb_size,
+                shared: 0,
                 reclaimable: sb_free,
             },
             output::DiskUsage {
@@ -161,6 +186,7 @@ impl Ctx {
                 total: ex as u64,
                 active: 0,
                 size: ex_size,
+                shared: 0,
                 reclaimable: 0,
             },
         ];
@@ -169,16 +195,17 @@ impl Ctx {
             return Ok(0);
         }
         println!(
-            "{:<12} {:<7} {:<7} {:<10} RECLAIMABLE",
-            "TYPE", "TOTAL", "ACTIVE", "SIZE"
+            "{:<12} {:<7} {:<7} {:<10} {:<10} RECLAIMABLE",
+            "TYPE", "TOTAL", "ACTIVE", "SIZE", "SHARED"
         );
         for r in &rows {
             println!(
-                "{:<12} {:<7} {:<7} {:<10} {}",
+                "{:<12} {:<7} {:<7} {:<10} {:<10} {}",
                 r.kind,
                 r.total,
                 r.active,
                 behavior::human_size(r.size),
+                behavior::human_size(r.shared),
                 behavior::human_size(r.reclaimable)
             );
         }
@@ -251,7 +278,9 @@ impl Ctx {
                 if in_use.contains(&i.record.id) {
                     continue;
                 }
-                let size = disk_usage(&layout.image_dir(&i.record.id));
+                // 지우면 비는 것: 이 이미지만 쓰던 것(앞에서 지운 이미지와 함께 쓰던 것도 그때는 이 이미지만 쓴다).
+                let parts = measured_parts(&m)?;
+                let size = image_sizes(&parts, &i.record.id).2;
                 match m.remove(&i.record.id) {
                     Ok(r) => {
                         report.reclaimed += size;
@@ -264,12 +293,17 @@ impl Ctx {
                 }
             }
         }
-        // 어느 이미지도 쓰지 않는 레이어(지우다 멈춘 rmi가 남긴 것 포함).
-        let blobs_before = disk_usage(&layout.blobs_dir());
-        if let Ok(gone) = m.collect_blobs() {
-            report.layers.extend(gone.iter().map(|d| d.to_string()));
+        // 어느 이미지도 쓰지 않는 레이어 blob, 층 디스크, 합친 디스크(지우다 멈춘 rmi가 남긴 것 포함).
+        let stored = |l: &sbx_store::CacheLayout| {
+            disk_usage(&l.blobs_dir()) + disk_usage(&l.layers_dir()) + disk_usage(&l.merged_dir())
+        };
+        let before = stored(&layout);
+        if let Ok(gone) = m.collect() {
+            report
+                .layers
+                .extend(gone.blobs.iter().map(|d| d.to_string()));
         }
-        report.reclaimed += blobs_before.saturating_sub(disk_usage(&layout.blobs_dir()));
+        report.reclaimed += before.saturating_sub(stored(&layout));
         // 남은 임시 것: 끝내지 못한 받기·만들기, 반쯤 만들거나 지운 샌드박스 디렉터리(이름이 `.`로 시작한다).
         report.reclaimed += remove_leftovers(&layout.tmp_dir(), |_| true, &mut report.leftovers);
         report.reclaimed += remove_leftovers(&layout.pulls_dir(), |_| true, &mut report.leftovers);

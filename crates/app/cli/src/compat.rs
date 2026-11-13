@@ -448,9 +448,10 @@ pub const ROWS: &[Row] = &[
         "registries_conf_is_read_for_pulls",
         "policy_json_is_followed",
     ]),
-    differs(Commands, "images", "Also lists which root filesystem disks are prepared.", &[
+    differs(Commands, "images", "Also lists which root filesystem disks are prepared, and SIZE / SHARED / UNIQUE on disk (layers several images use are shared, as in `docker system df -v`).", &[
         "names_work_in_place_of_ids",
         "json_output_contract",
+        "images_on_one_base_store_it_once",
     ]),
     differs(Commands, "rmi", "Never removes the image of a running sandbox, even with `-f`.", &[
         "json_output_contract",
@@ -475,8 +476,11 @@ pub const ROWS: &[Row] = &[
     differs(Commands, "version", "There is no `version` command.", &["docker_options_reach_the_sandbox"])
         .sbx("--version"),
     differs(Commands, "system", "`df` and `prune`.", &["system_df_and_prune_free_what_nothing_uses"]),
-    differs(Commands, "system df", "Images, sandboxes and executors, by what is actually on disk.", &["system_df_and_prune_free_what_nothing_uses"]),
-    differs(Commands, "system prune", "Stopped sandboxes, unused layers and leftovers of interrupted pulls older than an hour.", &[
+    differs(Commands, "system df", "Images, sandboxes and executors, by what is actually on disk. A layer several images use is counted once; `SHARED` is that part.", &[
+        "system_df_and_prune_free_what_nothing_uses",
+        "images_on_one_base_store_it_once",
+    ]),
+    differs(Commands, "system prune", "Stopped sandboxes, unused layers (blobs and layer disks) and leftovers of interrupted pulls older than an hour.", &[
         "system_df_and_prune_free_what_nothing_uses",
     ]),
     not_yet(Commands, "system events", UNPLANNED).note("`sbx events` does this."),
@@ -523,7 +527,7 @@ pub const ROWS: &[Row] = &[
     wont(Commands, "stack", SWARM),
     wont(Commands, "secret", SWARM),
     wont(Commands, "config", SWARM),
-    only(Commands, "prepare", "Builds an image's root filesystem disk ahead of time (`run` does it on first use)."),
+    only(Commands, "prepare", "Builds an image's layer disks ahead of time, one per layer and shared between images, for the executor `run` would use (`run` does it on first use)."),
     only(Commands, "tui", "Sandboxes, images, events and executors on one screen, like Docker Desktop or lazydocker. Every key runs an `sbx` command and shows its command line."),
     only(Commands, "mcp", "Serves sandboxes to AI agents over the Model Context Protocol ([guide](mcp.md))."),
     only(Commands, "executor", "Installs and picks executors, the programs that run the VMs ([guide](executors.md))."),

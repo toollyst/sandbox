@@ -101,10 +101,13 @@ port that is already in use makes the start fail. A sandbox started by an older 
 
 ## Images
 
-`pull` (with a progress bar), `prepare` (build the disk image ahead of time), `images [-q]` and `rmi [-f]`. `run`
+`pull` (with a progress bar), `prepare` (build the disk images ahead of time), `images [-q]` and `rmi [-f]`. `run`
 pulls and prepares on first use (`--pull=missing|always|never`). Images come from Docker Hub, GHCR or any OCI
-registry, unmodified. Each is converted once into a read-only EROFS disk image and cached, so after the first run,
-starting a sandbox is just booting a VM. `images --format json` also lists the ports and volumes an image declares
+registry, unmodified. Each layer is converted once into a read-only EROFS disk image and cached, so after the first
+run, starting a sandbox is just booting a VM. Images built on the same base share its layer disks: a second image on
+`python:3.12` only adds its own layers. `images` shows `SIZE` (on disk, everything the image uses), `SHARED` (the
+part other images use too) and `UNIQUE` (what `rmi` would free). An image with more layers than the executor can
+attach disks gets its lowest layers merged into one disk. `images --format json` also lists the ports and volumes an image declares
 (`exposed_ports`, `volumes`); `sbx` doesn't open ports or create volumes, and those paths stay on the sandbox's disk.
 
 Without a registry, `load` and `save` move images as OCI image layout archives, the format that `docker save` (Docker
@@ -223,7 +226,8 @@ sbx system prune -a -f         # also every image no sandbox uses; -f doesn't as
 sbx system prune --filter until=24h --filter label=ci=1
 ```
 
-Sizes are what is actually on disk: a sandbox's writable disk counts what it wrote. `prune` never touches running
+Sizes are what is actually on disk: a sandbox's writable disk counts what it wrote, and a layer several images use
+counts once (the `SHARED` column). `prune` never touches running
 sandboxes or the images they use, and only removes leftovers older than an hour (another `sbx` may still be writing
 them). Without a terminal it needs `-f`. In `sbx tui`, `U` and `P` on the Images tab do the same.
 

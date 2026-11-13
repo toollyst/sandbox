@@ -198,6 +198,13 @@ impl RootfsBuilder for Listing {
     }
 }
 
+/// 디스크 하나로 띄울 때의 rootfs: 모든 층을 합친 것.
+fn merged_disk(m: &Manager, id: &ImageId) -> PathBuf {
+    let r = m.store().image(id).unwrap();
+    let chain = sbx_store::stack::chain_ids(&r.layers).pop().unwrap();
+    m.store().layout().merged_disk(&chain, RootfsFormat::Erofs)
+}
+
 fn manager(root: &std::path::Path, source: FakeSource) -> Manager {
     Manager::new(root, Arc::new(source), vec![Arc::new(Listing)]).unwrap()
 }
@@ -343,11 +350,10 @@ fn prepare_merges_layers_and_is_idempotent() {
         .record
         .id;
 
-    assert!(ready(m.prepare(&id, RootfsFormat::Erofs)).unwrap());
-    let listing =
-        std::fs::read_to_string(m.store().layout().rootfs(&id, RootfsFormat::Erofs)).unwrap();
+    assert!(ready(m.prepare(&id, RootfsFormat::Erofs, 1)).unwrap());
+    let listing = std::fs::read_to_string(merged_disk(&m, &id)).unwrap();
     assert_eq!(listing, "/\netc/\netc/hosts=new\n");
-    assert!(!ready(m.prepare(&id, RootfsFormat::Erofs)).unwrap());
+    assert!(!ready(m.prepare(&id, RootfsFormat::Erofs, 1)).unwrap());
     assert_eq!(m.images().unwrap()[0].prepared, vec![RootfsFormat::Erofs]);
     // 작업 공간이 남지 않는다.
     assert_eq!(std::fs::read_dir(root.join("tmp")).unwrap().count(), 0);
@@ -377,22 +383,22 @@ fn prepare_extracts_the_image_kernel() {
         .record
         .id;
     let layout = m.store().layout().clone();
-    assert!(!m.is_prepared(&id, RootfsFormat::Erofs));
-    assert!(ready(m.prepare(&id, RootfsFormat::Erofs)).unwrap());
-    assert!(m.is_prepared(&id, RootfsFormat::Erofs));
+    assert!(!m.is_prepared(&id, RootfsFormat::Erofs, 1));
+    assert!(ready(m.prepare(&id, RootfsFormat::Erofs, 1)).unwrap());
+    assert!(m.is_prepared(&id, RootfsFormat::Erofs, 1));
     assert_eq!(std::fs::read(layout.kernel(&id)).unwrap(), b"KERNEL");
-    let lease = m.store().lease(&id, RootfsFormat::Erofs).unwrap();
+    let lease = m.store().lease(&id, RootfsFormat::Erofs, 1).unwrap();
     assert_eq!(lease.kernel(), Some(layout.kernel(&id).as_path()));
     drop(lease);
-    assert!(!ready(m.prepare(&id, RootfsFormat::Erofs)).unwrap());
+    assert!(!ready(m.prepare(&id, RootfsFormat::Erofs, 1)).unwrap());
     // 커널만 없어졌으면 커널만 다시 꺼낸다.
     std::fs::remove_file(layout.kernel(&id)).unwrap();
     assert!(matches!(
-        m.store().lease(&id, RootfsFormat::Erofs),
+        m.store().lease(&id, RootfsFormat::Erofs, 1),
         Err(LeaseError::KernelNotFound)
     ));
-    assert!(!m.is_prepared(&id, RootfsFormat::Erofs));
-    assert!(ready(m.prepare(&id, RootfsFormat::Erofs)).unwrap());
+    assert!(!m.is_prepared(&id, RootfsFormat::Erofs, 1));
+    assert!(ready(m.prepare(&id, RootfsFormat::Erofs, 1)).unwrap());
     assert!(layout.kernel(&id).is_file());
     std::fs::remove_dir_all(&root).unwrap();
 
@@ -407,11 +413,11 @@ fn prepare_extracts_the_image_kernel() {
             .unwrap()
             .record
             .id;
-        match ready(m.prepare(&id, RootfsFormat::Erofs)) {
+        match ready(m.prepare(&id, RootfsFormat::Erofs, 1)) {
             Err(ManageError::Kernel { reason, .. }) => assert!(reason.contains(why), "{reason}"),
             other => panic!("{label}: {other:?}"),
         }
-        assert!(!m.store().has_rootfs(&id, RootfsFormat::Erofs));
+        assert!(!m.is_prepared(&id, RootfsFormat::Erofs, 1));
         assert!(!m.store().layout().kernel(&id).exists());
         std::fs::remove_dir_all(&root).unwrap();
     }
@@ -428,10 +434,10 @@ fn prepare_detects_diff_id_mismatch() {
         .record
         .id;
     assert!(matches!(
-        ready(m.prepare(&id, RootfsFormat::Erofs)),
+        ready(m.prepare(&id, RootfsFormat::Erofs, 1)),
         Err(ManageError::Integrity(_))
     ));
-    assert!(!m.store().has_rootfs(&id, RootfsFormat::Erofs));
+    assert!(!m.is_prepared(&id, RootfsFormat::Erofs, 1));
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -446,12 +452,12 @@ fn prepare_without_builder_or_image() {
     .unwrap();
     let id = ImageId::new(sha256(b"missing"));
     assert!(matches!(
-        ready(m.prepare(&id, RootfsFormat::Erofs)),
+        ready(m.prepare(&id, RootfsFormat::Erofs, 1)),
         Err(ManageError::BuilderMissing(RootfsFormat::Erofs))
     ));
     let m = manager(&root, FakeSource::new(vec![]));
     assert!(matches!(
-        ready(m.prepare(&id, RootfsFormat::Erofs)),
+        ready(m.prepare(&id, RootfsFormat::Erofs, 1)),
         Err(ManageError::ImageNotFound(_))
     ));
     std::fs::remove_dir_all(root).unwrap();
@@ -465,9 +471,9 @@ fn remove_and_untag() {
         .unwrap()
         .record
         .id;
-    ready(m.prepare(&id, RootfsFormat::Erofs)).unwrap();
+    ready(m.prepare(&id, RootfsFormat::Erofs, 1)).unwrap();
 
-    let lease = m.store().lease(&id, RootfsFormat::Erofs).unwrap();
+    let lease = m.store().lease(&id, RootfsFormat::Erofs, 1).unwrap();
     assert!(matches!(m.remove(&id), Err(ManageError::InUse(_))));
     assert!(m.store().has_image(&id));
     drop(lease);
@@ -520,7 +526,7 @@ fn remove_deletes_only_layers_no_other_image_uses() {
     assert!(layout.blob(&base_d).is_file());
 
     // 남은 이미지는 레이어가 다 있으므로 prepare된다.
-    assert!(ready(b.prepare(&id_b, RootfsFormat::Erofs)).unwrap());
+    assert!(ready(b.prepare(&id_b, RootfsFormat::Erofs, 1)).unwrap());
 
     let r = b.remove(&id_b).unwrap();
     let mut expected = vec![base_d, b_d];
@@ -564,9 +570,9 @@ fn cache_changes_are_recorded_as_events() {
         .unwrap()
         .record
         .id;
-    assert!(ready(m.prepare(&id, RootfsFormat::Erofs)).unwrap());
+    assert!(ready(m.prepare(&id, RootfsFormat::Erofs, 1)).unwrap());
     // 이미 있으면 아무것도 만들지 않고 기록도 없다.
-    assert!(!ready(m.prepare(&id, RootfsFormat::Erofs)).unwrap());
+    assert!(!ready(m.prepare(&id, RootfsFormat::Erofs, 1)).unwrap());
     m.remove(&id).unwrap();
     // 실패한 동작은 기록하지 않는다.
     assert!(m.untag("docker.io/library/nope:latest").is_err());
@@ -596,6 +602,253 @@ fn cache_changes_are_recorded_as_events() {
         got.iter()
             .all(|e| e.kind == EVENT_KIND && e.id == id.to_string())
     );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// 같은 캐시를 쓰는 두 번째 이미지(다른 ID, 다른 참조).
+fn second(layers: Vec<(Vec<u8>, Layer)>, name: &str) -> FakeSource {
+    let mut src = FakeSource::new(layers);
+    src.image.id = ImageId::new(sha256(name.as_bytes()));
+    src.image.reference = format!("docker.io/library/{name}:latest");
+    src
+}
+
+fn pulled(m: &Manager) -> ImageId {
+    ready(m.pull("x", Platform { arch: Arch::X86_64 }))
+        .unwrap()
+        .record
+        .id
+}
+
+fn layer_disk(m: &Manager, l: &Layer) -> PathBuf {
+    m.store()
+        .layout()
+        .layer_disk(&l.diff_id, RootfsFormat::Erofs)
+}
+
+#[test]
+fn layers_get_one_disk_each_and_images_share_them() {
+    let root = temp_root("share");
+    let base = layer(&[T::Dir("etc"), T::File("etc/os", b"base")]);
+    let only_a = layer(&[T::Dir("etc"), T::Whiteout("etc/.wh.os"), T::File("a", b"a")]);
+    let only_b = layer(&[T::File("b", b"b")]);
+    let (bl, al, bbl) = (base.1.clone(), only_a.1.clone(), only_b.1.clone());
+    let a = manager(&root, FakeSource::new(vec![base.clone(), only_a]));
+    let b = manager(&root, second(vec![base, only_b], "b"));
+    let (id_a, id_b) = (pulled(&a), pulled(&b));
+
+    assert!(ready(a.prepare(&id_a, RootfsFormat::Erofs, 8)).unwrap());
+    assert_eq!(
+        std::fs::read_to_string(layer_disk(&a, &bl)).unwrap(),
+        "/\netc/\netc/os=base\n"
+    );
+    // whiteout은 overlay의 문자 장치 0/0이다.
+    assert_eq!(
+        std::fs::read_to_string(layer_disk(&a, &al)).unwrap(),
+        "/\na=a\netc/\netc/os CharDevice { major: 0, minor: 0 }\n"
+    );
+    let base_disk = std::fs::metadata(layer_disk(&a, &bl))
+        .unwrap()
+        .modified()
+        .unwrap();
+    // b는 자기 층만 만든다. 바탕 층은 a가 만든 것 그대로다.
+    assert!(ready(b.prepare(&id_b, RootfsFormat::Erofs, 8)).unwrap());
+    assert_eq!(
+        std::fs::metadata(layer_disk(&b, &bl))
+            .unwrap()
+            .modified()
+            .unwrap(),
+        base_disk
+    );
+    assert!(layer_disk(&b, &bbl).is_file());
+    assert!(!root.join("merged").exists(), "nothing merged");
+    let lease = b.store().lease(&id_b, RootfsFormat::Erofs, 8).unwrap();
+    assert_eq!(lease.disks(), [layer_disk(&b, &bl), layer_disk(&b, &bbl)]);
+    drop(lease);
+    assert_eq!(a.images().unwrap()[0].prepared, vec![RootfsFormat::Erofs]);
+
+    // 바탕 층은 하나로 센다. 두 이미지가 쓴다.
+    let parts = a.stored_parts().unwrap();
+    let base_part = parts
+        .iter()
+        .find(|p| p.path == b.store().layout().layer_dir(&bl.diff_id))
+        .unwrap();
+    assert_eq!(base_part.kind, PartKind::Layer);
+    let mut both = vec![id_a.clone(), id_b.clone()];
+    both.sort();
+    assert_eq!(base_part.users, both);
+    assert_eq!(
+        parts.iter().filter(|p| p.kind == PartKind::Layer).count(),
+        3
+    );
+    assert_eq!(
+        parts.iter().filter(|p| p.kind == PartKind::Image).count(),
+        2
+    );
+
+    // a를 지우면 a만 쓰던 층만 지워진다. 둘 다 지우면 층이 남지 않는다.
+    let r = a.remove(&id_a).unwrap();
+    assert_eq!(r.deleted_disks, vec![al.diff_id.clone()]);
+    assert!(layer_disk(&b, &bl).is_file());
+    let r = b.remove(&id_b).unwrap();
+    let mut gone = vec![bl.diff_id, bbl.diff_id];
+    gone.sort();
+    assert_eq!(r.deleted_disks, gone);
+    assert_eq!(std::fs::read_dir(root.join("layers")).unwrap().count(), 0);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn layers_above_the_disk_limit_are_merged_from_the_bottom() {
+    let root = temp_root("limit");
+    let names = ["f0", "f1", "f2", "f3"];
+    let ls: Vec<_> = names.iter().map(|n| layer(&[T::File(n, b"x")])).collect();
+    let descs: Vec<Layer> = ls.iter().map(|l| l.1.clone()).collect();
+    let m = manager(&root, FakeSource::new(ls));
+    let id = pulled(&m);
+    assert!(ready(m.prepare(&id, RootfsFormat::Erofs, 2)).unwrap());
+    let layout = m.store().layout();
+    let chain = sbx_store::stack::chain_ids(&descs)[2].clone();
+    assert_eq!(
+        std::fs::read_to_string(layout.merged_disk(&chain, RootfsFormat::Erofs)).unwrap(),
+        "/\nf0=x\nf1=x\nf2=x\n"
+    );
+    // 합쳐진 층은 따로 만들지 않는다.
+    assert!(!layout.layer_dir(&descs[0].diff_id).exists());
+    assert!(layer_disk(&m, &descs[3]).is_file());
+    assert!(m.is_prepared(&id, RootfsFormat::Erofs, 2));
+    assert!(!m.is_prepared(&id, RootfsFormat::Erofs, 8));
+    // 디스크가 넉넉한 실행기로 띄우려면 나머지 층을 만든다.
+    assert!(ready(m.prepare(&id, RootfsFormat::Erofs, 8)).unwrap());
+    assert!(!ready(m.prepare(&id, RootfsFormat::Erofs, 8)).unwrap());
+    // 합친 것은 캐시다. 지워도 다시 만든다.
+    std::fs::remove_dir_all(layout.merged_for(&chain)).unwrap();
+    assert!(!m.is_prepared(&id, RootfsFormat::Erofs, 2));
+    assert!(ready(m.prepare(&id, RootfsFormat::Erofs, 2)).unwrap());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_layer_that_needs_the_lower_layers_is_merged_with_them() {
+    let root = temp_root("needs-lower");
+    // 둘째 층은 tmp/의 항목 없이 tmp/x만 적는다. 따로 쌓으면 아래층 /tmp의 권한을 잃는다.
+    let ls = vec![
+        layer(&[T::Dir("tmp")]),
+        layer(&[T::File("tmp/x", b"x")]),
+        layer(&[T::File("top", b"t")]),
+    ];
+    let descs: Vec<Layer> = ls.iter().map(|l| l.1.clone()).collect();
+    let m = manager(&root, FakeSource::new(ls));
+    let id = pulled(&m);
+    assert!(ready(m.prepare(&id, RootfsFormat::Erofs, 8)).unwrap());
+    let layout = m.store().layout();
+    let why = std::fs::read_to_string(layout.layer_needs_lower(&descs[1].diff_id)).unwrap();
+    assert!(why.contains("tmp"), "{why}");
+    let chain = sbx_store::stack::chain_ids(&descs)[1].clone();
+    let lease = m.store().lease(&id, RootfsFormat::Erofs, 8).unwrap();
+    assert_eq!(
+        lease.disks(),
+        [
+            layout.merged_disk(&chain, RootfsFormat::Erofs),
+            layer_disk(&m, &descs[2])
+        ]
+    );
+    drop(lease);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// 만들 때마다 받은 트리를 적고, 겹치게 하려고 잠깐 멈추는 writer.
+struct Recording(Arc<std::sync::Mutex<Vec<String>>>);
+
+impl RootfsBuilder for Recording {
+    fn format(&self) -> RootfsFormat {
+        RootfsFormat::Erofs
+    }
+
+    fn build(
+        &self,
+        tree: &MergedTree,
+        content: &dyn ContentSource,
+        out: &mut dyn WriteSeek,
+    ) -> Result<(), RootfsError> {
+        let mut listing = std::io::Cursor::new(Vec::new());
+        Listing.build(tree, content, &mut listing)?;
+        let listing = listing.into_inner();
+        self.0
+            .lock()
+            .unwrap()
+            .push(String::from_utf8(listing.clone()).unwrap());
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        out.write_all(&listing)?;
+        Ok(())
+    }
+}
+
+#[test]
+fn concurrent_prepares_build_a_shared_layer_once() {
+    let root = temp_root("concurrent");
+    let base = layer(&[T::File("shared", b"base")]);
+    let built = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let make = |src: FakeSource| {
+        Manager::new(
+            &root,
+            Arc::new(src),
+            vec![Arc::new(Recording(built.clone()))],
+        )
+        .unwrap()
+    };
+    let a = make(FakeSource::new(vec![base.clone()]));
+    let b = make(second(vec![base.clone()], "b"));
+    let (id_a, id_b) = (pulled(&a), pulled(&b));
+    let gate = std::sync::Barrier::new(2);
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            gate.wait();
+            ready(a.prepare(&id_a, RootfsFormat::Erofs, 8)).unwrap();
+        });
+        s.spawn(|| {
+            gate.wait();
+            ready(b.prepare(&id_b, RootfsFormat::Erofs, 8)).unwrap();
+        });
+    });
+    assert_eq!(*built.lock().unwrap(), ["/\nshared=base\n"]);
+    assert_eq!(
+        std::fs::read_to_string(layer_disk(&a, &base.1)).unwrap(),
+        "/\nshared=base\n"
+    );
+    // 임시 파일이 남지 않는다.
+    let mut names: Vec<_> = std::fs::read_dir(a.store().layout().layer_dir(&base.1.diff_id))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(names, [".lock", "layer.erofs"]);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_layout_1_cache_is_migrated_and_prepared_again() {
+    let root = temp_root("migrate");
+    let m = manager(&root, FakeSource::new(vec![layer(&[T::File("a", b"1")])]));
+    let id = pulled(&m);
+    // 0.2가 만든 이미지별 rootfs.
+    let old = m.store().layout().legacy_rootfs(&id, RootfsFormat::Erofs);
+    std::fs::write(&old, b"merged by 0.2").unwrap();
+    assert!(!m.is_prepared(&id, RootfsFormat::Erofs, 8));
+    assert_eq!(
+        migrate_from_layout_1(&root).unwrap(),
+        std::slice::from_ref(&old)
+    );
+    assert!(!old.exists());
+    assert!(ready(m.prepare(&id, RootfsFormat::Erofs, 8)).unwrap());
+    assert!(m.is_prepared(&id, RootfsFormat::Erofs, 8));
+    // blob이 없으면(손으로 지웠으면) 다시 받으라고 한다.
+    let layout = m.store().layout();
+    let r = m.store().image(&id).unwrap();
+    std::fs::remove_dir_all(layout.layer_dir(&r.layers[0].diff_id)).unwrap();
+    std::fs::remove_file(layout.blob(&r.layers[0].digest)).unwrap();
+    let e = ready(m.prepare(&id, RootfsFormat::Erofs, 8)).unwrap_err();
+    assert!(e.to_string().contains("pull the image again"), "{e}");
     std::fs::remove_dir_all(root).unwrap();
 }
 

@@ -157,6 +157,41 @@ mod tests {
         assert_eq!(c["boot-source"]["kernel_image_path"], "/c/images/x/kernel");
     }
 
+    /// 층 디스크가 여럿이면(맨 아래 층, scratch, 위 층들) 받은 차례 그대로 drive가 된다. 게스트 장치 이름이 그 차례다.
+    #[test]
+    fn layer_disks_become_drives_in_order() {
+        let mut v = vm();
+        for i in 1..=2 {
+            v.disks.push(DiskSpec {
+                path: format!("/c/layers/{i}/layer.erofs").into(),
+                role: DiskRole::Rootfs,
+                readonly: true,
+            });
+        }
+        let c = firecracker_config(&v, Path::new("/k/kernel"), false).unwrap();
+        let d = c["drives"].as_array().unwrap();
+        let got: Vec<(&str, &str, bool)> = d
+            .iter()
+            .map(|x| {
+                (
+                    x["drive_id"].as_str().unwrap(),
+                    x["path_on_host"].as_str().unwrap(),
+                    x["is_read_only"].as_bool().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("rootfs0", "/c/rootfs.erofs", true),
+                ("scratch1", "/d/scratch.img", false),
+                ("rootfs2", "/c/layers/1/layer.erofs", true),
+                ("rootfs3", "/c/layers/2/layer.erofs", true),
+            ]
+        );
+        assert!(d.iter().all(|x| x["is_root_device"] == false));
+    }
+
     #[test]
     fn unsupported_or_unsafe_specs_are_refused() {
         let mut v = vm();

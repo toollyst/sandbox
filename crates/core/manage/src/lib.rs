@@ -7,12 +7,18 @@
 //!
 //! - `pull`은 받기만 한다. rootfs는 만들지 않는다. 이미 있는 레이어는 다시 받지 않는다.
 //!   레이어는 digest를 직접 계산해 맞을 때만 저장한다. 모든 레이어가 저장된 뒤에야 이미지 기록과 참조를 쓴다.
-//! - `prepare`는 이미 그 형식의 rootfs가 있으면 아무것도 하지 않는다. 레이어의 diff_id도 직접 계산해 대조한다.
+//! - `prepare`는 층 단위로 만든다(층마다 EROFS 하나, 같은 층은 이미지끼리 한 번만, `sbx_store::stack`). 실행기가 붙일
+//!   디스크 수를 받아 그 안에 들게 하고, 모자라면 아래 층들을 합친다. 이미 다 있으면 아무것도 하지 않는다.
+//!   레이어의 diff_id도 직접 계산해 대조한다. 압축 blob은 지우지 않는다(`save`가 그대로 쓴다).
+//!   **S1 phase B 자리**: 층 디스크를 만든 뒤 받은 blob을 지우고(`--keep-blobs`로 남긴다), `save`·push가 층 디스크에서
+//!   층 tar를 다시 만드는 일은 [`Manager::prepare`]의 끝과 [`Manager::save`]에 붙는다. 그때 `collect`의 blob 규칙과
+//!   `stored_parts`의 `Blob`도 바뀐다.
 //!   이미지가 자기 커널을 담고 있으면(`ImageConfig::KERNEL_LABEL`) 그 커널도 `images/<hex>/kernel`로 꺼낸다.
 //!   커널을 꺼낼 수 없으면(라벨의 경로가 없거나 일반 파일이 아니면) rootfs도 만들지 않는다.
 //!   만드는 동안 이미지에 공유 잠금을 쥐므로 그사이 이미지가 지워지지 않는다.
 //! - 자동 정리는 없다. 무엇을 언제 지울지는 관리하는 쪽(임베드한 앱이나 사람)이 정하고 `remove`를 부른다.
-//! - `remove`는 이미지를 지운 뒤 다른 이미지도, 진행 중인 pull도 쓰지 않는 레이어 blob을 지운다(Docker `rmi`와 같다).
+//! - `remove`는 이미지를 지운 뒤 다른 이미지도, 진행 중인 pull도 쓰지 않는 레이어 blob, 층 디스크, 합친 디스크를
+//!   지운다(Docker `rmi`와 같다).
 //!   동시에 같은 레이어를 쓰는 이미지를 받고 있어도 그 blob은 남는다([`write::claim_blobs`]).
 //! - `tag`는 참조 하나를 이미지에 붙인다. 그 참조가 다른 이미지를 가리키고 있었으면 옮긴다(Docker `tag`와 같다).
 //!   참조의 정규화는 부르는 쪽이 한다(OCI 이름 규칙은 이 크레이트가 모른다).
@@ -48,7 +54,9 @@ use sbx_model::{Arch, Compression, Digest, ImageId, RootfsFormat};
 use sbx_rootfs::{ContentSource, MergedTree, NodeKind, RootfsBuilder};
 use sbx_store::digest::HashingReader;
 use sbx_store::write::{self, BlobWriter, WorkDir};
-use sbx_store::{ImageRecord, LeaseError, Store};
+use sbx_store::{ImageRecord, LayerState, LeaseError, Part, Plan, Store};
+
+pub use sbx_store::write::Collected;
 
 mod error;
 mod layer;
@@ -86,6 +94,33 @@ pub struct Removal {
     pub deleted: Option<ImageId>,
     /// 함께 지운 레이어 blob. 다른 이미지가 쓰는 레이어는 남는다.
     pub deleted_layers: Vec<Digest>,
+    /// 함께 지운 층 디스크(diff_id). 다른 이미지가 쓰는 층은 남는다.
+    pub deleted_disks: Vec<Digest>,
+}
+
+/// 캐시에서 이미지가 차지하는 것의 종류([`StoredPart`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PartKind {
+    /// 이미지 디렉터리(기록, 받은 문서, 꺼낸 커널).
+    Image,
+    /// 압축한 층 blob(`save`, prepare가 읽는다).
+    Blob,
+    /// 층 하나의 디스크(디렉터리).
+    Layer,
+    /// 아래 층들을 합친 디스크(디렉터리, 지워도 되는 캐시).
+    Merged,
+}
+
+/// 캐시에서 이미지들이 차지하는 것 하나와 그것을 쓰는 이미지들([`Manager::stored_parts`]). 같은 층을 쓰는 이미지가
+/// 여럿이면 하나로 센다. 크기는 부르는 쪽이 `path`로 잰다.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredPart {
+    /// 종류.
+    pub kind: PartKind,
+    /// 파일이나 디렉터리.
+    pub path: PathBuf,
+    /// 쓰는 이미지들. ID 순서.
+    pub users: Vec<ImageId>,
 }
 
 /// 관리 코어.
@@ -354,6 +389,8 @@ impl Manager {
     /// 있으면 그 이름을 index에 붙인다(`io.containerd.image.name`, 태그는 `org.opencontainers.image.ref.name`).
     /// `docker save`처럼 Docker의 `manifest.json`도 함께 쓴다: `docker load`는 그것만 읽는다. 쓰는 동안 이미지를
     /// 쥔다.
+    ///
+    /// S1 phase B 자리: prepare가 blob을 지우게 되면 여기서 층 디스크로부터 층 tar를 다시 만든다(지금은 blob 그대로).
     pub fn save(
         &self,
         image: &ImageId,
@@ -454,12 +491,18 @@ impl Manager {
         let _ = sbx_events::Log::new(self.store.layout().image_events()).append(e);
     }
 
-    /// 그 형식의 rootfs를 만든다. 이미지가 자기 커널을 담고 있으면(`ImageConfig::KERNEL_LABEL`) 그 커널도 꺼낸다.
+    /// 디스크 `max_disks`개(실행기가 붙일 수 있는 수에서 scratch 하나를 뺀 것)로 띄울 층 구성을 만든다
+    /// (`sbx_store::stack`). 이미지가 자기 커널을 담고 있으면(`ImageConfig::KERNEL_LABEL`) 그 커널도 꺼낸다.
     /// 무언가 만들었으면 `true`, 모두 이미 있었으면 `false`.
+    ///
+    /// 위 층부터 하나씩 살펴 층 디스크(`layers/<diff_id>/layer.<형식>`)를 만든다. 같은 층은 다른 이미지가 이미 만들었으면
+    /// 그대로 쓰고, 두 프로세스가 함께 만들려 하면 하나만 만든다(`write::lock_build`). 혼자 설 수 없는 층은 표시만 남긴다.
+    /// 디스크가 모자라거나 혼자 설 수 없는 층이 있으면 아래 층들을 합친 것(`merged/<chain_id>`)을 만든다.
     pub async fn prepare(
         &self,
         image: &ImageId,
         format: RootfsFormat,
+        max_disks: usize,
     ) -> Result<bool, ManageError> {
         let builder = self
             .builders
@@ -470,46 +513,33 @@ impl Manager {
             LeaseError::Io(e) => ManageError::Io(e),
             _ => ManageError::ImageNotFound(image.clone()),
         })?;
-        let record = self.store.image(image)?;
         let layout = self.store.layout();
-        let need_rootfs = !self.store.has_rootfs(image, format);
-        let need_kernel = record
+        // 이 이미지 기록을 보지 못한 정리가 끝나기를 기다린다. 그 뒤에 본 층은 지워지지 않는다.
+        write::wait_for_collect(layout)?;
+        let record = self.store.image(image)?;
+        let mut built = false;
+        let parts = loop {
+            match self.store.plan(&record, format, max_disks) {
+                Plan::Parts(parts) => break parts,
+                Plan::Inspect(index) => {
+                    built |= self.inspect_layer(&record, index, format, builder.as_ref())?;
+                }
+            }
+        };
+        for part in &parts {
+            if let Part::Merged { chain, layers } = part {
+                built |= self.build_merged(&record, *layers, chain, format, builder.as_ref())?;
+            }
+        }
+        // 커널은 모든 층을 합친 트리에서 찾는다(링크가 층을 넘을 수 있다). 잘못된 라벨이면 이 이미지로는 부팅할 수 없다.
+        if let Some(path) = record
             .config
             .kernel()
-            .filter(|_| !layout.kernel(image).is_file());
-        if !need_rootfs && need_kernel.is_none() {
-            return Ok(false);
-        }
-        let work = WorkDir::create(layout, "prepare")?;
-
-        let mut tree = MergedTree::new();
-        for (index, l) in record.layers.iter().enumerate() {
-            let file = File::open(layout.blob(&l.digest)).map_err(|e| ManageError::Layer {
-                index,
-                reason: format!("blob {}: {e}", l.digest),
-            })?;
-            let decoded: Box<dyn Read> = match l.compression {
-                Compression::None => Box::new(BufReader::new(file)),
-                Compression::Gzip => Box::new(GzDecoder::new(BufReader::new(file))),
-                Compression::Zstd => Box::new(zstd::ZstdReader::new(BufReader::new(file))),
-            };
-            let mut hashing = HashingReader::new(decoded);
-            let entries = layer::read(index, &mut hashing, work.path())?;
-            // tar 끝 표시 뒤에 남은 바이트까지 읽어야 diff_id가 맞는다.
-            io::copy(&mut hashing, &mut io::sink())?;
-            let actual = hashing.digest();
-            if actual != l.diff_id {
-                return Err(ManageError::Integrity(format!(
-                    "layer {index} diff_id: expected {}, got {actual}",
-                    l.diff_id
-                )));
-            }
-            tree.apply_layer(entries)?;
-        }
-        let spool = layer::Spool::new(work.path());
-
-        // 커널을 먼저 꺼낸다. 잘못된 라벨이면 rootfs도 만들지 않는다(이 이미지로는 부팅할 수 없다).
-        if let Some(path) = need_kernel {
+            .filter(|_| !layout.kernel(image).is_file())
+        {
+            let work = WorkDir::create(layout, "prepare")?;
+            let tree = self.merge(&record.layers, work.path())?;
+            let spool = layer::Spool::new(work.path());
             let target = layout.kernel(image);
             let temp = write::temp_path(&layout.image_dir(image), "kernel");
             let result = extract_kernel(&tree, &spool, path, &temp)
@@ -518,39 +548,146 @@ impl Manager {
                 let _ = std::fs::remove_file(&temp);
             }
             result?;
+            built = true;
         }
-        if need_rootfs {
-            let target = layout.rootfs(image, format);
-            let temp = write::temp_path(&layout.image_dir(image), &format!("rootfs.{format}"));
-            let result = (|| -> Result<(), ManageError> {
-                let mut out = io::BufWriter::new(File::create(&temp)?);
-                builder.build(&tree, &spool, &mut out)?;
-                let file = out.into_inner().map_err(|e| e.into_error())?;
-                file.sync_all()?;
-                std::fs::rename(&temp, &target)?;
-                Ok(())
-            })();
-            if result.is_err() {
-                let _ = std::fs::remove_file(&temp);
-            }
-            result?;
+        if built {
+            self.emit(
+                sbx_events::Event::new(EVENT_KIND, "prepare", image.to_string())
+                    .with("rootfs_format", format.to_string()),
+            );
         }
-        self.emit(
-            sbx_events::Event::new(EVENT_KIND, "prepare", image.to_string())
-                .with("rootfs_format", format.to_string()),
-        );
+        Ok(built)
+    }
+
+    /// 층 하나의 tar를 blob에서 읽어 항목으로 바꾼다. 내용은 `work`에 둔다. diff_id를 직접 계산해 대조한다.
+    fn read_layer(
+        &self,
+        index: usize,
+        l: &sbx_model::Layer,
+        work: &Path,
+    ) -> Result<Vec<sbx_rootfs::LayerEntry>, ManageError> {
+        let blob = self.store.layout().blob(&l.digest);
+        let file = File::open(&blob).map_err(|e| ManageError::Layer {
+            index,
+            reason: if e.kind() == io::ErrorKind::NotFound {
+                format!("blob {} is missing; pull the image again", l.digest)
+            } else {
+                format!("blob {}: {e}", l.digest)
+            },
+        })?;
+        let decoded: Box<dyn Read> = match l.compression {
+            Compression::None => Box::new(BufReader::new(file)),
+            Compression::Gzip => Box::new(GzDecoder::new(BufReader::new(file))),
+            Compression::Zstd => Box::new(zstd::ZstdReader::new(BufReader::new(file))),
+        };
+        let mut hashing = HashingReader::new(decoded);
+        let entries = layer::read(index, &mut hashing, work)?;
+        // tar 끝 표시 뒤에 남은 바이트까지 읽어야 diff_id가 맞는다.
+        io::copy(&mut hashing, &mut io::sink())?;
+        let actual = hashing.digest();
+        if actual != l.diff_id {
+            return Err(ManageError::Integrity(format!(
+                "layer {index} diff_id: expected {}, got {actual}",
+                l.diff_id
+            )));
+        }
+        Ok(entries)
+    }
+
+    /// 층들을 아래부터 합친다. 내용은 `work`에 둔다.
+    fn merge(&self, layers: &[sbx_model::Layer], work: &Path) -> Result<MergedTree, ManageError> {
+        let mut tree = MergedTree::new();
+        for (index, l) in layers.iter().enumerate() {
+            tree.apply_layer(self.read_layer(index, l, work)?)?;
+        }
+        Ok(tree)
+    }
+
+    /// 트리를 디스크로 써서 `target`에 놓는다(옆 임시 파일에 쓴 뒤 rename).
+    fn write_disk(
+        builder: &dyn RootfsBuilder,
+        tree: &MergedTree,
+        content: &dyn ContentSource,
+        target: &Path,
+    ) -> Result<(), ManageError> {
+        let dir = target
+            .parent()
+            .ok_or_else(|| io::Error::other("disk path has no parent"))?;
+        let name = target
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let temp = write::temp_path(dir, &name);
+        let result = (|| -> Result<(), ManageError> {
+            let mut out = io::BufWriter::new(File::create(&temp)?);
+            builder.build(tree, content, &mut out)?;
+            let file = out.into_inner().map_err(|e| e.into_error())?;
+            file.sync_all()?;
+            std::fs::rename(&temp, target)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temp);
+        }
+        result
+    }
+
+    /// `index`번 층을 살펴본다: 혼자 설 수 있으면 층 디스크를, 아니면 `needs-lower` 표시를 만든다. 만들었으면 `true`.
+    fn inspect_layer(
+        &self,
+        record: &ImageRecord,
+        index: usize,
+        format: RootfsFormat,
+        builder: &dyn RootfsBuilder,
+    ) -> Result<bool, ManageError> {
+        let layout = self.store.layout();
+        let l = &record.layers[index];
+        let _lock = write::lock_build(&layout.layer_dir(&l.diff_id))?;
+        if self.store.layer_state(&l.diff_id, format) != LayerState::Unknown {
+            return Ok(false);
+        }
+        let work = WorkDir::create(layout, "layer")?;
+        let lower = sbx_rootfs::lower::lower_layer(self.read_layer(index, l, work.path())?)?;
+        match lower.needs_lower {
+            Some(why) => write::write_needs_lower(layout, &l.diff_id, &why)?,
+            None => Self::write_disk(
+                builder,
+                &lower.tree,
+                &layer::Spool::new(work.path()),
+                &layout.layer_disk(&l.diff_id, format),
+            )?,
+        }
         Ok(true)
     }
 
-    /// 그 형식으로 띄울 준비가 됐는지: rootfs가 있고, 이미지가 자기 커널을 담고 있으면 그 커널도 꺼내 두었다.
-    /// 아니면 [`Manager::prepare`]가 할 일이 있다.
-    pub fn is_prepared(&self, image: &ImageId, format: RootfsFormat) -> bool {
+    /// 아래 `count`개 층을 합친 디스크를 만든다. 이미 있으면 `false`.
+    fn build_merged(
+        &self,
+        record: &ImageRecord,
+        count: usize,
+        chain: &Digest,
+        format: RootfsFormat,
+        builder: &dyn RootfsBuilder,
+    ) -> Result<bool, ManageError> {
         let layout = self.store.layout();
-        self.store.has_rootfs(image, format)
-            && self
-                .store
-                .image(image)
-                .is_ok_and(|r| r.config.kernel().is_none() || layout.kernel(image).is_file())
+        let target = layout.merged_disk(chain, format);
+        if target.is_file() {
+            return Ok(false);
+        }
+        let _lock = write::lock_build(&layout.merged_for(chain))?;
+        if target.is_file() {
+            return Ok(false);
+        }
+        let work = WorkDir::create(layout, "merge")?;
+        let tree = self.merge(&record.layers[..count], work.path())?;
+        Self::write_disk(builder, &tree, &layer::Spool::new(work.path()), &target)?;
+        Ok(true)
+    }
+
+    /// 디스크 `max_disks`개로 띄울 준비가 됐는지: 층 구성이 모두 있고, 이미지가 자기 커널을 담고 있으면 그 커널도 꺼내
+    /// 두었다. 아니면 [`Manager::prepare`]가 할 일이 있다.
+    pub fn is_prepared(&self, image: &ImageId, format: RootfsFormat, max_disks: usize) -> bool {
+        self.store.is_prepared(image, format, max_disks)
     }
 
     /// 받아 둔 이미지 목록. ID 순서.
@@ -570,10 +707,12 @@ impl Manager {
             .filter(|(_, id)| *id == record.id)
             .map(|(r, _)| r)
             .collect();
+        let kernel_ok =
+            record.config.kernel().is_none() || self.store.layout().kernel(&record.id).is_file();
         let prepared = RootfsFormat::ALL
             .iter()
             .copied()
-            .filter(|f| self.store.has_rootfs(&record.id, *f))
+            .filter(|f| kernel_ok && self.store.is_prepared_for_some(&record, *f))
             .collect();
         Ok(ImageInfo {
             record,
@@ -609,6 +748,7 @@ impl Manager {
                     untagged: vec![reference.to_owned()],
                     deleted: None,
                     deleted_layers: Vec::new(),
+                    deleted_disks: Vec::new(),
                 })
             }
             None => Err(ManageError::RefNotFound(reference.to_owned())),
@@ -632,9 +772,50 @@ impl Manager {
         Ok(path)
     }
 
-    /// 어느 이미지도 쓰지 않는 레이어 blob을 지운다(`system prune`). 지운 digest.
-    pub fn collect_blobs(&self) -> Result<Vec<sbx_model::Digest>, ManageError> {
-        Ok(write::collect_blobs(self.store.layout())?)
+    /// 어느 이미지도 쓰지 않는 레이어 blob, 층 디스크, 합친 디스크를 지운다(`system prune`).
+    pub fn collect(&self) -> Result<Collected, ManageError> {
+        Ok(write::collect(self.store.layout())?)
+    }
+
+    /// 캐시에서 이미지들이 차지하는 것들([`StoredPart`]). 있는 것만, 종류와 경로 순서.
+    /// 이미지 기록을 하나라도 읽지 못하면 오류다.
+    pub fn stored_parts(&self) -> Result<Vec<StoredPart>, ManageError> {
+        use std::collections::BTreeMap;
+        let layout = self.store.layout();
+        let mut parts: BTreeMap<(u8, PathBuf), (PartKind, Vec<ImageId>)> = BTreeMap::new();
+        let mut add = |kind: PartKind, path: PathBuf, id: &ImageId| {
+            if !path.exists() {
+                return;
+            }
+            let users = &mut parts
+                .entry((kind as u8, path))
+                .or_insert((kind, Vec::new()))
+                .1;
+            if !users.contains(id) {
+                users.push(id.clone());
+            }
+        };
+        for r in self.store.images()? {
+            add(PartKind::Image, layout.image_dir(&r.id), &r.id);
+            for l in &r.layers {
+                add(PartKind::Blob, layout.blob(&l.digest), &r.id);
+                add(PartKind::Layer, layout.layer_dir(&l.diff_id), &r.id);
+            }
+            let mut chains = sbx_store::stack::chain_ids(&r.layers);
+            if r.layers.is_empty() {
+                chains.push(sbx_store::stack::empty_chain());
+            }
+            for c in chains {
+                add(PartKind::Merged, layout.merged_for(&c), &r.id);
+            }
+        }
+        Ok(parts
+            .into_iter()
+            .map(|((_, path), (kind, mut users))| {
+                users.sort();
+                StoredPart { kind, path, users }
+            })
+            .collect())
     }
 
     /// 이미지와 그 이미지를 가리키는 참조를 모두 지우고, 더 쓰이지 않는 레이어 blob도 지운다.
@@ -663,13 +844,21 @@ impl Manager {
             "delete",
             image.to_string(),
         ));
-        let deleted_layers = write::collect_blobs(layout)?;
+        let collected = write::collect(layout)?;
         Ok(Removal {
             untagged,
             deleted: Some(image.clone()),
-            deleted_layers,
+            deleted_layers: collected.blobs,
+            deleted_disks: collected.layers,
         })
     }
+}
+
+/// 배치 1(0.2)의 cache_dir을 배치 2로 옮긴다: 이미지마다 모든 층을 합쳐 두었던 `images/<hex>/rootfs.<형식>`을 지운다.
+/// 지운 파일. 다음 prepare(`sbx run`이 부른다)가 받아 둔 blob에서 층 디스크를 만든다. blob이 없는 이미지는 그때
+/// "다시 받으라"는 오류가 나고, `sbx pull`이 없는 blob만 받는다.
+pub fn migrate_from_layout_1(cache_dir: &Path) -> io::Result<Vec<PathBuf>> {
+    write::remove_legacy_rootfs(&sbx_store::CacheLayout::new(cache_dir))
 }
 
 /// 이미지 안 `path`(절대 경로, 링크는 이미지 안에서 따라간다)의 일반 파일을 `out`에 쓴다.

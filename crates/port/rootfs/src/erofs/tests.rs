@@ -381,3 +381,61 @@ fn fsck_erofs_accepts_and_extracts_image() {
     );
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+/// 층 하나를 overlay 아래층 모양으로 쓴 것(`lower::lower_layer`): whiteout은 문자 장치 0/0, opaque는
+/// `trusted.overlay.opaque` xattr이다. `fsck.erofs`가 있으면 그것으로도 읽는다.
+#[test]
+fn lower_layer_whiteouts_and_opaque_directories() {
+    let mut f = Fixture::new();
+    f.dir("etc")
+        .file("etc/.wh.gone", b"")
+        .dir("var")
+        .file("var/.wh..wh..opq", b"")
+        .file("var/new", b"n");
+    let lower = crate::lower::lower_layer(f.entries.clone()).unwrap();
+    assert!(lower.needs_lower.is_none());
+    let mut out = Cursor::new(Vec::new());
+    ErofsBuilder.build(&lower.tree, &f.mem, &mut out).unwrap();
+    let bytes = out.into_inner();
+    let img = Img(&bytes);
+
+    let gone = img.lookup("etc/gone");
+    assert_eq!(u32::from(gone.mode), S_IFCHR);
+    assert_eq!(gone.i_u, 0, "device 0/0");
+    // trusted. 접두어(번호 4)와 "overlay.opaque" = "y".
+    let x = img.lookup("var").xattrs;
+    assert_eq!((x[12], x[13]), (14, 4));
+    assert_eq!(&x[16..30], b"overlay.opaque");
+    assert_eq!(x[30], b'y');
+    let names: Vec<String> = img
+        .dir(&img.lookup("var"))
+        .into_iter()
+        .map(|(n, _, _)| n)
+        .collect();
+    assert_eq!(names, [".", "..", "new"]);
+
+    if std::process::Command::new("fsck.erofs")
+        .arg("--help")
+        .output()
+        .is_err()
+    {
+        eprintln!("fsck.erofs not found; skipping the fsck part");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("sandbox-erofs-lower-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("layer.erofs");
+    std::fs::write(&path, &bytes).unwrap();
+    let out = std::process::Command::new("fsck.erofs")
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "fsck.erofs failed: {}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

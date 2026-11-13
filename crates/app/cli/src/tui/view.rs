@@ -318,11 +318,13 @@ fn images(frame: &mut Frame, model: &mut Model, area: Rect) {
         title: "Images",
         len: rows.len(),
         loaded: model.images.is_some(),
-        header: &["REFERENCE", "ID", "ARCH", "SIZE", "PREPARED"],
+        // SIZE는 이 이미지가 쓰는 것 모두, SHARED는 그중 다른 이미지도 쓰는 층(`sbx images`와 같다).
+        header: &["REFERENCE", "ID", "ARCH", "SIZE", "SHARED", "PREPARED"],
         widths: &[
             Constraint::Fill(1),
             Constraint::Length(MIN_ID_PREFIX as u16),
             Constraint::Length(6),
+            Constraint::Length(9),
             Constraint::Length(9),
             Constraint::Max(20),
         ],
@@ -350,7 +352,8 @@ fn images(frame: &mut Frame, model: &mut Model, area: Rect) {
                     }),
                     Cell::from(short(&i.id).to_owned()),
                     Cell::from(i.arch.clone()),
-                    Cell::from(human_size(i.compressed_size)),
+                    Cell::from(human_size(i.disk_size)),
+                    Cell::from(human_size(i.shared_size)),
                     Cell::from(i.prepared.join(", ")),
                 ])
             })

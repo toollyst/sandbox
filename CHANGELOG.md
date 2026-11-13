@@ -7,6 +7,26 @@ are in [COMPATIBILITY.md](COMPATIBILITY.md); fixes for vulnerabilities are liste
 Each release has a section `## vX.Y.Z`; the release workflow publishes that section as the release notes and refuses
 to release a tag without one. Changes land under `## Unreleased` first, and the section is renamed when tagging.
 
+## Unreleased
+
+### Changed
+
+- Images are stored per layer: each layer becomes one read-only EROFS disk, shared by every image that has it, and
+  the VM stacks them as overlay lower layers. A second image on the same base only adds its own layers, on disk and
+  in `prepare` time. When an image has more layers than the executor can attach disks, its lowest layers are merged
+  into one disk (an executor with 2 disks gets one merged disk, as before). The executor protocol stays at version 2;
+  executors attach the disks in order as before, and the kernel command line is unchanged.
+- The cache directory moves to layout 2 on first use: each image's merged `rootfs.erofs` is deleted, and the next
+  `run`, `start` or `prepare` builds the layer disks from the layers already pulled. `sbx` 0.2.x refuses a migrated
+  cache directory; point it at another `SBX_CACHE_DIR` if you need to go back.
+- `sbx system prune` also removes layer disks no image uses.
+
+### Added
+
+- `sbx images` shows `SIZE`, `SHARED` and `UNIQUE` (on disk), and `--format json` adds `disk_size`, `shared_size`
+  and `unique_size`. `sbx system df` counts a shared layer once and shows the shared part (`SHARED`, JSON `shared`).
+  The Images tab in `sbx tui` shows `SIZE` and `SHARED`.
+
 ## v0.2.2
 
 Only additions: `sbx` tells you about newer releases and upgrades itself, checking signatures.

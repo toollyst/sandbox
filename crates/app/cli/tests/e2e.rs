@@ -133,6 +133,18 @@ mod unix {
             "load_and_save_round_trip_an_oci_archive",
             load_and_save_round_trip_an_oci_archive,
         ),
+        (
+            "images_on_one_base_store_it_once",
+            images_on_one_base_store_it_once,
+        ),
+        (
+            "more_layers_than_disks_run_through_a_merged_disk",
+            more_layers_than_disks_run_through_a_merged_disk,
+        ),
+        (
+            "a_layout_1_cache_is_migrated_on_first_use",
+            a_layout_1_cache_is_migrated_on_first_use,
+        ),
         ("policy_json_is_followed", policy_json_is_followed),
         (
             "registries_conf_is_read_for_pulls",
@@ -235,6 +247,13 @@ mod unix {
 
     const IMAGE: &str = "e2e-fake";
 
+    /// 층 없는 이미지의 rootfs(빈 rootfs 하나, `sbx_store::stack`). 관리 쪽이 prepare로 했을 일.
+    fn plant_empty_rootfs(layout: &CacheLayout) {
+        let path = layout.merged_disk(&sbx_store::stack::empty_chain(), RootfsFormat::Erofs);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"fs").unwrap();
+    }
+
     fn id_output(flag: &str) -> String {
         let o = Command::new("id").arg(flag).output().unwrap();
         String::from_utf8(o.stdout).unwrap().trim().to_owned()
@@ -280,7 +299,7 @@ mod unix {
             };
             write::write_image_record(&layout, &record).unwrap();
             write::set_ref(&layout, &record.reference, &id).unwrap();
-            std::fs::write(layout.rootfs(&id, RootfsFormat::Erofs), b"fs").unwrap();
+            plant_empty_rootfs(&layout);
         }
 
         fn path(&self, name: &str) -> PathBuf {
@@ -2275,6 +2294,11 @@ mod unix {
 
     /// `docker save`(Docker 25 이후)가 만드는 모양의 OCI layout tar: 레이어 하나, 이름 하나.
     fn oci_archive(name: &str) -> (Vec<u8>, String) {
+        oci_archive_layers(name, &[&[("hello.txt", b"hello")]])
+    }
+
+    /// 층들(아래부터, 층마다 (경로, 내용) 파일들)로 만든 OCI layout tar와 이미지 ID.
+    fn oci_archive_layers(name: &str, layers: &[&[(&str, &[u8])]]) -> (Vec<u8>, String) {
         use sha2::Digest as _;
         let hex = |b: &[u8]| {
             sha2::Sha256::digest(b)
@@ -2282,29 +2306,52 @@ mod unix {
                 .map(|x| format!("{x:02x}"))
                 .collect::<String>()
         };
-        let mut layer_tar = tar::Builder::new(Vec::new());
-        let mut h = tar::Header::new_gnu();
-        h.set_size(5);
-        h.set_mode(0o644);
-        h.set_cksum();
-        layer_tar
-            .append_data(&mut h, "hello.txt", &b"hello"[..])
-            .unwrap();
-        let layer_tar = layer_tar.into_inner().unwrap();
-        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
-        gz.write_all(&layer_tar).unwrap();
-        let layer = gz.finish().unwrap();
+        let mut tars = Vec::new();
+        let mut blobs = Vec::new();
+        for files in layers {
+            let mut layer_tar = tar::Builder::new(Vec::new());
+            for (path, data) in files.iter() {
+                let mut h = tar::Header::new_gnu();
+                h.set_size(data.len() as u64);
+                h.set_mode(0o644);
+                h.set_uid(0);
+                h.set_gid(0);
+                h.set_mtime(0);
+                h.set_cksum();
+                layer_tar.append_data(&mut h, path, *data).unwrap();
+            }
+            let layer_tar = layer_tar.into_inner().unwrap();
+            let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            gz.write_all(&layer_tar).unwrap();
+            blobs.push(gz.finish().unwrap());
+            tars.push(layer_tar);
+        }
         let arch = Arch::host().unwrap().oci_name();
+        let diff_ids: Vec<String> = tars
+            .iter()
+            .map(|t| format!("\"sha256:{}\"", hex(t)))
+            .collect();
         let config = format!(
-            r#"{{"architecture":"{arch}","os":"linux","config":{{"Cmd":["sh"]}},"rootfs":{{"type":"layers","diff_ids":["sha256:{}"]}}}}"#,
-            hex(&layer_tar)
+            r#"{{"architecture":"{arch}","os":"linux","config":{{"Cmd":["sh"],"User":"{}:{}","Labels":{{"name":"{name}"}}}},"rootfs":{{"type":"layers","diff_ids":[{}]}}}}"#,
+            id_output("-u"),
+            id_output("-g"),
+            diff_ids.join(",")
         );
+        let descs: Vec<String> = blobs
+            .iter()
+            .map(|b| {
+                format!(
+                    r#"{{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest":"sha256:{}","size":{}}}"#,
+                    hex(b),
+                    b.len()
+                )
+            })
+            .collect();
         let manifest = format!(
-            r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:{}","size":{}}},"layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest":"sha256:{}","size":{}}}]}}"#,
+            r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:{}","size":{}}},"layers":[{}]}}"#,
             hex(config.as_bytes()),
             config.len(),
-            hex(&layer),
-            layer.len()
+            descs.join(",")
         );
         let index = format!(
             r#"{{"schemaVersion":2,"manifests":[{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:{}","size":{},"annotations":{{"io.containerd.image.name":"{name}","org.opencontainers.image.ref.name":"latest"}}}}]}}"#,
@@ -2323,13 +2370,186 @@ mod unix {
         add("manifest.json".into(), b"[]");
         add("oci-layout".into(), br#"{"imageLayoutVersion":"1.0.0"}"#);
         add("index.json".into(), index.as_bytes());
-        for b in [config.as_bytes(), manifest.as_bytes(), &layer[..]] {
+        for b in [config.as_bytes(), manifest.as_bytes()]
+            .into_iter()
+            .chain(blobs.iter().map(Vec::as_slice))
+        {
             add(format!("blobs/sha256/{}", hex(b)), b);
         }
         (
             t.into_inner().unwrap(),
             format!("sha256:{}", hex(manifest.as_bytes())),
         )
+    }
+
+    const BASE: &[(&str, &[u8])] = &[("base.bin", &[7u8; 64 * 1024])];
+
+    /// 아카이브를 들인다.
+    fn load(e: &Env, file: &str, archive: &[u8]) {
+        std::fs::write(e.path(file), archive).unwrap();
+        let o = e.sbx(&["load", "-i", e.path(file).to_str().unwrap()]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    }
+
+    /// `run --rm IMAGE true`를 하고 실행기가 받은 VM 설정을 돌려준다.
+    fn run_recorded(e: &Env, image: &str, max_disks: Option<&str>) -> serde_json::Value {
+        let rec = e.path("launch.json");
+        let _ = std::fs::remove_file(&rec);
+        let mut c = e.cmd(&["run", "--rm", image, "true"]);
+        c.env("SBX_FAKE_RECORD", &rec);
+        if let Some(n) = max_disks {
+            c.env("SBX_FAKE_MAX_DISKS", n);
+        }
+        let o = c.output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        serde_json::from_slice(&std::fs::read(&rec).unwrap()).unwrap()
+    }
+
+    fn entries(dir: &Path) -> usize {
+        std::fs::read_dir(dir).map_or(0, |d| d.count())
+    }
+
+    /// 같은 바탕 층을 쓰는 이미지 둘: 바탕 층 디스크는 하나이고(`system df`가 한 번 센다), 한 이미지를 지워도 남고, 둘을
+    /// 지우면 지워진다. VM에는 층마다 디스크 하나가 붙는다(맨 아래 층, scratch, 위 층).
+    fn images_on_one_base_store_it_once() {
+        use sbx_cli::output::{DiskUsage, Image};
+        let e = Env::new();
+        let (a, _) = oci_archive_layers("local/a:1", &[BASE, &[("a.txt", b"a")]]);
+        let (b, _) = oci_archive_layers("local/b:1", &[BASE, &[("b.txt", b"b")]]);
+        load(&e, "a.tar", &a);
+        load(&e, "b.tar", &b);
+        let vm = run_recorded(&e, "local/a:1", None);
+        let disks = vm["disks"].as_array().unwrap();
+        let roles: Vec<&str> = disks.iter().map(|d| d["role"].as_str().unwrap()).collect();
+        assert_eq!(roles, ["rootfs", "scratch", "rootfs"], "{vm}");
+        assert!(
+            disks[0]["path"].as_str().unwrap().contains("/layers/"),
+            "{vm}"
+        );
+        run_recorded(&e, "local/b:1", None);
+        let layers = e.path("cache/layers");
+        assert_eq!(entries(&layers), 3, "base, a, b");
+        // 합친 것은 층 없는 기본 이미지(`IMAGE`)의 빈 rootfs 하나뿐이다.
+        assert_eq!(entries(&e.path("cache/merged")), 1);
+
+        let o = e.sbx(&["--format", "json", "images"]);
+        let list: Vec<Image> = serde_json::from_slice(&o.stdout).unwrap();
+        let mine: Vec<&Image> = list
+            .iter()
+            .filter(|i| i.references.iter().any(|r| r.contains("local/")))
+            .collect();
+        assert_eq!(mine.len(), 2);
+        for i in &mine {
+            assert!(i.shared_size >= 64 * 1024, "{i:?}");
+            assert_eq!(i.disk_size, i.shared_size + i.unique_size, "{i:?}");
+        }
+        let o = e.sbx(&["--format", "json", "system", "df"]);
+        let rows: Vec<DiskUsage> = serde_json::from_slice(&o.stdout).unwrap();
+        let im = rows.iter().find(|r| r.kind == "images").unwrap();
+        // 바탕은 한 번: 전체는 두 이미지 크기의 합에서 함께 쓰는 것 하나를 뺀 것이다.
+        let sum: u64 = mine.iter().map(|i| i.disk_size).sum();
+        assert_eq!(
+            im.size + mine[0].shared_size,
+            sum + e2e_fake_size(&list),
+            "{rows:?} {mine:?}"
+        );
+        assert_eq!(im.shared, mine[0].shared_size, "{rows:?}");
+        let o = e.sbx(&["images"]);
+        assert!(text(&o.stdout).contains("SHARED"), "{}", text(&o.stdout));
+
+        let o = e.sbx(&["rmi", "local/a:1"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(entries(&layers), 2, "base and b stay");
+        let vm = run_recorded(&e, "local/b:1", None);
+        assert_eq!(vm["disks"].as_array().unwrap().len(), 3);
+        let o = e.sbx(&["rmi", "local/b:1"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(entries(&layers), 0);
+    }
+
+    /// 기본 이미지(`IMAGE`, 층 없음)가 차지하는 것.
+    fn e2e_fake_size(list: &[sbx_cli::output::Image]) -> u64 {
+        list.iter()
+            .filter(|i| !i.references.iter().any(|r| r.contains("local/")))
+            .map(|i| i.disk_size)
+            .sum()
+    }
+
+    /// 실행기가 붙일 수 있는 디스크보다 층이 많으면 아래 층들을 합친 디스크 하나로 띄운다. 디스크가 넉넉한 실행기로
+    /// 다시 띄우면 층마다 디스크를 만들어 쓴다.
+    fn more_layers_than_disks_run_through_a_merged_disk() {
+        let e = Env::new();
+        let (a, _) = oci_archive_layers(
+            "local/deep:1",
+            &[
+                &[("0", b"0")],
+                &[("1", b"1")],
+                &[("2", b"2")],
+                &[("3", b"3")],
+            ],
+        );
+        load(&e, "deep.tar", &a);
+        let vm = run_recorded(&e, "local/deep:1", Some("3"));
+        let disks = vm["disks"].as_array().unwrap();
+        assert_eq!(disks.len(), 3, "{vm}");
+        assert!(
+            disks[0]["path"].as_str().unwrap().contains("/merged/"),
+            "{vm}"
+        );
+        assert!(
+            disks[2]["path"].as_str().unwrap().contains("/layers/"),
+            "{vm}"
+        );
+        assert_eq!(entries(&e.path("cache/layers")), 1, "only the top layer");
+        // 디스크 둘이면(지금까지와 같이) 모두 합친 것 하나와 scratch.
+        let vm = run_recorded(&e, "local/deep:1", Some("2"));
+        let roles: Vec<&str> = vm["disks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["role"].as_str().unwrap())
+            .collect();
+        assert_eq!(roles, ["rootfs", "scratch"]);
+        let vm = run_recorded(&e, "local/deep:1", None);
+        assert_eq!(vm["disks"].as_array().unwrap().len(), 5, "{vm}");
+        // 합친 것은 캐시다. prune이 쓰지 않는 것을 지우지는 않지만 이미지를 지우면 함께 지워진다.
+        let o = e.sbx(&["rmi", "local/deep:1"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(
+            entries(&e.path("cache/merged")),
+            1,
+            "the empty rootfs of IMAGE"
+        );
+        assert_eq!(entries(&e.path("cache/layers")), 0);
+    }
+
+    /// 0.2(배치 1)가 쓴 cache_dir: 이미지별 rootfs를 지우고, 다음 `run`이 받아 둔 blob에서 층 디스크를 만든다.
+    /// 그 전에 만들어 둔 샌드박스도 `start`가 그렇게 띄운다.
+    fn a_layout_1_cache_is_migrated_on_first_use() {
+        let e = Env::new();
+        let (a, id) = oci_archive_layers("local/old:1", &[BASE, &[("x", b"x")]]);
+        load(&e, "old.tar", &a);
+        let o = e.sbx(&["create", "--name", "kept", "local/old:1", "true"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        // 0.2가 남겼을 모습으로 되돌린다.
+        let cache = e.path("cache");
+        std::fs::remove_dir_all(cache.join("layers")).unwrap();
+        let old = cache
+            .join("images")
+            .join(id.strip_prefix("sha256:").unwrap())
+            .join("rootfs.erofs");
+        std::fs::write(&old, b"merged by 0.2").unwrap();
+        std::fs::write(cache.join("layout-version"), "1\n").unwrap();
+
+        let o = e.sbx(&["start", "-a", "kept"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(!old.exists());
+        assert_eq!(
+            std::fs::read_to_string(cache.join("layout-version")).unwrap(),
+            "2\n"
+        );
+        assert_eq!(entries(&cache.join("layers")), 2);
+        run_recorded(&e, "local/old:1", None);
     }
 
     fn load_and_save_round_trip_an_oci_archive() {
@@ -3777,7 +3997,7 @@ mod unix {
         };
         write::write_image_record(&layout, &record).unwrap();
         write::set_ref(&layout, &record.reference, &id).unwrap();
-        std::fs::write(layout.rootfs(&id, RootfsFormat::Erofs), b"fs").unwrap();
+        plant_empty_rootfs(&layout);
         std::fs::write(layout.kernel(&id), b"kernel").unwrap();
 
         let run = |image: &str| {

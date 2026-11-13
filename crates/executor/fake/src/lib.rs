@@ -9,7 +9,8 @@
 //! 그래서 실행 코어는 실제 게스트와 같은 메시지로 exec, 파일 복사, 종료 요청을 주고받는다.
 //!
 //! 실제 VM과 다른 점 (테스트를 쓸 때 알아야 할 것)
-//! - 프로세스는 호스트에서, 지금 사용자 권한으로 돈다. rootfs와 scratch 디스크는 쓰지 않는다.
+//! - 프로세스는 호스트에서, 지금 사용자 권한으로 돈다. rootfs(층 디스크들)와 scratch 디스크는 쓰지 않는다.
+//!   디스크는 [`MAX_DISKS`]개까지 받는다(실행 파일은 `SBX_FAKE_MAX_DISKS`로 바꾼다).
 //!   그래서 실행 사용자는 지금 사용자여야 하고, 경로는 호스트 경로다.
 //! - 사용자 이름은 호스트의 `/etc/passwd`로 해석한다.
 //! - VM을 끝내면 열린 게스트 연결을 모두 닫는다. 그러면 게스트 쪽 처리가 그 연결의 프로세스를 SIGKILL로 끝낸다
@@ -42,6 +43,9 @@ mod vm;
 
 pub use vm::{FakeVm, REASON_GUEST_SHUTDOWN, REASON_KILLED};
 
+/// 기본으로 붙일 수 있는 디스크 수. Firecracker 어댑터와 같다(층 디스크 7개와 scratch).
+pub const MAX_DISKS: usize = 8;
+
 /// 빌드 층 흉내의 뿌리: scratch 디스크 파일 이름 뒤에 `.root`를 붙인 디렉터리. 첫 `OpenLayer`가 없으면 만든다.
 /// 그 전에 둔 내용이 이미지 rootfs 노릇을 한다.
 pub fn build_root(scratch: &std::path::Path) -> std::path::PathBuf {
@@ -66,7 +70,7 @@ impl FakeExecutor {
         }
     }
 
-    /// 흔한 기본값: 호스트 아키텍처, 모든 rootfs 형식, 실시간 공유, 디스크 2개.
+    /// 흔한 기본값: 호스트 아키텍처, 모든 rootfs 형식, 실시간 공유, 디스크 [`MAX_DISKS`]개.
     pub fn basic() -> Self {
         Self::new(Capabilities {
             name: "fake",
@@ -75,7 +79,7 @@ impl FakeExecutor {
             live_share: true,
             custom_kernel: true,
             snapshot: false,
-            max_disks: 2,
+            max_disks: MAX_DISKS,
         })
     }
 

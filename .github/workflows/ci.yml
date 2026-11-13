@@ -96,7 +96,8 @@ jobs:
           SBX_EMBED_GUEST="$PWD/target/guest/$(uname -m)/initramfs" cargo test -p sbx-cli --test e2e
           cargo xtask dist
 
-  # root와 loop 장치가 필요한 테스트 (커널이 scratch를 마운트하고 overlay upper로 쓰는지).
+  # root와 loop 장치가 필요한 테스트 (커널이 scratch를 마운트하고 overlay upper로 쓰는지, 층 디스크를 쌓은 모습이 합친
+  # rootfs와 같은지).
   privileged:
     runs-on: ubuntu-latest
     steps:
@@ -104,8 +105,9 @@ jobs:
       - run: |
           docker run --rm --privileged -v "$PWD":/src -w /src \
             -e SANDBOX_PRIVILEGED_TESTS=1 -e SANDBOX_REQUIRE_E2FSCK=1 rust:1 bash -ec '
-              apt-get update -qq && apt-get install -y -qq e2fsprogs
-              cargo test -p sbx-guest --lib privileged -- --nocapture'
+              apt-get update -qq && apt-get install -y -qq e2fsprogs erofs-utils
+              cargo test -p sbx-guest --lib privileged -- --nocapture
+              cargo test -p sbx-rootfs --all-features --lib privileged -- --nocapture'
 
   # 실제 VM: 사용자가 받는 것과 같은 v2 경로. 이 커밋의 어댑터(sbx-executor-firecracker + `cargo xtask kernel`로 만든
   # 커널)와 upstream Firecracker VMM 묶음으로 로컬 v2 저장소(file://)를 만들고, install.sh로 설치한 sbx로

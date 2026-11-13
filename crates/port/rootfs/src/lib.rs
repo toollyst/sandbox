@@ -26,6 +26,8 @@
 //! - 하드 링크는 대상과 같은 노드가 되고 같은 `link_group`을 갖는다. 나중에 대상 이름이
 //!   지워져도 링크는 남는다.
 //!
+//! 층 하나만으로 overlay 아래층을 만드는 규칙(층 단위 저장)은 [`lower`]에 있다.
+//!
 //! - 의존: `sbx-model`
 
 use std::collections::BTreeMap;
@@ -36,6 +38,7 @@ use sbx_model::RootfsFormat;
 
 #[cfg(feature = "erofs")]
 pub mod erofs;
+pub mod lower;
 
 const WHITEOUT_PREFIX: &str = ".wh.";
 const OPAQUE: &str = ".wh..wh..opq";
