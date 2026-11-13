@@ -1,4 +1,5 @@
-//! OCI 이미지 소스. `sbx-image`의 [`ImageSource`]를 OCI Distribution Spec과 Image Spec으로 구현한다.
+//! OCI 이미지 소스와 올릴 곳. `sbx-image`의 [`ImageSource`]와 [`ImageDestination`]을 OCI Distribution Spec과
+//! Image Spec으로 구현한다.
 //!
 //! OCI는 입력 형식이다. OCI 자료형은 이 크레이트 밖으로 나가지 않고, 여기서 내부 모델
 //! (`ImageConfig`, 레이어 목록)로 변환된다. 그래서 적용 범위를 넓힐 때는 이 크레이트만 고친다.
@@ -7,6 +8,7 @@
 //! - 이미지 참조 해석: [`reference`](mod@reference)
 //! - 문서 해석: [`manifest`]
 //! - 레지스트리 통신: [`registry`]
+//! - 올리기(push, [`ImageDestination`]): [`push`]
 //! - OCI image layout(`sbx load`, 디렉터리나 tar): [`layout`]
 //! - 레지스트리 자격 증명(Docker config.json, containers-auth.json, credential helper): [`auth`]
 //! - 미러, 이름 바꾸기, 차단(containers registries.conf): [`registries`]
@@ -31,13 +33,17 @@ use std::io::Write;
 
 use sha2::{Digest as _, Sha256};
 
-use sbx_image::{ImageError, ImageSource, Platform, ResolvedImage};
+use sbx_image::{
+    BlobContent, BlobPush, ImageDestination, ImageError, ImageSource, Platform, PushTarget,
+    ResolvedImage,
+};
 use sbx_model::{BoxFuture, Digest, ImageId, Layer};
 
 pub mod auth;
 pub mod layout;
 pub mod manifest;
 pub mod policy;
+pub mod push;
 pub mod reference;
 pub mod registries;
 pub mod registry;
@@ -120,7 +126,7 @@ fn assemble(
     })
 }
 
-/// OCI 레지스트리 이미지 소스.
+/// OCI 레지스트리 이미지 소스이자 올릴 곳([`ImageDestination`], 규칙은 [`push`]).
 ///
 /// 자격 증명 파일과 `registries.conf`는 레지스트리에 처음 갈 때 읽는다. 그래서 레지스트리를 쓰지 않는 일
 /// (`images`, `rmi`, `save` 등)은 그 파일이 틀려도 막히지 않는다.
@@ -130,6 +136,10 @@ pub struct OciImageSource {
     conf: Option<registries::ConfFiles>,
     policy_file: Option<std::path::PathBuf>,
     state: std::sync::OnceLock<State>,
+    /// mount를 거절한(또는 실패한) `대상 참조 원래 저장소`. 그 대상의 남은 blob에는 묻지 않는다.
+    no_mount: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// 나눠 보낼 때 조각 크기. 없으면 [`push::CHUNK_BYTES`](테스트만 바꾼다).
+    chunk: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -163,6 +173,10 @@ impl OciImageSource {
     pub fn with_policy(mut self, file: Option<std::path::PathBuf>) -> Self {
         self.policy_file = file;
         self
+    }
+
+    fn chunk_bytes(&self) -> u64 {
+        self.chunk.unwrap_or(push::CHUNK_BYTES)
     }
 
     fn state(&self) -> Result<&State, ImageError> {
@@ -396,6 +410,31 @@ impl ImageSource for OciImageSource {
         sink: &'a mut (dyn Write + Send),
     ) -> BoxFuture<'a, Result<u64, ImageError>> {
         Box::pin(self.fetch_blob_inner(source, digest, sink))
+    }
+}
+
+impl ImageDestination for OciImageSource {
+    fn target(&self, reference: &str, blobs_from: Option<&str>) -> Result<PushTarget, ImageError> {
+        self.push_target(reference, blobs_from)
+    }
+
+    fn push_blob<'a>(
+        &'a self,
+        target: &'a PushTarget,
+        digest: &'a Digest,
+        content: &'a dyn BlobContent,
+        progress: &'a (dyn Fn(u64) + Sync),
+    ) -> BoxFuture<'a, Result<BlobPush, ImageError>> {
+        Box::pin(self.push_blob_inner(target, digest, content, progress))
+    }
+
+    fn push_manifest<'a>(
+        &'a self,
+        target: &'a PushTarget,
+        media_type: &'a str,
+        manifest: &'a [u8],
+    ) -> BoxFuture<'a, Result<(), ImageError>> {
+        Box::pin(self.push_manifest_inner(target, media_type, manifest))
     }
 }
 

@@ -1,14 +1,18 @@
-//! 이미지 소스 추상 인터페이스.
+//! 이미지 소스와 올릴 곳의 추상 인터페이스.
 //!
-//! "이미지 참조를 받아 config와 레이어 목록을 내놓고, 레이어 내용을 내려받는다"는 것만 정한다.
-//! OCI 자료형은 여기에 없다. OCI 해석은 구현체(`sbx-oci`) 안에만 있다.
+//! - [`ImageSource`]: "이미지 참조를 받아 config와 레이어 목록을 내놓고, 레이어 내용을 내려받는다".
+//! - [`ImageDestination`]: "blob을 올리고(이미 있으면 건너뛰고), 마지막에 manifest를 이름에 붙인다".
+//!   무엇을 어떤 순서로 올릴지는 쓰는 쪽(`sbx-manage`)이 정한다. 구현체는 blob 하나, manifest 하나의 규약만 안다.
+//!
+//! OCI 자료형은 여기에 없다. OCI 해석과 레지스트리 규약은 구현체(`sbx-oci`) 안에만 있다.
 //! 그래서 OCI 적용 범위가 바뀌어도 이 trait을 쓰는 쪽(`sbx-manage`)은 바뀌지 않는다.
+//! manifest와 config는 바이트 그대로 오간다([`Documents`]): 해석하지 않고 그대로 올리므로 digest가 바뀌지 않는다.
 //!
 //! - 의존: `sbx-model`
 //! - 구현: `sbx-oci`
 
 use std::fmt;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 
 use sbx_model::{Arch, BoxFuture, Digest, ImageConfig, ImageId, Layer, ParseError};
 
@@ -126,4 +130,77 @@ pub trait ImageSource: Send + Sync {
         digest: &'a Digest,
         sink: &'a mut (dyn Write + Send),
     ) -> BoxFuture<'a, Result<u64, ImageError>>;
+}
+
+/// 올릴 곳. [`ImageDestination::target`]이 만든다.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushTarget {
+    /// 정규화된 참조(태그 포함, 예: `docker.io/user/app:1`). manifest가 이 태그로 붙는다.
+    pub reference: String,
+    /// blob을 같은 레지스트리의 이 저장소(`레지스트리/저장소`)에서 끌어올 수 있다(cross-repository mount).
+    /// 구현체가 정한다: 같은 레지스트리의 다른 저장소일 때만 있다.
+    pub mount_from: Option<String>,
+}
+
+/// blob 하나를 어떻게 올렸는지.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BlobPush {
+    /// 레지스트리에 이미 있었다. 아무것도 보내지 않았다.
+    Exists,
+    /// 같은 레지스트리의 다른 저장소(`레지스트리/저장소`)에서 끌어왔다. 내용은 보내지 않았다.
+    Mounted(String),
+    /// 내용을 보냈다.
+    Uploaded,
+}
+
+/// 올릴 blob의 내용. 처음부터든 중간부터든 다시 읽을 수 있어야 한다(인증 뒤 다시 보내기, 나눠 보내기).
+pub trait BlobContent: Send + Sync {
+    /// 바이트 수.
+    fn size(&self) -> u64;
+
+    /// `offset`부터 끝까지 읽는다.
+    fn open(&self, offset: u64) -> io::Result<Box<dyn Read + Send + Sync>>;
+}
+
+/// 메모리의 바이트(config 같은 작은 문서).
+impl BlobContent for Vec<u8> {
+    fn size(&self) -> u64 {
+        self.len() as u64
+    }
+
+    fn open(&self, offset: u64) -> io::Result<Box<dyn Read + Send + Sync>> {
+        let start = usize::try_from(offset)
+            .ok()
+            .filter(|o| *o <= self.len())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "offset past the end"))?;
+        Ok(Box::new(io::Cursor::new(self[start..].to_vec())))
+    }
+}
+
+/// 이미지를 올릴 곳.
+///
+/// 순서는 쓰는 쪽이 지킨다: 모든 blob(레이어, config)을 [`push_blob`](Self::push_blob)으로 올린 뒤에야
+/// [`push_manifest`](Self::push_manifest)를 부른다. 그래서 중간에 실패하면 이름(태그)은 바뀌지 않는다.
+pub trait ImageDestination: Send + Sync {
+    /// 참조를 해석해 올릴 곳을 정한다. 레지스트리에 가지 않는다. 받지 않는 이름(digest만 있는 참조, 차단된
+    /// 레지스트리 등)은 여기서 오류다. `blobs_from`은 blob을 받아 온 곳(`레지스트리/저장소`)이고 mount의 단서다.
+    fn target(&self, reference: &str, blobs_from: Option<&str>) -> Result<PushTarget, ImageError>;
+
+    /// blob 하나를 올린다. 이미 있으면 보내지 않고, 끌어올 수 있으면 끌어오고, 아니면 내용을 보낸다.
+    /// `progress`에는 보낸 바이트 수(이 blob 안에서)를 알린다.
+    fn push_blob<'a>(
+        &'a self,
+        target: &'a PushTarget,
+        digest: &'a Digest,
+        content: &'a dyn BlobContent,
+        progress: &'a (dyn Fn(u64) + Sync),
+    ) -> BoxFuture<'a, Result<BlobPush, ImageError>>;
+
+    /// manifest를 바이트 그대로 태그에 붙인다. `media_type`은 manifest의 미디어 형식이다.
+    fn push_manifest<'a>(
+        &'a self,
+        target: &'a PushTarget,
+        media_type: &'a str,
+        manifest: &'a [u8],
+    ) -> BoxFuture<'a, Result<(), ImageError>>;
 }
