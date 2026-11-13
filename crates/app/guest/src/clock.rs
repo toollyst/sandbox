@@ -52,7 +52,7 @@ pub struct Reading {
     pub mono: Duration,
 }
 
-/// 게스트 시계. 게스트에서는 커널 시계([`Kernel`])이고, 테스트와 fake 실행기는 호스트 시계를 건드리지 않는 것을 준다.
+/// 게스트 시계. 게스트에서는 커널 시계(`Kernel`, Linux)이고, 테스트와 fake 실행기는 호스트 시계를 건드리지 않는 것을 준다.
 pub trait Clock: Send + Sync {
     /// 벽시계와 단조 시계를 함께 읽는다.
     fn read(&self) -> Reading;
