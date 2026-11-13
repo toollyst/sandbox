@@ -8,6 +8,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::*;
 use crate::{ContentRef, EntryKind, LayerEntry, Meta, NodeKind};
 
+#[cfg(all(feature = "erofs", target_os = "linux"))]
+mod kernel;
+
 fn meta(mode: u32) -> Meta {
     Meta {
         mode,
@@ -112,12 +115,7 @@ fn children<'a>(t: &'a MergedTree, dir: &str) -> Vec<&'a str> {
 /// 아니면 그것이다. 디렉터리면 아래층의 같은 디렉터리와 합치되, opaque거나 아래층에 디렉터리가 아닌 것이 있으면
 /// 거기서 멈춘다. 메타데이터는 찾은 맨 위의 것이다.
 fn overlay_view(layers: &[&MergedTree]) -> View {
-    fn walk<'a>(
-        layers: &[&'a MergedTree],
-        path: &str,
-        stack: &[usize],
-        out: &mut Seen<'a>,
-    ) {
+    fn walk<'a>(layers: &[&'a MergedTree], path: &str, stack: &[usize], out: &mut Seen<'a>) {
         let names: BTreeSet<&str> = stack
             .iter()
             .flat_map(|&l| children(layers[l], path))
