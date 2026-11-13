@@ -116,8 +116,19 @@ impl Executor for FakeExecutor {
                 .iter()
                 .find(|d| d.role == sbx_executor::DiskRole::Scratch)
                 .map(|d| (build_root(&d.path), net_dir(&d.path)));
-            guest::start(&vm.control_channel.host_endpoint, shares, scratch)
-                .map(|v| Box::new(v) as Box<dyn VmHandle>)
+            let layer_disks = vm
+                .disks
+                .iter()
+                .filter(|d| d.role == sbx_executor::DiskRole::Rootfs)
+                .map(|d| d.path.clone())
+                .collect();
+            guest::start(
+                &vm.control_channel.host_endpoint,
+                shares,
+                scratch,
+                layer_disks,
+            )
+            .map(|v| Box::new(v) as Box<dyn VmHandle>)
         })
     }
 

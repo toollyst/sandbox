@@ -46,6 +46,8 @@ pub trait Layers: Send + Sync {
     fn export(&self, out: &Out) -> Result<(), Error>;
     /// 파일 시스템 요청을 받아도 되는지. 빌드 전이거나 층이 열려 있으면 된다.
     fn check_ready(&self) -> Result<(), Error>;
+    /// 층이 열려 있는지(빌드 단계 `ExecStep`은 열린 층에서만 한다).
+    fn is_open(&self) -> bool;
 }
 
 /// `OpenLayer`를 처리한다.

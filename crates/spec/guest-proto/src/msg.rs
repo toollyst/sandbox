@@ -334,6 +334,29 @@ pub enum HostMsg {
         /// 포트가 `*`인 규칙이 맞았다(프록시로만 닿는다).
         any_port: bool,
     },
+    /// 빌드 단계 하나를 실행한다(`RUN`). [`Exec`](HostMsg::Exec)와 같은 흐름이고 다른 점은 끝이다: 프로세스가 끝나면
+    /// 게스트는 그 단계가 남긴 프로세스를 모두 끝내고(SIGKILL), 사라진 뒤에 남은 출력과 [`GuestMsg::Exited`]를 보낸다.
+    /// 그래서 백그라운드로 띄운 프로세스가 출력을 쥐고 있어도 단계는 끝나고, 다음 [`OpenLayer`](HostMsg::OpenLayer)가
+    /// 그 프로세스 때문에 실패하지 않는다(Docker의 `RUN`과 같다). 무엇을 끝내는지는 `sbx-guest`의 `exec` 모듈에 있다.
+    ///
+    /// 빌드 층이 열려 있어야 한다. 아니면(보통의 샌드박스) [`GuestMsg::Error`]다. [`Exec::main`]은 거짓이어야 한다.
+    /// 모르는 게스트는 `Protocol` 오류로 답한다.
+    ExecStep(Exec),
+    /// 이미지의 프로그램 없이 기본 프로세스 자리를 채운다(빌드 VM, `FROM scratch`처럼 실행할 것이 없는 이미지).
+    ///
+    /// 흐름: 게스트가 [`GuestMsg::Started`]를 `pid` 0으로 보내고(프로세스가 없다) 기다린다. [`SignalMain`]
+    /// (HostMsg::SignalMain)이나 이 연결로 온 [`Signal`](HostMsg::Signal)을 받으면 [`GuestMsg::Exited`]
+    /// (`ExitStatus::Signal`)를 보내고 닫는다. 호스트가 연결을 닫아도 끝난다. 모르는 게스트는 `Protocol` 오류로 답한다.
+    Hold,
+    /// 호스트가 붙인 층 디스크 수를 알린다. 게스트는 부팅 때 쌓은 층 디스크 수와 견준다. 같으면 [`GuestMsg::Done`]이다.
+    /// 다르면 실행기가 디스크를 빠뜨렸거나 더 붙인 것이다. 게스트는 잘못된 뿌리 위에서 아무것도 하지 않도록
+    /// [`GuestMsg::Error`]로 답한 뒤 VM을 끈다.
+    ///
+    /// 모르는 게스트는 `Protocol` 오류로 답한다(그런 게스트는 층 디스크를 하나만 쓴다. 호스트는 하나일 때만 받아들인다).
+    CheckLayers {
+        /// 호스트가 실행기에 준 층 디스크 수(scratch 빼고).
+        count: u32,
+    },
 }
 
 /// 게스트 → 호스트.
@@ -469,6 +492,9 @@ mod tag {
     pub const EXPORT_LAYER: u8 = 0x18;
     pub const TRANSPARENT: u8 = 0x19;
     pub const RESOLVED: u8 = 0x1A;
+    pub const EXEC_STEP: u8 = 0x1B;
+    pub const HOLD: u8 = 0x1C;
+    pub const CHECK_LAYERS: u8 = 0x1D;
 
     pub const HELLO_ACK: u8 = 0x81;
     pub const STARTED: u8 = 0x82;
@@ -671,11 +697,11 @@ impl HostMsg {
                 e = Encoder::new(tag::HELLO);
                 e.u32(*version);
             }
-            HostMsg::Exec(x) | HostMsg::ExecDetached(x) => {
-                e = Encoder::new(if matches!(self, HostMsg::Exec(_)) {
-                    tag::EXEC
-                } else {
-                    tag::EXEC_DETACHED
+            HostMsg::Exec(x) | HostMsg::ExecDetached(x) | HostMsg::ExecStep(x) => {
+                e = Encoder::new(match self {
+                    HostMsg::Exec(_) => tag::EXEC,
+                    HostMsg::ExecDetached(_) => tag::EXEC_DETACHED,
+                    _ => tag::EXEC_STEP,
                 });
                 e.list(&x.args, |e, a| {
                     e.str(a);
@@ -765,6 +791,11 @@ impl HostMsg {
                 })
                 .bool(*any_port);
             }
+            HostMsg::Hold => e = Encoder::new(tag::HOLD),
+            HostMsg::CheckLayers { count } => {
+                e = Encoder::new(tag::CHECK_LAYERS);
+                e.u32(*count);
+            }
         }
         e.finish()
     }
@@ -774,7 +805,7 @@ impl HostMsg {
         let mut d = Decoder::new(body);
         let msg = match d.u8()? {
             tag::HELLO => HostMsg::Hello { version: d.u32()? },
-            t @ (tag::EXEC | tag::EXEC_DETACHED) => {
+            t @ (tag::EXEC | tag::EXEC_DETACHED | tag::EXEC_STEP) => {
                 let args = d.list(|d| d.string())?;
                 let env = d.list(|d| Ok((d.string()?, d.string()?)))?;
                 let cwd = d.string()?;
@@ -792,10 +823,10 @@ impl HostMsg {
                     size: d.opt(dec_size)?,
                     main: d.bool()?,
                 };
-                if t == tag::EXEC {
-                    HostMsg::Exec(x)
-                } else {
-                    HostMsg::ExecDetached(x)
+                match t {
+                    tag::EXEC => HostMsg::Exec(x),
+                    tag::EXEC_DETACHED => HostMsg::ExecDetached(x),
+                    _ => HostMsg::ExecStep(x),
                 }
             }
             tag::STDIN => HostMsg::Stdin(d.bytes()?.to_vec()),
@@ -835,6 +866,8 @@ impl HostMsg {
                 ports: d.list(|d| d.u16())?,
                 any_port: d.bool()?,
             },
+            tag::HOLD => HostMsg::Hold,
+            tag::CHECK_LAYERS => HostMsg::CheckLayers { count: d.u32()? },
             t => return bad(format!("unknown host message {t:#04x}")),
         };
         d.end()?;

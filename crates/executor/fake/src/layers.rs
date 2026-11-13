@@ -264,6 +264,10 @@ impl Layers for DirLayers {
     fn check_ready(&self) -> Result<(), Error> {
         Ok(())
     }
+
+    fn is_open(&self) -> bool {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).0 > 0
+    }
 }
 
 /// 장치 번호를 (major, minor)로. 호스트 OS의 인코딩이다(Linux와 BSD 계열).

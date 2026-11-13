@@ -105,6 +105,22 @@ fn host_samples() -> Vec<HostMsg> {
             size: None,
             main: false,
         }),
+        HostMsg::ExecStep(Exec {
+            args: vec!["sh".into(), "-c".into(), "make &".into()],
+            env: vec![("A".into(), "1".into())],
+            cwd: "/app".into(),
+            user: User {
+                user: Ident::Name("node".into()),
+                group: Some(Ident::Id(1000)),
+            },
+            tty: false,
+            stdin: false,
+            size: None,
+            main: false,
+        }),
+        HostMsg::Hold,
+        HostMsg::CheckLayers { count: 0 },
+        HostMsg::CheckLayers { count: 16 },
     ]
 }
 

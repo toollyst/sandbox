@@ -86,10 +86,13 @@ mod unix {
     /// 제어 소켓을 열고 게스트 처리를 돌린다. `shares`는 (태그, 호스트 경로)다.
     /// `dirs`(scratch 디스크 옆의 두 디렉터리)가 있으면 빌드 층을 첫째로 흉내 내고([`crate::layers`]),
     /// 루프백 DNS와 투명 TCP를 둘째로 흉내 낸다([`crate::netdir::net_dir`]).
+    /// `layer_disks`는 받은 층 디스크(역할 `rootfs`, 받은 차례)다. 게스트가 부팅 때 센 층 수 노릇을 한다
+    /// (`CheckLayers`).
     pub(crate) fn start(
         socket: &Path,
         shares: Vec<(String, PathBuf)>,
         dirs: Option<(PathBuf, PathBuf)>,
+        layer_disks: Vec<PathBuf>,
     ) -> Result<FakeVm, ExecutorError> {
         let (build_root, net) = dirs.unzip();
         let path: PathBuf = socket.to_owned();
@@ -151,6 +154,9 @@ mod unix {
             layers: build_root.map(|r| {
                 Box::new(crate::layers::DirLayers::new(r)) as Box<dyn sbx_guest::layer::Layers>
             }),
+            // 호스트에서 돈다: 단계의 프로세스 그룹만 끝낸다.
+            sweep: sbx_guest::exec::Sweep::Group,
+            layer_disks: u32::try_from(layer_disks.len()).ok(),
         });
         {
             let life = life.clone();
@@ -207,6 +213,7 @@ mod other {
         _socket: &std::path::Path,
         _shares: Vec<(String, std::path::PathBuf)>,
         _dirs: Option<(std::path::PathBuf, std::path::PathBuf)>,
+        _layer_disks: Vec<std::path::PathBuf>,
     ) -> Result<FakeVm, ExecutorError> {
         Err(ExecutorError::Unsupported(
             "the fake guest needs Unix sockets".into(),

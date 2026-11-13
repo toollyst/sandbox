@@ -374,6 +374,10 @@ impl Layers for Overlay {
         export_upper(&upper, &st.stubs, &st.planted, &Kernel, out)
     }
 
+    fn is_open(&self) -> bool {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).phase == Phase::Open
+    }
+
     fn check_ready(&self) -> Result<(), Error> {
         let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if st.phase == Phase::Broken {
