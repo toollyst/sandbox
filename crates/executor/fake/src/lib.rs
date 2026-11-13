@@ -20,8 +20,11 @@
 //! - Unix에서만 VM을 "띄운다". 다른 OS에서는 `launch`가 [`ExecutorError::Unsupported`]다.
 //! - 빌드 층(`OpenLayer`, `ExportLayer`)은 overlay 대신 scratch 디스크 옆 디렉터리 하나([`build_root`])를 두 번 훑어
 //!   견준다. 규칙과 실제 overlay와 다른 점은 `layers` 모듈에 있다.
+//! - 루프백 DNS는 53번 대신 `127.0.0.1`의 빈 포트에서 듣고, 투명 TCP(`Transparent`)는 경로 표를 바꾸지 않는다.
+//!   가짜 주소에서 듣는 대신 `127.0.0.1`의 빈 포트에서 듣는다. 어디서 듣는지는 [`net_dir`]의 파일에 적는다.
+//!   호스트에서 도는 프로그램은 그 DNS와 가짜 주소를 모르므로, 테스트가 그 파일을 읽고 직접 묻고 붙는다.
 //!
-//! 모듈 층: `lib`, `process` → `guest` → `layers`, `vm`.
+//! 모듈 층: `lib`, `process` → `guest` → `layers`, `vm`. `probe`는 테스트가 쓰는 도구다(다른 모듈을 쓰지 않는다).
 //!
 //! - 의존: `sbx-model`, `sbx-executor`, `sbx-executor-proto`, `sbx-guest-proto`, `sbx-guest`(Unix)
 
@@ -36,6 +39,7 @@ use sbx_model::{Arch, BoxFuture, RootfsFormat};
 mod guest;
 #[cfg(unix)]
 mod layers;
+pub mod probe;
 #[cfg(unix)]
 pub mod process;
 mod vm;
@@ -49,6 +53,23 @@ pub fn build_root(scratch: &std::path::Path) -> std::path::PathBuf {
     s.push(".root");
     s.into()
 }
+
+/// 루프백 DNS와 투명 TCP 흉내의 디렉터리: scratch 디스크 파일 이름 뒤에 `.net`을 붙인 것. VM을 띄울 때 만든다.
+///
+/// - [`NET_DNS`]: 루프백 DNS가 듣는 `127.0.0.1`의 포트(10진수).
+/// - [`NET_ROUTES`]: 줄마다 `가짜주소:포트 127.0.0.1:실제포트`. 게스트 커널의 local 경로 대신이다.
+/// - `etc/resolv.conf`: 게스트가 `/etc/resolv.conf`에 쓰는 것(호스트의 `/etc`는 건드리지 않는다).
+pub fn net_dir(scratch: &std::path::Path) -> std::path::PathBuf {
+    let mut s = scratch.as_os_str().to_owned();
+    s.push(".net");
+    s.into()
+}
+
+/// [`net_dir`] 안의 DNS 포트 파일.
+pub const NET_DNS: &str = "dns-port";
+
+/// [`net_dir`] 안의 경로 표.
+pub const NET_ROUTES: &str = "routes";
 
 /// 가짜 실행기 (같은 프로세스 안).
 #[derive(Debug, Clone)]
@@ -101,12 +122,12 @@ impl Executor for FakeExecutor {
                 .iter()
                 .map(|s| (s.tag.clone(), s.host_path.clone()))
                 .collect();
-            let build = vm
+            let scratch = vm
                 .disks
                 .iter()
                 .find(|d| d.role == sbx_executor::DiskRole::Scratch)
-                .map(|d| build_root(&d.path));
-            guest::start(&vm.control_channel.host_endpoint, shares, build)
+                .map(|d| d.path.clone());
+            guest::start(&vm.control_channel.host_endpoint, shares, scratch)
                 .map(|v| Box::new(v) as Box<dyn VmHandle>)
         })
     }

@@ -308,6 +308,17 @@ impl Guest {
         }
     }
 
+    /// 투명 TCP를 켠다([`HostMsg::Transparent`]). 게스트가 하지 못한 것이 있으면 [`RuntimeError::Guest`]다.
+    pub fn transparent(&self, literals: Vec<std::net::SocketAddrV4>) -> Result<(), RuntimeError> {
+        let mut c = self.open()?;
+        send(&mut *c, &HostMsg::Transparent { literals })?;
+        match recv(&mut *c)? {
+            GuestMsg::Done => Ok(()),
+            GuestMsg::Error(e) => Err(RuntimeError::Guest(e)),
+            other => Err(proto_err(format!("expected Done, got {other:?}"))),
+        }
+    }
+
     /// 연결 하나를 나가는 연결용으로 맡긴다. 게스트가 쓸 때 `Connect`가 온다.
     pub fn egress_slot(&self) -> Result<Box<dyn GuestConn>, RuntimeError> {
         let mut c = self.open()?;
