@@ -190,7 +190,7 @@ VM 안에서, 나가는 연결은 허용 목록으로만. 기획: [docs/plan/dev
 | P1 | 규약: `sbx-guest-proto`에 빌드 층(열기·내보내기, D2에서 완료), `Lookup`, 시각, 파일 변경 알림(각 단계에서 더한다. 더하는 것으로는 버전을 올리지 않는다). `sbx-executor-proto` 3에 디스크 역할 `volume`(2도 계속 말한다) | 없음 | 계획 |
 | D1 | `sbx-dockerfile`: 해석, 처음 범위, 빌드 계획 자료형, 퍼징 | 없음 | 완료 (`sbx_dockerfile::plan`, `sbx_model::build`, `.dockerignore`, 퍼징 대상 `dockerfile`·`dockerignore`. 바탕 이미지의 `Env`는 호출자가 준다(D3). 남음: ARG·ENV 우선순위 등 기억으로 정한 Docker 규칙을 D3에서 실제 Docker와 같은 Dockerfile로 맞춰 본다. 바탕 이미지의 `OnBuild`는 D3가 거부한다) |
 | D2 | 게스트 빌드 모드: 층 쌓기, 층 내보내기(whiteout 바꾸기) | 없음 | 완료 (`Sandbox::open_layer`·`export_layer`, 게스트 `overlay.rs`·`layer.rs`, 퍼징 대상 `layer_from_guest`. 부팅은 그대로이고 층을 열 때마다 처음 뿌리로 돌아가 새 overlay로 chroot한다. 게스트는 항목을 보내고 tar는 호스트가 쓴다. 게스트 규약 버전은 2 그대로(메시지를 더하는 것으로는 올리지 않는다). macOS와 Linux 커널의 실제 overlay 테스트 통과. 남음: 실제 VM smoke(장치 다시 마운트, 실행기 커널의 `metacopy=off`·`index=off`), D3로 넘긴 것은 단계에 남은 프로세스 끝내기·캐시에 맞은 층 적용 요청·`FROM scratch`의 기본 프로세스) |
-| S1 | 층 단위 저장: 층마다 EROFS, 같은 층은 한 번만, 게스트가 층을 쌓아 부팅, 압축 blob은 두지 않음, 배치 버전 | 없음(`max_disks`를 넘으면 합친다) | 계획 |
+| S1 | 층 단위 저장: 층마다 EROFS, 같은 층은 한 번만, 게스트가 층을 쌓아 부팅, 압축 blob은 두지 않음, 배치 버전 | 없음(`max_disks`를 넘으면 합친다) | A 단계 완료 (`layers/<diff_id>/layer.erofs`를 이미지끼리 함께 쓰고, 실행기의 `max_disks`(많아야 16)를 넘는 아래 층은 `merged/<chain_id>/`로 합친다. 실행기 규약은 2 그대로: 층 디스크는 역할 `rootfs`로 scratch 뒤에 보내고 게스트가 EROFS 매직으로 층을 센다. 배치 버전 2(0.2.x로 되돌릴 수 없다). 잰 것: 바탕이 같은 alpine 이미지 둘에서 rootfs 236 → 216 MiB, 층 하나에 마운트 약 1.3 ms. 남음: 실행기가 디스크를 빠뜨렸을 때를 잡는 층 수 확인(D3에서), 실제 VM에서 디스크 3~16개, B 단계(압축 blob 지우기, 층에서 tar 다시 만들기)) |
 | D3 | `sbx-build`와 `sbx build`: 스테이지당 VM 하나, COPY·RUN, 캐시, `type=sbx`(고른 대상의 형태 하나만) | 없음 | 계획 |
 | N1 | 투명 TCP: 가짜 주소 DNS, 게스트 리스너, `resolv.conf` 덮기, 막힌 이름 기록 | 없음 | 계획 |
 | V2 | `--connect NAME:PORT` (N1 위에) | 없음 | 계획 |
