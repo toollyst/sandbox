@@ -1,7 +1,8 @@
 # Use it like Docker
 
-`sbx` takes the commands and flags you know from `docker`. Where it differs, it's on purpose, and every difference is
-[listed in one place](../../crates/app/cli/src/behavior.rs).
+`sbx` takes the commands and flags you know from `docker`. Where it differs, it's on purpose: the
+[Docker compatibility table](docker-compatibility.md) lists every Docker command and flag, what sbx does with it, and
+why.
 
 - [Run and manage sandboxes](#run-and-manage-sandboxes)
 - [Files](#files)

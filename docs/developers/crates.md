@@ -378,7 +378,8 @@ cores in order, and prints.
 | `tui` | `sbx tui`: `keys` (the key list), `model` (keys to `sbx` command lines, no I/O), `view` (drawing), `detail` (a row as readable `name  value` lines), and `mod` (runs `sbx` children, hands over the terminal) |
 | `mcp` | `sbx mcp`: the same operations as MCP tools over stdio, with progress notifications |
 | `complete` | `sbx completion` and `COMPLETE=<shell> sbx`: sandbox names and IDs, image references and installed executors as tab candidates, read-only |
-| `behavior` | exit codes, `--pull`, `rmi` protection, time formatting, and `DOCKER_DIFFERENCES` |
+| `behavior` | exit codes, `--pull`, `rmi` protection, time formatting |
+| `compat` | the Docker compatibility table (every Docker command, flag, Dockerfile instruction and Compose key), checked against clap, and the generated [docker-compatibility.md](../guide/docker-compatibility.md) |
 | `dirs` | default `data_dir`, `cache_dir` and `socket_dir` per OS |
 | `guest` | the embedded guest initramfs (empty in a plain `cargo build`) |
 | `host`, `progress` | `sbx info` host checks, and the pull progress line |
