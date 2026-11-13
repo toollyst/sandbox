@@ -195,7 +195,7 @@ VM 안에서, 나가는 연결은 허용 목록으로만. 기획: [docs/plan/dev
 | N1 | 투명 TCP: 가짜 주소 DNS, 게스트 리스너, `resolv.conf` 덮기, 막힌 이름 기록 | 없음 | 계획 |
 | V2 | `--connect NAME:PORT` (N1 위에) | 없음 | 계획 |
 | D4 | 빌드 출력 `type=docker`, `type=oci`, `SOURCE_DATE_EPOCH` | 없음 | 계획 |
-| D5 | `sbx tag`, `sbx push`, `build --push` | 없음 | 계획 |
+| D5 | `sbx tag`, `sbx push`, `build --push` | 없음 | 일부 (`sbx tag`, `sbx push`(`-a`, `-q`): 있는 blob은 보내지 않고, 같은 레지스트리의 다른 저장소에서 mount, 통째로 올리고 413이면 나눠서, manifest는 마지막에 받은 그대로. 미러로는 올리지 않고 `blocked`는 거부. 가짜 레지스트리 테스트와 e2e. 남음: 실제 `registry:2`·GHCR에 올리고 다른 도구로 받기(끝났다는 기준), 업로드를 307로 넘기는 레지스트리, blob 여러 개 동시에, `build --push`는 D3 뒤) |
 | V1 | 이름 붙은 볼륨(`sbx volume`, `-v NAME:/path`) | 디스크 하나 더 | 계획 |
 | V4 | 시계 맞추기(게스트 init, vsock으로 받은 호스트 시각) | 없음 | 계획 |
 | V3 | 실시간 마운트: 어댑터의 기능 확인과 `extensions.fs`, 호스트 변경 알림, 안내, smoke(`live_share`일 때만) | virtio-fs(선택) | 계획. sbx 쪽은 fake 실행기로 끝낸다. 0.3은 wick을 기다리지 않는다 |
