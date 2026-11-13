@@ -45,3 +45,13 @@
 "-2147483648"
 "4294967295"
 "4294967296"
+# push: 레지스트리 오류 본문과 Range·Location 헤더.
+"\"errors\":"
+"\"code\":"
+"\"message\":"
+"DIGEST_INVALID"
+"bytes="
+"0-"
+"?_state="
+"/v2/"
+"https://"
