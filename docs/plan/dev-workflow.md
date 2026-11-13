@@ -1,0 +1,244 @@
+# 개발 흐름 기획: build, 볼륨, 샌드박스 잇기
+
+2026년 11월 13일 · 대상 릴리스 `v0.3.0`(compose는 그 뒤) · 상위 문서: [architecture.md](architecture.md), [로드맵](../roadmap.md)
+
+이 문서는 방향과 범위만 다룬다. 구현하면 규칙의 정본은 코드(문서 주석, 타입, 테스트)로 옮기고, 이 문서는 방향이
+바뀔 때만 고친다.
+
+## 1. 왜
+
+"믿지 않는 코드를 돌리는 샌드박스"만으로는 이야기가 약하다. E2B, Docker Sandboxes처럼 같은 자리를 노리는 도구가
+많고, 개발자가 매일 여는 도구가 되지 못한다. 그래서 Docker Desktop의 **핵심**을 가져온다. 이미지를 만들고, 돌리고,
+개발용 서비스(postgres, redis)를 띄워 앱과 잇는 것이다. 전부 컨테이너마다 VM이고, 빠르고, 기본으로 닫혀 있다.
+
+한 줄로 말하면 이렇다. **build도 run도 VM 안에서.** 빌드도 믿지 않는 코드를 돌리는 일이다. `npm install`의
+postinstall이나 `pip install`의 빌드 스크립트가 그렇다. Docker는 빌드를 호스트 커널 위에서 돌리고 네트워크를 기본으로
+열어 둔다. sbx는 빌드의 `RUN`마다 VM 안에서 돌리고, 나가는 연결은 허용 목록으로만 연다.
+
+## 2. 목표와 하지 않는 것
+
+목표:
+
+- `sbx build .`가 Dockerfile로 OCI 이미지를 만든다. 결과는 `sbx run`, `docker run`, 레지스트리 어디서나 쓴다.
+- `sbx push`로 레지스트리에 올린다.
+- 이름 붙은 볼륨으로 DB 데이터가 샌드박스를 지워도 남는다.
+- 한 샌드박스가 다른 샌드박스의 정해진 포트에 닿는다(앱에서 `db:5432`로).
+- 소스 폴더를 고치면 샌드박스 안에 바로 보인다(`-v ./src:/app`, virtio-fs가 있는 실행기에서).
+- 위 기능 위에 `compose.yaml`의 일부를 읽는 `sbx compose`.
+
+하지 않는 것: GUI(있는 것은 `sbx tui`), Kubernetes, 확장, Docker Engine API 소켓, Compose 전체, 아키텍처 에뮬레이션
+(architecture.md 3장, 그래서 빌드도 호스트 아키텍처만), Swarm, `docker network`의 브리지·오버레이 네트워크.
+
+지키는 것:
+
+- **실행기 규약은 바꾸지 않는다.** build, 볼륨, 잇기는 이미 있는 `Launch`(디스크 목록, vsock)로 된다. 그래서 규약을
+  지키는 어느 실행기에서나 된다. 실행기에 기대는 것은 실시간 마운트(virtio-fs) 하나뿐이다. sbx 쪽은 이미 되어 있고
+  (`live_share`), sbx 릴리스는 실행기가 그것을 갖출 때를 기다리지 않는다(7.3).
+- **정책은 호출자가 정한다.** 빌드의 네트워크도 `run`처럼 기본 차단이다. 열지 말지는 사용자가 `--allow`로 정한다.
+- **조용히 바꾸지 않는다.** 지원하지 않는 Dockerfile 명령, 다른 아키텍처, 없는 기능은 오류로 알린다.
+
+참고한 것: BuildKit(단계 캐시 키, `--output type=…`, `--mount=type=cache`), buildah(데몬 없는 빌드, OCI layout으로
+쓰기), kaniko(컨테이너 안에서 rootfs 스냅샷으로 층 만들기), Apple `container`(컨테이너마다 VM, macOS 전용), Docker
+Compose 명세, podman volume.
+
+## 3. 정한 것 (2026-11-13)
+
+| 질문 | 결정 | 버린 길과 까닭 |
+|---|---|---|
+| 실행기 추상화 | 그대로 둔다. wick은 실행기 하나다 | wick에 직접 기대고 함께 배포: 빨라지거나 단순해지는 것이 거의 없고 열린 규약을 잃는다 |
+| 빌더 | **직접 만든다.** Dockerfile을 읽고 스테이지마다 VM 하나를 띄워 `RUN`을 거기서 돌린다(4장) | BuildKit을 VM 안에서: Dockerfile 호환은 완벽하지만 게스트에 컨테이너 런타임(runc, cgroup, namespace)과 buildkitd 이미지가 필요하고, VM 안에 컨테이너를 또 띄우므로 빠르다는 이야기가 약해진다 |
+| 실시간 마운트 | **실행기의 virtio-fs**(wick에 넣는다). sbx 쪽에 동기화를 따로 만들지 않는다(7.3) | sbx 쪽 한 방향 sync: 양방향이 아니어서 `-v`와 다르게 동작하고, 감시와 지우기 처리를 sbx가 떠안는다 |
+| 릴리스 범위 | **0.3에 개발 흐름 전부**: build, push, 볼륨, `--connect`. compose는 그 뒤 | 0.3은 build와 push만: 빨리 내지만 "postgres까지 이어 쓰는" 데모가 안 된다 |
+| 홍보 문구 | 0.3에서 README의 첫 줄과 비교표를 바꾼다 | 지금 바꾸기: 아직 없는 기능을 말하게 된다 |
+
+## 4. `sbx build`
+
+### 4.1 명령
+
+Docker와 buildx의 이름을 그대로 쓴다.
+
+```sh
+sbx build -t app .                                   # 기본: sbx 저장소에 넣고 rootfs까지 준비, 곧바로 sbx run app
+sbx build -t app -f docker/Dockerfile ./src          # Dockerfile과 컨텍스트를 따로
+sbx build -t app --build-arg NODE_ENV=production .
+sbx build -t app --target test .                     # 이 스테이지까지만
+sbx build -t app --no-cache .
+sbx build -t app --allow registry.npmjs.org:443 .    # RUN이 나갈 곳(run과 같은 규칙)
+sbx build -t app --output type=docker .              # docker 데몬에 load
+sbx build -t app --output type=oci,dest=app.tar .    # OCI 아카이브(podman, skopeo)
+sbx build -t ghcr.io/me/app:1 --push .               # 레지스트리로
+```
+
+- `--output`은 여러 번 줄 수 있다. 빌드는 한 번이고 결과만 여러 곳에 쓴다. 결과의 원본은 언제나 OCI 이미지이고,
+  EROFS 디스크는 지금처럼 sbx 안의 캐시 형식이다.
+- `type=sbx`(기본): sbx 저장소에 넣고 `prepare`까지 한다. 기록은 `sbx load`와 같은 길로 쓴다.
+- `type=docker`: `sbx save`와 같은 아카이브를 `docker load`에 넘긴다. `docker`가 없으면 오류다.
+- `type=oci,dest=…`: 파일이면 tar, 디렉터리면 OCI image layout.
+- `--push`(`type=registry`): 6장의 push.
+- Firecracker에서 sbx 없이 바로 부팅되는 rootfs는 내지 않는다. 지금 EROFS 디스크는 sbx 게스트 init과 디스크
+  구성에 묶인 내부 형식이고, 내보내면 공개 형식이 된다. 형식이 굳으면 그때 따로 정한다.
+- `--platform`은 호스트 아키텍처만 받는다. 다른 아키텍처는 에뮬레이션이 필요하므로 오류다.
+
+### 4.2 빌드 한 번의 흐름
+
+스테이지 하나는 VM 하나다. 단계마다 VM을 새로 띄우지 않는다.
+
+1. **해석.** Dockerfile을 읽어 스테이지와 단계의 목록으로 바꾼다. `ARG`와 `--build-arg`를 풀고, `--target`에
+   필요 없는 스테이지는 뺀다. 지원하지 않는 명령은 이 단계에서 줄 번호와 함께 오류다.
+2. **캐시 찾기.** 단계마다 캐시 키를 만든다(4.4). 앞에서부터 맞는 단계를 찾고, 처음으로 맞지 않는 단계에서 멈춘다.
+3. **바탕 준비.** `FROM` 이미지를 지금처럼 pull하고, 캐시에 맞은 층까지 얹어 rootfs 하나로 `prepare`한다
+   (`sbx-rootfs`가 메모리에서 합친다). 모든 단계가 맞으면 VM을 띄우지 않고 끝난다.
+4. **빌드 VM.** 그 rootfs로 샌드박스를 하나 띄운다. 사용자의 `--allow`, `--cpus`, `-m`을 따른다. 빌드용이라는 라벨
+   (`io.github.toollyst.sandbox.build`)을 붙이고, 빌드가 끝나면 지운다.
+5. **단계 실행.** 게스트가 단계마다 scratch 위에 새 위층을 만들어 overlay를 쌓는다(4.3).
+   - `RUN`: 그 층에서 실행한다. env, workdir, user, `SHELL`은 앞 단계까지의 상태를 따른다. 0이 아닌 종료 코드면 빌드가
+     실패하고 그 출력을 보여 준다. 허용 목록에 없어 막힌 연결이 있었으면 어느 `host:port`였는지 함께 알린다.
+   - `COPY`, `ADD`: 호스트가 컨텍스트에서 골라(`.dockerignore` 적용) 그 층에 넣는다. 지금의 `CopyIn`이다.
+     `--from=스테이지`는 그 스테이지의 층을 호스트에서 메모리로 합쳐 원하는 경로만 꺼낸다. VM이 필요 없다.
+   - `ENV`, `WORKDIR`, `USER`, `LABEL`, `EXPOSE`, `ENTRYPOINT`, `CMD` 같은 것은 이미지 config만 바꾸고 층을 만들지 않는다.
+6. **층 내보내기.** 단계가 끝나면 게스트가 그 위층을 OCI 층 tar로 보낸다. overlay의 whiteout(문자 장치 0/0,
+   opaque xattr)은 OCI의 `.wh.` 파일로 바꾼다. 호스트는 압축하고 diff_id와 digest를 계산해 blob으로 저장한다.
+7. **조립.** config와 manifest를 쓰고 4.1의 출력으로 보낸다. 독립된 스테이지들은 동시에 빌드한다.
+
+받은 층 tar는 게스트가 만든 것이므로 믿지 않는 입력이다. 지금 `CopyOut`과 레이어 병합이 지키는 규칙(경로 탈출 거부,
+크기 상한, scratch 크기 `--storage-opt size=`)을 그대로 적용한다.
+
+### 4.3 게스트 쪽: 빌드 모드
+
+지금 게스트 init은 rootfs(EROFS)와 scratch를 overlay로 합쳐 그 안으로 chroot한다. 빌드 모드에서는 chroot하지 않고
+이렇게 한다.
+
+- 층 n: overlay(lower = EROFS, 위층 1…n-1을 읽기 전용으로; upper = scratch의 `layers/n`)를 `build/n`에 마운트한다.
+- `Exec`는 `build/n` 안으로 들어가 실행한다. `CopyIn`도 `build/n`에 쓴다.
+- 층을 닫으면 `layers/n`을 tar로 흘려보낸다.
+
+`sbx-guest-proto`에 층 열기, 층 내보내기를 더하고 규약 버전을 올린다. 게스트 init은 `sbx` 안에 함께 들어 있으므로
+버전이 언제나 같이 간다. 실행기 규약은 바뀌지 않는다.
+
+### 4.4 캐시
+
+- 키: 앞 단계의 키, 명령 문자열(`ARG`를 푼 뒤), 그 단계가 쓰는 build arg, `COPY`·`ADD`면 고른 파일들의 내용과 메타데이터 해시.
+  `RUN`의 결과가 네트워크에 따라 달라지는 것은 Docker처럼 키에 넣지 않는다(`--no-cache`가 있다).
+- 키 → 층 digest의 기록은 `cache_dir/build/`에 둔다. 쓰는 것은 관리 쪽이다(architecture.md 1장). 층 blob은 이미
+  있는 blob 저장소와 정리 규칙(`claim_blobs`, `collect_blobs`)을 쓴다. `sbx system prune`이 빌드 캐시도 치운다.
+- `SOURCE_DATE_EPOCH`를 주면 층 tar의 시각과 순서를 고정해 같은 입력에서 같은 digest가 나오게 한다. "확인할 수
+  있다"는 목표와 맞다.
+
+### 4.5 Dockerfile 범위
+
+| 범위 | 명령과 기능 |
+|---|---|
+| 처음 | `FROM`(`AS`, `scratch`, `FROM` 앞 `ARG`), `RUN`(셸·exec 형식), `COPY`(`--from`, `--chown`, `--chmod`), `ADD`(로컬 파일, 로컬 tar 풀기), `ENV`, `ARG`, `WORKDIR`, `USER`, `LABEL`, `EXPOSE`, `VOLUME`, `ENTRYPOINT`, `CMD`, `STOPSIGNAL`, `SHELL`, 파서 지시어 `escape`, `.dockerignore`, `-f -` |
+| 나중 | `RUN --mount=type=cache`(볼륨을 그대로 쓴다), `RUN --mount=type=secret`, heredoc, `ADD <URL>`(호스트가 받으므로 같은 허용 목록), `ONBUILD`, `COPY --link`, git 컨텍스트 |
+| 하지 않음 | `# syntax=`로 다른 프런트엔드 고르기(무시하지 않고 알린다), `HEALTHCHECK`(config에 쓰지만 sbx는 적용하지 않는다고 알린다) |
+
+### 4.6 크레이트
+
+- Dockerfile 해석은 adapter(`sbx-dockerfile`)에 둔다. OCI 자료형이 `sbx-oci` 밖으로 나가지 않는 것처럼, Dockerfile
+  자료형도 그 크레이트 밖으로 나가지 않는다. 밖으로는 `sbx-model`의 빌드 계획(스테이지와 단계)만 나간다.
+- 빌드 코어(`sbx-build`)는 계획, 캐시 키, 층과 config 조립을 맡는다. VM을 띄우는 일과 저장소에 쓰는 일은 trait 뒤에
+  두고, CLI가 `sbx-runtime`과 `sbx-manage`로 채운다. `run`이 관리와 실행을 차례로 부르는 것과 같은 모양이다. 그래서
+  실행과 관리가 서로 모른다는 규칙은 그대로다. 정확한 규칙은 `RULES`에 더한다.
+
+## 5. 출력과 도구
+
+- 진행은 `pull`처럼 사람에게는 단계마다 한 줄씩 보여 준다(`[2/7] RUN npm ci`, 캐시면 `CACHED`). `--progress plain`이면
+  RUN 출력을 그대로 흘린다. `--format json`이면 단계 이벤트를 JSON Lines로 낸다(`output.rs`의 공개 자료형).
+- `sbx events`에 이미지 이벤트 `build`를 더한다.
+- `sbx tui`: 이미지 목록에서 빌드한 이미지와 그 Dockerfile 경로를 보이고, `:` 없이 키 하나로 다시 빌드한다
+  (같은 `sbx build` 명령을 자식으로 부른다).
+- MCP 도구로 `build`를 여는 것은 나중에 따로 정한다. 에이전트가 빌드까지 VM 안에서 하는 것은 잘 맞지만, 컨텍스트로
+  보낼 호스트 디렉터리를 어디까지 허락할지 먼저 정해야 한다.
+
+## 6. `sbx push`
+
+- `sbx push NAME[:TAG]`와 `sbx build --push`. OCI Distribution의 push: blob이 이미 있는지 묻고(`HEAD`), 없으면 올리고
+  (monolithic, 크면 chunked), 같은 레지스트리 안에서는 cross-repo mount를 먼저 시도하고, 마지막에 manifest를 올린다.
+- 인증은 지금 읽는 파일(Docker `config.json`, credential helper, containers `auth.json`)에 push scope로 요청한다.
+- `registries.conf`의 미러는 push에 쓰지 않는다. 이름이 가리키는 레지스트리로만 올린다. `blocked`면 거부한다.
+- pull한 이미지는 받은 문서 그대로(`save`와 같다)이므로 다시 올려도 digest가 같다.
+- architecture.md 3장의 Distribution "나중"에서 push를 "지금"으로 옮긴다.
+
+## 7. 개발용 서비스: 볼륨, 잇기, 실시간 마운트
+
+### 7.1 이름 붙은 볼륨
+
+```sh
+sbx volume create pgdata
+sbx run -d --name db -v pgdata:/var/lib/postgresql/data -p 5432:5432 postgres:17
+sbx volume ls / inspect / rm / prune
+```
+
+- 볼륨 하나는 `data_dir/volumes/<이름>/`의 sparse 디스크 이미지 하나다. VM에 디스크로 하나 더 붙이고(실행기의
+  `max_disks` 안에서), 게스트가 처음 쓸 때 scratch처럼 포맷한 뒤 대상 경로에 마운트한다.
+- 비어 있는 볼륨을 처음 붙이면 Docker처럼 이미지의 그 경로 내용을 먼저 채운다.
+- 쓰기로 붙인 볼륨은 한 번에 한 샌드박스만 쓴다(블록 장치는 두 커널이 함께 쓸 수 없다). 두 번째는 오류이고
+  `DOCKER_DIFFERENCES`에 적는다. 읽기 전용(`:ro`)은 쓰는 쪽이 없을 때 여럿이 붙일 수 있다.
+- `-v NAME:/path`와 `-v ./dir:/path`는 Docker 규칙(첫 글자가 `/`, `.`, `~`이면 경로)으로 가른다. 지금은 이름이면
+  오류를 낸다.
+
+### 7.2 샌드박스 잇기
+
+```sh
+sbx run -d --name db postgres:17
+sbx run --rm --connect db:5432 app        # 앱 안에서 db:5432로 닿는다. 다른 곳은 여전히 닫혀 있다
+```
+
+- `--connect NAME:PORT`는 허용 목록과 같은 생각이다. 무엇에 닿을지 하나씩 연다.
+- 게스트 안에서 `NAME`은 `/etc/hosts`로 루프백 주소 하나(`127.0.x.y`)를 가리키고, 게스트가 그 주소의 `PORT`에서
+  듣는다. 받은 연결은 vsock으로 호스트에 가고, 호스트는 대상 샌드박스의 게스트에 지금의 `Forward`로 넘긴다. VM에는
+  여전히 네트워크 장치가 없다.
+- HTTP 프록시가 아니라 TCP를 그대로 넘기므로 postgres, redis 같은 어느 프로토콜이든 된다.
+- 연결마다 대상을 새로 찾는다. 그래서 대상이 다시 시작해도 다음 연결은 된다. 대상이 없으면 그 연결만 끊긴다.
+  기록은 `events/network`에 `connect`로 남는다.
+- 같은 `data_dir`을 쓰는 샌드박스끼리만 된다.
+
+### 7.3 실시간 마운트
+
+- `-v ./src:/app[:ro]`는 sbx 쪽이 이미 되어 있다. 실행기가 `live_share`를 알리면 virtio-fs 태그로 넘기고 게스트가
+  마운트한다(로드맵 13). 알리지 않으면 지금처럼 오류이고, 조용히 복사로 바꾸지 않는다.
+- 남은 것은 실행기의 일이다. upstream Firecracker에는 virtio-fs가 없으므로 wick에 넣는다(wick 저장소의 일).
+  virtio-fs가 있는 다른 실행기(libkrun 등, 로드맵 "그 뒤")도 그대로 된다.
+- sbx 0.3은 이것을 기다리지 않는다. wick이 갖추면 `sbx executor install`로 받은 새 wick에서 바로 된다.
+- 0.3에서 sbx가 하는 것: `live_share`가 없을 때의 오류에 "이 실행기는 실시간 공유가 없다, `--mount type=copy`나
+  virtio-fs가 있는 실행기를 쓰라"를 넣고, smoke에 실행기가 `live_share`를 알릴 때만 도는 실시간 공유 확인을 더한다.
+
+## 8. `sbx compose` (마지막)
+
+- `compose.yaml`의 일부만 읽는다: `services`의 `image`, `build`, `command`, `entrypoint`, `environment`, `env_file`,
+  `ports`, `volumes`(이름 붙은 볼륨과 경로), `depends_on`(시작 순서만), 최상위 `volumes`.
+- 서비스마다 위의 명령으로 옮긴다. Compose는 기본 네트워크 안에서 서로 다 닿으므로, 서비스마다 다른 서비스의
+  `expose`·`ports`·이미지 `ExposedPorts`로 `--connect`를 만든다. 무엇을 열었는지 `sbx compose config`가 보여 준다.
+- 모르는 키는 오류다. 무시하면 사용자는 된 줄 안다.
+- `up`, `down`, `ps`, `logs`, `build`. 상태는 샌드박스 라벨(`io.github.toollyst.sandbox.compose.project`)에만 둔다.
+  따로 저장하지 않는다.
+
+## 9. 단계
+
+모든 단계는 CLI와 `sbx tui`를 함께 한다. "끝났다는 기준"은 fake 실행기 e2e와 CI `vm` 작업의 smoke 둘 다다.
+
+| 단계 | 내용 | 끝났다는 기준 |
+|---|---|---|
+| D1 | `sbx-dockerfile`: 해석과 4.5의 처음 범위, 빌드 계획 자료형 | Docker 문서의 예제와 공개 저장소 Dockerfile 묶음을 읽고, 지원하지 않는 것은 줄 번호로 거부한다. 퍼징 대상 |
+| D2 | 게스트 빌드 모드: 층 쌓기, 층 내보내기(whiteout 바꾸기), 규약 버전 올리기 | 게스트 단독 테스트와 fake로, 파일 추가·바꾸기·지우기·디렉터리 비우기가 OCI 층으로 맞게 나온다 |
+| D3 | `sbx-build`와 `sbx build`: 스테이지당 VM 하나, COPY·RUN, 캐시, `type=sbx` | 다단계 Dockerfile(node, python, go 예제)이 빌드되고 `sbx run`으로 돈다. 두 번째 빌드는 VM 없이 끝난다 |
+| D4 | 출력 `type=docker`, `type=oci`, `SOURCE_DATE_EPOCH` | `docker run`으로 같은 결과. 같은 입력을 두 번 빌드하면 digest가 같다 |
+| D5 | `sbx push`, `build --push` | 로컬 레지스트리(`registry:2`)와 GHCR에 올리고 다른 도구로 받는다 |
+| D6 | bench: 같은 Dockerfile을 `docker build`와 견준다(처음, 캐시, 한 줄 바꿈) | README에 숫자를 싣는다 |
+| V1 | 볼륨 | postgres 데이터가 `rm` 뒤에도 남고, 두 번째 쓰기 붙이기는 거부된다 |
+| V2 | `--connect` | 앱 샌드박스에서 `psql -h db`가 되고, 열지 않은 포트와 다른 샌드박스는 닿지 않는다 |
+| V3 | 실시간 마운트 안내와 smoke(7.3) | `live_share`가 없는 실행기에서 오류가 다른 길을 알리고, 있는 실행기에서 smoke가 호스트의 변경을 본다 |
+| R1 | 문서, README 문구와 비교표, `build` → `run` → `--connect`로 postgres까지 잇는 데모 → 0.3.0 | docs-before-main 확인 |
+| C1 | `sbx compose`(0.3 뒤) | 앱 + postgres + redis 예제가 `up` 한 번으로 뜨고 `down`으로 정리된다 |
+
+## 10. 위험
+
+- **Dockerfile 호환.** 사용자는 "내 Dockerfile이 그냥 돈다"를 기대한다. 처음 범위로 흔한 Dockerfile 대부분은 되지만
+  `--mount=type=cache`를 쓰는 Dockerfile이 늘고 있다. 공개 저장소의 Dockerfile 묶음으로 얼마나 되는지 재고, 그
+  숫자로 "나중" 순서를 정한다.
+- **빌드 네트워크 기본 차단.** 처음 쓰는 사람은 막힌 연결부터 만난다. 막힌 `host:port`와 그대로 붙여 쓸 수 있는
+  `--allow`를 오류에 넣는 것이 이 기능의 첫인상이다.
+- **이름.** Docker Sandboxes도 `sbx`다. Docker의 영역으로 들어갈수록 헷갈림이 커진다. README의 "Not Docker
+  Sandboxes" 절을 위로 올리는 것을 0.3에서 함께 본다.
+- **범위가 커진다.** Docker Desktop 대체로 보이면 Compose 전체, 브리지 네트워크, Engine API 요청이 온다. 2장의
+  "하지 않는 것"을 README에도 적는다.
