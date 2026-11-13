@@ -50,7 +50,7 @@
 //! - 커널은 보통 실행기의 기본 커널이다. [`VmSpec::kernel`]이 있으면(이미지가 자기 커널을 담은 경우) 그 파일로
 //!   부팅한다. 할 수 없는 실행기는 `custom_kernel`을 `false`로 알린다. 그러면 sbx는 커널을 보내지 않고, 그런 이미지는
 //!   그 실행기로 띄우지 않는다. 받은 커널의 형식(VMM이 읽는 형식인지)과 아래 기능은 이미지를 만든 쪽의 책임이다.
-//! - 커널 기능: virtio-blk, vsock(virtio), erofs, ext4(ext2 형식 포함), overlay, devtmpfs, proc, sysfs, tmpfs, devpts(Unix98 pty), 루프백 네트워크.
+//! - 커널 기능: virtio-blk, vsock(virtio), erofs(xattr 포함: 층 디스크가 opaque 디렉터리를 xattr로 적는다), ext4(ext2 형식 포함), overlay, devtmpfs, proc, sysfs, tmpfs, devpts(Unix98 pty), 루프백 네트워크.
 //!   커널은 4.7 이상이어야 한다(`newinstance`로 마운트한 `/dev/pts`를 `/dev/ptmx`가 찾는다).
 //! - 디스크는 [`VmSpec::disks`] 순서대로 virtio-blk 장치로 붙인다. 게스트에서 n번째 디스크가 n번째 장치 이름이다
 //!   (`/dev/vda`, `/dev/vdb`, …). 첫째는 이미지의 맨 아래 층(`rootfs`, 읽기 전용), 둘째는 scratch다. 셋째부터의

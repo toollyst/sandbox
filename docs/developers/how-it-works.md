@@ -9,8 +9,8 @@ that does it. The doc comment there is the precise rule.
 ```text
  your terminal
      │
- sbx (sbx-cli) ──────────── cache_dir: blobs, images/<id>/rootfs.erofs, guest/…/initramfs,   (sbx-manage writes)
-     │                                 events/images/
+ sbx (sbx-cli) ──────────── cache_dir: blobs, images/<id>/, layers/<diff_id>/layer.erofs,       (sbx-manage writes)
+     │                                 merged/<chain_id>/rootfs.erofs, guest/…/initramfs, events/images/
      │  sbx-runtime ─────── data_dir:  sandboxes/<id>/{spec.json,state.json,scratch.img,owner.lock,logs/},
      │                                 events/sandboxes/, events/network/, executors/, adapters/ (the last two: sbx executor)
      │                      socket_dir: short paths for Unix sockets (macOS caps them at 104 bytes)
@@ -20,8 +20,9 @@ that does it. The doc comment there is the precise rule.
                                                    │
                        control_socket ◄── vsock ──►│ microVM
                        (CONNECT 1024)              │  /init = sbx-guest (PID 1)
-                                                   │  /dev/vda rootfs.erofs (read-only)
+                                                   │  /dev/vda bottom layer (EROFS, read-only)
                                                    │  /dev/vdb scratch.img  (writable)
+                                                   │  /dev/vdc… upper layers (EROFS, read-only)
 ```
 
 There are three directories, each passed in by the caller. The CLI's defaults are in
@@ -33,7 +34,9 @@ Both `data_dir` and `cache_dir` hold a `layout-version` file (from 0.2.1): one d
 that wrote them. [`layout.rs`](../../crates/app/cli/src/layout.rs) checks it whenever `sbx` starts. A missing file
 (a directory 0.2.0 wrote) is layout 1 and gets written; a higher number than this `sbx` knows is refused rather than
 guessed at; a lower one is migrated in place. A change to the layout bumps `layout::CURRENT` and adds a step to
-`layout::migrate`.
+`layout::migrate`. Layout 2 stores root filesystems per layer: migrating a layout 1 cache deletes each image's
+`images/<id>/rootfs.<format>`, keeps the blobs and image records, and the next `run`, `start` or `prepare` builds
+the layer disks from the blobs. An older `sbx` then refuses the cache, as above.
 
 ## `sbx run --rm alpine echo hello`
 
@@ -63,10 +66,18 @@ neither. The CLI then calls the management core:
   writing and reports progress (the CLI draws the bar). The manifest and config are kept as pulled (for `sbx save`),
   and the image record and reference are written last.
   `sbx load` runs the same steps with an OCI image layout as the source ([`layout.rs`](../../crates/adapter/oci/src/layout.rs)).
-- **`prepare`**: [`sbx-rootfs`](../../crates/port/rootfs) merges the layers in memory (whiteouts, opaque
-  directories, hard links) and writes one EROFS image to `images/<id>/rootfs.erofs`. Nothing is unpacked onto your
-  disk, so the result is the same on macOS, Linux and Windows. If the image carries its own kernel (label
-  `io.github.toollyst.sandbox.kernel`), it is extracted next to the rootfs.
+- **`prepare`**: each layer becomes one EROFS image, `layers/<diff_id>/layer.erofs`, shared by every image that
+  has that layer. [`sbx-rootfs`](../../crates/port/rootfs) `lower` writes a layer the way overlayfs reads a lower
+  directory: a whiteout is a character device 0/0, an opaque directory has `trusted.overlay.opaque=y`. Nothing is
+  unpacked onto your disk, so the result is the same on macOS, Linux and Windows. The plan
+  ([`stack.rs`](../../crates/port/store/src/stack.rs)) walks from the top layer down and gives each layer its own
+  disk while the executor has disks left (`max_disks` minus one for scratch, at most 16). The layers below that are
+  merged into one EROFS, `merged/<chain_id>/rootfs.erofs`, the same in-memory merge (whiteouts, opaque directories,
+  hard links) that 0.2 did for the whole image. A layer that can't stand on its own as a lower (a hard link to a
+  file in a lower layer, a whiteout of the root) is merged with everything below it. Two processes preparing images
+  that share a layer build it once: each layer and merged disk has its own lock (`.lock` in its directory), and the
+  files appear by rename. If the image carries its own kernel (label `io.github.toollyst.sandbox.kernel`), it is
+  extracted to `images/<id>/kernel`.
 
 ### 3. Create the sandbox (`sbx-runtime`)
 
@@ -81,20 +92,26 @@ neither. The CLI then calls the management core:
   ([`records.rs`](../../crates/core/runtime/src/records.rs)).
 - **Claims `--name`, if given**, as a file under `names/`.
 
-`create` never pulls. If the image or rootfs is missing, it fails, and the CLI is the one that pulled in step 2.
+`create` never pulls. If the image or its layer disks for this executor are missing, it fails, and the CLI is the
+one that pulled and prepared in step 2. `start` prepares again if they went missing since (a cache migrated from
+layout 1, or a `prepare` for an executor with fewer disks).
 
 ### 4. Start: launch the VM (`sbx-runtime` → executor)
 
 `Sandbox::start`:
 
-1. **Takes ownership.** It holds `owner.lock` and a shared lease on the image in the cache, so `rmi` can't delete the
-   rootfs under a running VM.
+1. **Takes ownership.** It holds `owner.lock` and a shared lease on the image in the cache, so `rmi` and
+   `system prune` can't delete its layer disks under a running VM. A layer is deleted only when no image uses it
+   any more (`sbx_store::write::collect`, under the store's lock that `prepare` also waits on).
 2. **Picks the boot files.** The guest init is the initramfs embedded in `sbx`, extracted once to
    `cache_dir/guest/sha256-<digest>/<arch>/initramfs`. The kernel is the executor's default, unless the image
    brought its own.
 3. **Launches through the executor.** [`sbx-executor-process`](../../crates/adapter/executor-process) runs
    `sbx-executor run` and sends `Launch` (disks, initrd, kernel, vCPUs, memory, `control_socket`). Then it waits for
-   `Started`. The executor's stderr goes to `logs/executor.log`.
+   `Started`. The executor's stderr goes to `logs/executor.log`. The disks are, in order: the bottom layer (or the
+   merged disk), scratch, then the upper layers, bottom to top. Each is attached as the next virtio-blk device, so
+   the order alone tells the guest what it is. The executor protocol stays at version 2: an executor only has to
+   attach up to its `max_disks` disks in order.
 4. **The executor starts the VMM.** [`sbx-executor-firecracker`](../../crates/executor/firecracker) writes a
    Firecracker config with vsock at `control_socket`, guest CID 3 and the kernel command line
    (`sbx.hostname=…`, `sbx.halt=reboot`), and runs `firecracker --no-api --config-file`. The config file sits next to
@@ -110,9 +127,11 @@ The kernel unpacks the initramfs and runs `/init` = `sbx-guest` as PID 1
 ([`boot.rs`](../../crates/app/guest/src/boot.rs)):
 
 1. It mounts `/dev`, `/proc` and `/sys`, and reads the kernel command line.
-2. It mounts `/dev/vda` (EROFS) read-only. It formats `/dev/vdb` on first boot (scratch is zero-filled, so "no
-   filesystem" means "new") and reuses it after a restart.
-3. It stacks overlay(rootfs ↓, scratch ↑), mounts `/proc`, `/sys`, `/dev`, `/dev/pts` and `/dev/shm` inside, moves
+2. It mounts `/dev/vda` and then `/dev/vdc`, `/dev/vdd`, … read-only, up to the first disk that isn't EROFS
+   ([`disks.rs`](../../crates/app/guest/src/disks.rs): volumes come after the layers and are never EROFS). It
+   formats `/dev/vdb` on first boot (scratch is zero-filled, so "no filesystem" means "new") and reuses it after a
+   restart. The kernel command line doesn't change.
+3. It stacks overlay(layers ↓, scratch ↑), mounts `/proc`, `/sys`, `/dev`, `/dev/pts` and `/dev/shm` inside, moves
    it to `/`, and chroots. It brings up loopback and sets the hostname.
 4. It re-executes itself as the **agent**, which listens on vsock port 1024 and serves each connection on its own
    thread. It also starts a loopback DNS responder that answers NXDOMAIN at once, so name lookups without network
