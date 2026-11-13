@@ -256,6 +256,10 @@ pub fn agent() -> ! {
         }
     }
     let halt_how = cfg.halt;
+    let transparent_on = {
+        let e = egress.clone();
+        move || e.transparent_on()
+    };
     let ctx: &'static Ctx = Box::leak(Box::new(Ctx {
         root: "/".into(),
         on_shutdown: Box::new(move || halt(halt_how)),
@@ -264,12 +268,15 @@ pub fn agent() -> ! {
         main: Default::default(),
         // 첫 OpenLayer 전에는 아무것도 하지 않는다(보통의 run에는 비용이 없다).
         // 층 디스크는 부팅 때와 같은 규칙으로 다시 찾는다(디스크 차례와 내용만 본다).
-        layers: Some(Box::new(crate::overlay::Overlay::guest(
-            crate::disks::layer_devices(std::path::Path::new("/dev")).unwrap_or_else(|_| {
-                vec![std::path::Path::new("/dev").join(crate::disks::device(0))]
-            }),
-            SCRATCH_DEV,
-        ))),
+        layers: Some(Box::new(
+            crate::overlay::Overlay::guest(
+                crate::disks::layer_devices(std::path::Path::new("/dev")).unwrap_or_else(|_| {
+                    vec![std::path::Path::new("/dev").join(crate::disks::device(0))]
+                }),
+                SCRATCH_DEV,
+            )
+            .with_resolver(Box::new(transparent_on)),
+        )),
     }));
     loop {
         match sys::accept(&listener) {

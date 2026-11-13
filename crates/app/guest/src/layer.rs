@@ -23,6 +23,10 @@
 //! - 같은 inode를 가리키는 일반 파일(`nlink` > 1)은 처음 것만 내용과 함께 보내고, 나머지는 그 경로로의 하드 링크다.
 //! - 소켓은 건너뛴다(OCI 층에 담을 수 없다).
 //! - 층을 위해 만든 빈 마운트 자리(`skip`, 맨 위의 이름)는 보내지 않는다.
+//! - sbx가 층에 둔 파일([`Planted`], 예: `--network allow`의 `/etc/resolv.conf`)은 그 자리에 sbx가 쓴 내용 그대로인
+//!   일반 파일이면 보내지 않는다. 빌드 단계가 바꾸거나 지웠으면 그 변경을 보낸다(단계가 한 일이다). 맨 위의 마운트
+//!   자리처럼 sbx가 만든 맨 위 디렉터리 안에 그런 파일만 있으면 그 디렉터리도 보내지 않는다. 그래서 만든 이미지에는
+//!   sbx가 둔 것이 남지 않는다.
 
 use std::collections::HashMap;
 use std::fs;
@@ -122,11 +126,21 @@ impl UpperFs for Kernel {
 /// overlay 내부용 xattr 이름의 앞부분.
 pub const OVERLAY_XATTR: &str = "trusted.overlay.";
 
+/// sbx가 층에 둔 파일 하나: 층 안의 상대 경로와 쓴 내용. 그대로면 내보내지 않는다(모듈 문서).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Planted {
+    /// 층 안의 상대 경로(`etc/resolv.conf`).
+    pub path: String,
+    /// sbx가 쓴 내용.
+    pub content: Vec<u8>,
+}
+
 /// 위층 디렉터리 `upper`의 내용을 층 항목으로 보낸다. 규칙은 모듈 문서에 있다.
-/// `skip`은 맨 위에서 비어 있으면 건너뛸 디렉터리 이름이다(층을 위해 만든 마운트 자리).
+/// `skip`은 맨 위에서 비어 있으면(또는 [`Planted`] 파일만 있으면) 건너뛸 디렉터리 이름이다(층을 위해 만든 자리).
 pub fn export_upper(
     upper: &Path,
     skip: &[String],
+    planted: &[Planted],
     fs: &dyn UpperFs,
     out: &Out,
 ) -> Result<(), Error> {
@@ -134,8 +148,19 @@ pub fn export_upper(
         fs,
         out,
         links: HashMap::new(),
+        planted,
     };
     w.dir(upper, None, skip)
+}
+
+/// `abs`(층 안 `rel`)가 sbx가 둔 그대로의 파일인지.
+fn is_planted(planted: &[Planted], abs: &Path, rel: &str, meta: &fs::Metadata) -> bool {
+    planted.iter().any(|p| {
+        p.path == rel
+            && meta.is_file()
+            && meta.len() == p.content.len() as u64
+            && fs::read(abs).is_ok_and(|b| b == p.content)
+    })
 }
 
 struct Walk<'a> {
@@ -143,14 +168,26 @@ struct Walk<'a> {
     out: &'a Out,
     /// 이미 보낸 일반 파일: (장치, inode) → 경로. `nlink` > 1인 것만.
     links: HashMap<(u64, u64), String>,
+    planted: &'a [Planted],
 }
 
 fn invalid(m: impl Into<String>) -> Error {
     Error::new(ErrorKind::InvalidArgument, m)
 }
 
-fn is_empty_dir(p: &Path) -> io::Result<bool> {
-    Ok(fs::read_dir(p)?.next().is_none())
+/// 비었거나 sbx가 둔 그대로의 파일만 있는 디렉터리인지(`rel`은 층 안 경로).
+fn holds_only_planted(planted: &[Planted], p: &Path, rel: &str) -> io::Result<bool> {
+    for c in fs::read_dir(p)? {
+        let c = c?;
+        let Some(name) = c.file_name().to_str().map(str::to_owned) else {
+            return Ok(false);
+        };
+        let meta = fs::symlink_metadata(c.path())?;
+        if !is_planted(planted, &c.path(), &format!("{rel}/{name}"), &meta) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 impl Walk<'_> {
@@ -181,8 +218,12 @@ impl Walk<'_> {
             if rel.is_none()
                 && meta.is_dir()
                 && skip.iter().any(|s| s == name)
-                && is_empty_dir(&child).map_err(|e| io_error(&path, &e))?
+                && holds_only_planted(self.planted, &child, &path)
+                    .map_err(|e| io_error(&path, &e))?
             {
+                continue;
+            }
+            if is_planted(self.planted, &child, &path, &meta) {
                 continue;
             }
             self.entry(&child, path, &meta)?;

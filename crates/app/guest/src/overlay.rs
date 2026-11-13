@@ -29,7 +29,11 @@
 //! 4. 그 안에 `/proc`, `/sys`(읽기 전용), `/dev`, `/dev/pts`, `/dev/shm`을 마운트한다(부팅과 같은 옵션). 그 층에
 //!    자리가 없으면 만들고, 내보낼 때 비어 있으면 빼고 보낸다(BuildKit과 같다). 자리가 디렉터리가 아니면(심볼릭
 //!    링크 포함) 오류다. 링크를 따라 층 밖에 마운트하지 않는다.
-//! 5. 그 안으로 chroot한다. 스레드는 뿌리를 함께 쓰므로 그 뒤의 요청과 그 요청이 띄운 프로세스는 층 n을 `/`로 본다.
+//! 5. 투명 TCP가 켜져 있으면([`Overlay::with_resolver`]) 그 층의 `/etc/resolv.conf`를 보통의 샌드박스와 같은
+//!    내용(`transparent::RESOLV_CONF`)으로 쓴다. 층 안에서는 처음 뿌리의 쓰기 층(부팅 뒤 sbx가 쓴 것)이 보이지
+//!    않기 때문이다. 이 파일은 [`Planted`]로 내보내기에서 빠진다(단계가 바꾸지 않았으면). `/etc`가 없으면 만들고
+//!    마운트 자리처럼 다룬다. `/etc`가 디렉터리가 아니면(링크 포함) 쓰지 않는다. 링크를 따라 층 밖에 쓰지 않는다.
+//! 6. 그 안으로 chroot한다. 스레드는 뿌리를 함께 쓰므로 그 뒤의 요청과 그 요청이 띄운 프로세스는 층 n을 `/`로 본다.
 //!
 //! **상한**: 아래층은 상대 경로로 적어 마운트 옵션(한 페이지, 4096바이트) 안에 든다. 층 수는
 //! [`MAX_LAYERS`]까지이고, 이미지의 층 디스크와 앞 층을 합친 아래층 수는 overlayfs `OVL_MAX_STACK`(500)까지다.
@@ -49,7 +53,7 @@ use std::sync::Mutex;
 
 use sbx_guest_proto::{Error, ErrorKind, MAX_LAYERS};
 
-use crate::layer::{Kernel, Layers, export_upper};
+use crate::layer::{Kernel, Layers, Planted, export_upper};
 use crate::sys::linux as sys;
 use crate::wire::{Out, io_error};
 
@@ -75,8 +79,13 @@ pub struct Overlay {
     base: Vec<String>,
     /// 연 층 안으로 연결 처리 프로세스의 뿌리를 옮긴다. 테스트는 옮기지 않고 `dir/root`를 본다.
     enter: bool,
+    /// 층에 `/etc/resolv.conf`를 쓸지(투명 TCP가 켜졌는지). 없으면 쓰지 않는다.
+    resolver: Option<Resolver>,
     state: Mutex<State>,
 }
+
+/// 층을 열 때마다 묻는다: 루프백 DNS를 가리키는 `/etc/resolv.conf`를 층에 둘지.
+pub type Resolver = Box<dyn Fn() -> bool + Send + Sync>;
 
 #[derive(Default, PartialEq, Eq)]
 enum Phase {
@@ -102,6 +111,8 @@ struct State {
     mounted: Vec<String>,
     /// 지금 층에서 만든 마운트 자리.
     stubs: Vec<String>,
+    /// 지금 층에 sbx가 둔 파일.
+    planted: Vec<Planted>,
 }
 
 fn failed(what: &str, e: &io::Error) -> Error {
@@ -116,6 +127,7 @@ impl Overlay {
             prepare,
             base: vec!["lower".into()],
             enter,
+            resolver: None,
             state: Mutex::default(),
         }
     }
@@ -123,6 +135,12 @@ impl Overlay {
     /// 이미지 rootfs의 아래층들(층 디렉터리 기준 상대 경로, 위가 앞). `prepare`가 그 자리를 채운다.
     pub fn with_base(mut self, base: Vec<String>) -> Self {
         self.base = base;
+        self
+    }
+
+    /// 층을 열 때 `resolver()`가 참이면 그 층에 `/etc/resolv.conf`를 둔다(모듈 문서의 5).
+    pub fn with_resolver(mut self, resolver: Resolver) -> Self {
+        self.resolver = Some(resolver);
         self
     }
 
@@ -209,6 +227,7 @@ impl Overlay {
             st.mounted.pop();
         }
         st.stubs.clear();
+        st.planted.clear();
         let (upper, work) = (n.to_string(), format!("{n}.work"));
         fresh_dir(Path::new(&upper)).map_err(|e| failed(&upper, &e))?;
         fresh_dir(Path::new(&work)).map_err(|e| failed(&work, &e))?;
@@ -242,6 +261,9 @@ impl Overlay {
                 Err(e) => return Err(failed(&p, &e)),
             }
         }
+        if self.resolver.as_ref().is_some_and(|f| f()) {
+            plant_resolver(Path::new("root"), st)?;
+        }
         let nosuid = libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC;
         let mounts: [(&str, &str, &str, libc::c_ulong, &str); 5] = [
             ("proc", "root/proc", "proc", nosuid, ""),
@@ -273,6 +295,27 @@ impl Overlay {
         }
         Ok(())
     }
+}
+
+/// 층 뿌리 `root`에 루프백 DNS를 가리키는 `etc/resolv.conf`를 쓰고 [`Planted`]로 적는다(모듈 문서의 5).
+fn plant_resolver(root: &Path, st: &mut State) -> Result<(), Error> {
+    let etc = root.join("etc");
+    match fs::symlink_metadata(&etc) {
+        Ok(m) if m.is_dir() => {}
+        // 링크나 파일이면 쓰지 않는다(따라가면 층 밖일 수 있다).
+        Ok(_) => return Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            fs::create_dir(&etc).map_err(|e| failed("/etc", &e))?;
+            st.stubs.push("etc".into());
+        }
+        Err(e) => return Err(failed("/etc", &e)),
+    }
+    crate::transparent::write_resolv_conf(root).map_err(|e| failed("/etc/resolv.conf", &e))?;
+    st.planted.push(Planted {
+        path: "etc/resolv.conf".into(),
+        content: crate::transparent::RESOLV_CONF.as_bytes().to_vec(),
+    });
+    Ok(())
 }
 
 /// 비어 있는 새 디렉터리로 만든다. 있던 것은 지운다(실패한 열기나 이전 부팅이 남긴 것).
@@ -328,7 +371,7 @@ impl Layers for Overlay {
         } else {
             self.dir.join(st.count.to_string())
         };
-        export_upper(&upper, &st.stubs, &Kernel, out)
+        export_upper(&upper, &st.stubs, &st.planted, &Kernel, out)
     }
 
     fn check_ready(&self) -> Result<(), Error> {

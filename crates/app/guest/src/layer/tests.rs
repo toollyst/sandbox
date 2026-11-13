@@ -57,7 +57,7 @@ fn run(upper: &Path, skip: &[&str], fs: &dyn UpperFs) -> Result<Vec<(LayerEntry,
     let buf = Buf::default();
     let out = Out::new(buf.clone());
     let skip: Vec<String> = skip.iter().map(|s| s.to_string()).collect();
-    export_upper(upper, &skip, fs, &out)?;
+    export_upper(upper, &skip, &[], fs, &out)?;
     let bytes = buf.0.lock().unwrap().clone();
     let mut r = bytes.as_slice();
     let mut got: Vec<(LayerEntry, Vec<u8>)> = Vec::new();
@@ -238,4 +238,62 @@ fn the_server_answers_layer_requests_without_layers_with_an_error() {
             other => panic!("{other:?}"),
         }
     }
+}
+
+fn run_planted(
+    upper: &Path,
+    skip: &[&str],
+    planted: &[Planted],
+) -> Result<Vec<(String, LayerKind)>, Error> {
+    let buf = Buf::default();
+    let out = Out::new(buf.clone());
+    let skip: Vec<String> = skip.iter().map(|s| s.to_string()).collect();
+    export_upper(upper, &skip, planted, &Kernel, &out)?;
+    let bytes = buf.0.lock().unwrap().clone();
+    let mut r = bytes.as_slice();
+    let mut got = Vec::new();
+    while !r.is_empty() {
+        if let GuestMsg::LayerEntry(e) = GuestMsg::read_from(&mut r).unwrap() {
+            got.push((e.path, e.kind));
+        }
+    }
+    Ok(got)
+}
+
+/// sbx가 층에 둔 `/etc/resolv.conf`(`--network allow`)는 만든 이미지에 남지 않는다. 단계가 바꾼 것은 남는다.
+#[test]
+fn files_sbx_planted_are_not_exported_unless_a_step_changed_them() {
+    let resolv = Planted {
+        path: "etc/resolv.conf".into(),
+        content: crate::transparent::RESOLV_CONF.as_bytes().to_vec(),
+    };
+    let dir = LayerKind::Dir { opaque: false };
+    // 이미지에 /etc가 있었다: 위층에는 복사된 etc/와 sbx의 파일. etc/는 보내고(Docker의 층에도 있다) 파일은 뺀다.
+    let d = Dir::new("planted");
+    fs::create_dir(d.0.join("etc")).unwrap();
+    crate::transparent::write_resolv_conf(&d.0).unwrap();
+    fs::write(d.0.join("etc/hosts.new"), "h").unwrap();
+    let got = run_planted(&d.0, &[], std::slice::from_ref(&resolv)).unwrap();
+    assert_eq!(
+        got,
+        vec![
+            ("etc".into(), dir.clone()),
+            ("etc/hosts.new".into(), LayerKind::File { size: 1 })
+        ]
+    );
+    // /etc를 sbx가 만들었고 그 안에 sbx의 파일만 있으면 /etc도 뺀다.
+    let d = Dir::new("planted-stub");
+    crate::transparent::write_resolv_conf(&d.0).unwrap();
+    let got = run_planted(&d.0, &["etc"], std::slice::from_ref(&resolv)).unwrap();
+    assert!(got.is_empty(), "{got:?}");
+    // 단계가 바꾼 resolv.conf는 그 단계가 한 일이다.
+    fs::write(d.0.join("etc/resolv.conf"), "nameserver 10.0.0.1\n").unwrap();
+    let got = run_planted(&d.0, &["etc"], std::slice::from_ref(&resolv)).unwrap();
+    assert_eq!(
+        got,
+        vec![
+            ("etc".into(), dir),
+            ("etc/resolv.conf".into(), LayerKind::File { size: 20 })
+        ]
+    );
 }
