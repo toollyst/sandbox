@@ -1,4 +1,4 @@
-//! 투명 TCP 흉내([`crate::net_dir`])를 테스트에서 쓰는 도구: "게스트 안에서 프록시를 모르는 프로그램"이 하는 일을
+//! 투명 TCP 흉내([`crate::netdir::net_dir`])를 테스트에서 쓰는 도구: "게스트 안에서 프록시를 모르는 프로그램"이 하는 일을
 //! 대신한다. 루프백 DNS에 A 질의를 보내 가짜 주소를 받고, 경로 표로 그 주소가 실제로 듣는 곳을 찾아 붙는다.
 //! 실제 VM에서는 커널의 local 경로가 경로 표 노릇을 한다.
 
@@ -16,7 +16,7 @@ pub struct Reply {
     pub addrs: Vec<Ipv4Addr>,
 }
 
-/// `root` 아래에서 [`crate::net_dir`] 디렉터리를 찾는다(DNS 포트 파일이 있는 첫 것).
+/// `root` 아래에서 [`crate::netdir::net_dir`] 디렉터리를 찾는다(DNS 포트 파일이 있는 첫 것).
 pub fn find(root: &Path) -> Option<PathBuf> {
     let mut stack = vec![root.to_owned()];
     while let Some(d) = stack.pop() {
@@ -29,7 +29,8 @@ pub fn find(root: &Path) -> Option<PathBuf> {
             if !t.is_dir() {
                 continue;
             }
-            if p.extension().is_some_and(|x| x == "net") && p.join(crate::NET_DNS).is_file() {
+            if p.extension().is_some_and(|x| x == "net") && p.join(crate::netdir::NET_DNS).is_file()
+            {
                 return Some(p);
             }
             stack.push(p);
@@ -40,7 +41,7 @@ pub fn find(root: &Path) -> Option<PathBuf> {
 
 /// `dir`의 루프백 DNS에 `name`의 `qtype` 질의를 보낸다.
 pub fn lookup(dir: &Path, name: &str, qtype: u16) -> io::Result<Reply> {
-    let port: u16 = std::fs::read_to_string(dir.join(crate::NET_DNS))?
+    let port: u16 = std::fs::read_to_string(dir.join(crate::netdir::NET_DNS))?
         .trim()
         .parse()
         .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
@@ -84,7 +85,7 @@ pub fn lookup(dir: &Path, name: &str, qtype: u16) -> io::Result<Reply> {
 
 /// 가짜 주소 `addr`이 실제로 듣는 곳. 듣지 않으면 `None`.
 pub fn route(dir: &Path, addr: SocketAddrV4) -> Option<SocketAddr> {
-    let table = std::fs::read_to_string(dir.join(crate::NET_ROUTES)).ok()?;
+    let table = std::fs::read_to_string(dir.join(crate::netdir::NET_ROUTES)).ok()?;
     table.lines().find_map(|l| {
         let (from, to) = l.split_once(' ')?;
         (from.parse::<SocketAddrV4>().ok()? == addr).then(|| to.parse().ok())?

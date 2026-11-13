@@ -1146,7 +1146,7 @@ fn transparent_tcp_resolves_from_the_list_and_passes_names_to_the_host_check() {
     // 허용하지 않은 이름: 곧바로 NXDOMAIN. 호스트는 풀어 보지 않았다.
     let r = probe::lookup(&dir, &blocked, 1).unwrap();
     assert_eq!((r.rcode, r.addrs.len()), (3, 0));
-    assert!(!egress::tests::was_resolved(&blocked));
+    assert!(!egress::was_resolved(&blocked));
 
     // 허용된 이름: 가짜 주소. AAAA는 이름은 있고 레코드는 없다.
     let r = probe::lookup(&dir, &ok, 1).unwrap();
@@ -1162,10 +1162,7 @@ fn transparent_tcp_resolves_from_the_list_and_passes_names_to_the_host_check() {
     );
     assert!(probe::route(&dir, SocketAddrV4::new(ip, 5432)).is_some());
     assert!(probe::route(&dir, SocketAddrV4::new(ip, 5433)).is_none());
-    assert!(
-        !egress::tests::was_resolved(&ok),
-        "a lookup resolves nothing"
-    );
+    assert!(!egress::was_resolved(&ok), "a lookup resolves nothing");
 
     // 그 주소로 붙으면 호스트가 이름으로 확인한다(.invalid는 풀리지 않아 거부, 프로그램은 닫힌 연결을 본다).
     let mut c = probe::connect(&dir, &ok, 5432).unwrap();
@@ -1248,8 +1245,8 @@ fn transparent_tcp_resolves_from_the_list_and_passes_names_to_the_host_check() {
     );
     assert!(!events.iter().any(|ev| ev.action == "notice"), "{events:?}");
     // 연결은 이름으로 확인했다(호스트가 그때 처음 이름을 푼다). 거부된 이름은 끝까지 풀지 않았다.
-    assert!(egress::tests::was_resolved(&ok));
-    assert!(!egress::tests::was_resolved(&blocked));
+    assert!(egress::was_resolved(&ok));
+    assert!(!egress::was_resolved(&blocked));
     block_on(s.stop(None, Duration::from_secs(5))).unwrap();
     let _ = std::fs::remove_dir_all(&e.root);
 }

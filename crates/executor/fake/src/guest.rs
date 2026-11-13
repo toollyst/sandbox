@@ -47,7 +47,7 @@ mod unix {
         )?))
     }
 
-    /// 투명 TCP의 게스트 커널 흉내. 규칙은 [`crate::net_dir`]에 있다.
+    /// 투명 TCP의 게스트 커널 흉내. 규칙은 [`crate::netdir::net_dir`]에 있다.
     struct FakeNet {
         dir: PathBuf,
     }
@@ -58,7 +58,7 @@ mod unix {
             let mut f = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(self.dir.join(crate::NET_ROUTES))?;
+                .open(self.dir.join(crate::netdir::NET_ROUTES))?;
             f.write_all(format!("{line}\n").as_bytes())
         }
     }
@@ -84,15 +84,14 @@ mod unix {
     }
 
     /// 제어 소켓을 열고 게스트 처리를 돌린다. `shares`는 (태그, 호스트 경로)다.
-    /// `scratch`(scratch 디스크 경로)가 있으면 빌드 층을 그 옆 디렉터리로 흉내 내고([`crate::layers`]),
-    /// 루프백 DNS와 투명 TCP를 그 옆 다른 디렉터리로 흉내 낸다([`crate::net_dir`]).
+    /// `dirs`(scratch 디스크 옆의 두 디렉터리)가 있으면 빌드 층을 첫째로 흉내 내고([`crate::layers`]),
+    /// 루프백 DNS와 투명 TCP를 둘째로 흉내 낸다([`crate::netdir::net_dir`]).
     pub(crate) fn start(
         socket: &Path,
         shares: Vec<(String, PathBuf)>,
-        scratch: Option<PathBuf>,
+        dirs: Option<(PathBuf, PathBuf)>,
     ) -> Result<FakeVm, ExecutorError> {
-        let build_root = scratch.as_deref().map(crate::build_root);
-        let net = scratch.as_deref().map(crate::net_dir);
+        let (build_root, net) = dirs.unzip();
         let path: PathBuf = socket.to_owned();
         let _ = std::fs::remove_file(&path);
         let listener = UnixListener::bind(&path)?;
@@ -116,7 +115,7 @@ mod unix {
         let egress = Arc::new(match &net {
             Some(dir) => {
                 std::fs::create_dir_all(dir)?;
-                let _ = std::fs::remove_file(dir.join(crate::NET_ROUTES));
+                let _ = std::fs::remove_file(dir.join(crate::netdir::NET_ROUTES));
                 sbx_guest::egress::Egress::with_net(Box::new(FakeNet { dir: dir.clone() }))
             }
             None => sbx_guest::egress::Egress::default(),
@@ -125,7 +124,7 @@ mod unix {
             // 게스트의 루프백 DNS(53번 대신 빈 포트). 포트는 파일에 적는다.
             let sock = std::net::UdpSocket::bind("127.0.0.1:0")?;
             std::fs::write(
-                dir.join(crate::NET_DNS),
+                dir.join(crate::netdir::NET_DNS),
                 sock.local_addr()?.port().to_string(),
             )?;
             let resolver = egress.resolver();
@@ -207,7 +206,7 @@ mod other {
     pub(crate) fn start(
         _socket: &std::path::Path,
         _shares: Vec<(String, std::path::PathBuf)>,
-        _scratch: Option<std::path::PathBuf>,
+        _dirs: Option<(std::path::PathBuf, std::path::PathBuf)>,
     ) -> Result<FakeVm, ExecutorError> {
         Err(ExecutorError::Unsupported(
             "the fake guest needs Unix sockets".into(),

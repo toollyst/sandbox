@@ -5,7 +5,7 @@
 //! DNS는 모든 이름에 NXDOMAIN이고 `/etc/resolv.conf`는 이미지 그대로다.
 //!
 //! **켜기** ([`Transparent::enable`], 이 차례로)
-//! 1. 가짜 주소 범위 [`FAKE_RANGE`](sbx_guest_proto::FAKE_RANGE) 전체를 루프백의 local 경로로 잡는다
+//! 1. 가짜 주소 범위 [`FAKE_RANGE`] 전체를 루프백의 local 경로로 잡는다
 //!    (`ip route add local 198.18.0.0/15 dev lo`와 같은 netlink 메시지 하나). 그러면 범위 안의 어느 주소에서나 들을 수
 //!    있다. 실패하면 나머지도 하지 않는다(DNS는 계속 NXDOMAIN, `resolv.conf`도 그대로).
 //! 2. DNS가 이름을 호스트에 묻게 한다.
@@ -61,7 +61,7 @@ pub const MAX_REFUSED: usize = 4096;
 /// `resolv.conf` 내용.
 pub const RESOLV_CONF: &str = "# Written by sbx (--network allow): names are answered by the sandbox's loopback DNS.\nnameserver 127.0.0.1\n";
 
-/// 게스트 커널에 하는 일. 게스트에서는 [`KernelNet`], fake 실행기는 호스트에서 흉내 낸다.
+/// 게스트 커널에 하는 일. 게스트에서는 `KernelNet`(Linux), fake 실행기는 호스트에서 흉내 낸다.
 pub trait Net: Send + Sync {
     /// 가짜 주소 범위 전체를 local로 잡는다.
     fn make_range_local(&self) -> io::Result<()>;

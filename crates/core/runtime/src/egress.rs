@@ -234,7 +234,9 @@ fn transparent(guest: &Guest, rules: &[AllowRule], record: &Record) {
     literals.dedup();
     if let Err(e) = guest.transparent(literals) {
         let restart = match &e {
-            crate::RuntimeError::Guest(g) if g.kind == sbx_guest_proto::ErrorKind::Protocol => {
+            crate::error::RuntimeError::Guest(g)
+                if g.kind == sbx_guest_proto::ErrorKind::Protocol =>
+            {
                 " (the guest is older than this sbx; restart the sandbox)"
             }
             _ => "",
@@ -411,6 +413,28 @@ fn serve(mut conn: Box<dyn GuestConn>, opened: Opened, host: &str, port: u16) {
     shared.record.append("close", host, port, &extra);
 }
 
+/// 테스트 프로세스에서 호스트가 풀어 본 이름들. 이름 묻기가 이름을 풀지 않는 것을 테스트가 확인한다.
+#[cfg(test)]
+static RESOLVED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+#[cfg(test)]
+fn resolved(host: &str) {
+    RESOLVED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(host.to_owned());
+}
+
+/// 호스트가 `name`을 풀어 본 적이 있는지(테스트).
+#[cfg(test)]
+pub(crate) fn was_resolved(name: &str) -> bool {
+    RESOLVED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .any(|h| h.eq_ignore_ascii_case(name))
+}
+
 /// 허용 목록을 확인하고 연결할 주소를 돌려준다. 규칙은 모듈 문서에 있다.
 pub fn check(rules: &[AllowRule], host: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
     let host = host.trim_start_matches('[').trim_end_matches(']');
@@ -425,7 +449,7 @@ pub fn check(rules: &[AllowRule], host: &str, port: u16) -> Result<Vec<SocketAdd
     }
     let loopback_ok = matching.iter().any(|r| r.host == "localhost");
     #[cfg(test)]
-    tests::resolved(host);
+    resolved(host);
     let addrs: Vec<SocketAddr> = (host, port)
         .to_socket_addrs()
         .map_err(|e| format!("cannot resolve {host}: {e}"))?
@@ -531,30 +555,11 @@ pub(crate) fn splice(
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
 
     fn rules(list: &[&str]) -> Vec<AllowRule> {
         list.iter().map(|r| r.parse().unwrap()).collect()
-    }
-
-    /// 이 테스트 프로세스에서 호스트가 풀어 본 이름들. 이름 묻기가 이름을 풀지 않는 것을 테스트가 확인한다.
-    static RESOLVED: Mutex<Vec<String>> = Mutex::new(Vec::new());
-
-    pub(super) fn resolved(host: &str) {
-        RESOLVED
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(host.to_owned());
-    }
-
-    /// 호스트가 `name`을 풀어 본 적이 있는지.
-    pub(crate) fn was_resolved(name: &str) -> bool {
-        RESOLVED
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .any(|h| h.eq_ignore_ascii_case(name))
     }
 
     fn shared(limit: Option<u64>) -> Arc<Shared> {
