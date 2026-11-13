@@ -26,6 +26,10 @@ pub struct Ctx {
     pub main: Arc<exec::Main>,
     /// 빌드 층(`OpenLayer`, `ExportLayer`). 없으면 그 요청은 `InvalidArgument` 오류다. 규칙은 [`layer`] 모듈에 있다.
     pub layers: Option<Box<dyn Layers>>,
+    /// 빌드 단계(`ExecStep`)가 남긴 프로세스를 끝내는 방법.
+    pub sweep: exec::Sweep,
+    /// 부팅 때 쌓은 층 디스크 수(`CheckLayers`가 견준다). 모르면 `None`이고 그때는 어느 수든 받는다.
+    pub layer_disks: Option<u32>,
     /// 맞출 시계(`ClockSync`). 없으면 그 요청은 `InvalidArgument` 오류다. 규칙은 [`clock`] 모듈에 있다.
     pub clock: Option<Box<dyn clock::Clock>>,
 }
@@ -67,6 +71,7 @@ pub fn serve<C: Conn>(conn: C, ctx: &Ctx) {
         Ok(
             HostMsg::Exec(_)
             | HostMsg::ExecDetached(_)
+            | HostMsg::ExecStep(_)
             | HostMsg::CopyIn { .. }
             | HostMsg::CopyOut { .. }
             | HostMsg::Stat { .. },
@@ -79,6 +84,31 @@ pub fn serve<C: Conn>(conn: C, ctx: &Ctx) {
     }
     match request {
         Ok(HostMsg::Exec(x)) => exec::run(x, &ctx.root, input, out, &ctx.main),
+        Ok(HostMsg::ExecStep(x)) => match &ctx.layers {
+            Some(l) if l.is_open() => {
+                exec::run_step(x, &ctx.root, input, out, &ctx.main, ctx.sweep)
+            }
+            _ => out.error(Error::new(
+                ErrorKind::InvalidArgument,
+                "a build step needs an open build layer",
+            )),
+        },
+        Ok(HostMsg::Hold) => exec::hold(input, out, &ctx.main),
+        Ok(HostMsg::CheckLayers { count }) => match ctx.layer_disks {
+            Some(have) if have != count => {
+                out.error(Error::new(
+                    ErrorKind::InvalidArgument,
+                    format!(
+                        "the host attached {count} layer disks but the guest found {have}; \
+                         the executor did not attach the disks it was given, so the VM is powering off"
+                    ),
+                ));
+                (ctx.on_shutdown)();
+            }
+            _ => {
+                let _ = out.send(&GuestMsg::Done);
+            }
+        },
         Ok(HostMsg::ExecDetached(x)) => exec::run_detached(x, &ctx.root, out),
         Ok(HostMsg::CopyIn { dest }) => copy::receive(&dest, &mut input, &out),
         Ok(HostMsg::CopyOut { path }) => copy::send(&path, &out),

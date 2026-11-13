@@ -25,6 +25,27 @@ pub fn kill(pid: u32, signal: i32) -> io::Result<()> {
     check(unsafe { libc::kill(pid, signal) })
 }
 
+/// 프로세스 그룹 전체에 시그널을 보낸다(`killpg`).
+pub fn kill_group(pgid: u32, signal: i32) -> io::Result<()> {
+    let pgid =
+        libc::pid_t::try_from(pgid).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    if pgid <= 1 {
+        // 0은 이 프로세스의 그룹, 1은 init의 그룹이다. 남의 그룹은 받지 않는다.
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    // SAFETY: killpg는 메모리를 건드리지 않는다.
+    check(unsafe { libc::killpg(pgid, signal) })
+}
+
+/// 프로세스 그룹에 아직 프로세스가 있는지(좀비 포함). 시그널 0으로 본다.
+pub fn group_alive(pgid: u32) -> bool {
+    match kill_group(pgid, 0) {
+        Ok(()) => true,
+        // 권한이 없으면 있는 것이다.
+        Err(e) => e.raw_os_error() == Some(libc::EPERM),
+    }
+}
+
 /// Linux 번호가 다른 시그널: (Linux 번호, 이 OS의 번호). Linux에서는 비어 있다.
 #[cfg(target_os = "linux")]
 const RENUMBERED: &[(i32, i32)] = &[];
@@ -433,6 +454,16 @@ pub mod linux {
     pub fn sethostname(name: &str) -> io::Result<()> {
         // SAFETY: 포인터와 길이가 같은 바이트열을 가리킨다.
         check(unsafe { libc::sethostname(name.as_ptr().cast(), name.len()) })
+    }
+
+    /// PID 1과 이 프로세스를 뺀 모든 프로세스에 시그널을 보낸다(`kill(-1, …)`). 게스트(VM 안)에서만 부른다.
+    /// 보낼 프로세스가 없으면(`ESRCH`) 성공이다.
+    pub fn kill_everyone_else(signal: i32) -> io::Result<()> {
+        // SAFETY: kill은 메모리를 건드리지 않는다.
+        match check(unsafe { libc::kill(-1, signal) }) {
+            Err(e) if e.raw_os_error() == Some(libc::ESRCH) => Ok(()),
+            r => r,
+        }
     }
 
     /// `CLOCK_MONOTONIC_RAW`: 시계 맞추기(천천히 맞추기 포함)가 빠르기를 바꾸지 않는 단조 시계.

@@ -278,6 +278,48 @@ fn privileged_build_layers_stack_on_an_image_of_several_layer_disks() {
     assert_eq!(fs::read_to_string(r.join("etc/hosts")).unwrap(), "top\n");
 }
 
+/// 투명 TCP가 켜져 있으면 층마다 `/etc/resolv.conf`가 루프백 DNS를 가리키고(보통의 샌드박스와 같다), 내보낸 층에는
+/// 없다. 단계가 그 파일을 바꾸면 그 변경은 나간다. `/etc`가 없는 이미지에서는 `/etc`도 남지 않는다.
+#[test]
+fn privileged_layers_see_the_sandbox_resolver_but_do_not_export_it() {
+    let Some(_serial) = privileged() else {
+        return;
+    };
+    let s = Scratch::new("resolv");
+    let o = s.overlay(base).with_resolver(Box::new(|| true));
+    let r = s.root();
+    assert_eq!(o.open().unwrap(), 1);
+    assert_eq!(
+        fs::read_to_string(r.join("etc/resolv.conf")).unwrap(),
+        crate::transparent::RESOLV_CONF
+    );
+    fs::write(r.join("etc/app.conf"), "a\n").unwrap();
+    let l1 = export(&o);
+    assert_eq!(
+        kinds(&l1),
+        [
+            ("etc", &LayerKind::Dir { opaque: false }),
+            ("etc/app.conf", &LayerKind::File { size: 2 })
+        ]
+    );
+    assert_eq!(o.open().unwrap(), 2);
+    fs::write(r.join("etc/resolv.conf"), "nameserver 10.0.0.1\n").unwrap();
+    let l2 = export(&o);
+    assert!(
+        kinds(&l2).contains(&("etc/resolv.conf", &LayerKind::File { size: 20 })),
+        "{:?}",
+        kinds(&l2)
+    );
+
+    let s = Scratch::new("resolv-bare");
+    let o = s
+        .overlay(|lower| fs::write(lower.join("only"), "o\n").unwrap())
+        .with_resolver(Box::new(|| true));
+    assert_eq!(o.open().unwrap(), 1);
+    assert!(s.root().join("etc/resolv.conf").is_file());
+    assert!(export(&o).is_empty());
+}
+
 #[test]
 fn privileged_three_stacked_layers_export_what_the_guest_saw() {
     let Some(_serial) = privileged() else {

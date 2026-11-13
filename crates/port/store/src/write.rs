@@ -334,6 +334,8 @@ pub struct Collected {
 /// - 배타 잠금을 잡을 수 있는 pull 표시는 죽은 pull이 남긴 것이다. 지우고 참조로 세지 않는다.
 /// - 이름이 `.`으로 시작하는 파일(받는 중인 임시 파일)은 건드리지 않는다.
 /// - prepare 중인 이미지는 이미지 기록이 있으므로 그 blob과 층이 남는다.
+/// - 빌드 캐시 기록(`build/`)이 가리키는 층과 blob도 남긴다. 기록을 하나라도 읽지 못하면 아무것도 지우지 않는다.
+/// - pull 표시가 가리키는 digest는 blob이자 층(diff_id)으로 남긴다. 빌드는 만드는 동안 쓰는 층을 이것으로 쥔다.
 /// - 층(`layers/<diff_id>`)은 어느 이미지 기록의 층 목록에도 없으면 지운다. 합친 것(`merged/<chain_id>`)은 어느
 ///   이미지 기록의 아래 층들의 chain ID도 아니면 지운다(층 없는 이미지가 있으면 빈 rootfs는 남긴다).
 pub fn collect(layout: &CacheLayout) -> Result<Collected, StoreError> {
@@ -352,6 +354,10 @@ pub fn collect(layout: &CacheLayout) -> Result<Collected, StoreError> {
             keep.insert(l.digest);
             keep_layers.insert(l.diff_id);
         }
+    }
+    for (_, rec) in Store::open(layout.root()).build_caches()? {
+        keep.insert(rec.layer.digest);
+        keep_layers.insert(rec.layer.diff_id);
     }
     if let Some(entries) = read_dir_if_exists(&layout.pulls_dir())? {
         for entry in entries {
@@ -373,6 +379,7 @@ pub fn collect(layout: &CacheLayout) -> Result<Collected, StoreError> {
                             path: path.clone(),
                             reason: e.to_string(),
                         })?;
+                    keep_layers.extend(claimed.iter().cloned());
                     keep.extend(claimed);
                 }
                 Err(TryLockError::Error(e)) => return Err(e.into()),
@@ -434,6 +441,42 @@ pub fn wait_for_collect(layout: &CacheLayout) -> io::Result<()> {
     gate.lock_shared()?;
     drop(gate);
     Ok(())
+}
+
+/// 빌드 캐시 기록을 쓴다(같은 키는 덮는다).
+pub fn write_build_cache(
+    layout: &CacheLayout,
+    key: &str,
+    record: &crate::BuildCacheRecord,
+) -> io::Result<()> {
+    let path = layout
+        .build_cache_record(key)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "bad build cache key"))?;
+    fs::create_dir_all(layout.build_cache_dir())?;
+    atomic_write(
+        &path,
+        &serde_json::to_vec(record).map_err(io::Error::other)?,
+    )
+}
+
+/// 빌드 캐시 기록을 모두 지운다. 지운 수.
+pub fn remove_build_caches(layout: &CacheLayout) -> io::Result<usize> {
+    let Some(entries) = read_dir_if_exists(&layout.build_cache_dir())? else {
+        return Ok(0);
+    };
+    let mut n = 0;
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name
+            .strip_suffix(".json")
+            .is_some_and(|k| layout.build_cache_record(k).is_some())
+        {
+            fs::remove_file(entry.path())?;
+            n += 1;
+        }
+    }
+    Ok(n)
 }
 
 /// 층이나 합친 것을 만드는 동안의 배타 잠금([`lock_build`]).
@@ -737,6 +780,44 @@ mod tests {
 
         assert_eq!(collect(&layout).unwrap().blobs, vec![blob]);
         assert!(!stale.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 빌드 캐시 기록이 이긴다: 이미지 기록이 없어도 기록이 가리키는 층은 남고, 기록을 지우면 다음 정리가 지운다.
+    /// 빌드가 쥔 층(pull 표시)도 남는다.
+    #[test]
+    fn build_cache_records_and_build_claims_keep_layers() {
+        use sbx_model::{Compression, Layer};
+        let root = temp_root("gc-build");
+        let layout = CacheLayout::new(&root);
+        let cached = crate::digest::sha256(b"cached");
+        let claimed = crate::digest::sha256(b"claimed");
+        let loose = crate::digest::sha256(b"loose");
+        for d in [&cached, &claimed, &loose] {
+            put_layer(&layout, d);
+        }
+        let key = "ab".repeat(32);
+        let rec = crate::BuildCacheRecord {
+            layer: Layer {
+                digest: cached.clone(),
+                diff_id: cached.clone(),
+                size: 1,
+                compression: Compression::None,
+            },
+            created: "2026-01-01T00:00:00Z".into(),
+        };
+        write_build_cache(&layout, &key, &rec).unwrap();
+        assert!(write_build_cache(&layout, "../x", &rec).is_err());
+        let store = Store::open(&root);
+        assert_eq!(store.build_cache(&key).unwrap(), Some(rec.clone()));
+        assert_eq!(store.build_caches().unwrap(), vec![(key.clone(), rec)]);
+        assert_eq!(store.build_cache(&"cd".repeat(32)).unwrap(), None);
+        let claim = claim_blobs(&layout, std::slice::from_ref(&claimed)).unwrap();
+        assert_eq!(collect(&layout).unwrap().layers, vec![loose]);
+        drop(claim);
+        assert_eq!(collect(&layout).unwrap().layers, vec![claimed]);
+        assert_eq!(remove_build_caches(&layout).unwrap(), 1);
+        assert_eq!(collect(&layout).unwrap().layers, vec![cached]);
         fs::remove_dir_all(root).unwrap();
     }
 

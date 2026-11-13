@@ -32,6 +32,7 @@ The JSON Schema (draft 2020-12) of every type is in [cli-output.schema.json](cli
 | `attach` | not supported: its output is the process's own bytes |
 | `logs` | lines: `LogLine` |
 | `cp` | empty |
+| `build` | lines: `BuildEvent` |
 | `pull` | value: `Pulled` |
 | `push` | lines: `Pushed` |
 | `tag` | value: `Tagged` |

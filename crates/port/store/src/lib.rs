@@ -21,7 +21,8 @@
 //!   images/<hex>/.lock          사용 중 보호용 잠금 파일
 //!   guest/<version>/<arch>/initramfs  게스트 init. version은 `sha256-<hex>`(sbx에 내장된 것을 관리 코어가
 //!                               꺼낸 것, 내용 digest) 또는 게스트 프로토콜 버전(사용자가 직접 둔 것)
-//!   pulls/<이름>                진행 중인 pull이 쓸 레이어 목록 (pull이 공유 잠금을 쥔다)
+//!   pulls/<이름>                진행 중인 pull이 쓸 레이어 목록 (pull이 공유 잠금을 쥔다). 빌드도 쓴다(쥔 층)
+//!   build/<키>.json             빌드 캐시 기록: 캐시 키 → 층([`BuildCacheRecord`], `sbx build`)
 //!   refs.json                   정규화된 참조 → 이미지 ID
 //!   tmp/                        prepare 작업 공간 (끝나면 지운다)
 //!   .lock                       refs.json 갱신용 잠금
@@ -39,7 +40,9 @@
 //! 층과 합친 것은 따로 잠그지 않는다. 정리는 어떤 이미지 기록도 가리키지 않는 것만 지우고, lease를 쥔 이미지의 기록은
 //! 지워지지 않으므로 그 이미지가 쓰는 층도 남는다.
 //!
-//! **blob·층 보호**: blob, 층, 합친 것은 이미지 기록이나 진행 중인 pull 표시가 가리키는 동안 지워지지 않는다.
+//! **blob·층 보호**: blob, 층, 합친 것은 이미지 기록, 빌드 캐시 기록, 진행 중인 pull 표시가 가리키는 동안 지워지지
+//! 않는다. 빌드 캐시 기록이 이긴다: 만든 이미지를 지워도(`rmi`) 캐시가 가리키는 층은 남고, 캐시 기록을 지우는 것
+//! (`system prune`)이 그 층을 놓는다.
 //! 규칙과 순서는 [`write::claim_blobs`], [`write::collect`], [`write::wait_for_collect`]에 있다.
 //!
 //! - 의존: `sbx-model`
@@ -59,7 +62,7 @@ pub mod stack;
 #[cfg(feature = "write")]
 pub mod write;
 
-pub use stack::{LayerState, MAX_LAYER_DISKS, Part, Plan};
+pub use stack::{EMPTY_LAYER, LayerState, MAX_LAYER_DISKS, Part, Plan};
 
 /// `image.json`에 저장하는 이미지 기록.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,6 +88,15 @@ impl ImageRecord {
     pub fn compressed_size(&self) -> u64 {
         self.layers.iter().map(|l| l.size).sum()
     }
+}
+
+/// 빌드 캐시 기록 하나([`CacheLayout::build_cache_record`]): 그 키의 단계가 만든 층.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuildCacheRecord {
+    /// 층.
+    pub layer: Layer,
+    /// 층을 만든 시각(RFC 3339).
+    pub created: String,
 }
 
 /// 받은 문서에 대한 것([`CacheLayout::image_documents`]).
@@ -302,6 +314,20 @@ impl CacheLayout {
     pub fn pulls_dir(&self) -> PathBuf {
         self.root.join("pulls")
     }
+
+    /// 빌드 캐시 기록들.
+    pub fn build_cache_dir(&self) -> PathBuf {
+        self.root.join("build")
+    }
+
+    /// 빌드 캐시 기록 하나. 키는 16진수 sha256이어야 한다(아니면 `None`).
+    pub fn build_cache_record(&self, key: &str) -> Option<PathBuf> {
+        (key.len() == 64
+            && key
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()))
+        .then(|| self.build_cache_dir().join(format!("{key}.json")))
+    }
 }
 
 /// 잠금을 잡지 못한 이유.
@@ -453,6 +479,37 @@ impl Store {
             }
         }
         out.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(out)
+    }
+
+    /// 빌드 캐시 기록 하나. 없으면 `None`.
+    pub fn build_cache(&self, key: &str) -> Result<Option<BuildCacheRecord>, StoreError> {
+        match self.layout.build_cache_record(key) {
+            Some(p) if p.is_file() => read_json(&p).map(Some),
+            _ => Ok(None),
+        }
+    }
+
+    /// 모든 빌드 캐시 기록(키, 기록). 키 순서. 읽지 못하는 기록이 있으면 오류다.
+    pub fn build_caches(&self) -> Result<Vec<(String, BuildCacheRecord)>, StoreError> {
+        let entries = match std::fs::read_dir(self.layout.build_cache_dir()) {
+            Ok(e) => e,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        let mut out = Vec::new();
+        for entry in entries {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(key) = name.strip_suffix(".json") else {
+                continue;
+            };
+            if self.layout.build_cache_record(key).is_none() {
+                continue;
+            }
+            out.push((key.to_owned(), read_json(&entry.path())?));
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(out)
     }
 

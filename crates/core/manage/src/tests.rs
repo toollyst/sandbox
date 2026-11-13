@@ -1139,3 +1139,117 @@ fn tag_adds_or_moves_a_reference_and_records_it() {
     );
     std::fs::remove_dir_all(root).unwrap();
 }
+
+/// 빌드가 낸 층: 층 디스크만 둔다(blob 없음). 혼자 설 수 없는 층은 tar를 blob으로, 빈 층은 아무것도 두지 않는다.
+/// 그런 층으로 된 이미지도 합쳐 띄울 수 있고(디스크를 다시 읽는다), save는 거부한다. 뿌리 기록은 목록에 없다.
+#[test]
+fn built_layers_live_on_disks_and_images_made_of_them_prepare() {
+    let root = temp_root("built");
+    let base = layer(&[T::Dir("etc"), T::File("etc/os", b"base")]);
+    let m = Manager::new(
+        &root,
+        Arc::new(FakeSource::new(vec![base])),
+        vec![Arc::new(sbx_rootfs::erofs::ErofsBuilder)],
+    )
+    .unwrap();
+    let base_id = pulled(&m);
+    let base_layers = m.store().image(&base_id).unwrap().layers;
+    let layout = m.store().layout().clone();
+    let tar = |name: &str, entries: &[T<'_>]| {
+        let p = root.join(name);
+        std::fs::write(&p, layer_with(Compression::None, entries).0).unwrap();
+        p
+    };
+    let (alone, c1) = m
+        .add_layer(&tar("a.tar", &[T::Dir("app"), T::File("app/x", b"x")]))
+        .unwrap();
+    assert!(layer_disk(&m, &alone).is_file());
+    assert!(!layout.blob(&alone.digest).exists());
+    assert_eq!(
+        (alone.digest == alone.diff_id, alone.compression),
+        (true, Compression::None)
+    );
+    let (needs, c2) = m
+        .add_layer(&tar("b.tar", &[T::File("etc/y", b"y")]))
+        .unwrap();
+    assert!(layout.layer_needs_lower(&needs.diff_id).is_file());
+    assert!(layout.blob(&needs.digest).is_file());
+    let (empty, c3) = m.add_layer(&tar("e.tar", &[])).unwrap();
+    assert_eq!(empty.diff_id.as_str(), sbx_store::EMPTY_LAYER);
+    // 디스크에서 다시 읽는다.
+    let (entries, contents) = m.layer_entries(&alone, 4).unwrap();
+    let x = entries.iter().find(|e| e.path == "app/x").unwrap();
+    let sbx_rootfs::EntryKind::File(c) = &x.kind else {
+        panic!("{x:?}")
+    };
+    let mut s = String::new();
+    contents.open(c).unwrap().read_to_string(&mut s).unwrap();
+    assert_eq!((c.layer, s.as_str()), (4, "x"));
+    // 캐시 기록은 층이 있을 때만 쓰인다.
+    let key = "ab".repeat(32);
+    let rec = sbx_store::BuildCacheRecord {
+        layer: alone.clone(),
+        created: "2026-01-01T00:00:00Z".into(),
+    };
+    m.put_build_cache(&key, &rec).unwrap();
+    assert_eq!(m.build_cache(&key).unwrap(), Some(rec.clone()));
+
+    // 만든 이미지: 바탕 + 세 층. 디스크 하나로 띄우면 모두 합친다(디스크, blob, 빈 층).
+    let mut layers = base_layers.clone();
+    layers.extend([alone.clone(), empty.clone(), needs.clone()]);
+    let doc = br#"{"config":{}}"#;
+    let id = m
+        .commit_built(
+            doc,
+            ImageConfig::default(),
+            layers.clone(),
+            Arch::X86_64,
+            &["docker.io/library/built:latest".into()],
+        )
+        .unwrap();
+    assert_eq!(id.digest(), &sha256(doc));
+    assert_eq!(m.config_document(&id).unwrap().unwrap(), doc);
+    assert!(ready(m.prepare(&id, RootfsFormat::Erofs, 1)).unwrap());
+    let disk = merged_disk(&m, &id);
+    let read = sbx_rootfs::erofs::read::read_layer(&mut File::open(&disk).unwrap(), 0).unwrap();
+    let mut paths: Vec<&str> = read.entries.iter().map(|e| e.path.as_str()).collect();
+    paths.sort();
+    assert_eq!(paths, ["app", "app/x", "etc", "etc/os", "etc/y"]);
+    // 맨 위가 혼자 설 수 없으므로 디스크가 넷이어도 모두 합친 것 하나로 뜬다(이미 있다).
+    assert!(!ready(m.prepare(&id, RootfsFormat::Erofs, 4)).unwrap());
+    assert!(m.is_prepared(&id, RootfsFormat::Erofs, 4));
+    // save와 push는 아직 못 한다.
+    let e = m.save(&id, None, &mut Vec::new()).unwrap_err();
+    assert!(matches!(e, ManageError::NotExportable(_)), "{e}");
+    assert!(e.to_string().contains("sbx build"), "{e}");
+    // 뿌리 기록은 목록에 없고 지울 수 있다.
+    let root_id = m.put_build_root(&layers[..2], Arch::X86_64).unwrap();
+    assert_eq!(
+        m.put_build_root(&layers[..2], Arch::X86_64).unwrap(),
+        root_id
+    );
+    let listed: Vec<ImageId> = m
+        .images()
+        .unwrap()
+        .into_iter()
+        .map(|i| i.record.id)
+        .collect();
+    assert!(
+        listed.contains(&id) && !listed.contains(&root_id),
+        "{listed:?}"
+    );
+    assert!(m.remove_build_root(&root_id).unwrap());
+    assert!(!m.remove_build_root(&id).unwrap(), "not a build root");
+    // 만든 이미지를 지워도 캐시가 가리키는 층은 남는다. 캐시를 지우면 다음 정리가 지운다.
+    drop((c1, c2, c3));
+    m.remove(&id).unwrap();
+    assert!(layer_disk(&m, &alone).is_file());
+    assert!(!layout.layer_dir(&needs.diff_id).exists());
+    let usage = m.build_cache_usage().unwrap();
+    assert_eq!((usage.records, usage.only_cache.len()), (1, 1));
+    assert_eq!(m.prune_build_cache().unwrap(), 1);
+    m.collect().unwrap();
+    assert!(!layout.layer_dir(&alone.diff_id).exists());
+    assert_eq!(m.build_cache(&key).unwrap(), None);
+    std::fs::remove_dir_all(root).unwrap();
+}

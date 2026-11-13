@@ -17,7 +17,9 @@
 //! 그래서 새 메시지를 쓰는 쪽은 모르는 게스트의 오류를 "이 샌드박스를 다시 시작하라"로 알린다.
 //! 2 뒤에 더한 것: 빌드 층([`HostMsg::OpenLayer`], [`HostMsg::ExportLayer`]), 투명 TCP([`HostMsg::Transparent`],
 //! 맡긴 연결 위의 [`GuestMsg::Lookup`]과 [`HostMsg::Resolved`]). 투명 TCP는 시작할 때만 보내므로 언제나 같은 판의
-//! 게스트가 받는다. 그래도 `Protocol` 오류가 오면 호스트는 "다시 시작하라"를 기록한다.
+//! 게스트가 받는다. 그래도 `Protocol` 오류가 오면 호스트는 "다시 시작하라"를 기록한다. 빌드 단계와 층 수 확인
+//! ([`HostMsg::ExecStep`], [`HostMsg::Hold`], [`HostMsg::CheckLayers`]): 앞의 둘은 빌드 VM에만, 셋째는 시작할 때
+//! 보낸다. 모르는 게스트의 `CheckLayers` 오류는 층 디스크가 하나일 때만 넘어간다(그런 게스트는 하나만 쌓는다).
 //! 시계([`HostMsg::ClockSync`], 그 안의 [`GuestMsg::ClockAsk`]와 [`HostMsg::ClockNow`]): 소유 프로세스가 혼자 보낸다.
 //! 모르는 게스트면 그 VM에서 맞추기를 조용히 그만둔다(기록은 한 줄).
 //!

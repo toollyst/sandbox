@@ -144,6 +144,103 @@ impl Guest {
         }
     }
 
+    /// 빌드 단계 하나를 실행한다([`HostMsg::ExecStep`]). [`Guest::exec`]와 같이 연결과 PID를 돌려준다.
+    pub fn exec_step(&self, x: Exec) -> Result<(Box<dyn GuestConn>, u32), RuntimeError> {
+        let mut c = self.open()?;
+        send(&mut *c, &HostMsg::ExecStep(x))?;
+        match recv(&mut *c)? {
+            GuestMsg::Started { pid } => {
+                untimed(&*c)?;
+                Ok((c, pid))
+            }
+            GuestMsg::Error(e) => Err(RuntimeError::CommandFailed(e)),
+            other => Err(proto_err(format!("expected Started, got {other:?}"))),
+        }
+    }
+
+    /// 기본 프로세스 자리를 채운다([`HostMsg::Hold`]). 연결과 PID(0)를 돌려준다.
+    pub fn hold(&self) -> Result<(Box<dyn GuestConn>, u32), RuntimeError> {
+        let mut c = self.open()?;
+        send(&mut *c, &HostMsg::Hold)?;
+        match recv(&mut *c)? {
+            GuestMsg::Started { pid } => {
+                untimed(&*c)?;
+                Ok((c, pid))
+            }
+            GuestMsg::Error(e) if e.kind == sbx_guest_proto::ErrorKind::Protocol => {
+                Err(RuntimeError::Invalid(format!(
+                    "the guest init is older than this sbx and cannot run a sandbox without a program ({})",
+                    e.message
+                )))
+            }
+            GuestMsg::Error(e) => Err(RuntimeError::Guest(e)),
+            other => Err(proto_err(format!("expected Started, got {other:?}"))),
+        }
+    }
+
+    /// 붙인 층 디스크 수를 알린다([`HostMsg::CheckLayers`]). 게스트가 다르게 셌으면 오류다(게스트는 VM을 끈다).
+    /// 이 메시지를 모르는 게스트는 층 디스크를 하나만 쌓으므로 `count`가 1일 때만 넘어간다.
+    pub fn check_layers(&self, count: usize) -> Result<(), RuntimeError> {
+        let mut c = self.open()?;
+        let n = u32::try_from(count)
+            .map_err(|_| RuntimeError::Invalid(format!("{count} layer disks")))?;
+        send(&mut *c, &HostMsg::CheckLayers { count: n })?;
+        match recv(&mut *c)? {
+            GuestMsg::Done => Ok(()),
+            GuestMsg::Error(e) if e.kind == sbx_guest_proto::ErrorKind::Protocol => {
+                if count == 1 {
+                    Ok(())
+                } else {
+                    Err(RuntimeError::Invalid(format!(
+                        "the guest init does not check layer disks and stacks only one; this image needs {count} \
+                         (use the guest init that ships with this sbx)"
+                    )))
+                }
+            }
+            GuestMsg::Error(e) => Err(RuntimeError::Invalid(format!(
+                "the executor did not attach the layer disks sbx gave it: {}",
+                e.message
+            ))),
+            other => Err(proto_err(format!("expected Done, got {other:?}"))),
+        }
+    }
+
+    /// 항목들을 게스트 디렉터리 `dest_dir` 아래에 놓는다(`CopyIn`). 항목의 경로, 메타데이터, 내용은 부르는 쪽이 정한다
+    /// ([`crate::hostfs::Placed`]). 부모는 앞서 디렉터리로 와야 한다.
+    pub fn copy_entries(
+        &self,
+        dest_dir: &str,
+        entries: Vec<crate::hostfs::Placed>,
+    ) -> Result<(), RuntimeError> {
+        let mut c = self.open()?;
+        send(
+            &mut *c,
+            &HostMsg::CopyIn {
+                dest: dest_dir.to_owned(),
+            },
+        )?;
+        let mut writer = c
+            .try_clone_conn()
+            .map_err(|e| RuntimeError::Lost(e.to_string()))?;
+        let sent = (|| -> Result<(), RuntimeError> {
+            for e in entries {
+                hostfs::send_placed(e, &mut |m| m.write_to(&mut *writer))?;
+            }
+            send(&mut *writer, &HostMsg::End)
+        })();
+        // 이쪽의 내용이 모자라 멈췄으면 게스트의 답을 기다리지 않는다(게스트는 나머지를 기다린다). 연결을 닫는다.
+        if let Err(e @ RuntimeError::Invalid(_)) = sent {
+            return Err(e);
+        }
+        match (recv(&mut *c), sent) {
+            (Ok(GuestMsg::Done), Ok(())) => Ok(()),
+            (Ok(GuestMsg::Error(e)), _) => Err(RuntimeError::Guest(e)),
+            (_, Err(e)) => Err(e),
+            (Ok(other), Ok(())) => Err(proto_err(format!("expected Done, got {other:?}"))),
+            (Err(e), Ok(())) => Err(e),
+        }
+    }
+
     /// 떼어 놓고 실행한다([`HostMsg::ExecDetached`]). 게스트 안의 PID.
     pub fn exec_detached(&self, x: Exec) -> Result<u32, RuntimeError> {
         let mut c = self.open()?;

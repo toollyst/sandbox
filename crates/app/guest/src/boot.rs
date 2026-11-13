@@ -257,6 +257,15 @@ pub fn agent() -> ! {
         }
     }
     let halt_how = cfg.halt;
+    // 층 디스크는 부팅 때와 같은 규칙으로 다시 찾는다(디스크 차례와 내용만 본다). 찾지 못하면 수를 모른다고 본다.
+    let found = crate::disks::layer_devices(std::path::Path::new("/dev")).ok();
+    let layer_disks = found.as_ref().and_then(|d| u32::try_from(d.len()).ok());
+    let layer_devs =
+        found.unwrap_or_else(|| vec![std::path::Path::new("/dev").join(crate::disks::device(0))]);
+    let transparent_on = {
+        let e = egress.clone();
+        move || e.transparent_on()
+    };
     let ctx: &'static Ctx = Box::leak(Box::new(Ctx {
         root: "/".into(),
         on_shutdown: Box::new(move || halt(halt_how)),
@@ -264,13 +273,12 @@ pub fn agent() -> ! {
         egress,
         main: Default::default(),
         // 첫 OpenLayer 전에는 아무것도 하지 않는다(보통의 run에는 비용이 없다).
-        // 층 디스크는 부팅 때와 같은 규칙으로 다시 찾는다(디스크 차례와 내용만 본다).
-        layers: Some(Box::new(crate::overlay::Overlay::guest(
-            crate::disks::layer_devices(std::path::Path::new("/dev")).unwrap_or_else(|_| {
-                vec![std::path::Path::new("/dev").join(crate::disks::device(0))]
-            }),
-            SCRATCH_DEV,
-        ))),
+        layers: Some(Box::new(
+            crate::overlay::Overlay::guest(layer_devs, SCRATCH_DEV)
+                .with_resolver(Box::new(transparent_on)),
+        )),
+        sweep: crate::exec::Sweep::Everything,
+        layer_disks,
         // 시계 맞추기: 호스트가 보낼 때만 한다. 규칙은 clock 모듈에 있다.
         clock: Some(Box::new(crate::clock::Kernel)),
     }));

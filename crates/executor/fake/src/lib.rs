@@ -20,16 +20,19 @@
 //!   (대상이 빈 디렉터리면 바꾼다). 읽기 전용은 강제하지 않는다.
 //! - Unix에서만 VM을 "띄운다". 다른 OS에서는 `launch`가 [`ExecutorError::Unsupported`]다.
 //! - 빌드 층(`OpenLayer`, `ExportLayer`)은 overlay 대신 scratch 디스크 옆 디렉터리 하나([`build_root`])를 두 번 훑어
-//!   견준다. 규칙과 실제 overlay와 다른 점은 `layers` 모듈에 있다.
+//!   견준다. 규칙과 실제 overlay와 다른 점은 `layers` 모듈에 있다. 첫 층을 열 때 그 디렉터리가 없으면 받은 층
+//!   디스크(EROFS)를 펼치고, 그 뒤로는 연결이 보내는 절대 경로를 그 디렉터리 아래로 옮긴다(`rootdir` 모듈).
 //! - 루프백 DNS는 53번 대신 `127.0.0.1`의 빈 포트에서 듣고, 투명 TCP(`Transparent`)는 경로 표를 바꾸지 않는다.
 //!   가짜 주소에서 듣는 대신 `127.0.0.1`의 빈 포트에서 듣는다. 어디서 듣는지는 [`net_dir`]의 파일에 적는다.
 //!   호스트에서 도는 프로그램은 그 DNS와 가짜 주소를 모르므로, 테스트가 그 파일을 읽고 직접 묻고 붙는다.
 //! - 게스트 시계(`ClockSync`)는 호스트 시계를 건드리지 않고 scratch 디스크 옆 파일 하나([`clock_file`])의 "호스트와의
 //!   차이"를 바꾼다. 테스트는 그 파일로 게스트 시계를 틀고 맞았는지 본다. 규칙은 [`clock`] 모듈에 있다.
 //!
-//! 모듈 층: `lib`, `process` → `guest`, `probe` → `layers`, `vm`, `netdir`, `clock`. `probe`는 테스트가 쓰는 도구다.
+//! 모듈 층: `lib`, `process` → `guest`, `probe` → `layers`, `vm`, `netdir`, `clock` → `rootdir`. `probe`는 테스트가
+//! 쓰는 도구다.
 //!
-//! - 의존: `sbx-model`, `sbx-executor`, `sbx-executor-proto`, `sbx-guest-proto`, `sbx-guest`(Unix)
+//! - 의존: `sbx-model`, `sbx-executor`, `sbx-executor-proto`, `sbx-guest-proto`, `sbx-guest`(Unix),
+//!   `sbx-rootfs`(Unix, 층 디스크 읽기)
 
 use std::io;
 use std::sync::{Arc, Mutex};
@@ -47,6 +50,8 @@ mod netdir;
 pub mod probe;
 #[cfg(unix)]
 pub mod process;
+#[cfg(unix)]
+mod rootdir;
 mod vm;
 
 pub use clock::clock_file;
@@ -121,8 +126,20 @@ impl Executor for FakeExecutor {
                 .find(|d| d.role == sbx_executor::DiskRole::Scratch);
             let dirs = scratch.map(|d| (build_root(&d.path), net_dir(&d.path)));
             let clock = scratch.map(|d| clock_file(&d.path));
-            guest::start(&vm.control_channel.host_endpoint, shares, dirs, clock)
-                .map(|v| Box::new(v) as Box<dyn VmHandle>)
+            let layer_disks = vm
+                .disks
+                .iter()
+                .filter(|d| d.role == sbx_executor::DiskRole::Rootfs)
+                .map(|d| d.path.clone())
+                .collect();
+            guest::start(
+                &vm.control_channel.host_endpoint,
+                shares,
+                dirs,
+                layer_disks,
+                clock,
+            )
+            .map(|v| Box::new(v) as Box<dyn VmHandle>)
         })
     }
 

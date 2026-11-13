@@ -174,6 +174,49 @@ pub fn read(layer: usize, reader: impl Read, spool: &Path) -> Result<Vec<LayerEn
     Ok(out)
 }
 
+/// 층들의 파일 내용: blob에서 읽은 층은 작업 공간([`Spool`])에, 층 디스크만 있는 층(빌드가 만든 것)은 그 디스크에
+/// 있다.
+pub struct Contents {
+    spool: Spool,
+    disks: sbx_rootfs::erofs::read::DiskContents,
+}
+
+impl Contents {
+    /// `work`에 저장한 내용과 디스크 `disks`.
+    pub fn new(work: &Path, disks: sbx_rootfs::erofs::read::DiskContents) -> Self {
+        Self {
+            spool: Spool::new(work),
+            disks,
+        }
+    }
+}
+
+impl Contents {
+    /// [`ContentSource::open`]과 같고, 돌려받은 것이 이것을 빌리지 않는다.
+    pub fn open_owned(&self, content: &ContentRef) -> io::Result<Box<dyn Read + Send>> {
+        if self.disks.has(content.layer) {
+            self.disks.open_owned(content)
+        } else {
+            let file = File::open(
+                self.spool
+                    .dir
+                    .join(spool_name(content.layer, content.index)),
+            )?;
+            Ok(Box::new(BufReader::new(file)))
+        }
+    }
+}
+
+impl ContentSource for Contents {
+    fn open(&self, content: &ContentRef) -> io::Result<Box<dyn Read + '_>> {
+        if self.disks.has(content.layer) {
+            self.disks.open(content)
+        } else {
+            self.spool.open(content)
+        }
+    }
+}
+
 /// 작업 공간에 저장한 파일 내용.
 pub struct Spool {
     dir: PathBuf,

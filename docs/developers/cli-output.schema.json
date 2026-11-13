@@ -84,6 +84,117 @@
       ],
       "type": "object"
     },
+    "BuildEvent": {
+      "additionalProperties": false,
+      "description": "One line of `build` (JSON Lines): a step's progress (`step`), a piece of `RUN` output (`output`), and last the\nimage (`built`). A failed build ends with the error line instead.",
+      "properties": {
+        "data": {
+          "description": "`output`: the bytes as text (invalid UTF-8 replaced).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "`built`: the image ID.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "line": {
+          "description": "`step`: the Dockerfile line.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "millis": {
+          "description": "`step` with `done`: how long it took (milliseconds).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "stage": {
+          "description": "`step`: the stage's `AS` name, or `null`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stage_index": {
+          "description": "`step`: the stage's number (0 is the first stage in the Dockerfile that the build needs).",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "status": {
+          "description": "`step`: `started`, `cached` or `done`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "step": {
+          "description": "`step`: the step's number in its stage (1 is `FROM`).",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "steps": {
+          "description": "`step`: how many steps the stage has (with `FROM`).",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "stream": {
+          "description": "`output`: `stdout` or `stderr`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tags": {
+          "description": "`built`: the references from `-t`, normalized.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "text": {
+          "description": "`step`: the instruction with its variables expanded.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "description": "`step`, `output` or `built`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
     "Capabilities": {
       "additionalProperties": false,
       "description": "What an executor supports.",
@@ -173,20 +284,20 @@
       "description": "One row of `system df`.",
       "properties": {
         "active": {
-          "description": "Images some sandbox uses; sandboxes that are running. Always 0 for executors.",
+          "description": "Images some sandbox uses; sandboxes that are running. Always 0 for the build cache and executors.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
         },
         "reclaimable": {
-          "description": "Bytes `system prune -a` would free: unused images with the layers only they use, stopped sandboxes.",
+          "description": "Bytes `system prune -a` would free: unused images with the layers only they use, stopped sandboxes, the\nlayers only the build cache holds (`system prune` frees those too).",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
         },
         "shared": {
           "default": 0,
-          "description": "For images: the part of `size` that more than one image uses (shared layers). Always 0 for the others.",
+          "description": "For images: the part of `size` that more than one image uses (shared layers). For the build cache: layers\nthat images use too (counted under images, not in `size`). Always 0 for the others.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
@@ -198,13 +309,13 @@
           "type": "integer"
         },
         "total": {
-          "description": "How many there are (executors count installed executors and adapters).",
+          "description": "How many there are (executors count installed executors and adapters; the build cache counts cached\nsteps).",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
         },
         "type": {
-          "description": "`images`, `sandboxes` or `executors`.",
+          "description": "`images`, `build cache`, `sandboxes` or `executors`.",
           "type": "string"
         }
       },
@@ -286,14 +397,14 @@
       "description": "Something that changed (`events`).",
       "properties": {
         "action": {
-          "description": "Sandbox: `create`, `start`, `stop`, `remove`. Image: `pull`, `prepare`, `tag`, `untag`, `push`, `delete`.",
+          "description": "Sandbox: `create`, `start`, `stop`, `remove`. Image: `pull`, `build`, `prepare`, `tag`, `untag`, `push`,\n`delete`.",
           "type": "string"
         },
         "attributes": {
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Details. Sandbox: `image`, `name`; on `stop` also `exit_code` and `error`. Image: `reference` (`pull`,\n`tag`, `untag`, `push`: the reference pushed to), `rootfs_format` (`prepare`).",
+          "description": "Details. Sandbox: `image`, `name`; on `stop` also `exit_code` and `error`. Image: `reference` (`pull`,\n`tag`, `untag`, `push`: the reference pushed to; `build`: the first `-t`), `rootfs_format` (`prepare`).",
           "type": "object"
         },
         "id": {
@@ -926,6 +1037,13 @@
       "additionalProperties": false,
       "description": "What `system prune` removed.",
       "properties": {
+        "build_cache": {
+          "default": 0,
+          "description": "How many build cache entries (cached steps) were removed. Their layers are in `layers` when no image uses\nthem.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
         "images": {
           "description": "IDs of removed images (`-a`).",
           "items": {

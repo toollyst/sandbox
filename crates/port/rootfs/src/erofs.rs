@@ -414,5 +414,7 @@ fn encode_dev(major: u32, minor: u32) -> u32 {
     (minor & 0xff) | (major << 8) | ((minor & !0xff) << 12)
 }
 
+pub mod read;
+
 #[cfg(test)]
 mod tests;

@@ -178,6 +178,8 @@ pub enum Command {
         #[arg(add = complete::cp_endpoint_arg())]
         dst: String,
     },
+    #[command(about = about("build"), override_usage = "sbx build [OPTIONS] PATH")]
+    Build(BuildArgs),
     #[command(about = about("pull"))]
     Pull {
         /// linux/amd64 or linux/arm64. Defaults to the host architecture.
@@ -600,6 +602,55 @@ pub struct AttachArgs {
     /// Run in the background and print the ID. The sandbox outlives sbx; use `sbx attach` to attach.
     #[arg(short = 'd', long)]
     pub detach: bool,
+}
+
+/// `build --progress`의 값. 값마다 문서 주석을 달지 않는다([`Format`]과 같은 까닭).
+#[allow(missing_docs)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum BuildProgress {
+    Auto,
+    Plain,
+}
+
+/// `build`의 옵션.
+#[derive(Debug, Args)]
+pub struct BuildArgs {
+    /// Name the image `NAME[:TAG]` (repeatable).
+    #[arg(short = 't', long = "tag", value_name = "NAME[:TAG]")]
+    pub tags: Vec<String>,
+    /// Dockerfile (default: PATH/Dockerfile).
+    #[arg(short = 'f', long = "file", value_name = "FILE")]
+    pub file: Option<PathBuf>,
+    /// Build argument `KEY=VALUE`, or `KEY` to take the value from the environment (repeatable).
+    #[arg(long = "build-arg", value_name = "KEY=VALUE")]
+    pub build_args: Vec<String>,
+    /// Build only up to this stage (`AS` name).
+    #[arg(long)]
+    pub target: Option<String>,
+    /// Do not use cached steps (the new layers are still cached).
+    #[arg(long)]
+    pub no_cache: bool,
+    /// Progress: auto (one line per step; RUN output only when a step fails) or plain (RUN output too).
+    #[arg(long, value_enum, default_value_t = BuildProgress::Auto, hide_possible_values = true)]
+    pub progress: BuildProgress,
+    /// Only print the image ID.
+    #[arg(short, long)]
+    pub quiet: bool,
+    /// Network for RUN steps: none (no access) or allow (only --allow destinations, through a proxy).
+    #[arg(long, default_value = "none", help_heading = "Network")]
+    pub network: String,
+    /// Destination RUN steps may reach with --network allow: `HOST:PORT` (`*.npmjs.org:443`). Repeatable.
+    #[arg(long = "allow", help_heading = "Network")]
+    pub allow: Vec<String>,
+    /// Number of vCPUs of the build VM (default 1).
+    #[arg(long, help_heading = "Resources")]
+    pub cpus: Option<String>,
+    /// Memory of the build VM (e.g. 2g; default 512m).
+    #[arg(short = 'm', long, help_heading = "Resources")]
+    pub memory: Option<String>,
+    /// Build context: a local directory.
+    #[arg(value_hint = clap::ValueHint::DirPath)]
+    pub path: PathBuf,
 }
 
 /// `run`과 `create`의 옵션. 이미지 이름 뒤의 인자는 모두 명령으로 넘어간다(Docker와 같다).

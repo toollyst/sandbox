@@ -413,6 +413,7 @@ mod tests {
             lifetime_secs: None,
             ports: Vec::new(),
             egress_limit_bytes: None,
+            hold: false,
         };
         std::fs::write(dir.join("spec.json"), serde_json::to_vec(&spec).unwrap()).unwrap();
         std::fs::write(dir.join("state.json"), br#"{"state":"stopped"}"#).unwrap();

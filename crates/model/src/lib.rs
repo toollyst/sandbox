@@ -918,6 +918,10 @@ pub struct SandboxSpec {
     /// 열린 연결을 끊고 새 연결을 거절한다. 없으면 끝없이.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub egress_limit_bytes: Option<u64>,
+    /// 기본 프로세스 대신 게스트가 프로그램 없이 자리를 채운다(빌드 VM). 이미지에 실행할 것이 없어도 되고
+    /// `process.args`는 쓰지 않는다. 멈추기(`stop`, 멈춤 시그널)는 보통의 샌드박스와 같다.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hold: bool,
 }
 
 /// `-p [IP:][HOST_PORT:]PORT[/tcp]`: 호스트의 `IP:HOST_PORT`에 온 TCP 연결을 게스트 `127.0.0.1:PORT`로 잇는다.

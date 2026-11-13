@@ -492,7 +492,7 @@ fn progress() -> String {
         "<!-- compat-progress:begin -->\nCounted from the {} rows below. \"What applies to sbx\" leaves out \
          ⚫, ⚪ and ➕ rows.\n\n| | |\n| --- | --- |\n\
          | **Works (🟢 or 🟡), of what applies to sbx** | **{} {}% ({} of {})** |\n\
-         | **The Docker CLI alone** (without `build`, the Dockerfile and Compose, which come in 0.3 and after) \
+         | **The Docker CLI alone** (without `build`, the Dockerfile and Compose) \
          | **{} {}% ({} of {})** |\n",
         ROWS.len(),
         bar(total),
@@ -592,7 +592,7 @@ fn readme_line() -> String {
     let cli = works_of(ROWS.iter().filter(|r| r.area.is_cli()));
     format!(
         "{README_BEGIN}\n**Docker compatibility:** {}% of the Docker CLI's commands and flags that apply to a VM \
-         work today ({} of {}); with `build`, the Dockerfile and Compose, which come in 0.3 and after, {}% ({} of \
+         work today ({} of {}); counting `build`, the Dockerfile and Compose too, {}% ({} of \
          {}). [The table](docs/guide/docker-compatibility.md) gives every row, its difference and its test, and CI \
          keeps it in step with the code.\n{README_END}",
         percent(cli),

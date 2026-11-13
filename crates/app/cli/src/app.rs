@@ -47,6 +47,7 @@ use crate::parse::{self, CpEndpoint};
 use crate::progress::Status;
 use crate::{choose, dirs, executors, guest, host};
 
+mod build;
 mod load;
 mod login;
 mod push;
@@ -131,6 +132,7 @@ fn host_arch() -> AppResult<Arch> {
 pub async fn run(cli: Cli) -> AppResult<u8> {
     let ctx = Ctx::new(&cli)?;
     match &cli.command {
+        Command::Build(a) => ctx.build(a).await,
         Command::Pull { platform, image } => ctx.pull(platform.as_deref(), image).await,
         Command::Push {
             all_tags,
@@ -1120,6 +1122,7 @@ impl Ctx {
                         lifetime_secs: a.timeout,
                         ports: a.publish.clone(),
                         egress_limit_bytes: a.egress_limit,
+                        hold: false,
                     };
                     let sandbox = self.launcher_with(&chosen)?.create(spec).await?;
                     return Ok(sandbox.id().clone());
@@ -1435,8 +1438,10 @@ impl Ctx {
     pub(crate) fn image_name(&self, image: &ImageId) -> String {
         sbx_store::Store::open(&self.cache_dir)
             .image(image)
+            .ok()
+            .filter(|r| !r.reference.is_empty())
             .map(|r| behavior::familiar(&r.reference).to_owned())
-            .unwrap_or_else(|_| short(image).to_owned())
+            .unwrap_or_else(|| short(image).to_owned())
     }
 
     async fn inspect(&self, id: &str) -> AppResult<u8> {
@@ -1562,7 +1567,8 @@ impl Ctx {
         let reference = sbx_store::Store::open(&self.cache_dir)
             .image(&s.spec.image)
             .ok()
-            .map(|r| r.reference);
+            .map(|r| r.reference)
+            .filter(|r| !r.is_empty());
         output::Sandbox::new(s, reference)
     }
 

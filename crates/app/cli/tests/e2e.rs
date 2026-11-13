@@ -217,6 +217,27 @@ mod unix {
             embedded_guest_init_is_unpacked_into_the_cache,
         ),
         (
+            "build_runs_stages_and_caches_steps",
+            build_runs_stages_and_caches_steps,
+        ),
+        (
+            "build_failures_targets_and_build_args",
+            build_failures_targets_and_build_args,
+        ),
+        (
+            "build_scratch_without_a_vm_and_shared_base_layers",
+            build_scratch_without_a_vm_and_shared_base_layers,
+        ),
+        ("build_shows_blocked_names", build_shows_blocked_names),
+        (
+            "build_writes_the_image_config",
+            build_writes_the_image_config,
+        ),
+        (
+            "a_missing_layer_disk_stops_the_start",
+            a_missing_layer_disk_stops_the_start,
+        ),
+        (
             "the_guest_clock_follows_the_host",
             the_guest_clock_follows_the_host,
         ),
@@ -4811,5 +4832,395 @@ mod unix {
         drop(m.child.stdin.take());
         let out = wait_with_timeout(m.child, Duration::from_secs(10));
         assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    }
+
+    // ── build ────────────────────────────────────────────────────────────
+    //
+    // 가짜 실행기의 빌드 VM은 층 디스크를 디렉터리로 펼치고, 작업 디렉터리와 COPY 대상을 그 아래로 옮긴다. 명령은
+    // 호스트에서 돌므로 RUN은 작업 디렉터리 기준 상대 경로를 쓴다.
+
+    /// 바탕 이미지(`local/base:1`, 층 하나)를 들이고 빌드 컨텍스트 디렉터리를 돌려준다.
+    fn build_env() -> (Env, PathBuf) {
+        let e = Env::new();
+        let (base, _) = oci_archive_layers("local/base:1", &[BASE]);
+        load(&e, "base.tar", &base);
+        let ctx = e.path("ctx");
+        std::fs::create_dir_all(ctx.join("src")).unwrap();
+        (e, ctx)
+    }
+
+    fn write(dir: &Path, name: &str, data: &str) {
+        let p = dir.join(name);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, data).unwrap();
+    }
+
+    /// `build`을 돌린다. `record`면 실행기가 받은 VM 설정을 그 파일에 적게 한다(VM을 띄웠는지 본다).
+    fn build(e: &Env, ctx: &Path, args: &[&str], record: Option<&Path>) -> Output {
+        let mut all = vec!["build"];
+        all.extend_from_slice(args);
+        all.push(ctx.to_str().unwrap());
+        let mut c = e.cmd(&all);
+        if let Some(r) = record {
+            let _ = std::fs::remove_file(r);
+            c.env("SBX_FAKE_RECORD", r);
+        }
+        c.output().unwrap()
+    }
+
+    const MULTI_STAGE: &str = "\
+FROM local/base:1 AS build
+WORKDIR /src
+COPY src/ ./
+RUN test ! -e secret.txt && cat a.txt > out.txt && echo built >> out.txt
+FROM local/base:1
+COPY --from=build /src/out.txt /app/out.txt
+ENV GREETING=hi
+CMD [\"cat\", \"/app/out.txt\"]
+";
+
+    /// 여러 스테이지를 만들고, 만든 이미지가 목록에 있고 돌고, 그 층을 다음 빌드가 본다. 두 번째 빌드는 모두 캐시에서
+    /// 와 VM을 띄우지 않는다. COPY한 파일 하나를 바꾸면 그 단계부터 다시 만들고, `--no-cache`는 캐시를 쓰지 않는다.
+    fn build_runs_stages_and_caches_steps() {
+        let (e, ctx) = build_env();
+        write(&ctx, "Dockerfile", MULTI_STAGE);
+        write(&ctx, ".dockerignore", "src/secret.txt\n");
+        write(&ctx, "src/a.txt", "from the context\n");
+        write(&ctx, "src/secret.txt", "no\n");
+        let rec = e.path("vm.json");
+        let o = build(&e, &ctx, &["-t", "local/app:1"], Some(&rec));
+        let err = text(&o.stderr);
+        assert_eq!(o.status.code(), Some(0), "{err}");
+        assert!(rec.is_file(), "the RUN step needs a VM");
+        assert!(
+            err.contains("[build 4/4] RUN test ! -e secret.txt"),
+            "{err}"
+        );
+        assert!(err.contains("[stage-1 2/4] COPY --from=build"), "{err}");
+        assert!(text(&o.stdout).contains("Successfully tagged local/app:1"));
+        let o = e.sbx(&["--format", "json", "images"]);
+        let list: Vec<sbx_cli::output::Image> = serde_json::from_slice(&o.stdout).unwrap();
+        let app = list
+            .iter()
+            .find(|i| i.references.iter().any(|r| r.contains("local/app:1")))
+            .expect("the built image is listed");
+        // 바탕 층 + COPY 층.
+        let o = e.sbx(&["run", "--rm", "local/app:1", "true"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        // 빌드 VM과 그 뿌리 기록은 남지 않는다.
+        assert!(e.ps().is_empty());
+        assert_eq!(list.len(), 3, "e2e-fake, base, app: {list:?}");
+
+        // 만든 이미지 위에서 그 층을 본다.
+        let check = e.path("check");
+        std::fs::create_dir_all(&check).unwrap();
+        write(
+            &check,
+            "Dockerfile",
+            "FROM local/app:1\nWORKDIR /app\nRUN cat out.txt && echo \"GREETING=$GREETING\"\n",
+        );
+        let o = build(&e, &check, &["--progress", "plain"], None);
+        let err = text(&o.stderr);
+        assert_eq!(o.status.code(), Some(0), "{err}");
+        assert!(
+            err.contains("from the context\nbuilt\nGREETING=hi\n"),
+            "{err}"
+        );
+
+        // 두 번째: 모두 캐시, VM 없음, 같은 이미지 ID.
+        let o = build(&e, &ctx, &["-q", "-t", "local/app:1"], Some(&rec));
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(!rec.exists(), "a fully cached build launches no VM");
+        assert_eq!(text(&o.stdout).trim(), app.id);
+        let o = build(&e, &ctx, &[], Some(&rec));
+        let err = text(&o.stderr);
+        assert!(err.contains("[build 4/4] CACHED"), "{err}");
+
+        // 원본 하나를 바꾸면 그 단계부터 다시 만든다(앞 단계는 캐시).
+        write(&ctx, "src/a.txt", "changed\n");
+        let o = build(&e, &ctx, &[], Some(&rec));
+        let err = text(&o.stderr);
+        assert_eq!(o.status.code(), Some(0), "{err}");
+        assert!(err.contains("[build 2/4] CACHED"), "{err}");
+        assert!(!err.contains("[build 3/4] CACHED"), "{err}");
+        assert!(!err.contains("[build 4/4] CACHED"), "{err}");
+        assert!(rec.is_file());
+        // --no-cache: 캐시를 읽지 않는다.
+        let o = build(&e, &ctx, &["--no-cache"], Some(&rec));
+        let err = text(&o.stderr);
+        assert_eq!(o.status.code(), Some(0), "{err}");
+        assert!(!err.contains("CACHED"), "{err}");
+        assert!(rec.is_file());
+        // 만든 이미지는 아직 save·push하지 못한다(층 tar 내보내기 단계의 자리).
+        let o = e.sbx(&[
+            "save",
+            "-o",
+            e.path("app.tar").to_str().unwrap(),
+            "local/app:1",
+        ]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("made by sbx build"),
+            "{}",
+            text(&o.stderr)
+        );
+    }
+
+    /// 실패한 RUN은 그 출력과 코드를 보인다. 백그라운드로 남긴 프로세스는 단계를 붙잡지 않는다. `--target`은 그
+    /// 스테이지까지만 만든다. 빌드 인자는 캐시 키다. 받지 않는 명령은 줄 번호와 함께 오류다.
+    fn build_failures_targets_and_build_args() {
+        let (e, ctx) = build_env();
+        write(
+            &ctx,
+            "Dockerfile",
+            "FROM local/base:1\nRUN echo something went wrong && exit 3\n",
+        );
+        let o = build(&e, &ctx, &[], None);
+        let err = text(&o.stderr);
+        assert_eq!(o.status.code(), Some(1), "{err}");
+        assert!(err.contains("something went wrong"), "{err}");
+        assert!(err.contains("line 2: RUN echo something went wrong && exit 3: the command returned a non-zero code: 3"), "{err}");
+        assert!(e.ps().is_empty(), "the build VM is removed");
+
+        write(
+            &ctx,
+            "Dockerfile",
+            "FROM local/base:1\nRUN sleep 60 & echo left running\n",
+        );
+        let t = Instant::now();
+        let o = build(&e, &ctx, &[], None);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(t.elapsed() < Duration::from_secs(30), "{:?}", t.elapsed());
+
+        write(
+            &ctx,
+            "Dockerfile",
+            "FROM local/base:1 AS first\nARG V=1\nRUN echo $V > v.txt\nFROM first\nRUN false\n",
+        );
+        let rec = e.path("vm.json");
+        let o = build(
+            &e,
+            &ctx,
+            &["--target", "first", "-t", "local/first:1"],
+            Some(&rec),
+        );
+        let err = text(&o.stderr);
+        assert_eq!(o.status.code(), Some(0), "{err}");
+        assert!(err.contains("[2/2] RUN echo $V > v.txt"), "{err}");
+        assert!(!err.contains("RUN false"), "{err}");
+        let o = build(&e, &ctx, &["--target", "first"], Some(&rec));
+        assert!(
+            text(&o.stderr).contains("[2/2] CACHED"),
+            "{}",
+            text(&o.stderr)
+        );
+        assert!(!rec.exists());
+        let o = build(
+            &e,
+            &ctx,
+            &["--target", "first", "--build-arg", "V=2"],
+            Some(&rec),
+        );
+        let err = text(&o.stderr);
+        assert_eq!(o.status.code(), Some(0), "{err}");
+        assert!(!err.contains("[2/2] CACHED"), "{err}");
+        assert!(
+            rec.is_file(),
+            "another build argument value is another step"
+        );
+
+        write(&ctx, "Dockerfile", "FROM local/base:1\nONBUILD RUN make\n");
+        let o = build(&e, &ctx, &[], None);
+        assert_eq!(o.status.code(), Some(1));
+        assert!(text(&o.stderr).contains("line 2"), "{}", text(&o.stderr));
+        // JSON: 단계마다 한 줄, 끝에 만든 이미지.
+        write(&ctx, "Dockerfile", "FROM local/base:1\nENV A=1\n");
+        let o = build(&e, &ctx, &["--format", "json"], None);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let lines: Vec<sbx_cli::output::BuildEvent> = text(&o.stdout)
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.first().unwrap().status.as_deref(), Some("started"));
+        let last = lines.last().unwrap();
+        assert_eq!(last.kind, "built");
+        assert!(last.id.as_deref().unwrap().starts_with("sha256:"));
+    }
+
+    /// `FROM scratch`와 COPY뿐인 빌드는 VM 없이 만든다. 같은 바탕의 두 빌드는 바탕 층을 함께 쓰고 `system df`는 그것을
+    /// 한 번 센다. 빌드 캐시도 한 줄이고, `system prune`이 비운다.
+    fn build_scratch_without_a_vm_and_shared_base_layers() {
+        use sbx_cli::output::{DiskUsage, PruneReport};
+        let (e, ctx) = build_env();
+        write(
+            &ctx,
+            "Dockerfile",
+            "FROM scratch\nCOPY src/ /\nCMD [\"/tool\"]\n",
+        );
+        write(&ctx, "src/tool", "#!/bin/sh\n");
+        let rec = e.path("vm.json");
+        let o = build(&e, &ctx, &["-t", "local/scratch:1"], Some(&rec));
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(!rec.exists(), "FROM scratch with COPY needs no VM");
+
+        for (n, word) in [("one", "1"), ("two", "2")] {
+            let dir = e.path(n);
+            std::fs::create_dir_all(&dir).unwrap();
+            write(
+                &dir,
+                "Dockerfile",
+                &format!("FROM local/base:1\nRUN echo {word} > f\n"),
+            );
+            let o = build(&e, &dir, &["-t", &format!("local/{n}:1")], None);
+            assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        }
+        let o = e.sbx(&["--format", "json", "system", "df"]);
+        let rows: Vec<DiskUsage> = serde_json::from_slice(&o.stdout).unwrap();
+        let im = rows.iter().find(|r| r.kind == "images").unwrap();
+        // 바탕 층(64 KiB)은 바탕 이미지와 두 빌드가 함께 쓰고 한 번만 센다.
+        assert!(im.shared >= 64 * 1024, "{rows:?}");
+        assert!(im.size < 2 * 64 * 1024 + 64 * 1024, "{rows:?}");
+        let cache = rows.iter().find(|r| r.kind == "build cache").unwrap();
+        assert!(cache.total >= 3, "{rows:?}");
+        // 이미지를 지워도 캐시는 남는다. prune이 캐시를 비우면 그 층도 간다.
+        let o = e.sbx(&["rmi", "local/one:1", "local/two:1", "local/scratch:1"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = build(&e, &e.path("one"), &[], Some(&rec));
+        assert!(
+            text(&o.stderr).contains("[2/2] CACHED"),
+            "{}",
+            text(&o.stderr)
+        );
+        let o = e.sbx(&["--format", "json", "system", "prune", "-f"]);
+        let r: PruneReport = serde_json::from_slice(&o.stdout).unwrap();
+        assert!(r.build_cache >= 3, "{r:?}");
+        let o = build(&e, &e.path("one"), &[], None);
+        assert!(!text(&o.stderr).contains("CACHED"), "{}", text(&o.stderr));
+    }
+
+    /// 실패한 단계가 막힌 이름을 썼으면 그것을 열 `--allow`를 보인다(포트는 짐작하지 않는다).
+    fn build_shows_blocked_names() {
+        let (e, ctx) = build_env();
+        let me = std::env::current_exe().unwrap();
+        write(
+            &ctx,
+            "Dockerfile",
+            &format!(
+                "FROM local/base:1\nRUN {} net-probe {} blocked.invalid 443; exit 1\n",
+                me.display(),
+                e.path("data").display()
+            ),
+        );
+        let o = build(
+            &e,
+            &ctx,
+            &["--network", "allow", "--allow", "ok.invalid:443"],
+            None,
+        );
+        let err = text(&o.stderr);
+        assert_eq!(o.status.code(), Some(1), "{err}");
+        assert!(
+            err.contains("blocked: blocked.invalid — add --allow blocked.invalid:PORT"),
+            "{err}"
+        );
+    }
+
+    /// 실행기가 층 디스크를 빠뜨리면 게스트가 센 수가 달라 시작하지 않는다(보통의 run).
+    fn a_missing_layer_disk_stops_the_start() {
+        let e = Env::new();
+        let (a, _) = oci_archive_layers("local/a:1", &[BASE, &[("a.txt", b"a")]]);
+        load(&e, "a.tar", &a);
+        let o = e
+            .cmd(&["run", "--rm", "local/a:1", "true"])
+            .env("SBX_FAKE_DROP_LAYER_DISK", "1")
+            .output()
+            .unwrap();
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("layer disks"),
+            "{}",
+            text(&o.stderr)
+        );
+    }
+
+    /// config만 바꾸는 명령은 이미지 config에 쓰인다. `COPY --chown --chmod`는 층의 소유자와 권한이다. 파서 지시어
+    /// `escape`를 따른다.
+    fn build_writes_the_image_config() {
+        let (e, ctx) = build_env();
+        write(
+            &ctx,
+            "Dockerfile",
+            "# escape=`\n\
+             FROM local/base:1\n\
+             SHELL [\"/bin/sh\", \"-ec\"]\n\
+             LABEL a=b `\n      c=d\n\
+             EXPOSE 80 53/udp\n\
+             VOLUME /data\n\
+             STOPSIGNAL SIGINT\n\
+             HEALTHCHECK --interval=5s CMD true\n\
+             MAINTAINER someone\n\
+             COPY --chown=7:8 --chmod=600 src/a.txt /a.txt\n\
+             ENTRYPOINT [\"/e\"]\n\
+             USER 1:2\n",
+        );
+        write(&ctx, "src/a.txt", "a");
+        let o = build(&e, &ctx, &["-q", "-t", "local/cfg:1"], None);
+        let err = text(&o.stderr);
+        assert_eq!(o.status.code(), Some(0), "{err}");
+        let id = text(&o.stdout).trim().to_owned();
+        let hex = id.strip_prefix("sha256:").unwrap();
+        let doc: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(e.path(&format!("cache/images/{hex}/config.json"))).unwrap(),
+        )
+        .unwrap();
+        let c = &doc["config"];
+        assert_eq!(c["Shell"], serde_json::json!(["/bin/sh", "-ec"]));
+        assert_eq!(c["Labels"]["a"], "b");
+        assert_eq!(c["Labels"]["c"], "d");
+        assert_eq!(
+            c["ExposedPorts"],
+            serde_json::json!({"53/udp": {}, "80/tcp": {}})
+        );
+        assert_eq!(c["Volumes"], serde_json::json!({"/data": {}}));
+        assert_eq!(c["StopSignal"], "SIGINT");
+        assert_eq!(
+            c["Healthcheck"]["Test"],
+            serde_json::json!(["CMD-SHELL", "true"])
+        );
+        assert_eq!(c["Healthcheck"]["Interval"], 5_000_000_000u64);
+        assert_eq!(c["Entrypoint"], serde_json::json!(["/e"]));
+        assert_eq!(
+            c["Cmd"],
+            serde_json::Value::Null,
+            "ENTRYPOINT clears the base's Cmd"
+        );
+        assert_eq!(c["User"], "1:2");
+        assert_eq!(doc["author"], "someone");
+        // HEALTHCHECK는 쓰지만 돌리지 않는다고 알린다.
+        let o = build(&e, &ctx, &[], None);
+        assert!(
+            text(&o.stderr).contains("HEALTHCHECK"),
+            "{}",
+            text(&o.stderr)
+        );
+        // COPY 층: 소유자와 권한.
+        let ids = doc["rootfs"]["diff_ids"].as_array().unwrap();
+        let top = ids
+            .last()
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .strip_prefix("sha256:")
+            .unwrap();
+        let disk = e.path(&format!("cache/layers/{top}/layer.erofs"));
+        let read = sbx_rootfs::erofs::read::read_layer(&mut std::fs::File::open(&disk).unwrap(), 0)
+            .unwrap();
+        let a = read.entries.iter().find(|x| x.path == "a.txt").unwrap();
+        assert_eq!((a.meta.uid, a.meta.gid, a.meta.mode), (7, 8, 0o600));
+        // 만든 이미지의 기본값으로 돈다.
+        let o = e.sbx(&["--format", "json", "images"]);
+        let list: Vec<sbx_cli::output::Image> = serde_json::from_slice(&o.stdout).unwrap();
+        let img = list.iter().find(|i| i.id == id).unwrap();
+        assert_eq!(img.exposed_ports, ["53/udp", "80/tcp"]);
     }
 }

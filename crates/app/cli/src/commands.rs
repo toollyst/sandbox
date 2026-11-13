@@ -133,6 +133,11 @@ pub const COMMANDS: &[Command] = &[
         "Copy files between the host and a sandbox (SANDBOX:PATH on the sandbox side)",
     ),
     cmd(
+        "build",
+        Section::Images,
+        "Build an image from a Dockerfile, each RUN step in a microVM",
+    ),
+    cmd(
         "pull",
         Section::Images,
         "Download an image (only downloads)",

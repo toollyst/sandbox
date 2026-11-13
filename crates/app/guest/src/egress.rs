@@ -131,6 +131,11 @@ impl Egress {
         self.transparent.enable(self.clone(), literals)
     }
 
+    /// 투명 TCP가 켜졌는지(빌드 층이 `/etc/resolv.conf`를 둘지 정한다).
+    pub fn transparent_on(&self) -> bool {
+        self.transparent.is_on()
+    }
+
     /// 루프백 DNS가 쓸 답하는 쪽. 투명 TCP가 꺼져 있으면 모든 이름에 NXDOMAIN이다([`dns`]).
     pub fn resolver(self: &Arc<Self>) -> Arc<dyn dns::Resolver> {
         Arc::new(Resolver(self.clone()))

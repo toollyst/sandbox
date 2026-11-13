@@ -53,6 +53,8 @@ impl Fixture {
                     egress: Default::default(),
                     main,
                     layers: None,
+                    sweep: crate::exec::Sweep::Group,
+                    layer_disks: None,
                     clock: None,
                 },
             )
@@ -149,6 +151,8 @@ fn version_mismatch_is_reported() {
                 egress: Default::default(),
                 main: Default::default(),
                 layers: None,
+                sweep: crate::exec::Sweep::Group,
+                layer_disks: None,
                 clock: None,
             },
         )
@@ -170,6 +174,8 @@ fn request_before_hello_is_a_protocol_error() {
                 egress: Default::default(),
                 main: Default::default(),
                 layers: None,
+                sweep: crate::exec::Sweep::Group,
+                layer_disks: None,
                 clock: None,
             },
         )
@@ -533,6 +539,8 @@ fn shutdown_syncs_replies_then_calls_back() {
                 egress: Default::default(),
                 main: Default::default(),
                 layers: None,
+                sweep: crate::exec::Sweep::Group,
+                layer_disks: None,
                 clock: None,
             },
         )
@@ -784,6 +792,220 @@ fn stat_follows_links_and_reports_missing() {
     assert_eq!((l.path.as_str(), l.kind), ("l", FileKind::Dir));
     assert_eq!(stat(&f.dir.join("nope")), None);
     assert_eq!(stat(Path::new("/")).unwrap().path, "/");
+}
+
+/// 늘 열린 빌드 층(아무것도 쌓지 않는다). `ExecStep`은 열린 층에서만 한다.
+struct OpenLayers;
+
+impl crate::layer::Layers for OpenLayers {
+    fn open(&self) -> Result<u32, sbx_guest_proto::Error> {
+        Ok(1)
+    }
+    fn export(&self, _out: &crate::wire::Out) -> Result<(), sbx_guest_proto::Error> {
+        Ok(())
+    }
+    fn check_ready(&self) -> Result<(), sbx_guest_proto::Error> {
+        Ok(())
+    }
+    fn is_open(&self) -> bool {
+        true
+    }
+}
+
+/// `layers`, `layer_disks`, 끄기 표시를 정한 서버에 Hello까지 마친 연결.
+fn connect_with(
+    f: &Fixture,
+    layers: bool,
+    layer_disks: Option<u32>,
+    off: Arc<AtomicBool>,
+) -> UnixStream {
+    let (mut host, guest) = UnixStream::pair().unwrap();
+    let (root, main) = (f.dir.clone(), f.main.clone());
+    thread::spawn(move || {
+        server::serve(
+            guest,
+            &Ctx {
+                root,
+                on_shutdown: Box::new(move || off.store(true, Ordering::SeqCst)),
+                share: None,
+                egress: Default::default(),
+                main,
+                layers: layers.then(|| Box::new(OpenLayers) as Box<dyn crate::layer::Layers>),
+                sweep: crate::exec::Sweep::Group,
+                layer_disks,
+                clock: None,
+            },
+        )
+    });
+    send(
+        &mut host,
+        HostMsg::Hello {
+            version: PROTOCOL_VERSION,
+        },
+    );
+    assert!(matches!(recv(&mut host), GuestMsg::HelloAck { .. }));
+    host
+}
+
+/// 빌드 단계가 백그라운드로 띄운 프로세스가 출력을 쥐고 있어도 단계는 곧 끝나고, 그 프로세스는 끝나 있다.
+/// 보통의 `Exec`는 그 프로세스가 출력을 닫을 때까지 기다린다.
+#[test]
+fn a_build_step_ends_the_processes_it_left() {
+    // `Sweep::Group`은 끝낸 프로세스를 init이 거둔다고 본다. 이 프로세스가 init이면(거두지 않는 컨테이너 init) 맞지 않다.
+    if std::process::id() == 1 {
+        return;
+    }
+    let f = Fixture::new("step");
+    let pidfile = f.dir.join("bg.pid");
+    let script = format!("sleep 30 & echo $! > {}; echo step done", pidfile.display());
+    let mut c = connect_with(&f, true, None, Arc::default());
+    let t = Instant::now();
+    send(
+        &mut c,
+        HostMsg::ExecStep(f.exec(&["sh", "-c", &script], false)),
+    );
+    started(&mut c);
+    let (out, _, status) = collect(&mut c);
+    assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
+    assert_eq!((out.as_str(), status), ("step done\n", ExitStatus::Code(0)));
+    let pid: u32 = fs::read_to_string(&pidfile)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert!(
+        crate::sys::kill(pid, 0).is_err(),
+        "the background process {pid} is still there"
+    );
+    // 실패한 단계도 남긴 것을 끝내고 그 코드로 끝난다.
+    let mut c = connect_with(&f, true, None, Arc::default());
+    send(
+        &mut c,
+        HostMsg::ExecStep(f.exec(&["sh", "-c", "sleep 30 & exit 3"], false)),
+    );
+    started(&mut c);
+    assert_eq!(collect(&mut c).2, ExitStatus::Code(3));
+}
+
+#[test]
+fn a_build_step_needs_an_open_layer_and_is_not_the_main_process() {
+    let f = Fixture::new("step-closed");
+    let mut c = connect_with(&f, false, None, Arc::default());
+    send(&mut c, HostMsg::ExecStep(f.exec(&["true"], false)));
+    assert_eq!(error_kind(&mut c), ErrorKind::InvalidArgument);
+    let mut c = connect_with(&f, true, None, Arc::default());
+    let mut x = f.exec(&["true"], false);
+    x.main = true;
+    send(&mut c, HostMsg::ExecStep(x));
+    assert_eq!(error_kind(&mut c), ErrorKind::InvalidArgument);
+}
+
+/// `Hold`는 프로세스 없이 기본 프로세스 자리를 채운다. `SignalMain`이 그것을 끝낸다.
+#[test]
+fn hold_is_a_main_process_without_a_program() {
+    let f = Fixture::new("hold");
+    let mut c = connect_with(&f, false, None, Arc::default());
+    send(&mut c, HostMsg::Hold);
+    assert_eq!(started(&mut c), 0);
+    let mut other = connect_with(&f, false, None, Arc::default());
+    send(&mut other, HostMsg::SignalMain(15));
+    assert_eq!(recv(&mut other), GuestMsg::Done);
+    assert_eq!(recv(&mut c), GuestMsg::Exited(ExitStatus::Signal(15)));
+    // 끝난 뒤에는 기본 프로세스가 없다.
+    let mut other = connect_with(&f, false, None, Arc::default());
+    send(&mut other, HostMsg::SignalMain(15));
+    assert_eq!(error_kind(&mut other), ErrorKind::NotFound);
+}
+
+/// 호스트가 알린 층 디스크 수가 게스트가 쌓은 수와 다르면 게스트는 거부하고 VM을 끈다.
+#[test]
+fn a_layer_count_mismatch_powers_the_guest_off() {
+    let f = Fixture::new("layers");
+    let off = Arc::new(AtomicBool::new(false));
+    let mut c = connect_with(&f, false, Some(3), off.clone());
+    send(&mut c, HostMsg::CheckLayers { count: 3 });
+    assert_eq!(recv(&mut c), GuestMsg::Done);
+    assert!(!off.load(Ordering::SeqCst));
+    let mut c = connect_with(&f, false, Some(3), off.clone());
+    send(&mut c, HostMsg::CheckLayers { count: 4 });
+    match recv(&mut c) {
+        GuestMsg::Error(e) => assert!(e.message.contains("found 3"), "{}", e.message),
+        other => panic!("{other:?}"),
+    }
+    assert!(off.load(Ordering::SeqCst));
+}
+
+#[test]
+fn proc_stat_lines_tell_user_processes_from_kernel_threads_and_zombies() {
+    use crate::exec::is_live_user_process as live;
+    assert!(live(40, "40 (sleep) S 1 40 40 0", 7));
+    assert!(live(41, "41 (a (b) c) R 40 1 1 0", 7));
+    assert!(!live(40, "40 (sleep) Z 1 40 40 0", 7));
+    assert!(!live(3, "3 (kworker/0:0) I 2 0 0 0", 7));
+    assert!(!live(2, "2 (kthreadd) S 0 0 0 0", 7));
+    assert!(!live(1, "1 (init) S 0 1 1 0", 7));
+    assert!(!live(7, "7 (agent) S 1 7 7 0", 7));
+    assert!(!live(9, "garbage", 7));
+}
+
+/// VM 안처럼 모든 프로세스를 끝내는 쪽(`Sweep::Everything`). 새 세션으로 떼어 낸 데몬도 끝난다. `kill(-1)`을 쓰므로
+/// 이 프로세스가 PID 1일 때만 돈다(빈 컨테이너의 init으로: `docker run --rm <테스트 바이너리> privileged_pid1`).
+#[cfg(target_os = "linux")]
+#[test]
+fn privileged_pid1_a_build_step_ends_even_detached_daemons() {
+    if std::process::id() != 1 {
+        eprintln!("not PID 1, skipping");
+        return;
+    }
+    let f = Fixture::new("step-all");
+    let pidfile = f.dir.join("daemon.pid");
+    let (mut host, guest) = UnixStream::pair().unwrap();
+    let (root, main) = (f.dir.clone(), f.main.clone());
+    thread::spawn(move || {
+        server::serve(
+            guest,
+            &Ctx {
+                root,
+                on_shutdown: Box::new(|| {}),
+                share: None,
+                egress: Default::default(),
+                main,
+                layers: Some(Box::new(OpenLayers)),
+                sweep: crate::exec::Sweep::Everything,
+                layer_disks: None,
+                clock: None,
+            },
+        )
+    });
+    send(
+        &mut host,
+        HostMsg::Hello {
+            version: PROTOCOL_VERSION,
+        },
+    );
+    assert!(matches!(recv(&mut host), GuestMsg::HelloAck { .. }));
+    let script = format!(
+        "setsid sh -c 'echo $$ > {}; exec sleep 30' < /dev/null > /dev/null 2>&1 & sleep 0.2; echo ok",
+        pidfile.display()
+    );
+    send(
+        &mut host,
+        HostMsg::ExecStep(f.exec(&["sh", "-c", &script], false)),
+    );
+    started(&mut host);
+    let (out, _, status) = collect(&mut host);
+    assert_eq!((out.as_str(), status), ("ok\n", ExitStatus::Code(0)));
+    let pid: u32 = fs::read_to_string(&pidfile)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    // 끝난 프로세스는 PID 1(이 프로세스)이 거둘 때까지 좀비다. 살아 있는(좀비가 아닌) 것만 본다.
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+    assert!(
+        !crate::exec::is_live_user_process(pid, &stat, std::process::id()),
+        "the daemon {pid} survived: {stat}"
+    );
 }
 
 #[test]

@@ -3,6 +3,7 @@
 //! 테스트를 위한 환경 변수:
 //! - `SBX_FAKE_FAIL_LAUNCH=<메시지>`: `Launch`에 그 메시지로 `Error`를 보내고 끝난다.
 //! - `SBX_FAKE_RECORD=<파일>`: 받은 `Launch`의 VM 설정을 JSON으로 그 파일에 쓴다.
+//! - `SBX_FAKE_DROP_LAYER_DISK=1`: 받은 층 디스크 가운데 마지막 것을 게스트에 주지 않는다(디스크를 빠뜨린 실행기).
 //! - `SBX_FAKE_MAX_DISKS=<수>`: `capabilities`가 알리는 `max_disks`(기본 [`crate::MAX_DISKS`]). 더 많이 받으면 거부한다.
 
 use std::io::{self, BufReader, Write};
@@ -83,7 +84,17 @@ fn run() -> ExitCode {
     let scratch = vm.disks.iter().find(|d| d.role == proto::DiskRole::Scratch);
     let build = scratch.map(|d| (crate::build_root(&d.path), crate::net_dir(&d.path)));
     let clock = scratch.map(|d| crate::clock_file(&d.path));
-    let handle = match guest::start(&vm.control_socket, shares, build, clock) {
+    let mut layer_disks: Vec<std::path::PathBuf> = vm
+        .disks
+        .iter()
+        .filter(|d| d.role == proto::DiskRole::Rootfs)
+        .map(|d| d.path.clone())
+        .collect();
+    if std::env::var_os("SBX_FAKE_DROP_LAYER_DISK").is_some() {
+        // 디스크 하나를 빠뜨린 실행기를 흉내 낸다. 게스트는 받은 것만 센다.
+        layer_disks.pop();
+    }
+    let handle = match guest::start(&vm.control_socket, shares, build, layer_disks, clock) {
         Ok(h) => h,
         Err(e) => return fail(&mut out, format!("cannot open control socket: {e}")),
     };

@@ -86,6 +86,7 @@ pub mod fuzzing {
 }
 
 pub use error::RuntimeError;
+pub use hostfs::{OpenContent, Placed, PlacedKind};
 pub use layer::LayerStats;
 pub use records::{OWNER_GONE, StateRecord};
 
@@ -770,6 +771,8 @@ impl Sandbox {
             .map_err(|e| record_failure(e.into()))?;
 
         let guest = rt.guest(&control);
+        let layer_count = lease.disks().len();
+        let hold = spec.hold;
         let mut main = to_proto_exec(&spec.process, io, true);
         let mounts = spec.mounts.clone();
         let network = spec.network.clone();
@@ -782,7 +785,12 @@ impl Sandbox {
             let r = (|| {
                 let mut alive = || !chan::block_on(vm.wait(Duration::ZERO)).unwrap_or(true);
                 guest.wait_ready(START_TIMEOUT, &mut alive)?;
-                // 시계는 따로 맞춘다. 아래(공유 폴더, 복사, 기본 프로세스)는 기다리지 않는다.
+                // 실행기가 디스크를 빠뜨리면 게스트는 모자란 뿌리로 뜬다. 붙인 층 수를 알려 게스트가 견주게 한다.
+                // 시계보다 먼저 한다: 견주기가 끝나기 전에는 이 VM에 다른 연결을 열지 않는다(틀리면 게스트가 꺼진다).
+                guest.check_layers(layer_count)?;
+                // 시계는 따로 맞춘다. 아래(공유 폴더, 복사, 기본 프로세스)는 기다리지 않는다. 빌드 VM(`hold`)도 맞춘다:
+                // `RUN`의 TLS 검사와 파일 시각이 호스트 시각을 본다. 시계 맞추기는 파일 시스템을 보지 않으므로 빌드 층을
+                // 여닫는 차례와 섞여도 된다(`sbx-guest`의 `layer` 모듈).
                 let clock = clock::start(guest.clone(), clock_log);
                 let binds = mounts.iter().filter(|m| m.kind == MountKind::Bind);
                 for (i, m) in binds.enumerate() {
@@ -828,9 +836,8 @@ impl Sandbox {
                 };
                 let forwarding =
                     (!bound.listeners_empty()).then(|| ports::serve(bound, guest.clone()));
-                guest
-                    .exec(main)
-                    .map(|(c, pid)| (c, pid, egress_port, forwarding, clock))
+                let started = if hold { guest.hold() } else { guest.exec(main) };
+                started.map(|(c, pid)| (c, pid, egress_port, forwarding, clock))
             })();
             if r.is_err() {
                 let _ = vm.kill();
@@ -919,6 +926,43 @@ impl Sandbox {
             rt.emit("exec_die", &id, Some(&spec), &extra);
         });
         Ok(Process::spawn(conn, pid, None, Some(on_exit)))
+    }
+
+    /// 빌드 단계 하나를 실행한다(`RUN`). [`Sandbox::exec`]와 같고, 끝나면 게스트가 그 단계가 남긴 프로세스를 모두
+    /// 끝낸다(`HostMsg::ExecStep`). 빌드 층이 열려 있어야 한다([`Sandbox::open_layer`]).
+    pub async fn exec_step(&self, spec: ExecSpec) -> Result<Process, RuntimeError> {
+        let (info, guest) = self.require_running("build")?;
+        let p = process::for_exec(&info.spec.process, &spec)?;
+        let mut x = to_proto_exec(&p, IoMode::default(), false);
+        if let Some(port) = info.egress_port {
+            process::add_proxy_env(&mut x.env, port);
+        }
+        let (conn, pid) = blocking(move || guest.exec_step(x)).await?;
+        Ok(Process::spawn(conn, pid, None, None))
+    }
+
+    /// 항목들을 게스트 디렉터리 `dest_dir`(절대 경로, 있어야 한다) 아래에 놓는다. 경로, 소유자, 권한, 시각은 부르는
+    /// 쪽이 정한 그대로다(빌드의 `COPY`). 같은 이름은 덮고 디렉터리끼리는 합친다(`CopyIn`). `running`에서만.
+    pub async fn copy_entries(
+        &self,
+        dest_dir: &str,
+        entries: Vec<Placed>,
+    ) -> Result<(), RuntimeError> {
+        let (_, guest) = self.require_running("copy")?;
+        require_absolute(dest_dir)?;
+        let dest = dest_dir.to_owned();
+        blocking(move || guest.copy_entries(&dest, entries)).await
+    }
+
+    /// 게스트 경로 정보(심볼릭 링크는 게스트 안에서 따라간다). 없으면 `None`. `running`에서만.
+    pub async fn stat(
+        &self,
+        guest_path: &str,
+    ) -> Result<Option<sbx_guest_proto::Entry>, RuntimeError> {
+        let (_, guest) = self.require_running("stat")?;
+        require_absolute(guest_path)?;
+        let p = guest_path.to_owned();
+        blocking(move || guest.stat(&p)).await
     }
 
     /// 게스트가 보고하는 자원 사용량(`sbx stats`). `running`에서만.

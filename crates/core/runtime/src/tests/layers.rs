@@ -102,7 +102,9 @@ fn build_layers_export_tars_that_merge_into_what_the_guest_saw() {
     let s = e.sandbox(&["sh", "-c", "sleep 30"]);
     let root = sbx_executor_fake::build_root(&e.rt.paths(s.id()).scratch());
     let _main = block_on(s.start(IoMode::default())).unwrap();
-    let r = root.display().to_string();
+    // 가짜 실행기는 층을 연 뒤 연결의 경로를 뿌리 아래로 옮긴다. 명령은 호스트에서 도므로 작업 디렉터리(뿌리) 기준
+    // 상대 경로를 쓴다.
+    let r = ".";
     let sh = |script: &str| {
         let p = block_on(s.exec(exec(&["sh", "-ec", script]))).unwrap();
         let (out, err, code) = collect(p);
@@ -120,7 +122,7 @@ fn build_layers_export_tars_that_merge_into_what_the_guest_saw() {
     let src = e.root.join("src");
     std::fs::create_dir_all(src.join("app")).unwrap();
     std::fs::write(src.join("app/main.py"), "print(1)\n").unwrap();
-    block_on(s.copy_in(&src.join("app"), &format!("{r}/srv"))).unwrap();
+    block_on(s.copy_in(&src.join("app"), "/srv")).unwrap();
     let (l1, stats) = export(&s);
     assert_eq!(stats.tar_bytes, l1.len() as u64);
     let names = tar_names(&l1);
@@ -264,4 +266,72 @@ fn build_layers_need_a_running_sandbox_and_report_guest_errors() {
         Err(RuntimeError::Invalid(_))
     ));
     block_on(s.stop(None, Duration::from_secs(5))).unwrap();
+}
+
+/// 빌드 VM: 프로그램 없는 기본 프로세스 자리(`hold`), 단계가 남긴 프로세스를 끝내는 `exec_step`, 정한 메타데이터로
+/// 놓는 `copy_entries`. 멈추기는 보통의 샌드박스와 같다.
+#[test]
+fn a_build_vm_holds_without_a_program_and_steps_end_what_they_leave() {
+    let e = Env::new("build-vm");
+    e.prepare_image();
+    let mut spec = e.spec(&[]);
+    spec.hold = true;
+    let s = block_on(e.rt.create(spec)).unwrap();
+    let main = block_on(s.start(IoMode::default())).unwrap();
+    assert_eq!(main.pid(), 0);
+    // 층을 열기 전에는 단계를 돌리지 않는다.
+    assert!(block_on(s.exec_step(exec(&["true"]))).is_err());
+    assert_eq!(block_on(s.open_layer()).unwrap(), 1);
+    let root = sbx_executor_fake::build_root(&e.rt.paths(s.id()).scratch());
+    let t = Instant::now();
+    let p = block_on(s.exec_step(exec(&["sh", "-c", "sleep 30 & echo left"]))).unwrap();
+    let (out, _, code) = collect(p);
+    assert_eq!((out.as_str(), code), ("left\n", Some(0)));
+    assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
+
+    let r = "x";
+    std::fs::create_dir_all(root.join(r)).unwrap();
+    let dest = "/".to_owned();
+    let entries = vec![
+        Placed {
+            path: format!("{r}/app"),
+            kind: PlacedKind::Dir,
+            mode: 0o750,
+            uid: e.uid,
+            gid: e.gid,
+            mtime: 1_000_000_000,
+        },
+        Placed {
+            path: format!("{r}/app/a.txt"),
+            kind: PlacedKind::File {
+                size: 3,
+                open: Box::new(|| Ok(Box::new(&b"abc"[..]) as Box<dyn Read>)),
+            },
+            mode: 0o640,
+            uid: e.uid,
+            gid: e.gid,
+            mtime: 1_000_000_000,
+        },
+    ];
+    block_on(s.copy_entries(&dest, entries)).unwrap();
+    let m = std::fs::metadata(root.join("x/app/a.txt")).unwrap();
+    assert_eq!((m.mode() & 0o7777, m.mtime()), (0o640, 1_000_000_000));
+    assert_eq!(std::fs::read(root.join("x/app/a.txt")).unwrap(), b"abc");
+    let st = block_on(s.stat("/x/app")).unwrap().unwrap();
+    assert_eq!(st.mode, 0o750);
+    // 내용이 알린 크기보다 짧으면 오류다.
+    let short = vec![Placed {
+        path: format!("{r}/short"),
+        kind: PlacedKind::File {
+            size: 9,
+            open: Box::new(|| Ok(Box::new(&b"abc"[..]) as Box<dyn Read>)),
+        },
+        mode: 0o644,
+        uid: e.uid,
+        gid: e.gid,
+        mtime: 0,
+    }];
+    assert!(block_on(s.copy_entries(&dest, short)).is_err());
+    block_on(s.stop(None, Duration::from_secs(5))).unwrap();
+    assert_eq!(e.state(&s).state, State::Stopped);
 }

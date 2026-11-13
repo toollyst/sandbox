@@ -8,6 +8,7 @@ why.
 - [Files](#files)
 - [Network](#network)
 - [Images](#images)
+- [Build](#build)
 - [Resources](#resources)
 - [Scripting](#scripting)
 - [Full-screen view](#full-screen-view)
@@ -236,6 +237,52 @@ The guest kernel comes with the executor. An image can bring its own instead, wi
 `io.github.toollyst.sandbox.kernel=/path/in/image`; other labels under `io.github.toollyst.sandbox.` are reserved
 for `sbx` and an image can't set them.
 
+## Build
+
+`sbx build` makes an image from a Dockerfile, with buildx's flag names. The image goes into the same store as pulled
+images, so `sbx run` can use it right away:
+
+```sh
+sbx build -t local/app:dev .                     # PATH/Dockerfile, the context is PATH
+sbx build -f ci/Dockerfile --target test --build-arg VERSION=1.2 .
+sbx build --network allow --allow registry.npmjs.org:443 -t local/web .  # RUN npm ci may reach npm
+sbx build --progress plain .                     # stream RUN output as it comes
+sbx build -q .                                   # print only the image ID
+sbx --format json build .                        # one BuildEvent JSON line per step and output chunk
+```
+
+Each stage's `RUN` steps run in **one microVM**, started at the first `RUN` that isn't cached, with the layers built
+so far as its root filesystem. Each `RUN` gets a new writable layer; its changes are copied out as the step's layer,
+and anything the step left running is ended. `COPY`, `ADD` and `WORKDIR` layers are made on the host from the
+context and the layers below, so a `FROM scratch` stage of copies, or a rebuild where every `RUN` is cached, starts
+no VM at all. `--cpus` and `-m` size the build VM (1 vCPU and 512m by default); its writable disk is 16 GiB, sparse.
+Stages are built one after another, never in parallel. A step's progress goes to stderr as `[2/7] RUN …`, then
+`DONE 1.2s` or `CACHED` (`[name 2/7]` when there are several stages, `stage-N` for one without a name); when a `RUN` fails, the end of its
+output is shown with the exit code.
+
+The **network is closed** while building, unlike Docker. `--network allow` with `--allow HOST:PORT` opens
+destinations for `RUN` steps exactly as for `sbx run`, through the proxy and transparent TCP. When a failed step
+was refused a name, `sbx` lists it: `blocked: registry.npmjs.org — add --allow registry.npmjs.org:PORT`. The port is
+left for you to fill in, because only the name was asked for.
+
+The **context** is a local directory. Files that `.dockerignore` (or `FILE.dockerignore` next to `-f FILE`, which
+wins, as in BuildKit) excludes don't exist for `COPY`. Paths can't leave the context: `../x` and symlinks are
+resolved with the context as `/`, as Docker does. Sockets, FIFOs and devices in the context are skipped. A URL, a
+tar on stdin and `-f -` are refused.
+
+The **cache** keeps every step that makes a layer, keyed by the step, the layer below it, its build arguments and,
+for `COPY`, the content it copies (names, modes, sizes, link targets and file contents; not modification times). A
+rebuild with nothing changed gives the same image ID. `--no-cache` doesn't read the cache but still records what it
+builds. Images built on the same base share its layer disks, and so do the layers the cache holds. `sbx system df`
+shows the cache as `build cache`, and `sbx system prune` empties it (the layers it alone kept go in the same run).
+
+What Docker does differently, and what isn't there yet, is in the build rows of
+[Docker compatibility](docker-compatibility.md). In short: `ADD` copies a local file but refuses an archive Docker
+would unpack; `ONBUILD` (in the Dockerfile or the base image), `RUN --mount`, heredocs and `--platform` other than the
+host's are errors with the line number, never ignored; `HEALTHCHECK` is written to the image but `sbx` doesn't run
+it. A built image has no tar layers yet, so `sbx save` and `sbx push` refuse it until the layer export step (`-o
+type=docker|oci` comes with it).
+
 ## Resources
 
 `--cpus` and `-m` set a sandbox's vCPUs and memory, and `--storage-opt size=20g` its writable disk (1 GiB by
@@ -249,8 +296,8 @@ reason it stopped. `sbx start` starts the clock again. Which executor a sandbox 
 ## Disk usage and cleanup
 
 ```sh
-sbx system df                  # images, sandboxes and executors: count, in use, size, reclaimable
-sbx system prune               # stopped sandboxes, unused layers, leftovers of interrupted pulls (asks first)
+sbx system df                  # images, build cache, sandboxes and executors: count, in use, size, reclaimable
+sbx system prune               # stopped sandboxes, the build cache, unused layers, leftovers (asks first)
 sbx system prune -a -f         # also every image no sandbox uses; -f doesn't ask
 sbx system prune --filter until=24h --filter label=ci=1
 ```
@@ -267,7 +314,7 @@ them). Without a terminal it needs `-f`. In `sbx tui`, `U` and `P` on the Images
 - `--jq EXPR` picks fields with a built-in jq, so you don't need jq installed: `sbx --format json ps --jq '.[].name'`.
 - `ps`, `images` and `events` take `--filter KEY=VALUE` with Docker's rules. `-q` prints IDs only.
 - `sbx events` streams what changes (sandboxes created, started, stopped and removed; commands run with `exec`, as
-  `exec_start` with their argv and `exec_die` with their exit code; images pulled, prepared, untagged and deleted)
+  `exec_start` with their argv and `exec_die` with their exit code; images pulled, built, prepared, untagged and deleted)
   with no daemon, and `--since 10m` replays the recent past first. The log lives in the data directory, readable
   only by you.
 - `sbx logs` takes `-t`, `--since`, `--until` and `--format json`.

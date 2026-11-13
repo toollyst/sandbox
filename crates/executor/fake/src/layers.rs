@@ -120,14 +120,24 @@ fn ancestors(p: &str) -> impl Iterator<Item = &str> {
 /// 디렉터리 하나를 층의 뿌리로 쓰는 흉내.
 pub(crate) struct DirLayers {
     root: PathBuf,
+    /// 받은 층 디스크. 첫 층을 열 때 뿌리가 없으면 펼친다([`crate::rootdir::populate`]).
+    disks: Vec<PathBuf>,
+    /// 층을 열었다. 그 뒤로 연결의 경로를 뿌리 아래로 옮긴다([`crate::rootdir::rebase`]).
+    opened: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// (마지막으로 연 층 번호, 열 때의 모습).
     state: Mutex<(u32, Option<Snap>)>,
 }
 
 impl DirLayers {
-    pub(crate) fn new(root: PathBuf) -> Self {
+    pub(crate) fn new(
+        root: PathBuf,
+        disks: Vec<PathBuf>,
+        opened: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
         Self {
             root,
+            disks,
+            opened,
             state: Mutex::new((0, None)),
         }
     }
@@ -146,8 +156,13 @@ impl Layers for DirLayers {
                 format!("a build can have at most {MAX_LAYERS} layers"),
             ));
         }
+        if st.0 == 0 && !self.root.exists() {
+            crate::rootdir::populate(&self.root, &self.disks)
+                .map_err(|e| io_err("build root", &e))?;
+        }
         fs::create_dir_all(&self.root).map_err(|e| io_err("build root", &e))?;
         let snap = snapshot(&self.root).map_err(|e| io_err("build root", &e))?;
+        self.opened.store(true, std::sync::atomic::Ordering::SeqCst);
         st.0 += 1;
         st.1 = Some(snap);
         Ok(st.0)
@@ -263,6 +278,10 @@ impl Layers for DirLayers {
 
     fn check_ready(&self) -> Result<(), Error> {
         Ok(())
+    }
+
+    fn is_open(&self) -> bool {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).0 > 0
     }
 }
 

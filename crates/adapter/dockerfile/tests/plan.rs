@@ -310,7 +310,8 @@ fn stage_args_take_build_args_then_defaults_then_globals() {
 
 #[test]
 fn arg_scope_ends_with_the_stage() {
-    let plan = p("FROM alpine AS a\nARG X=1\nFROM a\nENV Y=${X:-gone}");
+    // 다른 이미지에서 시작한 스테이지에는 이어지지 않는다.
+    let plan = p("FROM alpine AS a\nARG X=1\nFROM alpine\nENV Y=${X:-gone}");
     assert_eq!(env_of(&plan), kv(&[("Y", "gone")]));
 }
 
@@ -698,4 +699,113 @@ fn exponential_expansion_stops() {
 fn plans_are_deterministic() {
     let text = "FROM node AS a\nRUN x\nFROM a\nCOPY --from=a / /";
     assert_eq!(p(text), p(text));
+}
+
+// ---- Docker로 확인한 규칙 ----
+//
+// 아래 기대값은 Docker 29.9.2(buildx 0.38.1, BuildKit 0.34.0, linux/arm64)에 같은 Dockerfile을
+// `docker build --no-cache`로 돌려 본 결과다(2026-11-13). RUN 환경은 `RUN echo`와 `RUN ["/usr/bin/env"]`로,
+// 풀기는 config `Env`로 보았다. CI에는 Docker가 필요 없다.
+
+#[test]
+fn docker_env_after_arg_wins_and_ignores_the_build_arg() {
+    let text = "FROM alpine\nARG A=arg\nENV A=env\nRUN x\nENV B=$A";
+    for plan in [p(text), with_args(text, &[("A", "cli")])] {
+        assert_eq!(run_args(&plan, 0), kv(&[]));
+        assert_eq!(env_of(&plan), kv(&[("A", "env"), ("B", "env")]));
+    }
+}
+
+#[test]
+fn docker_arg_after_env_wins_in_run_and_expansion_but_not_in_config() {
+    let text = "FROM alpine\nENV A=env\nARG A=again\nRUN x\nENV B=$A";
+    let plan = p(text);
+    assert_eq!(run_args(&plan, 0), kv(&[("A", "again")]));
+    assert_eq!(env_of(&plan), kv(&[("A", "env"), ("B", "again")]));
+    let plan = with_args(text, &[("A", "cli")]);
+    assert_eq!(run_args(&plan, 0), kv(&[("A", "cli")]));
+    assert_eq!(env_of(&plan), kv(&[("A", "env"), ("B", "cli")]));
+}
+
+#[test]
+fn docker_arg_overrides_a_base_image_env() {
+    // 바탕 이미지의 PATH 뒤의 ARG PATH는 RUN의 PATH를 바꾼다. config의 PATH는 바탕 것 그대로다.
+    let plan = p("FROM python:3.12\nARG PATH=/x\nRUN x\nENV P2=$PATH");
+    assert_eq!(run_args(&plan, 0), kv(&[("PATH", "/x")]));
+    // ENV 단계는 P2 하나다. 바탕의 PATH는 config에 그대로 남는다(빌더가 바탕 Env에 단계를 더한다).
+    assert_eq!(env_of(&plan), kv(&[("P2", "/x")]));
+}
+
+#[test]
+fn docker_args_carry_over_through_from_stage() {
+    let text = "FROM alpine AS a\nARG X=1\nFROM a\nENV Y=${X:-gone}\nRUN x";
+    let plan = p(text);
+    assert_eq!(env_of(&plan), kv(&[("Y", "1")]));
+    assert_eq!(run_args(&plan, 0), kv(&[("X", "1")]));
+    let plan = with_args(text, &[("X", "cli")]);
+    assert_eq!(env_of(&plan), kv(&[("Y", "cli")]));
+    assert_eq!(run_args(&plan, 0), kv(&[("X", "cli")]));
+}
+
+#[test]
+fn docker_arg_pairs_expand_in_order_env_pairs_against_the_state_before() {
+    let plan = p("FROM alpine\nARG A=1 B=${A}2\nENV A=1\nENV A=x C=$A\nENV D=$B");
+    assert_eq!(
+        env_of(&plan),
+        kv(&[("A", "1"), ("A", "x"), ("C", "1"), ("D", "12")])
+    );
+    let plan = p("FROM alpine\nENV a=1 b=$a");
+    assert_eq!(env_of(&plan), kv(&[("a", "1"), ("b", "")]));
+    let plan = p("FROM alpine\nENV a=0\nENV a=1 b=$a");
+    assert_eq!(env_of(&plan), kv(&[("a", "0"), ("a", "1"), ("b", "0")]));
+}
+
+#[test]
+fn docker_stage_args_resolve_cli_then_default_then_global() {
+    let text = "ARG G=global\nFROM alpine\nARG G=stage\nRUN x";
+    assert_eq!(run_args(&p(text), 0), kv(&[("G", "stage")]));
+    assert_eq!(
+        run_args(&with_args(text, &[("G", "cli")]), 0),
+        kv(&[("G", "cli")])
+    );
+    let text = "ARG G=global\nFROM alpine\nARG G\nRUN x";
+    assert_eq!(run_args(&p(text), 0), kv(&[("G", "global")]));
+    assert_eq!(
+        run_args(&with_args(text, &[("G", "cli")]), 0),
+        kv(&[("G", "cli")])
+    );
+    // 다시 선언하지 않은 전역 ARG는 보이지 않는다.
+    let text = "ARG V=1\nFROM alpine\nENV A=$V\nRUN x";
+    assert_eq!(env_of(&p(text)), kv(&[("A", "")]));
+    assert_eq!(run_args(&with_args(text, &[("V", "cli")]), 0), kv(&[]));
+}
+
+#[test]
+fn docker_global_defaults_expand_with_earlier_globals() {
+    let text = "ARG A=1\nARG B=${A}x\nFROM alpine\nARG B\nRUN x";
+    assert_eq!(run_args(&p(text), 0), kv(&[("B", "1x")]));
+    assert_eq!(
+        run_args(&with_args(text, &[("B", "cli")]), 0),
+        kv(&[("B", "cli")])
+    );
+    assert_eq!(
+        run_args(&with_args(text, &[("A", "cli")]), 0),
+        kv(&[("B", "clix")])
+    );
+}
+
+#[test]
+fn docker_platform_args_need_declaring_and_variants_are_empty() {
+    let plan = p("FROM alpine\nARG TARGETVARIANT BUILDVARIANT TARGETOS\nRUN x");
+    assert_eq!(
+        run_args(&plan, 0),
+        kv(&[
+            ("TARGETVARIANT", ""),
+            ("BUILDVARIANT", ""),
+            ("TARGETOS", "linux")
+        ])
+    );
+    let plan = p("FROM alpine\nENV E_BO=${BUILDOS:-none} E_TA=${TARGETARCH:-none}\nRUN x");
+    assert_eq!(env_of(&plan), kv(&[("E_BO", "none"), ("E_TA", "none")]));
+    assert_eq!(run_args(&plan, 0), kv(&[]));
 }
