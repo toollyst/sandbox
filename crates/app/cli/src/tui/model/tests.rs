@@ -182,6 +182,48 @@ fn destructive_keys_ask_first() {
 }
 
 #[test]
+fn image_keys_fill_in_tag_and_push() {
+    let mut m = loaded();
+    press(&mut m, KeyCode::Char('2'));
+    // t: 새 이름은 사용자가 친다.
+    assert_eq!(press(&mut m, KeyCode::Char('t')), None);
+    assert_eq!(
+        m.prompt.as_ref().unwrap().text,
+        "tag docker.io/library/alpine:3.20 "
+    );
+    for c in "ghcr.io/me/alpine:1".chars() {
+        press(&mut m, KeyCode::Char(c));
+    }
+    assert_eq!(
+        press(&mut m, KeyCode::Enter),
+        Some(Action::Handover(strings(&[
+            "tag",
+            "docker.io/library/alpine:3.20",
+            "ghcr.io/me/alpine:1"
+        ])))
+    );
+    // p: 그 참조를 올린다. Enter면 터미널을 넘겨 진행을 보인다.
+    assert_eq!(press(&mut m, KeyCode::Char('p')), None);
+    assert_eq!(
+        m.prompt.as_ref().unwrap().text,
+        "push docker.io/library/alpine:3.20"
+    );
+    assert_eq!(
+        press(&mut m, KeyCode::Enter),
+        Some(Action::Handover(strings(&[
+            "push",
+            "docker.io/library/alpine:3.20"
+        ])))
+    );
+    // 참조가 없는 이미지는 올릴 수 없다(태그는 된다).
+    m.apply(Msg::Images(Ok(vec![image(None)])));
+    assert_eq!(press(&mut m, KeyCode::Char('p')), None);
+    assert!(m.prompt.is_none());
+    press(&mut m, KeyCode::Char('t'));
+    assert!(m.prompt.take().unwrap().text.starts_with("tag "));
+}
+
+#[test]
 fn every_listed_letter_key_does_something() {
     for h in KEYS.iter().filter(|h| h.tabs == "sandboxes") {
         let mut m = loaded();

@@ -544,6 +544,24 @@ impl Model {
                         });
                         None
                     }
+                    // 새 이름은 사용자가 친다.
+                    't' => {
+                        self.prompt = Some(Prompt {
+                            kind: PromptKind::Command,
+                            text: format!("tag {target} "),
+                        });
+                        None
+                    }
+                    // 올릴 곳은 이름이 정한다: 고쳐 칠 수 있게 채운다. 진행을 보이도록 터미널을 넘긴다.
+                    // 참조가 없는 이미지는 올릴 수 없다(먼저 `t`로 이름을 붙인다).
+                    'p' => {
+                        let reference = image.references.first()?;
+                        self.prompt = Some(Prompt {
+                            kind: PromptKind::Command,
+                            text: format!("push {reference}"),
+                        });
+                        None
+                    }
                     _ => None,
                 }
             }

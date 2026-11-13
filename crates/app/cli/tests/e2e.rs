@@ -1421,9 +1421,11 @@ mod unix {
         assert!(!complete(&e, &["exec", "web", ""]).contains(&"web".to_owned()));
         assert_eq!(complete(&e, &["cp", "we"]), ["web:"]);
         // 이미지: 줄인 참조. run과 create는 첫 인자만.
-        for cmd in ["run", "create", "rmi", "prepare", "pull"] {
+        for cmd in ["run", "create", "rmi", "prepare", "pull", "push", "tag"] {
             has(&[cmd, ""], &image);
         }
+        // tag는 둘째 인자(새 이름)도 이미지 참조에서 고쳐 쓴다.
+        has(&["tag", &image, ""], &image);
         assert_eq!(complete(&e, &["run", "--rm", "e2e"]), [image.as_str()]);
         assert!(!complete(&e, &["run", &image, ""]).contains(&image));
         // 줄에 친 --data-dir이 SBX_DATA_DIR보다 앞선다. 없는 디렉터리는 후보가 없고, 만들지도 않는다.

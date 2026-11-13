@@ -11,7 +11,7 @@
 //! |---|---|
 //! | `start`, `stop`, `restart`, `kill`, `wait`, `rm`, `attach`, `inspect`, `logs`의 샌드박스, `exec`의 첫 인자 | [`sandboxes`] |
 //! | `cp`의 양쪽 | [`cp_endpoints`]: `이름:`·`ID:`와 호스트 경로 |
-//! | `pull`, `prepare`, `rmi`의 이미지, `run`·`create`의 첫 인자 | [`images`] |
+//! | `pull`, `push`, `prepare`, `rmi`의 이미지, `tag`의 양쪽, `run`·`create`의 첫 인자 | [`images`] |
 //! | `executor use`, `executor rm` | [`executors`] |
 //!
 //! - 후보는 친 앞부분으로 시작하는 것만이다. 순서는 이름이 먼저, 그다음 ID다.
