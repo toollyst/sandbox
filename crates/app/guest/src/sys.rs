@@ -211,18 +211,121 @@ pub fn disk_usage(path: &str) -> io::Result<(u64, u64)> {
     Ok((total, total.saturating_sub(free)))
 }
 
-/// Linux 전용 시스템 호출. 부팅(`boot`)만 쓴다.
+/// 장치 번호(`st_rdev`)를 (major, minor)로 나눈다. 인코딩은 OS마다 다르다.
+pub fn dev_split(rdev: u64) -> (u32, u32) {
+    #[cfg(target_os = "linux")]
+    {
+        // glibc `gnu_dev_major`, `gnu_dev_minor`와 같다.
+        let major = ((rdev >> 8) & 0xfff) | ((rdev >> 32) & !0xfff);
+        let minor = (rdev & 0xff) | ((rdev >> 12) & !0xff);
+        (major as u32, minor as u32)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        // BSD와 macOS: 위 8비트가 major, 아래 24비트가 minor.
+        (((rdev >> 24) & 0xff) as u32, (rdev & 0xff_ffff) as u32)
+    }
+}
+
+/// Linux 전용 시스템 호출. 부팅(`boot`)과 빌드 층(`overlay`, `layer`)이 쓴다.
 #[cfg(target_os = "linux")]
 pub mod linux {
     use std::ffi::CString;
     use std::fs::File;
     use std::io;
-    use std::os::fd::{FromRawFd, OwnedFd};
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
 
     use super::check;
 
     fn cstr(s: &str) -> io::Result<CString> {
         CString::new(s).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))
+    }
+
+    fn cpath(p: &Path) -> io::Result<CString> {
+        CString::new(p.as_os_str().as_bytes())
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))
+    }
+
+    /// `umount2(2)`, 플래그 없이. 쓰는 프로세스가 있으면 `EBUSY`로 실패한다(늦게 떼기를 쓰지 않는다).
+    pub fn umount(target: &str) -> io::Result<()> {
+        let t = cstr(target)?;
+        // SAFETY: t는 이 호출 동안 살아 있는 NUL 종료 문자열이다.
+        check(unsafe { libc::umount2(t.as_ptr(), 0) })
+    }
+
+    /// 작업 디렉터리를 열린 디렉터리로 바꾼다(`fchdir(2)`). chroot 밖의 디렉터리여도 된다.
+    pub fn fchdir(dir: &File) -> io::Result<()> {
+        // SAFETY: fchdir은 열린 fd 하나만 받는다. dir이 이 호출 동안 살아 있다.
+        check(unsafe { libc::fchdir(dir.as_raw_fd()) })
+    }
+
+    /// 확장 속성 이름 목록. 심볼릭 링크를 따라가지 않는다(`llistxattr(2)`). xattr이 없는 파일 시스템이면 빈 목록이다.
+    pub fn list_xattrs(path: &Path) -> io::Result<Vec<Vec<u8>>> {
+        let p = cpath(path)?;
+        loop {
+            // SAFETY: 크기 0이면 버퍼를 쓰지 않고 필요한 크기만 돌려준다.
+            let need = unsafe { libc::llistxattr(p.as_ptr(), std::ptr::null_mut(), 0) };
+            if need < 0 {
+                let e = io::Error::last_os_error();
+                return match e.raw_os_error() {
+                    Some(libc::ENOTSUP) => Ok(Vec::new()),
+                    _ => Err(e),
+                };
+            }
+            if need == 0 {
+                return Ok(Vec::new());
+            }
+            let mut buf = vec![0u8; need as usize];
+            // SAFETY: buf는 buf.len() 바이트를 쓸 수 있다.
+            let got = unsafe { libc::llistxattr(p.as_ptr(), buf.as_mut_ptr().cast(), buf.len()) };
+            if got < 0 {
+                let e = io::Error::last_os_error();
+                if e.raw_os_error() == Some(libc::ERANGE) {
+                    continue; // 그 사이에 늘었다.
+                }
+                return Err(e);
+            }
+            buf.truncate(got as usize);
+            return Ok(buf
+                .split(|b| *b == 0)
+                .filter(|n| !n.is_empty())
+                .map(<[u8]>::to_vec)
+                .collect());
+        }
+    }
+
+    /// 확장 속성 값 하나. 심볼릭 링크를 따라가지 않는다(`lgetxattr(2)`). 없으면 `None`.
+    pub fn get_xattr(path: &Path, name: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        let p = cpath(path)?;
+        let n = CString::new(name).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        loop {
+            // SAFETY: 크기 0이면 버퍼를 쓰지 않는다.
+            let need = unsafe { libc::lgetxattr(p.as_ptr(), n.as_ptr(), std::ptr::null_mut(), 0) };
+            if need < 0 {
+                let e = io::Error::last_os_error();
+                return match e.raw_os_error() {
+                    Some(libc::ENODATA) | Some(libc::ENOTSUP) => Ok(None),
+                    _ => Err(e),
+                };
+            }
+            let mut buf = vec![0u8; need as usize];
+            // SAFETY: buf는 buf.len() 바이트를 쓸 수 있다.
+            let got = unsafe {
+                libc::lgetxattr(p.as_ptr(), n.as_ptr(), buf.as_mut_ptr().cast(), buf.len())
+            };
+            if got < 0 {
+                let e = io::Error::last_os_error();
+                match e.raw_os_error() {
+                    Some(libc::ERANGE) => continue,
+                    Some(libc::ENODATA) => return Ok(None),
+                    _ => return Err(e),
+                }
+            }
+            buf.truncate(got as usize);
+            return Ok(Some(buf));
+        }
     }
 
     /// `mount(2)`.

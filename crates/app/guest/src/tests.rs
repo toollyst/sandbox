@@ -52,6 +52,7 @@ impl Fixture {
                     share: None,
                     egress: Default::default(),
                     main,
+                    layers: None,
                 },
             )
         });
@@ -146,6 +147,7 @@ fn version_mismatch_is_reported() {
                 share: None,
                 egress: Default::default(),
                 main: Default::default(),
+                layers: None,
             },
         )
     });
@@ -165,6 +167,7 @@ fn request_before_hello_is_a_protocol_error() {
                 share: None,
                 egress: Default::default(),
                 main: Default::default(),
+                layers: None,
             },
         )
     });
@@ -526,6 +529,7 @@ fn shutdown_syncs_replies_then_calls_back() {
                 share: None,
                 egress: Default::default(),
                 main: Default::default(),
+                layers: None,
             },
         )
     });

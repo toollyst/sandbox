@@ -48,9 +48,11 @@ mod unix {
     }
 
     /// 제어 소켓을 열고 게스트 처리를 돌린다. `shares`는 (태그, 호스트 경로)다.
+    /// `build_root`가 있으면 빌드 층을 그 디렉터리로 흉내 낸다([`crate::layers`]).
     pub(crate) fn start(
         socket: &Path,
         shares: Vec<(String, PathBuf)>,
+        build_root: Option<PathBuf>,
     ) -> Result<FakeVm, ExecutorError> {
         let path: PathBuf = socket.to_owned();
         let _ = std::fs::remove_file(&path);
@@ -90,6 +92,9 @@ mod unix {
             })),
             egress: Default::default(),
             main: Default::default(),
+            layers: build_root.map(|r| {
+                Box::new(crate::layers::DirLayers::new(r)) as Box<dyn sbx_guest::layer::Layers>
+            }),
         });
         {
             let life = life.clone();
@@ -145,6 +150,7 @@ mod other {
     pub(crate) fn start(
         _socket: &std::path::Path,
         _shares: Vec<(String, std::path::PathBuf)>,
+        _build_root: Option<std::path::PathBuf>,
     ) -> Result<FakeVm, ExecutorError> {
         Err(ExecutorError::Unsupported(
             "the fake guest needs Unix sockets".into(),
