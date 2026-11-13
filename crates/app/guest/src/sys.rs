@@ -227,7 +227,73 @@ pub fn dev_split(rdev: u64) -> (u32, u32) {
     }
 }
 
-/// Linux 전용 시스템 호출. 부팅(`boot`)과 빌드 층(`overlay`, `layer`)이 쓴다.
+/// netlink `RTM_NEWROUTE` 메시지 하나: `ip route replace local <dst>/<prefix> dev <ifindex>`와 같다
+/// (표 local, 종류 local, 범위 host). 응답(ack)을 달라고 한다. 헤더는 이 CPU의 바이트 순서, 주소는 네트워크 순서다.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn local_route_message(dst: std::net::Ipv4Addr, prefix: u8, ifindex: u32, seq: u32) -> Vec<u8> {
+    const RTM_NEWROUTE: u16 = 24;
+    const NLM_F_REQUEST: u16 = 0x1;
+    const NLM_F_ACK: u16 = 0x4;
+    const NLM_F_REPLACE: u16 = 0x100;
+    const NLM_F_CREATE: u16 = 0x400;
+    const AF_INET: u8 = 2;
+    const RT_TABLE_LOCAL: u8 = 255;
+    const RTPROT_STATIC: u8 = 4;
+    const RT_SCOPE_HOST: u8 = 254;
+    const RTN_LOCAL: u8 = 2;
+    const RTA_DST: u16 = 1;
+    const RTA_OIF: u16 = 4;
+    let mut m = Vec::with_capacity(44);
+    m.extend_from_slice(&44u32.to_ne_bytes());
+    m.extend_from_slice(&RTM_NEWROUTE.to_ne_bytes());
+    m.extend_from_slice(&(NLM_F_REQUEST | NLM_F_ACK | NLM_F_REPLACE | NLM_F_CREATE).to_ne_bytes());
+    m.extend_from_slice(&seq.to_ne_bytes());
+    m.extend_from_slice(&0u32.to_ne_bytes());
+    // rtmsg: family, dst_len, src_len, tos, table, protocol, scope, type, flags.
+    m.extend_from_slice(&[
+        AF_INET,
+        prefix,
+        0,
+        0,
+        RT_TABLE_LOCAL,
+        RTPROT_STATIC,
+        RT_SCOPE_HOST,
+        RTN_LOCAL,
+    ]);
+    m.extend_from_slice(&0u32.to_ne_bytes());
+    // rtattr: 길이, 종류, 값.
+    m.extend_from_slice(&8u16.to_ne_bytes());
+    m.extend_from_slice(&RTA_DST.to_ne_bytes());
+    m.extend_from_slice(&dst.octets());
+    m.extend_from_slice(&8u16.to_ne_bytes());
+    m.extend_from_slice(&RTA_OIF.to_ne_bytes());
+    m.extend_from_slice(&ifindex.to_ne_bytes());
+    m
+}
+
+/// netlink 응답에서 `seq`의 ack를 찾는다: `Some(0)`이면 성공, `Some(errno)`이면 실패, 없으면 `None`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn netlink_ack(buf: &[u8], seq: u32) -> Option<i32> {
+    const NLMSG_ERROR: u16 = 2;
+    let mut at = 0;
+    while at + 16 <= buf.len() {
+        let word = |o: usize| u32::from_ne_bytes(buf[o..o + 4].try_into().unwrap_or_default());
+        let len = word(at) as usize;
+        if len < 16 || at + len > buf.len() {
+            return None;
+        }
+        let kind = u16::from_ne_bytes([buf[at + 4], buf[at + 5]]);
+        if kind == NLMSG_ERROR && word(at + 8) == seq && len >= 20 {
+            let err = i32::from_ne_bytes(buf[at + 16..at + 20].try_into().unwrap_or_default());
+            return Some(-err);
+        }
+        // 다음 메시지는 4바이트 경계에서 시작한다.
+        at += (len + 3) & !3;
+    }
+    None
+}
+
+/// Linux 전용 시스템 호출. 부팅(`boot`)과 빌드 층(`overlay`, `layer`)과 투명 TCP(`transparent`)가 쓴다.
 #[cfg(target_os = "linux")]
 pub mod linux {
     use std::ffi::CString;
@@ -416,6 +482,65 @@ pub mod linux {
         check(unsafe { libc::ioctl(sock.as_raw_fd(), libc::SIOCSIFFLAGS as libc::Ioctl, &req) })
     }
 
+    /// `dst/prefix`를 루프백의 local 경로로 잡는다(`ip route replace local dst/prefix dev lo`). 이미 있으면 그대로다.
+    /// 그 뒤로 범위 안의 어느 주소에서나 듣고 연결할 수 있다.
+    pub fn add_local_route(dst: std::net::Ipv4Addr, prefix: u8) -> io::Result<()> {
+        use std::os::fd::AsRawFd;
+        // SAFETY: 이름은 NUL로 끝나는 정적 문자열이다.
+        let lo = unsafe { libc::if_nametoindex(c"lo".as_ptr()) };
+        if lo == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: socket은 새 fd를 돌려주거나 -1이다.
+        let fd = unsafe {
+            libc::socket(
+                libc::AF_NETLINK,
+                libc::SOCK_RAW | libc::SOCK_CLOEXEC,
+                libc::NETLINK_ROUTE,
+            )
+        };
+        check(fd)?;
+        // SAFETY: fd는 방금 만든, 아무도 소유하지 않은 fd다.
+        let sock = unsafe { OwnedFd::from_raw_fd(fd) };
+        let seq = 1;
+        let msg = super::local_route_message(dst, prefix, lo, seq);
+        // SAFETY: sockaddr_nl은 정수 필드만 있어 0으로 채워도 된다(nl_pid 0은 커널).
+        let mut kernel: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
+        kernel.nl_family = libc::AF_NETLINK as libc::sa_family_t;
+        // SAFETY: msg와 kernel은 이 호출 동안 살아 있고 길이는 그 크기다.
+        let sent = unsafe {
+            libc::sendto(
+                sock.as_raw_fd(),
+                msg.as_ptr().cast(),
+                msg.len(),
+                0,
+                (&kernel as *const libc::sockaddr_nl).cast(),
+                std::mem::size_of::<libc::sockaddr_nl>() as libc::socklen_t,
+            )
+        };
+        if sent < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut buf = vec![0u8; 8192];
+        loop {
+            // SAFETY: buf는 buf.len() 바이트를 쓸 수 있다.
+            let n = unsafe { libc::recv(sock.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len(), 0) };
+            if n < 0 {
+                let e = io::Error::last_os_error();
+                if e.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(e);
+            }
+            match super::netlink_ack(&buf[..n as usize], seq) {
+                Some(0) => return Ok(()),
+                Some(errno) => return Err(io::Error::from_raw_os_error(errno)),
+                None if n == 0 => return Err(io::ErrorKind::UnexpectedEof.into()),
+                None => {}
+            }
+        }
+    }
+
     /// vsock 포트에서 듣는다.
     pub fn vsock_listen(port: u32) -> io::Result<OwnedFd> {
         // SAFETY: socket은 새 fd를 돌려주거나 -1이다.
@@ -464,5 +589,55 @@ pub mod linux {
                 return Err(e);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_local_route_message_is_laid_out_as_the_kernel_reads_it() {
+        let m = local_route_message(std::net::Ipv4Addr::new(198, 18, 0, 0), 15, 1, 7);
+        assert_eq!(m.len(), 44);
+        assert_eq!(u32::from_ne_bytes(m[0..4].try_into().unwrap()), 44);
+        assert_eq!(u16::from_ne_bytes([m[4], m[5]]), 24);
+        assert_eq!(u16::from_ne_bytes([m[6], m[7]]), 0x505);
+        assert_eq!(u32::from_ne_bytes(m[8..12].try_into().unwrap()), 7);
+        assert_eq!(&m[16..24], &[2, 15, 0, 0, 255, 4, 254, 2]);
+        assert_eq!(
+            &m[28..32],
+            &[8u16.to_ne_bytes(), 1u16.to_ne_bytes()].concat()[..]
+        );
+        assert_eq!(&m[32..36], &[198, 18, 0, 0]);
+        assert_eq!(
+            &m[36..40],
+            &[8u16.to_ne_bytes(), 4u16.to_ne_bytes()].concat()[..]
+        );
+        assert_eq!(u32::from_ne_bytes(m[40..44].try_into().unwrap()), 1);
+    }
+
+    #[test]
+    fn netlink_acks_are_found_by_sequence() {
+        let ack = |seq: u32, err: i32| {
+            let mut m = Vec::new();
+            m.extend_from_slice(&36u32.to_ne_bytes());
+            m.extend_from_slice(&2u16.to_ne_bytes());
+            m.extend_from_slice(&0u16.to_ne_bytes());
+            m.extend_from_slice(&seq.to_ne_bytes());
+            m.extend_from_slice(&0u32.to_ne_bytes());
+            m.extend_from_slice(&err.to_ne_bytes());
+            m.extend_from_slice(&[0; 16]);
+            m
+        };
+        assert_eq!(netlink_ack(&ack(1, 0), 1), Some(0));
+        assert_eq!(netlink_ack(&ack(1, -17), 1), Some(17));
+        assert_eq!(netlink_ack(&[ack(9, -1), ack(1, 0)].concat(), 1), Some(0));
+        assert_eq!(netlink_ack(&ack(2, 0), 1), None);
+        assert_eq!(netlink_ack(&ack(1, 0)[..10], 1), None);
+        let mut lying = ack(1, 0);
+        lying[0] = 200;
+        assert_eq!(netlink_ack(&lying, 1), None);
+        assert_eq!(netlink_ack(&[], 1), None);
     }
 }

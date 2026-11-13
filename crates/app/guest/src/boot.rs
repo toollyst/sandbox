@@ -223,11 +223,16 @@ pub fn agent() -> ! {
             halt(cfg.halt);
         }
     };
+    // 나가는 연결과 투명 TCP. 루프백 DNS는 이것에게 답을 받는다(투명 TCP가 켜지기 전에는 모두 NXDOMAIN).
+    let egress = std::sync::Arc::new(crate::egress::Egress::with_net(Box::new(
+        crate::transparent::KernelNet,
+    )));
     // 루프백 DNS. 띄우지 못해도(이미 누가 듣는다) 부팅은 계속한다. 그때는 이름 풀기가 느리게 실패할 뿐이다.
     for addr in ["127.0.0.1:53", "[::1]:53"] {
         match std::net::UdpSocket::bind(addr) {
             Ok(sock) => {
-                thread::spawn(move || crate::dns::serve(&sock));
+                let resolver = egress.resolver();
+                thread::spawn(move || crate::dns::serve(&sock, resolver));
             }
             Err(e) => log(&format!("dns on {addr}: {e}")),
         }
@@ -237,7 +242,7 @@ pub fn agent() -> ! {
         root: "/".into(),
         on_shutdown: Box::new(move || halt(halt_how)),
         share: Some(Box::new(mount_share)),
-        egress: Default::default(),
+        egress,
         main: Default::default(),
         // 첫 OpenLayer 전에는 아무것도 하지 않는다(보통의 run에는 비용이 없다).
         layers: Some(Box::new(crate::overlay::Overlay::guest(
