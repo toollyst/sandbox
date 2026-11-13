@@ -17,6 +17,7 @@ members = [
     "crates/adapter/executor-process",
     "crates/core/runtime",
     "crates/core/manage",
+    "crates/core/build",
     "crates/app/cli",
     "crates/app/shim",
     "crates/app/guest",
@@ -87,6 +88,7 @@ sbx-store = { path = "crates/port/store" }
 sbx-events = { path = "crates/port/events" }
 sbx-runtime = { path = "crates/core/runtime" }
 sbx-manage = { path = "crates/core/manage" }
+sbx-build = { path = "crates/core/build" }
 sbx-oci = { path = "crates/adapter/oci" }
 sbx-dockerfile = { path = "crates/adapter/dockerfile" }
 sbx-executor-fake = { path = "crates/executor/fake" }

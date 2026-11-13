@@ -82,14 +82,14 @@ fn sorted_children(dir: &Path) -> Result<Vec<fs::DirEntry>, RuntimeError> {
 
 /// 부르는 쪽이 정한 항목 하나를 보낸다(빌드의 `COPY`). 파일 내용은 알린 크기만큼 정확히 보낸다.
 pub fn send_placed(
-    e: crate::Placed,
+    e: Placed,
     emit: &mut dyn FnMut(HostMsg) -> io::Result<()>,
 ) -> Result<(), RuntimeError> {
     check_relative_path(&e.path).map_err(RuntimeError::Invalid)?;
     let (kind, content) = match e.kind {
-        crate::PlacedKind::Dir => (FileKind::Dir, None),
-        crate::PlacedKind::Symlink(target) => (FileKind::Symlink { target }, None),
-        crate::PlacedKind::File { size, open } => (FileKind::File { size }, Some((size, open))),
+        PlacedKind::Dir => (FileKind::Dir, None),
+        PlacedKind::Symlink(target) => (FileKind::Symlink { target }, None),
+        PlacedKind::File { size, open } => (FileKind::File { size }, Some((size, open))),
     };
     emit(HostMsg::Entry(Entry {
         path: e.path.clone(),
@@ -462,6 +462,49 @@ pub fn receive_bytes(
         other => Err(proto_err(format!(
             "expected End after one file, got {other:?}"
         ))),
+    }
+}
+
+/// `Sandbox::copy_entries`의 항목 하나. 경로는 놓을 디렉터리 기준 상대 경로다.
+pub struct Placed {
+    /// 상대 경로(`check_relative_path`를 통과해야 한다).
+    pub path: String,
+    /// 종류와 내용.
+    pub kind: PlacedKind,
+    /// 권한 비트.
+    pub mode: u32,
+    /// 소유자.
+    pub uid: u32,
+    /// 그룹.
+    pub gid: u32,
+    /// 수정 시각(Unix 초).
+    pub mtime: i64,
+}
+
+/// 파일 내용을 여는 함수. 한 번 부른다.
+pub type OpenContent = Box<dyn FnOnce() -> std::io::Result<Box<dyn std::io::Read>> + Send>;
+
+/// [`Placed`]의 종류.
+pub enum PlacedKind {
+    /// 디렉터리.
+    Dir,
+    /// 일반 파일. 내용은 `open`이 주고, 정확히 `size` 바이트를 보낸다(모자라면 오류).
+    File {
+        /// 크기.
+        size: u64,
+        /// 내용.
+        open: OpenContent,
+    },
+    /// 심볼릭 링크(대상 그대로).
+    Symlink(String),
+}
+
+impl std::fmt::Debug for Placed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Placed")
+            .field("path", &self.path)
+            .field("mode", &self.mode)
+            .finish_non_exhaustive()
     }
 }
 

@@ -206,11 +206,11 @@ impl Guest {
     }
 
     /// 항목들을 게스트 디렉터리 `dest_dir` 아래에 놓는다(`CopyIn`). 항목의 경로, 메타데이터, 내용은 부르는 쪽이 정한다
-    /// ([`crate::Placed`]). 부모는 앞서 디렉터리로 와야 한다.
+    /// ([`crate::hostfs::Placed`]). 부모는 앞서 디렉터리로 와야 한다.
     pub fn copy_entries(
         &self,
         dest_dir: &str,
-        entries: Vec<crate::Placed>,
+        entries: Vec<crate::hostfs::Placed>,
     ) -> Result<(), RuntimeError> {
         let mut c = self.open()?;
         send(

@@ -85,14 +85,22 @@ const RULES: &[(&str, Allowed)] = &[
             "sbx-events",
         ]),
     ),
+    // 빌드 코어: 빌드 계획 실행, 캐시 키, 이미지 config 조립. VM(실행 쪽)과 저장소(관리 쪽)는 이 크레이트의 trait
+    // 뒤에 있고 바이너리가 잇는다. 그래서 실행과 관리를 모두 모르고, Dockerfile 문법(sbx-dockerfile)도 모른다.
+    (
+        "sbx-build",
+        Allowed::Workspace(&["sbx-model", "sbx-rootfs"]),
+    ),
     ("sbx-oci", Allowed::Workspace(&["sbx-model", "sbx-image"])),
     // Dockerfile 해석(손으로 쓴 해석기, 직접 쓰는 외부 크레이트가 없다). 밖으로는 sbx-model의 빌드 계획만 나간다.
     ("sbx-dockerfile", Allowed::Workspace(&["sbx-model"])),
     (
         "sbx-executor-fake",
-        // 게스트 쪽 연결 처리를 호스트에서 그대로 돌리고, 실행기 규약을 말한다.
+        // 게스트 쪽 연결 처리를 호스트에서 그대로 돌리고, 실행기 규약을 말한다. 층 디스크(EROFS)를 읽어 빌드 VM의
+        // 뿌리를 디렉터리로 펼친다(sbx-rootfs).
         Allowed::Workspace(&[
             "sbx-model",
+            "sbx-rootfs",
             "sbx-executor",
             "sbx-executor-proto",
             "sbx-guest-proto",

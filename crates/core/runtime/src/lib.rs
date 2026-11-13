@@ -82,54 +82,12 @@ pub mod fuzzing {
 }
 
 pub use error::RuntimeError;
+pub use hostfs::{OpenContent, Placed, PlacedKind};
 pub use layer::LayerStats;
 pub use records::{OWNER_GONE, StateRecord};
 
 use client::Guest;
 use records::{OwnerLock, Paths};
-
-/// [`Sandbox::copy_entries`]의 항목 하나. 경로는 놓을 디렉터리 기준 상대 경로다.
-pub struct Placed {
-    /// 상대 경로(`check_relative_path`를 통과해야 한다).
-    pub path: String,
-    /// 종류와 내용.
-    pub kind: PlacedKind,
-    /// 권한 비트.
-    pub mode: u32,
-    /// 소유자.
-    pub uid: u32,
-    /// 그룹.
-    pub gid: u32,
-    /// 수정 시각(Unix 초).
-    pub mtime: i64,
-}
-
-/// 파일 내용을 여는 함수. 한 번 부른다.
-pub type OpenContent = Box<dyn FnOnce() -> std::io::Result<Box<dyn std::io::Read>> + Send>;
-
-/// [`Placed`]의 종류.
-pub enum PlacedKind {
-    /// 디렉터리.
-    Dir,
-    /// 일반 파일. 내용은 `open`이 주고, 정확히 `size` 바이트를 보낸다(모자라면 오류).
-    File {
-        /// 크기.
-        size: u64,
-        /// 내용.
-        open: OpenContent,
-    },
-    /// 심볼릭 링크(대상 그대로).
-    Symlink(String),
-}
-
-impl fmt::Debug for Placed {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Placed")
-            .field("path", &self.path)
-            .field("mode", &self.mode)
-            .finish_non_exhaustive()
-    }
-}
 
 /// 게스트가 연결을 받을 때까지 기다리는 시간.
 pub const START_TIMEOUT: Duration = Duration::from_secs(30);
