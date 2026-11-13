@@ -12,8 +12,9 @@
 개발용 서비스(postgres, redis)를 띄워 앱과 잇는 것이다. 전부 컨테이너마다 VM이고, 빠르고, 기본으로 닫혀 있다.
 
 한 줄로 말하면 이렇다. **build도 run도 VM 안에서.** 빌드도 믿지 않는 코드를 돌리는 일이다. `npm install`의
-postinstall이나 `pip install`의 빌드 스크립트가 그렇다. Docker는 빌드를 호스트 커널 위에서 돌리고 네트워크를 기본으로
-열어 둔다. sbx는 빌드의 `RUN`마다 VM 안에서 돌리고, 나가는 연결은 허용 목록으로만 연다.
+postinstall이나 `pip install`의 빌드 스크립트가 그렇다. Docker는 빌드를 모든 컨테이너가 함께 쓰는 커널(Linux에서는
+호스트 커널, Docker Desktop에서는 그 VM 하나의 커널) 위에서 돌리고 네트워크를 기본으로 열어 둔다. sbx는 빌드마다
+따로 VM을 띄우고, 나가는 연결은 허용 목록으로만 연다.
 
 ## 2. 목표와 하지 않는 것
 
@@ -87,7 +88,9 @@ sbx build -t ghcr.io/me/app:1 --push .               # 레지스트리로
    필요 없는 스테이지는 뺀다. 지원하지 않는 명령은 이 단계에서 줄 번호와 함께 오류다.
 2. **캐시 찾기.** 단계마다 캐시 키를 만든다(4.4). 앞에서부터 맞는 단계를 찾고, 처음으로 맞지 않는 단계에서 멈춘다.
 3. **바탕 준비.** `FROM` 이미지를 지금처럼 pull하고, 캐시에 맞은 층까지 얹어 rootfs 하나로 `prepare`한다
-   (`sbx-rootfs`가 메모리에서 합친다). 모든 단계가 맞으면 VM을 띄우지 않고 끝난다.
+   (`sbx-rootfs`가 메모리에서 합친다). 모든 단계가 맞으면 VM을 띄우지 않고 끝난다. 이 `prepare`는 바탕 이미지
+   전체를 다시 합치므로 큰 이미지(node, python)에서는 초 단위가 걸린다. 그래서 바탕 이미지의 EROFS는 지금처럼 캐시에서
+   그대로 쓰고, 캐시에 맞은 층은 빌드 VM의 scratch에 층 tar로 넣어 위층으로 푸는 쪽을 먼저 잰다(D3에서 정한다).
 4. **빌드 VM.** 그 rootfs로 샌드박스를 하나 띄운다. 사용자의 `--allow`, `--cpus`, `-m`을 따른다. 빌드용이라는 라벨
    (`io.github.toollyst.sandbox.build`)을 붙이고, 빌드가 끝나면 지운다.
 5. **단계 실행.** 게스트가 단계마다 scratch 위에 새 위층을 만들어 overlay를 쌓는다(4.3).
@@ -121,8 +124,9 @@ sbx build -t ghcr.io/me/app:1 --push .               # 레지스트리로
   `RUN`의 결과가 네트워크에 따라 달라지는 것은 Docker처럼 키에 넣지 않는다(`--no-cache`가 있다).
 - 키 → 층 digest의 기록은 `cache_dir/build/`에 둔다. 쓰는 것은 관리 쪽이다(architecture.md 1장). 층 blob은 이미
   있는 blob 저장소와 정리 규칙(`claim_blobs`, `collect_blobs`)을 쓴다. `sbx system prune`이 빌드 캐시도 치운다.
-- `SOURCE_DATE_EPOCH`를 주면 층 tar의 시각과 순서를 고정해 같은 입력에서 같은 digest가 나오게 한다. "확인할 수
-  있다"는 목표와 맞다.
+- `SOURCE_DATE_EPOCH`를 주면 층 tar의 항목 순서와 시각을 고정한다(BuildKit의 `rewrite-timestamp`와 같다). "확인할 수
+  있다"는 목표와 맞다. 다만 `RUN`이 매번 다른 내용(로그, 받은 패키지의 새 버전)을 쓰면 digest는 달라진다. 보장하는 것은
+  "sbx가 만드는 차이는 없다"까지다.
 
 ### 4.5 Dockerfile 범위
 
@@ -174,6 +178,7 @@ sbx volume ls / inspect / rm / prune
 - 비어 있는 볼륨을 처음 붙이면 Docker처럼 이미지의 그 경로 내용을 먼저 채운다.
 - 쓰기로 붙인 볼륨은 한 번에 한 샌드박스만 쓴다(블록 장치는 두 커널이 함께 쓸 수 없다). 두 번째는 오류이고
   `DOCKER_DIFFERENCES`에 적는다. 읽기 전용(`:ro`)은 쓰는 쪽이 없을 때 여럿이 붙일 수 있다.
+- MCP 서버는 호스트 폴더를 붙이지 않는 것처럼, 사용자가 만든 볼륨도 붙이지 않는다. MCP로 만든 볼륨만 쓴다.
 - `-v NAME:/path`와 `-v ./dir:/path`는 Docker 규칙(첫 글자가 `/`, `.`, `~`이면 경로)으로 가른다. 지금은 이름이면
   오류를 낸다.
 
@@ -192,6 +197,8 @@ sbx run --rm --connect db:5432 app        # 앱 안에서 db:5432로 닿는다. 
 - 연결마다 대상을 새로 찾는다. 그래서 대상이 다시 시작해도 다음 연결은 된다. 대상이 없으면 그 연결만 끊긴다.
   기록은 `events/network`에 `connect`로 남는다.
 - 같은 `data_dir`을 쓰는 샌드박스끼리만 된다.
+- MCP의 샌드박스는 MCP로 만든 샌드박스에만 `--connect`할 수 있다. 지금 MCP 도구가 MCP로 만든 샌드박스만 보는 것과 같은
+  선이다. 그러지 않으면 에이전트가 사용자의 DB에 닿는다.
 
 ### 7.3 실시간 마운트
 
@@ -222,7 +229,7 @@ sbx run --rm --connect db:5432 app        # 앱 안에서 db:5432로 닿는다. 
 | D1 | `sbx-dockerfile`: 해석과 4.5의 처음 범위, 빌드 계획 자료형 | Docker 문서의 예제와 공개 저장소 Dockerfile 묶음을 읽고, 지원하지 않는 것은 줄 번호로 거부한다. 퍼징 대상 |
 | D2 | 게스트 빌드 모드: 층 쌓기, 층 내보내기(whiteout 바꾸기), 규약 버전 올리기 | 게스트 단독 테스트와 fake로, 파일 추가·바꾸기·지우기·디렉터리 비우기가 OCI 층으로 맞게 나온다 |
 | D3 | `sbx-build`와 `sbx build`: 스테이지당 VM 하나, COPY·RUN, 캐시, `type=sbx` | 다단계 Dockerfile(node, python, go 예제)이 빌드되고 `sbx run`으로 돈다. 두 번째 빌드는 VM 없이 끝난다 |
-| D4 | 출력 `type=docker`, `type=oci`, `SOURCE_DATE_EPOCH` | `docker run`으로 같은 결과. 같은 입력을 두 번 빌드하면 digest가 같다 |
+| D4 | 출력 `type=docker`, `type=oci`, `SOURCE_DATE_EPOCH` | `docker run`으로 같은 결과. `COPY`와 결정적인 `RUN`만 있는 Dockerfile을 두 번 빌드하면 digest가 같다 |
 | D5 | `sbx push`, `build --push` | 로컬 레지스트리(`registry:2`)와 GHCR에 올리고 다른 도구로 받는다 |
 | D6 | bench: 같은 Dockerfile을 `docker build`와 견준다(처음, 캐시, 한 줄 바꿈) | README에 숫자를 싣는다 |
 | V1 | 볼륨 | postgres 데이터가 `rm` 뒤에도 남고, 두 번째 쓰기 붙이기는 거부된다 |
@@ -237,7 +244,15 @@ sbx run --rm --connect db:5432 app        # 앱 안에서 db:5432로 닿는다. 
   `--mount=type=cache`를 쓰는 Dockerfile이 늘고 있다. 공개 저장소의 Dockerfile 묶음으로 얼마나 되는지 재고, 그
   숫자로 "나중" 순서를 정한다.
 - **빌드 네트워크 기본 차단.** 처음 쓰는 사람은 막힌 연결부터 만난다. 막힌 `host:port`와 그대로 붙여 쓸 수 있는
-  `--allow`를 오류에 넣는 것이 이 기능의 첫인상이다.
+  `--allow`를 오류에 넣는 것이 이 기능의 첫인상이다. 또 나가는 길은 HTTP 프록시뿐이라 프록시를 따르지 않는 것
+  (`git`의 ssh·`git://`, 일부 언어의 자체 다운로더)은 허용해도 나가지 못한다. 흔한 Dockerfile 묶음으로 어떤 도구가
+  걸리는지 D1·D3에서 재고 문서에 적는다.
+- **실시간 마운트가 0.3에 없을 수 있다.** 개발할 때 Docker Desktop을 쓰는 가장 흔한 까닭이 소스 폴더 마운트와 핫
+  리로드다. wick에 virtio-fs를 넣는 일은 작지 않다. Linux의 virtiofsd는 Linux 호스트에서만 돌기 때문에, macOS(HVF)의
+  wick에는 VMM 안에서 도는 virtio-fs 서버가 따로 필요하다. 0.3의 README와 데모는 "마운트는 실행기가 갖출 때"를 분명히
+  하고, wick 쪽 일정이 나오면 이 결정(3장)을 다시 본다.
+- **macOS에는 Apple `container`가 있다.** 컨테이너마다 VM이고 빌드도 VM 안에서 한다. 그 앞에서 sbx의 차이는 기본
+  차단 네트워크와 허용 목록(빌드 포함), Linux, 열린 실행기 규약, MCP다. README의 비교는 이 넷으로 한다.
 - **이름.** Docker Sandboxes도 `sbx`다. Docker의 영역으로 들어갈수록 헷갈림이 커진다. README의 "Not Docker
   Sandboxes" 절을 위로 올리는 것을 0.3에서 함께 본다.
 - **범위가 커진다.** Docker Desktop 대체로 보이면 Compose 전체, 브리지 네트워크, Engine API 요청이 온다. 2장의
