@@ -76,7 +76,12 @@ fn run() -> ExitCode {
         .iter()
         .map(|s| (s.tag.clone(), s.host_path.clone()))
         .collect();
-    let handle = match guest::start(&vm.control_socket, shares) {
+    let build = vm
+        .disks
+        .iter()
+        .find(|d| d.role == proto::DiskRole::Scratch)
+        .map(|d| crate::build_root(&d.path));
+    let handle = match guest::start(&vm.control_socket, shares, build) {
         Ok(h) => h,
         Err(e) => return fail(&mut out, format!("cannot open control socket: {e}")),
     };

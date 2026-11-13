@@ -99,6 +99,71 @@ pub struct Entry {
     pub mtime: i64,
 }
 
+/// 빌드 층 항목의 종류. [`HostMsg::ExportLayer`]의 답에 쓴다.
+///
+/// overlay 위층의 내용을 OCI 층의 변경으로 옮긴 것이다. whiteout과 opaque는 `.wh.` 이름이 아니라 종류로 보낸다.
+/// 그래서 받는 쪽은 사용자가 만든 `.wh.`로 시작하는 이름을 지우기 표시와 헷갈리지 않고 거부할 수 있다.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LayerKind {
+    /// 일반 파일. 이어서 [`GuestMsg::Data`]가 합쳐서 정확히 `size` 바이트 온다.
+    File {
+        /// 크기.
+        size: u64,
+    },
+    /// 디렉터리.
+    Dir {
+        /// 아래층의 내용을 가린다(overlay의 opaque 디렉터리, OCI의 `.wh..wh..opq`).
+        opaque: bool,
+    },
+    /// 심볼릭 링크.
+    Symlink {
+        /// 링크 대상 (해석하지 않고 그대로 둔다).
+        target: String,
+    },
+    /// 하드 링크. 대상은 같은 층에서 앞서 [`LayerKind::File`]로 보낸 항목의 경로다.
+    Hardlink {
+        /// 대상 경로 (층 안 상대 경로).
+        target: String,
+    },
+    /// 문자 장치.
+    CharDevice {
+        /// major 번호.
+        major: u32,
+        /// minor 번호.
+        minor: u32,
+    },
+    /// 블록 장치.
+    BlockDevice {
+        /// major 번호.
+        major: u32,
+        /// minor 번호.
+        minor: u32,
+    },
+    /// FIFO.
+    Fifo,
+    /// 아래층의 이 경로와 그 아래 전체를 지운다(overlay의 whiteout, OCI의 `.wh.<이름>`).
+    Whiteout,
+}
+
+/// 빌드 층 항목 하나. 디렉터리는 그 안의 항목보다 먼저 온다. 층의 맨 위(`/`)는 보내지 않는다.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LayerEntry {
+    /// 층 안의 상대 경로. [`check_relative_path`]를 통과해야 한다.
+    pub path: String,
+    /// 종류.
+    pub kind: LayerKind,
+    /// 권한 비트 (`0o7777` 안).
+    pub mode: u32,
+    /// 소유자.
+    pub uid: u32,
+    /// 그룹.
+    pub gid: u32,
+    /// 수정 시각 (Unix 초).
+    pub mtime: i64,
+    /// 확장 속성 (이름, 값). overlay 내부용(`trusted.overlay.*`)은 넣지 않는다.
+    pub xattrs: Vec<(String, Vec<u8>)>,
+}
+
 /// 프로세스 종료 상태.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExitStatus {
@@ -233,6 +298,19 @@ pub enum HostMsg {
         /// 게스트 포트.
         port: u16,
     },
+    /// 빌드 층을 하나 새로 연다. 이미지 rootfs와 앞서 연 층들을 읽기 전용 아래층으로, 빈 쓰기 층을 위로 쌓는다.
+    /// 그 뒤의 [`Exec`](HostMsg::Exec), [`ExecDetached`](HostMsg::ExecDetached), [`CopyIn`](HostMsg::CopyIn),
+    /// [`CopyOut`](HostMsg::CopyOut), [`Stat`](HostMsg::Stat)은 이 층으로 본 파일 시스템에서 한다.
+    /// 규칙(차례, 앞 층 내리기, 상한)은 `sbx-guest`의 `layer` 모듈에 있다.
+    ///
+    /// 흐름: 게스트가 [`GuestMsg::LayerOpened`]. 층을 쌓을 수 없는 게스트이거나 [`MAX_LAYERS`](crate::MAX_LAYERS)를
+    /// 넘거나 앞 층을 쓰는 프로세스가 남아 있으면 [`GuestMsg::Error`].
+    OpenLayer,
+    /// 지금 열린 층의 변경을 보내 달라. 층은 열린 채로 둔다.
+    ///
+    /// 흐름: 게스트가 [`GuestMsg::LayerEntry`]와 (일반 파일 뒤에) [`GuestMsg::Data`]를 보내고 [`GuestMsg::End`]로
+    /// 끝낸다. 열린 층이 없으면 [`GuestMsg::Error`].
+    ExportLayer,
 }
 
 /// 게스트 → 호스트.
@@ -280,6 +358,13 @@ pub enum GuestMsg {
     },
     /// [`HostMsg::Usage`]의 답.
     Usage(Usage),
+    /// [`HostMsg::OpenLayer`]의 답: 연 층의 번호(1부터).
+    LayerOpened {
+        /// 층 번호.
+        layer: u32,
+    },
+    /// [`HostMsg::ExportLayer`]의 항목.
+    LayerEntry(LayerEntry),
 }
 
 /// 게스트 전체의 자원 사용량. 게스트가 보고하는 값이라 호스트는 표시에만 쓴다(믿고 결정하지 않는다).
@@ -351,6 +436,8 @@ mod tag {
     pub const EXEC_DETACHED: u8 = 0x14;
     pub const USAGE: u8 = 0x15;
     pub const FORWARD: u8 = 0x16;
+    pub const OPEN_LAYER: u8 = 0x17;
+    pub const EXPORT_LAYER: u8 = 0x18;
 
     pub const HELLO_ACK: u8 = 0x81;
     pub const STARTED: u8 = 0x82;
@@ -366,6 +453,8 @@ mod tag {
     pub const LISTENING: u8 = 0x8C;
     pub const CONNECT: u8 = 0x8D;
     pub const G_USAGE: u8 = 0x8E;
+    pub const LAYER_OPENED: u8 = 0x8F;
+    pub const LAYER_ENTRY: u8 = 0x90;
 }
 
 fn bad<T>(m: impl Into<String>) -> DecodeResult<T> {
@@ -429,6 +518,62 @@ fn dec_entry(d: &mut Decoder<'_>) -> DecodeResult<Entry> {
         uid: d.u32()?,
         gid: d.u32()?,
         mtime: d.i64()?,
+    })
+}
+
+fn enc_layer_entry(e: &mut Encoder, v: &LayerEntry) {
+    e.str(&v.path);
+    match &v.kind {
+        LayerKind::File { size } => e.u8(0).u64(*size),
+        LayerKind::Dir { opaque } => e.u8(1).bool(*opaque),
+        LayerKind::Symlink { target } => e.u8(2).str(target),
+        LayerKind::Hardlink { target } => e.u8(3).str(target),
+        LayerKind::CharDevice { major, minor } => e.u8(4).u32(*major).u32(*minor),
+        LayerKind::BlockDevice { major, minor } => e.u8(5).u32(*major).u32(*minor),
+        LayerKind::Fifo => e.u8(6),
+        LayerKind::Whiteout => e.u8(7),
+    };
+    e.u32(v.mode).u32(v.uid).u32(v.gid).i64(v.mtime);
+    e.list(&v.xattrs, |e, (k, val)| {
+        e.str(k).bytes(val);
+    });
+}
+
+fn dec_layer_entry(d: &mut Decoder<'_>) -> DecodeResult<LayerEntry> {
+    let path = d.string()?;
+    let kind = match d.u8()? {
+        0 => LayerKind::File { size: d.u64()? },
+        1 => LayerKind::Dir { opaque: d.bool()? },
+        2 => LayerKind::Symlink {
+            target: d.string()?,
+        },
+        3 => LayerKind::Hardlink {
+            target: d.string()?,
+        },
+        4 => LayerKind::CharDevice {
+            major: d.u32()?,
+            minor: d.u32()?,
+        },
+        5 => LayerKind::BlockDevice {
+            major: d.u32()?,
+            minor: d.u32()?,
+        },
+        6 => LayerKind::Fifo,
+        7 => LayerKind::Whiteout,
+        v => return bad(format!("layer entry kind {v}")),
+    };
+    let mode = d.u32()?;
+    if mode & !0o7777 != 0 {
+        return bad(format!("mode {mode:o} has bits outside 0o7777"));
+    }
+    Ok(LayerEntry {
+        path,
+        kind,
+        mode,
+        uid: d.u32()?,
+        gid: d.u32()?,
+        mtime: d.i64()?,
+        xattrs: d.list(|d| Ok((d.string()?, d.bytes()?.to_vec())))?,
     })
 }
 
@@ -573,6 +718,8 @@ impl HostMsg {
                 e = Encoder::new(tag::FORWARD);
                 e.u16(*port);
             }
+            HostMsg::OpenLayer => e = Encoder::new(tag::OPEN_LAYER),
+            HostMsg::ExportLayer => e = Encoder::new(tag::EXPORT_LAYER),
         }
         e.finish()
     }
@@ -631,6 +778,8 @@ impl HostMsg {
             tag::SIGNAL_MAIN => HostMsg::SignalMain(d.i32()?),
             tag::USAGE => HostMsg::Usage,
             tag::FORWARD => HostMsg::Forward { port: d.u16()? },
+            tag::OPEN_LAYER => HostMsg::OpenLayer,
+            tag::EXPORT_LAYER => HostMsg::ExportLayer,
             t => return bad(format!("unknown host message {t:#04x}")),
         };
         d.end()?;
@@ -713,6 +862,14 @@ impl GuestMsg {
                     .u64(u.disk_used)
                     .u32(u.pids);
             }
+            GuestMsg::LayerOpened { layer } => {
+                e = Encoder::new(tag::LAYER_OPENED);
+                e.u32(*layer);
+            }
+            GuestMsg::LayerEntry(x) => {
+                e = Encoder::new(tag::LAYER_ENTRY);
+                enc_layer_entry(&mut e, x);
+            }
         }
         e.finish()
     }
@@ -754,6 +911,8 @@ impl GuestMsg {
                 disk_used: d.u64()?,
                 pids: d.u32()?,
             }),
+            tag::LAYER_OPENED => GuestMsg::LayerOpened { layer: d.u32()? },
+            tag::LAYER_ENTRY => GuestMsg::LayerEntry(dec_layer_entry(&mut d)?),
             t => return bad(format!("unknown guest message {t:#04x}")),
         };
         d.end()?;

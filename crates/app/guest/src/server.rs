@@ -7,6 +7,7 @@ use std::sync::Arc;
 use sbx_guest_proto::{Error, ErrorKind, GuestMsg, HostMsg, PROTOCOL_VERSION};
 
 use crate::egress::{Egress, Slot};
+use crate::layer::{self, Layers};
 use crate::wire::{Conn, Out, protocol};
 use crate::{copy, exec, sys};
 
@@ -23,6 +24,8 @@ pub struct Ctx {
     pub egress: Arc<Egress>,
     /// 실행 중인 기본 프로세스 (`SignalMain`이 시그널을 보낼 곳).
     pub main: Arc<exec::Main>,
+    /// 빌드 층(`OpenLayer`, `ExportLayer`). 없으면 그 요청은 `InvalidArgument` 오류다. 규칙은 [`layer`] 모듈에 있다.
+    pub layers: Option<Box<dyn Layers>>,
 }
 
 /// 공유 폴더를 붙이는 방법.
@@ -56,7 +59,23 @@ pub fn serve<C: Conn>(conn: C, ctx: &Ctx) {
         return;
     }
 
-    match HostMsg::read_from(&mut input) {
+    let request = HostMsg::read_from(&mut input);
+    // 층 열기가 실패한 뒤에는 파일 시스템을 쓰는 요청을 받지 않는다(엉뚱한 뿌리에서 하지 않게).
+    if let (
+        Ok(
+            HostMsg::Exec(_)
+            | HostMsg::ExecDetached(_)
+            | HostMsg::CopyIn { .. }
+            | HostMsg::CopyOut { .. }
+            | HostMsg::Stat { .. },
+        ),
+        Some(l),
+    ) = (&request, &ctx.layers)
+        && let Err(e) = l.check_ready()
+    {
+        return out.error(e);
+    }
+    match request {
         Ok(HostMsg::Exec(x)) => exec::run(x, &ctx.root, input, out, &ctx.main),
         Ok(HostMsg::ExecDetached(x)) => exec::run_detached(x, &ctx.root, out),
         Ok(HostMsg::CopyIn { dest }) => copy::receive(&dest, &mut input, &out),
@@ -113,6 +132,8 @@ pub fn serve<C: Conn>(conn: C, ctx: &Ctx) {
             }
             Err(e) => out.error(crate::wire::io_error("usage", &e)),
         },
+        Ok(HostMsg::OpenLayer) => layer::open(ctx.layers.as_deref(), &out),
+        Ok(HostMsg::ExportLayer) => layer::export(ctx.layers.as_deref(), &out),
         Ok(HostMsg::Shutdown) => {
             sys::sync();
             let _ = out.send(&GuestMsg::Done);

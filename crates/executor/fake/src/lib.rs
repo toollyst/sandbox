@@ -18,8 +18,10 @@
 //! - 공유 폴더(`Share`)는 마운트하지 않고 대상 경로에 호스트 경로를 가리키는 심볼릭 링크를 둔다
 //!   (대상이 빈 디렉터리면 바꾼다). 읽기 전용은 강제하지 않는다.
 //! - Unix에서만 VM을 "띄운다". 다른 OS에서는 `launch`가 [`ExecutorError::Unsupported`]다.
+//! - 빌드 층(`OpenLayer`, `ExportLayer`)은 overlay 대신 scratch 디스크 옆 디렉터리 하나([`build_root`])를 두 번 훑어
+//!   견준다. 규칙과 실제 overlay와 다른 점은 `layers` 모듈에 있다.
 //!
-//! 모듈 층: `lib`, `process` → `guest` → `vm`.
+//! 모듈 층: `lib`, `process` → `guest` → `layers`, `vm`.
 //!
 //! - 의존: `sbx-model`, `sbx-executor`, `sbx-executor-proto`, `sbx-guest-proto`, `sbx-guest`(Unix)
 
@@ -33,10 +35,20 @@ use sbx_model::{Arch, BoxFuture, RootfsFormat};
 
 mod guest;
 #[cfg(unix)]
+mod layers;
+#[cfg(unix)]
 pub mod process;
 mod vm;
 
 pub use vm::{FakeVm, REASON_GUEST_SHUTDOWN, REASON_KILLED};
+
+/// 빌드 층 흉내의 뿌리: scratch 디스크 파일 이름 뒤에 `.root`를 붙인 디렉터리. 첫 `OpenLayer`가 없으면 만든다.
+/// 그 전에 둔 내용이 이미지 rootfs 노릇을 한다.
+pub fn build_root(scratch: &std::path::Path) -> std::path::PathBuf {
+    let mut s = scratch.as_os_str().to_owned();
+    s.push(".root");
+    s.into()
+}
 
 /// 가짜 실행기 (같은 프로세스 안).
 #[derive(Debug, Clone)]
@@ -89,7 +101,12 @@ impl Executor for FakeExecutor {
                 .iter()
                 .map(|s| (s.tag.clone(), s.host_path.clone()))
                 .collect();
-            guest::start(&vm.control_channel.host_endpoint, shares)
+            let build = vm
+                .disks
+                .iter()
+                .find(|d| d.role == sbx_executor::DiskRole::Scratch)
+                .map(|d| build_root(&d.path));
+            guest::start(&vm.control_channel.host_endpoint, shares, build)
                 .map(|v| Box::new(v) as Box<dyn VmHandle>)
         })
     }

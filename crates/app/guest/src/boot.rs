@@ -16,6 +16,7 @@
 //! **연결 처리** ([`agent`]): vsock [`GUEST_PORT`]에서 연결마다 스레드 하나로 `server::serve`를 돌린다.
 //! 루프백 DNS([`crate::dns`])도 띄운다: 이름 풀기가 시간 초과(5초)를 기다리지 않고 곧바로 실패하게 한다.
 //! `Shutdown` 요청이면 sync 뒤 `sbx.halt` 방법으로 VM을 끝낸다.
+//! 빌드 층(`OpenLayer`)은 이 프로세스의 뿌리를 층 안으로 옮긴다. 규칙은 `overlay` 모듈에 있다. PID 1은 처음 뿌리에 남는다.
 //!
 //! 어느 단계든 실패하면 콘솔에 이유를 쓰고 VM을 끝낸다. 호스트는 연결이 되지 않는 것으로 안다.
 
@@ -238,6 +239,11 @@ pub fn agent() -> ! {
         share: Some(Box::new(mount_share)),
         egress: Default::default(),
         main: Default::default(),
+        // 첫 OpenLayer 전에는 아무것도 하지 않는다(보통의 run에는 비용이 없다).
+        layers: Some(Box::new(crate::overlay::Overlay::guest(
+            ROOTFS_DEV,
+            SCRATCH_DEV,
+        ))),
     }));
     loop {
         match sys::accept(&listener) {

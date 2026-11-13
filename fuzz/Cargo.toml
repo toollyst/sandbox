@@ -147,3 +147,10 @@ path = "fuzz_targets/dockerignore.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "layer_from_guest"
+path = "fuzz_targets/layer_from_guest.rs"
+test = false
+doc = false
+bench = false

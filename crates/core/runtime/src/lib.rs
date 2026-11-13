@@ -27,6 +27,10 @@
 //!   순서: bind를 모두 마운트한 뒤 copy를 마운트 순서대로.
 //! - 파일 복사([`Sandbox::copy_in`], [`Sandbox::copy_out`])의 대상 규칙은 Docker `cp`와 같다([`cpplan`]).
 //!   Docker와 달리 실행 중인 샌드박스에서만 된다(디스크를 읽는 것이 게스트이기 때문이다).
+//! - **빌드 층**([`Sandbox::open_layer`], [`Sandbox::export_layer`]): 이미지를 만드는 쪽(빌드 코어)이 한 VM 안에서
+//!   층을 하나씩 쌓는다. 층을 연 뒤의 exec와 복사는 그 층에서 하고, 내보내면 그 층의 변경이 압축하지 않은 OCI 층
+//!   tar로 나온다. 게스트가 보낸 항목은 믿지 않는다([`layer`]). 차례(층을 여는 동안 다른 요청을 보내지 않는다,
+//!   앞 단계의 프로세스를 끝낸다)는 부르는 쪽이 지킨다. 게스트 쪽 규칙은 `sbx-guest`의 `layer`, `overlay`에 있다.
 //!
 //! **수명 (attached)**: VM을 띄운 프로세스가 그 VM을 소유한다(`owner.lock`). 소유 프로세스가 끝나면 실행기 규약에 따라
 //! VM도 끝나고, 다른 프로세스는 그 샌드박스를 `stopped`로 본다. 다른 프로세스도 같은 data_dir로 exec, cp, stop을 할 수 있다.
@@ -39,7 +43,7 @@
 //! 속성은 `image`(ID)와 `name`(있으면)이다. 기록하지 못해도 동작은 계속한다(알림이다).
 //! 소유 프로세스가 갑자기 죽으면 아무도 `stopped`를 기록하지 않으므로(읽는 쪽이 `stopped`로 본다) `stop` 이벤트도 없다.
 //!
-//! **층**: `lib` → `egress` → `client` → `hostfs`, `records` → `process`, `validate`, `cpplan`, `chan` → `error`.
+//! **층**: `lib` → `egress` → `client` → `hostfs`, `layer`, `records` → `process`, `validate`, `cpplan`, `chan` → `error`.
 //!
 //! - 의존: `sbx-model`, `sbx-guest-proto`, `sbx-executor`, `sbx-store`(읽기), `sbx-events`
 
@@ -63,6 +67,7 @@ pub mod cpplan;
 pub mod egress;
 mod error;
 mod hostfs;
+pub mod layer;
 mod ports;
 pub mod process;
 mod records;
@@ -77,6 +82,7 @@ pub mod fuzzing {
 }
 
 pub use error::RuntimeError;
+pub use layer::LayerStats;
 pub use records::{OWNER_GONE, StateRecord};
 
 use client::Guest;
@@ -1035,6 +1041,36 @@ impl Sandbox {
                     guest.copy_out(src, parent, Some(&name))
                 }
             }
+        })
+        .await
+    }
+
+    /// 빌드 층을 하나 연다. 이미지 rootfs와 앞서 연 층들 위에 빈 쓰기 층을 쌓고, 그 번호(1부터)를 돌려준다.
+    /// 그 뒤의 [`exec`](Self::exec), [`copy_in`](Self::copy_in), [`copy_out`](Self::copy_out)은 이 층으로 본
+    /// 파일 시스템에서 한다. `running`에서만.
+    ///
+    /// 앞 단계의 프로세스가 남아 앞 층을 쥐고 있거나 층이 [`MAX_LAYERS`](sbx_guest_proto::MAX_LAYERS)를 넘으면
+    /// 게스트 오류([`RuntimeError::Guest`])다.
+    pub async fn open_layer(&self) -> Result<u32, RuntimeError> {
+        let (_, guest) = self.require_running("build")?;
+        blocking(move || guest.open_layer()).await
+    }
+
+    /// 지금 층의 변경을 압축하지 않은 OCI 층 tar로 `sink`에 쓰고 `sink`를 돌려준다. 층은 열린 채로 둔다.
+    /// `running`에서만.
+    ///
+    /// `limit`은 층에 든 파일 내용 합계의 상한이다. 게스트가 보낸 것은 [`layer`]의 규칙으로 확인한다. 오류이면
+    /// 그때까지 `sink`에 쓴 것은 온전한 tar가 아니므로 버려야 한다.
+    pub async fn export_layer<W: std::io::Write + Send + 'static>(
+        &self,
+        mut sink: W,
+        limit: u64,
+    ) -> Result<(W, LayerStats), RuntimeError> {
+        let (_, guest) = self.require_running("build")?;
+        blocking(move || {
+            let stats = guest.export_layer(&mut sink, limit)?;
+            sink.flush()?;
+            Ok((sink, stats))
         })
         .await
     }

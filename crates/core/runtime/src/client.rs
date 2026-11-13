@@ -16,7 +16,7 @@ use sbx_executor::{ChannelSpec, Executor, GuestConn};
 use sbx_guest_proto::{Entry, Exec, GuestMsg, HostMsg, PROTOCOL_VERSION};
 
 use crate::error::RuntimeError;
-use crate::hostfs;
+use crate::{hostfs, layer};
 
 /// 연결을 다시 시도하는 간격.
 pub const RETRY: Duration = Duration::from_millis(5);
@@ -326,6 +326,28 @@ impl Guest {
             GuestMsg::Error(e) => Err(RuntimeError::Guest(e)),
             other => Err(proto_err(format!("expected Done, got {other:?}"))),
         }
+    }
+
+    /// 빌드 층을 하나 연다([`HostMsg::OpenLayer`]). 연 층의 번호.
+    pub fn open_layer(&self) -> Result<u32, RuntimeError> {
+        let mut c = self.open()?;
+        send(&mut *c, &HostMsg::OpenLayer)?;
+        match recv(&mut *c)? {
+            GuestMsg::LayerOpened { layer } => Ok(layer),
+            GuestMsg::Error(e) => Err(RuntimeError::Guest(e)),
+            other => Err(proto_err(format!("expected LayerOpened, got {other:?}"))),
+        }
+    }
+
+    /// 지금 층을 tar로 `sink`에 쓴다([`HostMsg::ExportLayer`], [`layer::receive`]).
+    pub fn export_layer(
+        &self,
+        sink: &mut dyn io::Write,
+        limit: u64,
+    ) -> Result<layer::LayerStats, RuntimeError> {
+        let mut c = self.open()?;
+        send(&mut *c, &HostMsg::ExportLayer)?;
+        layer::receive(sink, limit, &mut || recv(&mut *c))
     }
 
     /// 게스트에 종료를 요청한다. `Done`을 받으면 돌아온다.

@@ -26,6 +26,10 @@ sbx-events.workspace = true
 
 [dev-dependencies]
 sbx-executor-fake.workspace = true
+# 빌드 층 테스트: 내보낸 tar를 다른 구현(tar 크레이트)으로 읽어 rootfs 병합에 넣는다. 관리 쪽(sbx-manage)은
+# 쓰지 않는다: 캐시 쓰기 feature를 켜게 되기 때문이다(cargo xtask check-deps).
+tar.workspace = true
+sbx-rootfs.workspace = true
 
 # macOS의 fsync(2) (records::sync). std의 sync_all은 F_FULLFSYNC다.
 [target.'cfg(target_vendor = "apple")'.dependencies]
