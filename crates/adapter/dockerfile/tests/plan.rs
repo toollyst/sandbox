@@ -132,8 +132,10 @@ fn a_stage_named_like_its_image_uses_the_image() {
 
 #[test]
 fn stages_can_only_use_earlier_stages() {
-    let e = err("FROM later\nFROM alpine AS later");
+    let e = err("FROM later AS x\nFROM alpine AS later\nFROM x");
     assert_eq!(e.line, Some(1));
+    // 필요 없는 스테이지면 오류가 아니다.
+    assert_eq!(p("FROM later\nFROM alpine AS later").stages.len(), 1);
     assert!(e.message.contains("later build stage"), "{e}");
     let e = err("FROM alpine AS a\nCOPY --from=b /x /x\nFROM alpine AS b\nFROM a");
     assert_eq!(e.line, Some(2));
@@ -176,6 +178,13 @@ fn platform_must_be_the_host() {
     assert!(p_with("FROM --platform=$TARGETPLATFORM alpine", &x86).is_ok());
     assert!(p_with("FROM --platform=linux/x86_64 alpine", &x86).is_ok());
     assert!(p_with("FROM --platform=windows/amd64 alpine", &x86).is_err());
+    // 필요 없는 스테이지의 플랫폼은 보지 않는다.
+    assert_eq!(
+        p("FROM --platform=linux/amd64 alpine AS cross\nFROM alpine")
+            .stages
+            .len(),
+        1
+    );
 }
 
 #[test]

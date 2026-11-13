@@ -9,6 +9,8 @@
 //! - 같은 `AS` 이름이 둘이면 오류다.
 //! - 결과는 `--target` 스테이지(없으면 마지막)와, 그것이 `FROM`과 `COPY --from`으로 기대는 스테이지들이다.
 //!   나머지는 계획에 넣지 않고 변수도 풀지 않는다(BuildKit처럼 필요 없는 스테이지의 풀기 오류는 나지 않는다).
+//!   `FROM`만은 어느 스테이지가 어느 스테이지에 기대는지 알려고 모두 푼다. 그 풀기의 문법 오류는 어디서든 오류이고,
+//!   값 검사(빈 이름, 다른 플랫폼, 뒤 스테이지 참조)는 그 스테이지가 필요할 때만 오류다.
 //!
 //! # 변수와 `ARG`
 //!
@@ -89,6 +91,8 @@ struct RawStage {
 struct From {
     base: StageBase,
     text: String,
+    /// 이 스테이지가 필요하면 낼 오류(빈 이미지 이름, 다른 플랫폼, 뒤 스테이지 참조).
+    problem: Option<PlanError>,
 }
 
 /// 바탕 스테이지에서 물려받는 것: config `Env`와 `SHELL`.
@@ -243,6 +247,9 @@ pub fn plan(
         if done[i].is_some() {
             stack.pop();
             continue;
+        }
+        if let Some(e) = &froms[i].problem {
+            return Err(e.clone());
         }
         let parent = match froms[i].base {
             StageBase::Stage(j) => match &done[j] {
@@ -535,13 +542,15 @@ impl Planner<'_> {
             .transpose();
         self.global = global;
         let (image, platform) = (image?, platform?);
+        // 값 검사는 이 스테이지가 필요할 때만 오류다. 바탕은 다른 스테이지가 기대는지 알려고 모두 정한다.
+        let mut problem = None;
         if image.is_empty() {
-            return Err(PlanError::at(s.line, "base name should not be blank"));
+            problem = Some(PlanError::at(s.line, "base name should not be blank"));
         }
         if let Some(p) = &platform {
             let host = self.arch.oci_name();
             if platform_arch(p) != Some(self.arch) {
-                return Err(PlanError::at(
+                problem = Some(PlanError::at(
                     s.line,
                     format!(
                         "FROM --platform={p}: sbx builds only for the host platform linux/{host}"
@@ -555,7 +564,10 @@ impl Planner<'_> {
             match stage_ref(&image, s.position, all, false) {
                 Ok(Some(i)) => StageBase::Stage(i),
                 Ok(None) => StageBase::Image(image.clone()),
-                Err(e) => return Err(PlanError::at(s.line, e)),
+                Err(e) => {
+                    problem = Some(PlanError::at(s.line, e));
+                    StageBase::Scratch
+                }
             }
         };
         let mut text = String::from("FROM ");
@@ -566,7 +578,11 @@ impl Planner<'_> {
         if let Some(n) = &s.name {
             text.push_str(&format!(" AS {n}"));
         }
-        Ok(From { base, text })
+        Ok(From {
+            base,
+            text,
+            problem,
+        })
     }
 
     fn image_env(&mut self, image: &str, line: usize) -> Result<Vec<(String, String)>, PlanError> {
