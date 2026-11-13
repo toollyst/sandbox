@@ -197,7 +197,7 @@ VM 안에서, 나가는 연결은 허용 목록으로만. 기획: [docs/plan/dev
 | D4 | 빌드 출력 `type=docker`, `type=oci`, `SOURCE_DATE_EPOCH` | 없음 | 계획 |
 | D5 | `sbx tag`, `sbx push`, `build --push` | 없음 | 일부 (`sbx tag`, `sbx push`(`-a`, `-q`): 있는 blob은 보내지 않고, 같은 레지스트리의 다른 저장소에서 mount, 통째로 올리고 413이면 나눠서, manifest는 마지막에 받은 그대로. 미러로는 올리지 않고 `blocked`는 거부. 가짜 레지스트리 테스트와 e2e. 로컬 `registry:2`에 올려 Docker로 받아 실행했고 digest가 받은 원본과 같다(2026-11-13). 남음: GHCR, 업로드를 307로 넘기는 레지스트리, blob 여러 개 동시에, `build --push`는 D3 뒤) |
 | V1 | 이름 붙은 볼륨(`sbx volume`, `-v NAME:/path`) | 디스크 하나 더 | 계획 |
-| V4 | 시계 맞추기(게스트 init, vsock으로 받은 호스트 시각) | 없음 | 계획 |
+| V4 | 시계 맞추기(게스트 init, vsock으로 받은 호스트 시각) | 없음 | 완료 (소유 프로세스가 시작 직후, 60초마다, 벽시계가 단조 시계와 어긋나거나 타이머가 늦게 깨면 곧바로 `ClockSync`를 보낸다. 게스트는 왕복 시간으로 차이를 재고 128 ms 이상이면 바로, 아니면 천천히 맞춘다. 옵션은 없다. 실제 VM(macOS arm64, wick, 2026-11-13): 부팅 시계가 0.234초 늦은 것을 시작 때 맞추고, `date -s 2020-01-01` 뒤 shim을 SIGSTOP·SIGCONT하면 곧바로, 그냥 두면 63초 안에 호스트와 같아진다. 남음: 실제 호스트 잠자기, 하루 어긋남, 실제 커널의 천천히 맞추기 테스트(`SANDBOX_CLOCK_TESTS=1`, 버릴 VM 안에서만)) |
 | V3 | 실시간 마운트: 어댑터의 기능 확인과 `extensions.fs`, 호스트 변경 알림, 안내, smoke(`live_share`일 때만) | virtio-fs(선택) | 계획. sbx 쪽은 fake 실행기로 끝낸다. 0.3은 wick을 기다리지 않는다 |
 | D6 | bench: 같은 Dockerfile을 `docker build`와 견준다 | 없음 | 계획 |
 | T4 | `sbx tui`: 이미지 탭에서 빌드와 다시 빌드, 볼륨 탭, 샌드박스 상세에 `--connect`와 허용 목록 | 없음 | 계획 |
