@@ -435,6 +435,18 @@ pub mod linux {
         check(unsafe { libc::sethostname(name.as_ptr().cast(), name.len()) })
     }
 
+    /// `CLOCK_MONOTONIC_RAW`: 시계 맞추기(천천히 맞추기 포함)가 빠르기를 바꾸지 않는 단조 시계.
+    pub fn monotonic_raw() -> std::time::Duration {
+        // SAFETY: timespec은 정수 필드뿐이라 0으로 채운 값이 올바르다.
+        let mut t: libc::timespec = unsafe { std::mem::zeroed() };
+        // SAFETY: t는 이 호출 동안 살아 있는 timespec이다. 이 시계는 2.6.28부터 있어 실패하지 않는다.
+        unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC_RAW, &mut t) };
+        std::time::Duration::new(
+            t.tv_sec.max(0) as u64,
+            t.tv_nsec.clamp(0, 999_999_999) as u32,
+        )
+    }
+
     /// 벽시계(`CLOCK_REALTIME`)에 `secs`초 + `nanos`나노초를 바로 더한다(`ADJ_SETOFFSET`). `nanos`는 `0..1e9`여야 한다
     /// (음수 차이는 초를 내려 나타낸다). 읽고 쓰는 사이의 틈이 없다(커널이 한 번에 더한다).
     pub fn clock_step(secs: i64, nanos: i64) -> io::Result<()> {

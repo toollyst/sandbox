@@ -272,7 +272,7 @@ pub fn agent() -> ! {
             SCRATCH_DEV,
         ))),
         // 시계 맞추기: 호스트가 보낼 때만 한다. 규칙은 clock 모듈에 있다.
-        clock: Some(Box::new(crate::clock::Kernel::default())),
+        clock: Some(Box::new(crate::clock::Kernel)),
     }));
     loop {
         match sys::accept(&listener) {

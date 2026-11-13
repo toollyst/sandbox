@@ -198,6 +198,25 @@ These don't go through the owner. Any process with the same `data_dir` reads `st
 `CopyOut` or `Shutdown`. That is why `sbx exec` takes milliseconds and works the same for attached and detached
 sandboxes. `cp` targets follow `docker cp` ([`cpplan.rs`](../../crates/core/runtime/src/cpplan.rs)).
 
+## The guest clock
+
+A VM's clock stops while the host sleeps and is not corrected when it wakes, and it drifts a little even without
+sleep (about 0.35 s a day on the reference executor). So the owner (`sbx` for attached runs, `sbx-shim` for detached
+ones) keeps the guest clock on the host's, without chrony in the image or anything more from the executor. Right
+after the guest is ready, every 60 s, and as soon as it sees the host's wall clock jump, it opens a connection with
+`ClockSync`. The guest sends `ClockAsk` up to four times, the host answers each with `ClockNow{its wall clock}`, and
+the guest keeps the sample with the shortest round trip: the host's time at arrival is estimated as `ClockNow` plus
+half the round trip, so the error is at most half of it (vsock round trips are about 0.1 ms; samples slower than
+20 ms are not used). Offsets of 128 ms or more are stepped at once (as after a sleep, or when someone ran `date -s`
+inside); smaller ones are slewed at the kernel's 0.5 ms per second, so the clock never runs backwards for them. A host
+clock set back by more than 128 ms is followed backwards too. The owner notices a jump by waking every 0.5 s and
+comparing how far the wall clock and the monotonic clock moved: on macOS and Linux the monotonic clock stops during
+sleep, so the wall clock runs ahead; where it keeps running (Windows), the 0.5 s wait ends late. Either way the
+guest is corrected within about half a second of waking. The first sync runs in the background and never delays
+the main process. Nothing the guest replies affects the host, and failures go to `logs/executor.log`, once per kind;
+a guest init too old to know `ClockSync` is left alone. Rules: [`clock.rs`](../../crates/core/runtime/src/clock.rs)
+(host) and [`clock.rs`](../../crates/app/guest/src/clock.rs) (guest).
+
 ## Events, JSON output and the TUI
 
 There is no daemon to ask what changed, so the process that changes something writes it down.

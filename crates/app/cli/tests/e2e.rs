@@ -612,7 +612,8 @@ mod unix {
         use sbx_executor_fake::clock;
         let e = Env::new();
         let sandbox_dir = |id: &str| e.path("data").join("sandboxes").join(id);
-        let clock_of = |id: &str| sbx_executor_fake::clock_file(&sandbox_dir(id).join("scratch.img"));
+        let clock_of =
+            |id: &str| sbx_executor_fake::clock_file(&sandbox_dir(id).join("scratch.img"));
         let wait_right = |file: &Path, steps: u64| {
             let deadline = Instant::now() + Duration::from_secs(10);
             loop {
@@ -620,7 +621,10 @@ mod unix {
                 if st.offset.unsigned_abs() < 50_000_000 && st.steps >= steps {
                     return st;
                 }
-                assert!(Instant::now() < deadline, "the guest clock is still off: {st:?}");
+                assert!(
+                    Instant::now() < deadline,
+                    "the guest clock is still off: {st:?}"
+                );
                 std::thread::sleep(Duration::from_millis(50));
             }
         };
@@ -681,9 +685,7 @@ mod unix {
         let shims: Vec<u32> = ps
             .lines()
             .map(str::trim)
-            .filter(|l| {
-                l.contains(&format!("{} start ", me.display())) && l.ends_with(id.as_str())
-            })
+            .filter(|l| l.contains(&format!("{} start ", me.display())) && l.ends_with(id.as_str()))
             .filter_map(|l| l.split_whitespace().next()?.parse().ok())
             .collect();
         assert_eq!(shims.len(), 1, "{ps}");

@@ -144,25 +144,16 @@ pub fn sync<R: Read>(clock: &dyn Clock, input: &mut R, out: &Out) {
     }
 }
 
-/// 게스트 커널의 시계(`CLOCK_REALTIME`). 바로 맞추면 콘솔에 한 줄 쓴다(실행기 로그에 남는다).
+/// 게스트 커널의 시계: 벽시계는 `CLOCK_REALTIME`, 단조 시계는 `CLOCK_MONOTONIC_RAW`(천천히 맞추기는
+/// `CLOCK_MONOTONIC`의 빠르기도 바꾸므로 그것과 견주면 보이지 않는다). 바로 맞추면 콘솔에 한 줄 쓴다(실행기 로그에 남는다).
 #[cfg(target_os = "linux")]
-pub struct Kernel {
-    base: std::time::Instant,
-}
-
-#[cfg(target_os = "linux")]
-impl Default for Kernel {
-    fn default() -> Self {
-        Self {
-            base: std::time::Instant::now(),
-        }
-    }
-}
+#[derive(Default)]
+pub struct Kernel;
 
 #[cfg(target_os = "linux")]
 impl Clock for Kernel {
     fn read(&self) -> Reading {
-        let mono = self.base.elapsed();
+        let mono = crate::sys::linux::monotonic_raw();
         let wall = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
             Ok(d) => i64::try_from(d.as_nanos()).unwrap_or(i64::MAX),
             Err(e) => i64::try_from(e.duration().as_nanos()).map_or(i64::MIN, |n| -n),
@@ -401,5 +392,63 @@ mod tests {
             matches!(GuestMsg::read_from(&mut h).unwrap(), GuestMsg::Error(e) if e.kind == ErrorKind::Protocol)
         );
         assert!(t.join().unwrap().is_empty());
+    }
+
+    /// 실제 커널 시계를 바로·천천히 옮긴다. **그 커널의 벽시계를 바꾼다.** 컨테이너는 호스트와 벽시계를 함께 쓴다
+    /// (Linux 시간 이름공간은 `CLOCK_MONOTONIC`과 `CLOCK_BOOTTIME`만 나눈다). 그래서 root(`CAP_SYS_TIME`)와
+    /// `SANDBOX_PRIVILEGED_TESTS=1`에 더해 `SANDBOX_CLOCK_TESTS=1`일 때만 돈다. 버려도 되는 VM 안에서만 켠다
+    /// (예: sbx 샌드박스 안. 끝에 시계를 되돌리고, 다음 맞추기가 어차피 호스트에 맞춘다). CI는 켜지 않는다.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn privileged_kernel_clock_steps_and_slews() {
+        if std::env::var_os("SANDBOX_PRIVILEGED_TESTS").is_none()
+            || std::env::var_os("SANDBOX_CLOCK_TESTS").is_none()
+        {
+            eprintln!("SANDBOX_PRIVILEGED_TESTS and SANDBOX_CLOCK_TESTS not both set, skipping");
+            return;
+        }
+        let k = Kernel;
+        // 벽시계 - 단조 시계(나노초, `CLOCK_MONOTONIC_RAW`). 둘 다 같은 빠르기로 가면 그대로다.
+        let gap = || {
+            let r = k.read();
+            i128::from(r.wall) - r.mono.as_nanos() as i128
+        };
+        let near = |a: i128, b: i128, ms: i128| (a - b).abs() < ms * 1_000_000;
+
+        // 바로: 2초 앞으로, 다시 2.5초 뒤로(음수의 나눗셈), 0.5초 앞으로. 처음과 같아진다.
+        let start = gap();
+        k.step(2_000_000_000).unwrap();
+        assert!(near(gap(), start + 2_000_000_000, 50));
+        k.step(-2_500_000_000).unwrap();
+        assert!(near(gap(), start - 500_000_000, 50));
+        k.step(500_000_000).unwrap();
+        assert!(near(gap(), start, 50));
+
+        // 천천히 앞으로 50ms: 1초에 0.5ms쯤 가고 바로 다 가지 않는다.
+        let before = gap();
+        k.slew(50_000_000).unwrap();
+        std::thread::sleep(Duration::from_secs(2));
+        let moved = gap() - before;
+        assert!(
+            (200_000..=3_000_000).contains(&moved),
+            "moved {moved}ns in 2s"
+        );
+
+        // 천천히 뒤로: 벽시계는 거꾸로 가지 않는다. 바로 맞추기는 남은 천천히 맞추기를 취소한다.
+        k.slew(-50_000_000).unwrap();
+        let mut last = k.read().wall;
+        let until = std::time::Instant::now() + Duration::from_secs(2);
+        while std::time::Instant::now() < until {
+            let now = k.read().wall;
+            assert!(now >= last, "the clock went back by {}ns", last - now);
+            last = now;
+        }
+        k.step(0).unwrap();
+        let settled = gap();
+        std::thread::sleep(Duration::from_secs(1));
+        assert!(near(gap(), settled, 1), "a cancelled slew kept going");
+        // 처음 차이로 되돌린다.
+        k.step((start - gap()) as i64).unwrap();
+        assert!(near(gap(), start, 50));
     }
 }
