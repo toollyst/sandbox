@@ -99,7 +99,7 @@ sbx build -t ghcr.io/me/app:1 --push .               # 레지스트리로
    (`io.github.toollyst.sandbox.build`)을 붙이고, 빌드가 끝나면 지운다.
 5. **단계 실행.** 게스트가 단계마다 scratch 위에 새 위층을 만들어 overlay를 쌓는다(4.3).
    - `RUN`: 그 층에서 실행한다. env, workdir, user, `SHELL`은 앞 단계까지의 상태를 따른다. 0이 아닌 종료 코드면 빌드가
-     실패하고 그 출력을 보여 준다. 허용 목록에 없어 막힌 연결이 있었으면 어느 `host:port`였는지 함께 알린다.
+     실패하고 그 출력을 보여 준다. 허용 목록에 없어 거절된 이름이 있었으면 함께 알린다(8.5).
    - `COPY`, `ADD`: 호스트가 컨텍스트에서 골라(`.dockerignore` 적용) 그 층에 넣는다. 지금의 `CopyIn`이다.
      `--from=스테이지`는 그 스테이지의 층을 호스트에서 메모리로 합쳐 원하는 경로만 꺼낸다. VM이 필요 없다.
    - `ENV`, `WORKDIR`, `USER`, `LABEL`, `EXPOSE`, `ENTRYPOINT`, `CMD` 같은 것은 이미지 config만 바꾸고 층을 만들지 않는다.
@@ -329,9 +329,13 @@ VM에 네트워크 장치를 붙이지 않고, 이름 단위 허용 목록과 �
 
 ### 8.5 범위
 
-빌드만의 기능이 아니다. `run`, `exec`, MCP 샌드박스 모두 `--network allow`면 이 길을 얻는다. 막힌 이름이 호스트에
-기록되므로 `sbx build`가 실패할 때 "막힌 곳: `github.com:22`, `--allow github.com:22`를 더하라"를 보여 줄 수 있다.
-`sbx-guest-proto`에 `Lookup`과 그 답을 더한다. 실행기 규약은 바뀌지 않는다.
+빌드만의 기능이 아니다. `run`, `exec`, MCP 샌드박스 모두 `--network allow`면 이 길을 얻는다. `sbx-guest-proto`에
+`Transparent`, `Lookup`, `Resolved`를 더했다. 실행기 규약은 바뀌지 않는다. 규칙의 정본은
+`crates/app/guest/src/transparent.rs`, `dns.rs`, `crates/core/runtime/src/egress.rs`다.
+
+거절된 **이름**은 호스트에 기록되므로 `sbx build`가 실패할 때 "막힌 이름: `example.com`, `--allow example.com:PORT`를
+더하라"를 보여 줄 수 있다. 포트는 보여 줄 수 없다. DNS 질의에는 포트가 없고, 허용된 이름의 열지 않은 포트로 가는 연결은
+게스트 안에서 바로 끊겨 호스트가 알지 못한다. 그때는 그 이름에 열린 포트를 함께 알린다.
 
 ## 9. `sbx compose` (마지막)
 
