@@ -26,7 +26,9 @@ pub type Lookup<'a> = &'a dyn Fn(&str) -> Option<String>;
 
 /// 한 낱말로 푼다(공백은 그대로). 결과가 `limit` 바이트를 넘으면 오류다.
 pub fn word(text: &str, escape: char, env: Lookup<'_>, limit: usize) -> Result<String, String> {
-    Lex::new(text, escape, env, limit).run().map(|(s, _)| s)
+    Lex::new(text, escape, env, limit, false)
+        .run()
+        .map(|(s, _)| s)
 }
 
 /// 낱말들로 나눠 푼다. 결과가 `limit` 바이트를 넘으면 오류다.
@@ -36,7 +38,9 @@ pub fn words(
     env: Lookup<'_>,
     limit: usize,
 ) -> Result<Vec<String>, String> {
-    Lex::new(text, escape, env, limit).run().map(|(_, w)| w)
+    Lex::new(text, escape, env, limit, true)
+        .run()
+        .map(|(_, w)| w)
 }
 
 #[derive(Default)]
@@ -89,10 +93,12 @@ struct Lex<'a> {
     env: Lookup<'a>,
     depth: usize,
     limit: usize,
+    /// 낱말 목록도 만드는지([`words`]). 아니면 결과 문자열만 만든다.
+    split: bool,
 }
 
 impl<'a> Lex<'a> {
-    fn new(text: &str, escape: char, env: Lookup<'a>, limit: usize) -> Self {
+    fn new(text: &str, escape: char, env: Lookup<'a>, limit: usize, split: bool) -> Self {
         Self {
             chars: text.chars().collect(),
             i: 0,
@@ -100,6 +106,7 @@ impl<'a> Lex<'a> {
             env,
             depth: 0,
             limit,
+            split,
         }
     }
 
@@ -143,17 +150,23 @@ impl<'a> Lex<'a> {
                     let v = self.dollar()?;
                     self.check(result.len() + v.len())?;
                     result.push_str(&v);
-                    words.add_string(&v);
+                    if self.split {
+                        words.add_string(&v);
+                    }
                 }
                 '\'' => {
                     let v = self.single_quote()?;
                     result.push_str(&v);
-                    words.add_raw_string(&v);
+                    if self.split {
+                        words.add_raw_string(&v);
+                    }
                 }
                 '"' => {
                     let v = self.double_quote()?;
                     result.push_str(&v);
-                    words.add_raw_string(&v);
+                    if self.split {
+                        words.add_raw_string(&v);
+                    }
                 }
                 _ => {
                     self.i += 1;

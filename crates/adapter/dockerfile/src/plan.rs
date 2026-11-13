@@ -606,8 +606,7 @@ impl Planner<'_> {
 
         for ins in &s.instrs {
             let line = ins.line;
-            let snapshot = state.clone();
-            let lookup = move |n: &str| find(&snapshot, n).map(|(v, _)| v.clone());
+            let lookup = |n: &str| find(&state, n).map(|(v, _)| v.clone());
             let step = |text: String, kind: StepKind| Step { line, text, kind };
             match &ins.kind {
                 Kind::From { .. } => unreachable!("FROM starts a stage"),
@@ -617,8 +616,7 @@ impl Planner<'_> {
                         let value = match (self.build_arg(name), default) {
                             (Some(v), _) => Some(v),
                             (None, Some(d)) => {
-                                let now = state.clone();
-                                let lookup = |n: &str| find(&now, n).map(|(v, _)| v.clone());
+                                let lookup = |n: &str| find(&state, n).map(|(v, _)| v.clone());
                                 Some(self.word(d, line, &lookup)?)
                             }
                             (None, None) => find(&self.global, name).cloned().flatten(),
@@ -807,7 +805,11 @@ impl Planner<'_> {
                         Some(raw) => {
                             let v = self.word(raw, line, &lookup)?;
                             text.push_str(&format!(" --chown={}", shown(&v)));
-                            Some(v.parse::<UserSpec>().map_err(|_| {
+                            let parsed = v
+                                .parse::<UserSpec>()
+                                .ok()
+                                .filter(|_| v.matches(':').count() < 2);
+                            Some(parsed.ok_or_else(|| {
                                 PlanError::at(
                                     line,
                                     format!("invalid --chown={v} (want USER[:GROUP])"),
