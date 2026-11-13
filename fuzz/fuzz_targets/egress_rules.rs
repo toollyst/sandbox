@@ -11,6 +11,10 @@
 //! - 맞추기는 대소문자와 끝의 `.`을 가리지 않는다.
 //! - `check`가 허락하면 맞는 규칙이 있고, IP 요청이면 그 주소 하나로만 연결한다. 맞는 규칙이 없으면 거부한다.
 //! - `is_public_ip`는 IPv4와 그 IPv4-mapped IPv6에 같은 답을 한다.
+//! - 게스트의 이름 묻기(`egress::lookup`, 투명 TCP의 DNS)는 목록으로만 답한다: 요청 호스트를 이름으로 물으면,
+//!   허용은 IP가 아닌 규칙이 그 이름에 맞을 때뿐이고, 포트들은 맞은 규칙의 포트를 겹치지 않게 늘어놓은 것이고,
+//!   `*` 규칙이 맞았는지와 같다. IP 주소 꼴의 이름은 허용되지 않는다. (이름을 풀지 않는 것은 이 함수가 해석기를
+//!   부르지 않는 것으로, 실행 코어 테스트가 본다.)
 
 #![no_main]
 
@@ -78,6 +82,33 @@ fuzz_target!(|data: &[u8]| {
             }
             Err(_) => assert!(!any_match || ip.is_none()),
         }
+    }
+
+    let answer = egress::lookup(&rules, host);
+    let named: Vec<&AllowRule> = rules
+        .iter()
+        .filter(|r| !r.is_ip() && r.matches_host(host))
+        .collect();
+    if answer.allowed() {
+        assert!(
+            !named.is_empty(),
+            "{host:?} allowed by lookup with no name rule"
+        );
+        assert!(
+            host.trim_end_matches('.').parse::<IpAddr>().is_err(),
+            "{host:?} is an address"
+        );
+        let mut ports: Vec<u16> = named.iter().filter_map(|r| r.port).collect();
+        ports.sort_unstable();
+        ports.dedup();
+        assert_eq!(answer.ports, ports, "{host:?}");
+        assert_eq!(
+            answer.any_port,
+            named.iter().any(|r| r.port.is_none()),
+            "{host:?}"
+        );
+    } else {
+        assert!(answer.ports.is_empty() && !answer.any_port);
     }
 
     if let Some(ip) = ip {

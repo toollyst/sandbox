@@ -411,13 +411,17 @@ but everything it runs is untrusted user code, so the host never trusts what it 
 ```text
 boot                         PID 1 and the connection-handling process (Linux)
 server                       one connection: version check, dispatch
-exec   copy   egress  dns    one request each (egress: HTTP proxy; dns: instant NXDOMAIN)
-wire   passwd  mkfs  cmdline messages, user lookup, formatting scratch, kernel command line
+exec   copy   egress        one request each (egress: HTTP proxy and the connections lent by the host)
+transparent                  transparent TCP: stand-in addresses for allowed names, listeners (egress owns it)
+wire   passwd  mkfs  cmdline  dns   messages, user lookup, formatting scratch, kernel command line, loopback DNS
 sys                          system calls (the only place with unsafe)
 ```
 
 Everything below `boot` works on plain streams and files, so it's unit-tested on the host. The tests that need real
-mounts run as root in a privileged container in CI (`SANDBOX_PRIVILEGED_TESTS=1`).
+mounts or routes run as root in a privileged container in CI (`SANDBOX_PRIVILEGED_TESTS=1`). The kernel side of
+transparent TCP (the netlink route, listening on stand-in addresses) is behind the `Net` trait; the fake executor
+implements it on the host's loopback and writes where it listens next to the scratch disk
+(`sbx_executor_fake::net_dir`, read by `sbx_executor_fake::probe` in tests).
 
 ## executor
 

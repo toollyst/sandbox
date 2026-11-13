@@ -13,7 +13,8 @@
 //! overlay                       빌드 층을 overlay로 쌓기 (Linux)
 //! server                        연결 하나: 버전 확인, 요청을 나눠 보냄
 //! exec   copy   egress  layer   요청별 처리 (egress: 나가는 연결 프록시, layer: 빌드 층 내보내기)
-//! wire   passwd  mkfs  cmdline  메시지 주고받기, 사용자 해석, scratch 포맷, 부팅 인자
+//! transparent                   투명 TCP: 가짜 주소 DNS, 듣는 소켓 (egress가 가진다)
+//! wire   passwd  mkfs  cmdline  dns   메시지 주고받기, 사용자 해석, scratch 포맷, 부팅 인자, 루프백 DNS
 //! disks                         부팅 때 디스크 차례에서 이미지 층 찾기
 //! sys                           시스템 호출 (unsafe는 여기만)
 //! ```
@@ -38,6 +39,7 @@ pub mod overlay;
 pub mod passwd;
 pub mod server;
 mod sys;
+pub mod transparent;
 pub mod usage;
 pub mod wire;
 

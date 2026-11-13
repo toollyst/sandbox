@@ -59,6 +59,9 @@ fn guest_msgs(out: &Path) {
             host: "pypi.org".into(),
             port: 443,
         },
+        GuestMsg::Lookup {
+            name: "github.com".into(),
+        },
     ];
     let host = [
         HostMsg::Hello { version: 2 },
@@ -87,6 +90,13 @@ fn guest_msgs(out: &Path) {
         },
         HostMsg::Refused {
             reason: "not allowed".into(),
+        },
+        HostMsg::Transparent {
+            literals: vec!["140.82.112.3:22".parse().unwrap()],
+        },
+        HostMsg::Resolved {
+            ports: vec![22, 443],
+            any_port: true,
         },
     ];
     let mut stream = Vec::new();
@@ -119,6 +129,11 @@ fn egress(out: &Path) {
             "[::ffff:10.0.0.1]:80\n[64:ff9b::a00:1]:80\n[::ffff:10.0.0.1] 80",
         ),
         ("refused", "example.com:443\nexample.org 443"),
+        // 이름 묻기(투명 TCP): 같은 이름의 여러 포트, 와일드카드, 포트가 *인 것, 이름이 아닌 것.
+        (
+            "lookups",
+            "github.com:22\ngithub.com:443\n*.githubusercontent.com:443\ncdn.example:*\n140.82.112.3:22\nGitHub.COM. 22",
+        ),
     ];
     for (name, text) in cases {
         put(out, "egress_rules", name, text.as_bytes());

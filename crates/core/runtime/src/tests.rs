@@ -1191,3 +1191,150 @@ fn published_ports_reach_a_service_inside_and_close_on_stop() {
     assert!(err.contains("can't listen"), "{err}");
     let _ = std::fs::remove_dir_all(&e.root);
 }
+
+/// 투명 TCP(fake 실행기의 흉내로): 허용된 이름은 가짜 주소와 듣는 소켓을 받고, 그 연결은 이름으로 호스트 확인을
+/// 지난다. 허용하지 않은 이름은 NXDOMAIN이고 호스트는 그 이름을 풀지 않는다. 모두 `events/network`에 남는다.
+#[cfg(unix)]
+#[test]
+fn transparent_tcp_resolves_from_the_list_and_passes_names_to_the_host_check() {
+    use std::io::Read;
+    use std::net::{Ipv4Addr, SocketAddrV4};
+
+    use sbx_executor_fake::probe;
+
+    let pid = std::process::id();
+    let ok = format!("ok-{pid}.invalid");
+    let blocked = format!("blocked-{pid}.invalid");
+    let e = Env::new("transp");
+    e.prepare_image();
+    let mut spec = e.spec(&["sh", "-c", "sleep 30"]);
+    spec.network = NetworkPolicy::Allow(
+        [
+            format!("{ok}:5432"),
+            format!("*.wild-{pid}.invalid:443"),
+            format!("any-{pid}.invalid:*"),
+            "203.0.113.7:22".into(),
+            "127.0.0.1:9".into(),
+        ]
+        .iter()
+        .map(|r| r.parse().unwrap())
+        .collect(),
+    );
+    let s = block_on(e.rt.create(spec)).unwrap();
+    let _main = block_on(s.start(IoMode::default())).unwrap();
+    let dir = sbx_executor_fake::net_dir(
+        &e.root
+            .join("d/sandboxes")
+            .join(s.id().as_str())
+            .join("scratch.img"),
+    );
+    let resolv = std::fs::read_to_string(dir.join("etc/resolv.conf")).unwrap();
+    assert!(resolv.ends_with("\nnameserver 127.0.0.1\n"), "{resolv}");
+
+    // 허용하지 않은 이름: 곧바로 NXDOMAIN. 호스트는 풀어 보지 않았다.
+    let r = probe::lookup(&dir, &blocked, 1).unwrap();
+    assert_eq!((r.rcode, r.addrs.len()), (3, 0));
+    assert!(!egress::was_resolved(&blocked));
+
+    // 허용된 이름: 가짜 주소. AAAA는 이름은 있고 레코드는 없다.
+    let r = probe::lookup(&dir, &ok, 1).unwrap();
+    assert_eq!(r.rcode, 0);
+    let ip = r.addrs[0];
+    assert!(sbx_guest_proto::in_fake_range(ip), "{ip}");
+    assert_eq!(
+        probe::lookup(&dir, &ok, 28).unwrap(),
+        probe::Reply {
+            rcode: 0,
+            addrs: vec![]
+        }
+    );
+    assert!(probe::route(&dir, SocketAddrV4::new(ip, 5432)).is_some());
+    assert!(probe::route(&dir, SocketAddrV4::new(ip, 5433)).is_none());
+    assert!(!egress::was_resolved(&ok), "a lookup resolves nothing");
+
+    // 그 주소로 붙으면 호스트가 이름으로 확인한다(.invalid는 풀리지 않아 거부, 프로그램은 닫힌 연결을 본다).
+    let mut c = probe::connect(&dir, &ok, 5432).unwrap();
+    let mut got = Vec::new();
+    let _ = c.read_to_end(&mut got);
+    assert!(got.is_empty());
+
+    // 와일드카드는 이름마다 다른 주소, 접미사 자체는 아니다.
+    let a = probe::lookup(&dir, &format!("a.wild-{pid}.invalid"), 1)
+        .unwrap()
+        .addrs;
+    let b = probe::lookup(&dir, &format!("b.wild-{pid}.invalid"), 1)
+        .unwrap()
+        .addrs;
+    assert!(a.len() == 1 && b.len() == 1 && a != b, "{a:?} {b:?}");
+    assert!(probe::route(&dir, SocketAddrV4::new(b[0], 443)).is_some());
+    assert_eq!(
+        probe::lookup(&dir, &format!("wild-{pid}.invalid"), 1)
+            .unwrap()
+            .rcode,
+        3
+    );
+    // 포트가 *인 규칙만 맞은 이름: 주소는 있고 듣는 곳은 없다(프록시로만).
+    let any = probe::lookup(&dir, &format!("any-{pid}.invalid"), 1)
+        .unwrap()
+        .addrs;
+    assert_eq!(any.len(), 1);
+    assert!(probe::route(&dir, SocketAddrV4::new(any[0], 80)).is_none());
+    // IP 규칙: 그 주소에서 듣는다. 루프백 주소 규칙은 게스트 자신이라 듣지 않는다.
+    assert!(probe::route(&dir, "203.0.113.7:22".parse().unwrap()).is_some());
+    assert!(probe::route(&dir, "127.0.0.1:9".parse().unwrap()).is_none());
+    // localhost는 호스트에 묻지 않는다.
+    let r = probe::lookup(&dir, "localhost", 1).unwrap();
+    assert_eq!(r.addrs, vec![Ipv4Addr::LOCALHOST]);
+
+    let log = network_log(&e.root.join("d"));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let events = loop {
+        let mut r = log.reader(sbx_events::Start::Beginning).unwrap();
+        let mut all = Vec::new();
+        while let Some(ev) = r.next_event().unwrap() {
+            all.push(ev);
+        }
+        if all
+            .iter()
+            .any(|ev| ev.action == "refuse" && ev.attributes.contains_key("port"))
+            || Instant::now() > deadline
+        {
+            break all;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let find = |action: &str, host: &str| {
+        events
+            .iter()
+            .find(|ev| {
+                ev.action == action && ev.attributes.get("host").map(String::as_str) == Some(host)
+            })
+            .unwrap_or_else(|| panic!("no {action} {host} in {events:?}"))
+    };
+    assert_eq!(
+        find("proxy_only", &format!("any-{pid}.invalid")).attributes["port"],
+        "*"
+    );
+    assert!(find("proxy_only", "127.0.0.1").attributes["reason"].contains("sandbox itself"));
+    assert_eq!(find("lookup", &ok).attributes["ports"], "5432");
+    let refused = find("refuse", &blocked);
+    assert_eq!(refused.attributes["via"], "dns");
+    assert!(!refused.attributes.contains_key("port"));
+    let passed = events
+        .iter()
+        .find(|ev| {
+            ev.action == "refuse" && ev.attributes.get("port").map(String::as_str) == Some("5432")
+        })
+        .unwrap_or_else(|| panic!("{events:?}"));
+    assert_eq!(passed.attributes["host"], ok);
+    assert!(
+        passed.attributes["reason"].contains("resolve"),
+        "{passed:?}"
+    );
+    assert!(!events.iter().any(|ev| ev.action == "notice"), "{events:?}");
+    // 연결은 이름으로 확인했다(호스트가 그때 처음 이름을 푼다). 거부된 이름은 끝까지 풀지 않았다.
+    assert!(egress::was_resolved(&ok));
+    assert!(!egress::was_resolved(&blocked));
+    block_on(s.stop(None, Duration::from_secs(5))).unwrap();
+    let _ = std::fs::remove_dir_all(&e.root);
+}

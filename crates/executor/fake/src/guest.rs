@@ -47,13 +47,51 @@ mod unix {
         )?))
     }
 
+    /// 투명 TCP의 게스트 커널 흉내. 규칙은 [`crate::netdir::net_dir`]에 있다.
+    struct FakeNet {
+        dir: PathBuf,
+    }
+
+    impl FakeNet {
+        fn append(&self, line: &str) -> io::Result<()> {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(self.dir.join(crate::netdir::NET_ROUTES))?;
+            f.write_all(format!("{line}\n").as_bytes())
+        }
+    }
+
+    impl sbx_guest::transparent::Net for FakeNet {
+        fn make_range_local(&self) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn make_local(&self, _ip: std::net::Ipv4Addr) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn listen(&self, addr: std::net::SocketAddrV4) -> io::Result<std::net::TcpListener> {
+            let l = std::net::TcpListener::bind("127.0.0.1:0")?;
+            self.append(&format!("{addr} {}", l.local_addr()?))?;
+            Ok(l)
+        }
+
+        fn point_resolver(&self) -> io::Result<()> {
+            sbx_guest::transparent::write_resolv_conf(&self.dir)
+        }
+    }
+
     /// 제어 소켓을 열고 게스트 처리를 돌린다. `shares`는 (태그, 호스트 경로)다.
-    /// `build_root`가 있으면 빌드 층을 그 디렉터리로 흉내 낸다([`crate::layers`]).
+    /// `dirs`(scratch 디스크 옆의 두 디렉터리)가 있으면 빌드 층을 첫째로 흉내 내고([`crate::layers`]),
+    /// 루프백 DNS와 투명 TCP를 둘째로 흉내 낸다([`crate::netdir::net_dir`]).
     pub(crate) fn start(
         socket: &Path,
         shares: Vec<(String, PathBuf)>,
-        build_root: Option<PathBuf>,
+        dirs: Option<(PathBuf, PathBuf)>,
     ) -> Result<FakeVm, ExecutorError> {
+        let (build_root, net) = dirs.unzip();
         let path: PathBuf = socket.to_owned();
         let _ = std::fs::remove_file(&path);
         let listener = UnixListener::bind(&path)?;
@@ -74,6 +112,24 @@ mod unix {
                 }
             })
         };
+        let egress = Arc::new(match &net {
+            Some(dir) => {
+                std::fs::create_dir_all(dir)?;
+                let _ = std::fs::remove_file(dir.join(crate::netdir::NET_ROUTES));
+                sbx_guest::egress::Egress::with_net(Box::new(FakeNet { dir: dir.clone() }))
+            }
+            None => sbx_guest::egress::Egress::default(),
+        });
+        if let Some(dir) = &net {
+            // 게스트의 루프백 DNS(53번 대신 빈 포트). 포트는 파일에 적는다.
+            let sock = std::net::UdpSocket::bind("127.0.0.1:0")?;
+            std::fs::write(
+                dir.join(crate::netdir::NET_DNS),
+                sock.local_addr()?.port().to_string(),
+            )?;
+            let resolver = egress.resolver();
+            thread::spawn(move || sbx_guest::dns::serve(&sock, resolver));
+        }
         let ctx = Arc::new(Ctx {
             root: "/".into(),
             on_shutdown: {
@@ -90,7 +146,7 @@ mod unix {
                     })?;
                 link_share(&host, Path::new(target))
             })),
-            egress: Default::default(),
+            egress,
             main: Default::default(),
             layers: build_root.map(|r| {
                 Box::new(crate::layers::DirLayers::new(r)) as Box<dyn sbx_guest::layer::Layers>
@@ -150,7 +206,7 @@ mod other {
     pub(crate) fn start(
         _socket: &std::path::Path,
         _shares: Vec<(String, std::path::PathBuf)>,
-        _build_root: Option<std::path::PathBuf>,
+        _dirs: Option<(std::path::PathBuf, std::path::PathBuf)>,
     ) -> Result<FakeVm, ExecutorError> {
         Err(ExecutorError::Unsupported(
             "the fake guest needs Unix sockets".into(),

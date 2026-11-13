@@ -115,6 +115,12 @@ pub fn serve<C: Conn>(conn: C, ctx: &Ctx) {
             Ok(slot) => ctx.egress.offer(slot),
             Err(e) => out.error(crate::wire::io_error("egress slot", &e)),
         },
+        Ok(HostMsg::Transparent { literals }) => match ctx.egress.enable_transparent(&literals) {
+            Ok(()) => {
+                let _ = out.send(&GuestMsg::Done);
+            }
+            Err(e) => out.error(Error::new(ErrorKind::Io, e)),
+        },
         Ok(HostMsg::SignalMain(n)) => {
             if ctx.main.signal(n) {
                 let _ = out.send(&GuestMsg::Done);

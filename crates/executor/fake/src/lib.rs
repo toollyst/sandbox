@@ -21,8 +21,11 @@
 //! - Unix에서만 VM을 "띄운다". 다른 OS에서는 `launch`가 [`ExecutorError::Unsupported`]다.
 //! - 빌드 층(`OpenLayer`, `ExportLayer`)은 overlay 대신 scratch 디스크 옆 디렉터리 하나([`build_root`])를 두 번 훑어
 //!   견준다. 규칙과 실제 overlay와 다른 점은 `layers` 모듈에 있다.
+//! - 루프백 DNS는 53번 대신 `127.0.0.1`의 빈 포트에서 듣고, 투명 TCP(`Transparent`)는 경로 표를 바꾸지 않는다.
+//!   가짜 주소에서 듣는 대신 `127.0.0.1`의 빈 포트에서 듣는다. 어디서 듣는지는 [`net_dir`]의 파일에 적는다.
+//!   호스트에서 도는 프로그램은 그 DNS와 가짜 주소를 모르므로, 테스트가 그 파일을 읽고 직접 묻고 붙는다.
 //!
-//! 모듈 층: `lib`, `process` → `guest` → `layers`, `vm`.
+//! 모듈 층: `lib`, `process` → `guest`, `probe` → `layers`, `vm`, `netdir`. `probe`는 테스트가 쓰는 도구다.
 //!
 //! - 의존: `sbx-model`, `sbx-executor`, `sbx-executor-proto`, `sbx-guest-proto`, `sbx-guest`(Unix)
 
@@ -37,10 +40,13 @@ use sbx_model::{Arch, BoxFuture, RootfsFormat};
 mod guest;
 #[cfg(unix)]
 mod layers;
+mod netdir;
+pub mod probe;
 #[cfg(unix)]
 pub mod process;
 mod vm;
 
+pub use netdir::{NET_DNS, NET_ROUTES, net_dir};
 pub use vm::{FakeVm, REASON_GUEST_SHUTDOWN, REASON_KILLED};
 
 /// 기본으로 붙일 수 있는 디스크 수. Firecracker 어댑터와 같다(층 디스크 7개와 scratch).
@@ -105,12 +111,12 @@ impl Executor for FakeExecutor {
                 .iter()
                 .map(|s| (s.tag.clone(), s.host_path.clone()))
                 .collect();
-            let build = vm
+            let scratch = vm
                 .disks
                 .iter()
                 .find(|d| d.role == sbx_executor::DiskRole::Scratch)
-                .map(|d| build_root(&d.path));
-            guest::start(&vm.control_channel.host_endpoint, shares, build)
+                .map(|d| (build_root(&d.path), net_dir(&d.path)));
+            guest::start(&vm.control_channel.host_endpoint, shares, scratch)
                 .map(|v| Box::new(v) as Box<dyn VmHandle>)
         })
     }
