@@ -25,13 +25,21 @@
 //!   `ARG`는 한 쌍씩 차례로 푼다(BuildKit과 같다).
 //! - 전역 `ARG`의 값: `--build-arg`가 있으면 그것, 없으면 기본값(앞의 전역 `ARG`로 푼다), 없으면 값이 없다.
 //! - 스테이지의 `ARG 이름`: `--build-arg`, 기본값, 같은 이름의 전역 `ARG` 값 순서로 찾는다. 범위는 그 스테이지
-//!   끝까지다. 전역 `ARG`는 스테이지 안에서 다시 선언해야 보인다.
+//!   끝까지이고, `FROM 그 스테이지`로 시작한 스테이지에도 이어진다(BuildKit은 바탕 스테이지의 `ARG`를 물려준다).
+//!   전역 `ARG`는 스테이지 안에서 다시 선언해야 보인다.
+//! - `ENV`와 `ARG`는 나중에 쓴 쪽이 풀기와 `RUN` 환경에서 이긴다. 바탕 이미지의 `Env`도 `ENV`다(`ARG PATH=/x`는 그 뒤
+//!   `RUN`의 `PATH`를 바꾼다). 이미지 config에는 `ENV`의 값만 남는다.
+//!
+//! 위 `ARG`·`ENV` 규칙은 Docker 29(BuildKit 0.34)에 같은 Dockerfile을 돌려 확인했다. 그 결과는 `tests/plan.rs`의
+//! `docker_*` 테스트에 기대값으로 있다(CI에는 Docker가 필요 없다).
 //! - 이미 정해진 전역 `ARG`(BuildKit의 플랫폼 인자): `TARGETPLATFORM`, `TARGETOS`, `TARGETARCH`, `TARGETVARIANT`,
 //!   `BUILDPLATFORM`, `BUILDOS`, `BUILDARCH`, `BUILDVARIANT`. sbx는 호스트 아키텍처로만 빌드하므로 둘 다
 //!   `linux/<호스트 아키텍처>`이고 변형(variant)은 빈 값이다(`linux/arm64`의 `v8`은 BuildKit도 비운다).
-//!   `--build-arg`로 바꿀 수 없다(오류다). 프록시 인자(`HTTP_PROXY` 등)는 따로 대하지 않는다: 다른 이름과 같이
+//!   `--build-arg`로 바꿀 수 없다(오류다). BuildKit은 그 값을 그대로 받지만(플랫폼은 그대로 두고 변수만 바뀐다)
+//!   sbx는 다른 아키텍처로 빌드하는 것처럼 보이는 값을 받지 않는다. 프록시 인자(`HTTP_PROXY` 등)는 따로 대하지 않는다: 다른 이름과 같이
 //!   `ARG`로 선언해야 쓰인다.
-//! - 어느 `ARG`로도 쓰이지 않은 `--build-arg`는 경고다(Docker와 같다).
+//! - 어느 `ARG`로도 쓰이지 않은 `--build-arg`는 경고다. BuildKit은 알리지 않는다(Docker 29로 확인). 오타를 잡으려고
+//!   sbx가 더 알린다.
 //!
 //! # 값 검사
 //!
@@ -95,8 +103,12 @@ struct From {
     problem: Option<PlanError>,
 }
 
-/// 바탕 스테이지에서 물려받는 것: config `Env`와 `SHELL`.
-type Inherited = (Vec<(String, String)>, Vec<String>);
+/// 바탕 스테이지에서 물려받는 것: config `Env`, `SHELL`, 끝의 환경(값이 있는 `ARG` 포함).
+type Inherited = (
+    Vec<(String, String)>,
+    Vec<String>,
+    Vec<(String, (String, Origin))>,
+);
 
 /// 스테이지 하나를 푼 결과.
 struct Done {
@@ -104,6 +116,8 @@ struct Done {
     /// config `Env`(자식 스테이지가 물려받는다).
     config_env: Vec<(String, String)>,
     shell: Vec<String>,
+    /// 스테이지 끝의 환경(`ENV`와 값이 있는 `ARG`). `FROM 이 스테이지`가 물려받는다.
+    state: Vec<(String, (String, Origin))>,
     deps: Vec<usize>,
 }
 
@@ -253,7 +267,7 @@ pub fn plan(
         }
         let parent = match froms[i].base {
             StageBase::Stage(j) => match &done[j] {
-                Some(d) => Some((d.config_env.clone(), d.shell.clone())),
+                Some(d) => Some((d.config_env.clone(), d.shell.clone(), d.state.clone())),
                 None => {
                     stack.push(j);
                     continue;
@@ -604,19 +618,27 @@ impl Planner<'_> {
         parent: Option<Inherited>,
         all: &[RawStage],
     ) -> Result<Done, PlanError> {
-        let (mut config_env, mut shell_cmd) = match (base, parent) {
-            (_, Some((env, shell))) => {
+        let (mut config_env, mut shell_cmd, inherited) = match (base, parent) {
+            (_, Some((env, shell, state))) => {
                 self.charge_pairs(&env, s.line)?;
-                (env, shell)
+                (env, shell, Some(state))
             }
-            (StageBase::Image(r), None) => (self.image_env(r, s.line)?, default_shell()),
-            _ => (vec![("PATH".into(), DEFAULT_PATH.into())], default_shell()),
+            (StageBase::Image(r), None) => (self.image_env(r, s.line)?, default_shell(), None),
+            _ => (
+                vec![("PATH".into(), DEFAULT_PATH.into())],
+                default_shell(),
+                None,
+            ),
         };
-        // 그 자리의 환경(풀기와 RUN). ENV와 ARG가 차례로 쓴다.
-        let mut state: Vec<(String, (String, Origin))> = config_env
-            .iter()
-            .map(|(k, v)| (k.clone(), (v.clone(), Origin::Env)))
-            .collect();
+        // 그 자리의 환경(풀기와 RUN). ENV와 ARG가 차례로 쓴다. 스테이지 바탕이면 그 스테이지 끝의 환경에서
+        // 시작한다: 그 스테이지의 `ARG` 값도 이어진다(BuildKit과 같다, Docker로 확인했다).
+        let mut state: Vec<(String, (String, Origin))> = match inherited {
+            Some(st) => st,
+            None => config_env
+                .iter()
+                .map(|(k, v)| (k.clone(), (v.clone(), Origin::Env)))
+                .collect(),
+        };
         let mut steps = Vec::new();
         let mut deps = Vec::new();
 
@@ -898,6 +920,7 @@ impl Planner<'_> {
             steps,
             config_env,
             shell: shell_cmd,
+            state,
             deps,
         })
     }

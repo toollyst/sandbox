@@ -166,8 +166,8 @@ pub struct RunStep {
     pub command: Command,
     /// 그 자리에서 값이 있는 `ARG`들. 실행 환경에 config `Env`와 함께 넣는다. 이미지에는 남기지 않는다.
     ///
-    /// `ENV`(바탕 이미지의 것 포함)에 같은 이름이 있는 것은 빠져 있다. `ENV`가 이긴다(Docker와 같다).
-    /// 캐시 키에 넣는다.
+    /// 같은 이름을 `ARG` 뒤에 `ENV`가 썼으면 빠져 있다(`ENV`가 이긴다). `ARG`가 `ENV`(바탕 이미지의 `Env` 포함)
+    /// 뒤에 오면 들어 있고, 실행 환경에서 config `Env`의 값을 덮는다(Docker 29로 확인). 캐시 키에 넣는다.
     pub args: Vec<(String, String)>,
 }
 
