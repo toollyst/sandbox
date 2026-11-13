@@ -77,6 +77,21 @@ fn host_samples() -> Vec<HostMsg> {
         HostMsg::Forward { port: 8080 },
         HostMsg::OpenLayer,
         HostMsg::ExportLayer,
+        HostMsg::Transparent { literals: vec![] },
+        HostMsg::Transparent {
+            literals: vec![
+                "140.82.112.3:22".parse().unwrap(),
+                "10.0.0.5:5432".parse().unwrap(),
+            ],
+        },
+        HostMsg::Resolved {
+            ports: vec![],
+            any_port: false,
+        },
+        HostMsg::Resolved {
+            ports: vec![22, 443],
+            any_port: true,
+        },
         HostMsg::ExecDetached(Exec {
             args: vec!["sleep".into(), "9".into()],
             env: vec![],
@@ -125,6 +140,9 @@ fn guest_samples() -> Vec<GuestMsg> {
             port: 443,
         },
         GuestMsg::LayerOpened { layer: 3 },
+        GuestMsg::Lookup {
+            name: "github.com".into(),
+        },
     ]
     .into_iter()
     .chain(layer_samples().into_iter().map(GuestMsg::LayerEntry))

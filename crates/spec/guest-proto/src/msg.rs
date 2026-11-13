@@ -276,6 +276,7 @@ pub enum HostMsg {
     /// [`GuestMsg::Connect`]의 답: 연결했다.
     Connected,
     /// [`GuestMsg::Connect`]의 답: 허용하지 않거나 연결하지 못했다. 연결의 마지막 메시지.
+    /// ([`GuestMsg::Lookup`]의 답은 [`HostMsg::Resolved`]다.)
     Refused {
         /// 이유.
         reason: String,
@@ -311,6 +312,28 @@ pub enum HostMsg {
     /// 흐름: 게스트가 [`GuestMsg::LayerEntry`]와 (일반 파일 뒤에) [`GuestMsg::Data`]를 보내고 [`GuestMsg::End`]로
     /// 끝낸다. 열린 층이 없으면 [`GuestMsg::Error`].
     ExportLayer,
+    /// 투명 TCP를 켠다(`--network allow`일 때 시작에서 한 번). 프록시를 모르는 프로그램도 허용된 `HOST:PORT`에
+    /// 닿게 한다. 규칙은 `sbx-guest`의 `transparent` 모듈에 있다.
+    ///
+    /// 게스트는 가짜 주소 범위를 local로 잡고, 루프백 DNS가 이름을 [`GuestMsg::Lookup`]으로 호스트에 묻게 하고,
+    /// `/etc/resolv.conf`가 루프백 DNS를 가리키게 쓰고(쓰기 층에), `literals`의 주소마다 듣는다.
+    /// `literals`는 IP로 적은 규칙 가운데 게스트가 들을 수 있는 IPv4 주소와 포트다(어느 것인지는 호스트가 고른다).
+    ///
+    /// 흐름: 게스트가 [`GuestMsg::Done`]. 일부나 전부를 하지 못했으면 [`GuestMsg::Error`]이고, 한 것은 남는다
+    /// (프록시는 어느 쪽이든 그대로다). 모르는 게스트는 `Protocol` 오류로 답한다.
+    Transparent {
+        /// 듣는 IP 규칙 주소.
+        literals: Vec<std::net::SocketAddrV4>,
+    },
+    /// [`GuestMsg::Lookup`]의 답. 이름에 맞는 허용 규칙의 포트들(작은 것부터, 겹치지 않게)과, 포트가 `*`인 규칙이
+    /// 맞았는지. 둘 다 비었으면 그 이름은 허용되지 않았다. 호스트는 이 답을 위해 이름을 풀지 않는다.
+    /// 이 답 뒤로 그 연결은 다시 맡긴 연결이다(다음 `Lookup`이나 `Connect`에 쓴다).
+    Resolved {
+        /// 열린 포트들.
+        ports: Vec<u16>,
+        /// 포트가 `*`인 규칙이 맞았다(프록시로만 닿는다).
+        any_port: bool,
+    },
 }
 
 /// 게스트 → 호스트.
@@ -365,6 +388,12 @@ pub enum GuestMsg {
     },
     /// [`HostMsg::ExportLayer`]의 항목.
     LayerEntry(LayerEntry),
+    /// [`HostMsg::EgressSlot`]으로 맡긴 연결로 이름 하나가 허용 목록에 있는지 묻는다(투명 TCP의 DNS).
+    /// 호스트는 [`HostMsg::Resolved`]로 답하고 연결을 맡긴 채로 둔다. 호스트는 `name`을 믿지 않는다.
+    Lookup {
+        /// 프로그램이 물은 이름.
+        name: String,
+    },
 }
 
 /// 게스트 전체의 자원 사용량. 게스트가 보고하는 값이라 호스트는 표시에만 쓴다(믿고 결정하지 않는다).
@@ -438,6 +467,8 @@ mod tag {
     pub const FORWARD: u8 = 0x16;
     pub const OPEN_LAYER: u8 = 0x17;
     pub const EXPORT_LAYER: u8 = 0x18;
+    pub const TRANSPARENT: u8 = 0x19;
+    pub const RESOLVED: u8 = 0x1A;
 
     pub const HELLO_ACK: u8 = 0x81;
     pub const STARTED: u8 = 0x82;
@@ -455,6 +486,7 @@ mod tag {
     pub const G_USAGE: u8 = 0x8E;
     pub const LAYER_OPENED: u8 = 0x8F;
     pub const LAYER_ENTRY: u8 = 0x90;
+    pub const LOOKUP: u8 = 0x91;
 }
 
 fn bad<T>(m: impl Into<String>) -> DecodeResult<T> {
@@ -720,6 +752,19 @@ impl HostMsg {
             }
             HostMsg::OpenLayer => e = Encoder::new(tag::OPEN_LAYER),
             HostMsg::ExportLayer => e = Encoder::new(tag::EXPORT_LAYER),
+            HostMsg::Transparent { literals } => {
+                e = Encoder::new(tag::TRANSPARENT);
+                e.list(literals, |e, a| {
+                    e.u32(u32::from(*a.ip())).u16(a.port());
+                });
+            }
+            HostMsg::Resolved { ports, any_port } => {
+                e = Encoder::new(tag::RESOLVED);
+                e.list(ports, |e, p| {
+                    e.u16(*p);
+                })
+                .bool(*any_port);
+            }
         }
         e.finish()
     }
@@ -780,6 +825,16 @@ impl HostMsg {
             tag::FORWARD => HostMsg::Forward { port: d.u16()? },
             tag::OPEN_LAYER => HostMsg::OpenLayer,
             tag::EXPORT_LAYER => HostMsg::ExportLayer,
+            tag::TRANSPARENT => HostMsg::Transparent {
+                literals: d.list(|d| {
+                    let ip = std::net::Ipv4Addr::from(d.u32()?);
+                    Ok(std::net::SocketAddrV4::new(ip, d.u16()?))
+                })?,
+            },
+            tag::RESOLVED => HostMsg::Resolved {
+                ports: d.list(|d| d.u16())?,
+                any_port: d.bool()?,
+            },
             t => return bad(format!("unknown host message {t:#04x}")),
         };
         d.end()?;
@@ -870,6 +925,10 @@ impl GuestMsg {
                 e = Encoder::new(tag::LAYER_ENTRY);
                 enc_layer_entry(&mut e, x);
             }
+            GuestMsg::Lookup { name } => {
+                e = Encoder::new(tag::LOOKUP);
+                e.str(name);
+            }
         }
         e.finish()
     }
@@ -913,6 +972,7 @@ impl GuestMsg {
             }),
             tag::LAYER_OPENED => GuestMsg::LayerOpened { layer: d.u32()? },
             tag::LAYER_ENTRY => GuestMsg::LayerEntry(dec_layer_entry(&mut d)?),
+            tag::LOOKUP => GuestMsg::Lookup { name: d.string()? },
             t => return bad(format!("unknown guest message {t:#04x}")),
         };
         d.end()?;

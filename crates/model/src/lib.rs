@@ -565,9 +565,11 @@ impl AllowRule {
 
     /// 요청한 호스트(이름 또는 IP 문자열)와 포트가 이 규칙에 맞는지. 호스트는 대소문자를 무시한다.
     pub fn matches(&self, host: &str, port: u16) -> bool {
-        if self.port.is_some_and(|p| p != port) {
-            return false;
-        }
+        self.port.is_none_or(|p| p == port) && self.matches_host(host)
+    }
+
+    /// 포트는 보지 않고 호스트만 맞는지([`AllowRule::matches`]의 앞 절반). 투명 TCP의 이름 묻기가 쓴다.
+    pub fn matches_host(&self, host: &str) -> bool {
         let host = host.trim_end_matches('.').to_ascii_lowercase();
         if let Ok(ip) = self.host.parse::<std::net::IpAddr>() {
             return host.parse::<std::net::IpAddr>() == Ok(ip);
@@ -579,6 +581,94 @@ impl AllowRule {
             None => host == self.host,
         }
     }
+}
+
+/// 투명 TCP(프록시를 모르는 프로그램의 길)로 닿을 수 있는 규칙인지. 정본은 이 함수다.
+///
+/// 게스트는 듣는 소켓으로 연결을 받으므로 포트를 미리 알아야 하고, 그 주소를 게스트 안에서 local로 잡을 수 있어야
+/// 한다. 그렇지 않은 규칙은 HTTP 프록시(`HTTP_PROXY`)로만 닿는다. 어느 쪽이든 호스트의 확인은 같다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reach {
+    /// 이름 규칙: 게스트 DNS가 가짜 주소를 주고 그 주소의 이 포트에서 듣는다.
+    Name,
+    /// IPv4 주소 규칙: 게스트가 이 주소를 local로 잡고 듣는다.
+    Literal(std::net::SocketAddrV4),
+    /// 프록시로만 닿는다. 이유는 [`ProxyOnly::why`].
+    ProxyOnly(ProxyOnly),
+}
+
+/// 투명 TCP로 닿지 못하는 까닭.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProxyOnly {
+    /// 포트가 `*`다: 어느 포트로 올지 몰라 들을 수 없다.
+    AnyPort,
+    /// IPv6 주소: 게스트 커널에 바라는 것은 IPv4 루프백뿐이다(실행기 규약).
+    Ipv6,
+    /// `localhost`이거나 루프백·지정되지 않은 주소·멀티캐스트·브로드캐스트: 게스트 안에서는 게스트 자신을 가리킨다.
+    Local,
+    /// 가짜 주소 범위([`FAKE_RANGE`]) 안의 주소: 이름에 줄 주소와 겹친다.
+    FakeRange,
+}
+
+/// 투명 TCP가 이름에 주는 가짜 주소의 범위: `198.18.0.0/15`(RFC 2544, 장비 시험용이라 실제로 쓰이지 않는다).
+pub const FAKE_RANGE: (std::net::Ipv4Addr, u8) = (std::net::Ipv4Addr::new(198, 18, 0, 0), 15);
+
+/// `ip`가 [`FAKE_RANGE`] 안인지.
+pub fn in_fake_range(ip: std::net::Ipv4Addr) -> bool {
+    let (base, len) = FAKE_RANGE;
+    let mask = u32::MAX << (32 - len);
+    u32::from(ip) & mask == u32::from(base)
+}
+
+impl ProxyOnly {
+    /// 사용자에게 보이는 설명(경고와 이벤트).
+    pub fn why(self) -> &'static str {
+        match self {
+            ProxyOnly::AnyPort => {
+                "a rule for every port (*) cannot be listened for; programs that ignore HTTP_PROXY need a port (HOST:22)"
+            }
+            ProxyOnly::Ipv6 => {
+                "the sandbox has no IPv6; only programs that use HTTP_PROXY reach it"
+            }
+            ProxyOnly::Local => {
+                "inside the sandbox this address is the sandbox itself; only programs that use HTTP_PROXY reach the host's"
+            }
+            ProxyOnly::FakeRange => {
+                "the address is in 198.18.0.0/15, which sbx gives to allowed names"
+            }
+        }
+    }
+}
+
+impl AllowRule {
+    /// 투명 TCP로 닿는지. 규칙은 [`Reach`].
+    pub fn reach(&self) -> Reach {
+        use std::net::IpAddr;
+        let Some(port) = self.port else {
+            return Reach::ProxyOnly(ProxyOnly::AnyPort);
+        };
+        match self.host.parse::<IpAddr>() {
+            Ok(IpAddr::V6(_)) => Reach::ProxyOnly(ProxyOnly::Ipv6),
+            Ok(IpAddr::V4(v4)) => {
+                if v4.is_loopback() || v4.is_unspecified() || v4.is_multicast() || v4.is_broadcast()
+                {
+                    Reach::ProxyOnly(ProxyOnly::Local)
+                } else if in_fake_range(v4) {
+                    Reach::ProxyOnly(ProxyOnly::FakeRange)
+                } else {
+                    Reach::Literal(std::net::SocketAddrV4::new(v4, port))
+                }
+            }
+            Err(_) if is_localhost_name(&self.host) => Reach::ProxyOnly(ProxyOnly::Local),
+            Err(_) => Reach::Name,
+        }
+    }
+}
+
+/// `localhost`와 그 아래 이름(`*.localhost`). 게스트 DNS는 이 이름을 호스트에 묻지 않고 루프백으로 답한다(RFC 6761).
+pub fn is_localhost_name(name: &str) -> bool {
+    let n = name.trim_end_matches('.').to_ascii_lowercase();
+    n == "localhost" || n.ends_with(".localhost")
 }
 
 impl fmt::Display for AllowRule {
@@ -1182,6 +1272,55 @@ mod tests {
         ] {
             assert!(check_sandbox_name(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn which_rules_transparent_tcp_can_reach() {
+        let r = |s: &str| s.parse::<AllowRule>().unwrap().reach();
+        assert_eq!(r("github.com:22"), Reach::Name);
+        assert_eq!(r("*.githubusercontent.com:443"), Reach::Name);
+        assert_eq!(
+            r("140.82.112.3:22"),
+            Reach::Literal("140.82.112.3:22".parse().unwrap())
+        );
+        assert_eq!(
+            r("10.0.0.5:5432"),
+            Reach::Literal("10.0.0.5:5432".parse().unwrap())
+        );
+        assert_eq!(r("github.com:*"), Reach::ProxyOnly(ProxyOnly::AnyPort));
+        assert_eq!(r("10.0.0.5:*"), Reach::ProxyOnly(ProxyOnly::AnyPort));
+        assert_eq!(r("[2001:db8::1]:443"), Reach::ProxyOnly(ProxyOnly::Ipv6));
+        for local in [
+            "localhost:8080",
+            "LocalHost.:8080",
+            "*.localhost:80",
+            "a.localhost:80",
+            "127.0.0.1:8080",
+            "127.9.9.9:1",
+            "0.0.0.0:80",
+            "255.255.255.255:9",
+            "224.0.0.1:9",
+        ] {
+            assert_eq!(r(local), Reach::ProxyOnly(ProxyOnly::Local), "{local}");
+        }
+        assert_eq!(r("198.18.0.1:80"), Reach::ProxyOnly(ProxyOnly::FakeRange));
+        assert_eq!(
+            r("198.19.255.255:80"),
+            Reach::ProxyOnly(ProxyOnly::FakeRange)
+        );
+        assert_eq!(
+            r("198.20.0.1:80"),
+            Reach::Literal("198.20.0.1:80".parse().unwrap())
+        );
+        assert_eq!(
+            r("198.17.255.255:80"),
+            Reach::Literal("198.17.255.255:80".parse().unwrap())
+        );
+        // 이름만 맞추기: 포트는 보지 않는다.
+        let w: AllowRule = "*.example.com:443".parse().unwrap();
+        assert!(w.matches_host("A.Example.com."));
+        assert!(!w.matches_host("example.com"));
+        assert!(!w.matches("a.example.com", 22));
     }
 
     #[test]
