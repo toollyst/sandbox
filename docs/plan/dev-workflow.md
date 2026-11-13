@@ -190,9 +190,9 @@ sbx run --rm --connect db:5432 app        # 앱 안에서 db:5432로 닿는다. 
 ```
 
 - `--connect NAME:PORT`는 허용 목록과 같은 생각이다. 무엇에 닿을지 하나씩 연다.
-- 게스트 안에서 `NAME`은 `/etc/hosts`로 루프백 주소 하나(`127.0.x.y`)를 가리키고, 게스트가 그 주소의 `PORT`에서
-  듣는다. 받은 연결은 vsock으로 호스트에 가고, 호스트는 대상 샌드박스의 게스트에 지금의 `Forward`로 넘긴다. VM에는
-  여전히 네트워크 장치가 없다.
+- 8장의 투명 TCP를 그대로 쓴다. 게스트가 `NAME`을 물으면 호스트가 `--connect` 목록에서 찾아 가짜 주소를 주고,
+  게스트는 그 주소의 `PORT`에서 듣는다. 받은 연결은 vsock으로 호스트에 가고, 호스트는 대상 샌드박스의 게스트에
+  지금의 `Forward`로 넘긴다. VM에는 여전히 네트워크 장치가 없다.
 - HTTP 프록시가 아니라 TCP를 그대로 넘기므로 postgres, redis 같은 어느 프로토콜이든 된다.
 - 연결마다 대상을 새로 찾는다. 그래서 대상이 다시 시작해도 다음 연결은 된다. 대상이 없으면 그 연결만 끊긴다.
   기록은 `events/network`에 `connect`로 남는다.
@@ -210,7 +210,74 @@ sbx run --rm --connect db:5432 app        # 앱 안에서 db:5432로 닿는다. 
 - 0.3에서 sbx가 하는 것: `live_share`가 없을 때의 오류에 "이 실행기는 실시간 공유가 없다, `--mount type=copy`나
   virtio-fs가 있는 실행기를 쓰라"를 넣고, smoke에 실행기가 `live_share`를 알릴 때만 도는 실시간 공유 확인을 더한다.
 
-## 8. `sbx compose` (마지막)
+## 8. 나가는 길: 프록시를 모르는 프로그램
+
+### 8.1 문제
+
+지금 `--network allow`의 길은 게스트 안 HTTP 프록시 하나다. `HTTP_PROXY`를 따르는 프로그램(curl, apk, apt, pip, npm,
+cargo)은 나가지만, 따르지 않는 프로그램은 허용 목록에 있어도 나가지 못한다. 빌드와 개발에서 흔히 걸리는 것은 이렇다.
+
+- ssh로 받는 `git`(`git@github.com:…`, 포트 22)과 `git://`
+- HTTP가 아닌 TCP 클라이언트: 바깥 postgres·redis·mongo, SMTP, gRPC 일부
+- 프록시를 읽지 않는 다운로더(언어 런타임이나 설치 스크립트가 직접 소켓을 여는 것)
+- 그리고 무엇이 막혔는지 모른다. 이름이 게스트 안에서 바로 NXDOMAIN으로 끝나므로 호스트에는 아무 기록도 남지 않는다.
+
+### 8.2 방법: 가짜 주소 DNS와 투명 TCP
+
+VM에 네트워크 장치를 붙이지 않고, 이름 단위 허용 목록과 호스트의 강제를 그대로 두고, TCP라면 어느 프로그램이든 나가게 한다.
+
+1. **이름을 호스트에 묻는다.** 게스트의 루프백 DNS(지금은 늘 NXDOMAIN)가 A 질의를 받으면 호스트에 `Lookup{name}`을
+   보낸다(빌려 준 egress 연결 하나로).
+2. **호스트가 목록으로만 답한다.** 이름이 허용 목록(`--allow`)이나 `--connect`에 맞으면 열린 포트들을 돌려준다. 맞지
+   않으면 거절하고 `events/network`에 `refuse`(이름)를 남긴다. 이때 호스트는 그 이름을 실제로 풀지 않는다. 그래서
+   허용하지 않은 이름은 DNS로도 새어 나가지 않는다.
+3. **게스트가 가짜 주소를 준다.** 허용된 이름에 `198.18.0.0/15`(RFC 2544, 실제로 쓰이지 않는 범위)에서 주소 하나를 주고,
+   그 주소의 허용된 포트마다 듣는 소켓을 연다. 그 뒤에 DNS 응답을 보낸다. 범위 전체는 부팅 때 루프백의 local 경로로
+   잡는다(`ip route add local 198.18.0.0/15 dev lo`와 같은 netlink 메시지 하나).
+4. **연결을 넘긴다.** 프로그램이 가짜 주소로 연결하면 게스트가 받아 주소를 이름으로 되돌리고, 지금 프록시가 보내는 것과
+   같은 `Connect{host, port}`를 보낸다. 호스트 쪽 확인(이름 풀기, 사설 주소 거부, `--egress-limit`, 기록)은 한 줄도
+   바뀌지 않는다.
+
+성질:
+
+- 프로그램은 목적지를 속일 수 없다. 고를 수 있는 것은 가짜 주소뿐이고, 그 주소는 허용된 이름 하나에 묶여 있다. 호스트는
+  그 이름으로 연결한다.
+- 게스트가 허용 목록을 알 필요가 없다. 정본은 여전히 호스트의 목록이고, 망가진 게스트가 할 수 있는 일은 지금과 같다.
+- IP로 적은 규칙(`--allow 140.82.112.3:22`)은 그 주소를 루프백의 `/32` local 주소로 더하고 같은 방법으로 듣는다.
+- AAAA 질의에는 "이름은 있고 주소는 없다"(NOERROR, 빈 답)로 답해 프로그램이 IPv4를 쓰게 한다. NXDOMAIN으로 답하면
+  일부 리졸버는 이름이 없다고 본다.
+- `HTTP_PROXY`는 지금처럼 함께 둔다. 프록시를 따르는 프로그램은 그대로 프록시로 나간다. 두 길 모두 같은 목록을 지난다.
+- 게스트 커널에 더 바라는 것이 없다. IPv4 루프백, local 경로, 보통의 소켓뿐이다. 커널은 실행기의 것이므로 netfilter나
+  TUN 같은 선택 기능에 기대지 않는다.
+
+### 8.3 남는 한계
+
+- **포트가 `*`인 규칙.** 어느 포트로 올지 미리 모르면 들을 수 없다. `HOST:*`는 지금처럼 프록시로만 나간다. 투명 TCP에는
+  포트를 적어야 한다고 문서와 경고에 쓴다.
+- **UDP.** DNS 말고는 여전히 나가지 못한다. QUIC(HTTP/3)은 보통 TCP로 돌아간다.
+- **이미지의 `/etc/resolv.conf`.** 이미지가 바깥 이름 서버(`8.8.8.8` 등)를 적어 두면 질의가 루프백 DNS에 오지 않는다.
+  그래서 `--network allow`나 `--connect`가 있을 때는 Docker처럼 sbx가 `/etc/resolv.conf`를 `nameserver 127.0.0.1`로
+  덮는다(overlay 위층에, 이미지는 그대로). 지금 `dns.rs`의 "건드리지 않는다"를 바꾸는 결정이다.
+- **자체 DNS를 쓰는 프로그램**(DoH, 이름 서버를 직접 고르는 것)은 나가지 못한다. 의도한 대로다.
+- **비공개 저장소의 ssh 키.** 나가는 길과 별개로 키가 VM 안에 있어야 한다. 빌드에서는 `RUN --mount=type=ssh`(나중)로
+  호스트의 ssh agent를 그 단계에만 빌려 준다.
+
+### 8.4 버린 길
+
+| 길 | 버린 까닭 |
+|---|---|
+| VM에 네트워크 장치를 붙이고 호스트의 사용자 공간 스택(passt, gVisor netstack)으로 거른다 | "네트워크 장치가 없다"는 경계를 버린다. 실행기 기능이 더 필요하고, 거르는 단위가 이름이 아니라 IP가 된다 |
+| 게스트 안 TUN과 사용자 공간 TCP 스택(smoltcp 등) | 모든 포트와 UDP까지 되지만 게스트 init에 TCP 스택이 들어간다(`sbx-guest`는 `libc`만 쓴다). 실행기 커널에 TUN이 있어야 한다. `HOST:*`가 꼭 필요해지면 다시 본다 |
+| 게스트 netfilter(REDIRECT, TPROXY) | 실행기 커널의 선택 기능에 기댄다. nftables netlink를 게스트에 들여야 한다 |
+| `LD_PRELOAD`로 `connect()` 가로채기 | 정적 바이너리(Go 등)는 지나간다 |
+
+### 8.5 범위
+
+빌드만의 기능이 아니다. `run`, `exec`, MCP 샌드박스 모두 `--network allow`면 이 길을 얻는다. 막힌 이름이 호스트에
+기록되므로 `sbx build`가 실패할 때 "막힌 곳: `github.com:22`, `--allow github.com:22`를 더하라"를 보여 줄 수 있다.
+`sbx-guest-proto`에 `Lookup`과 그 답을 더한다. 실행기 규약은 바뀌지 않는다.
+
+## 9. `sbx compose` (마지막)
 
 - `compose.yaml`의 일부만 읽는다: `services`의 `image`, `build`, `command`, `entrypoint`, `environment`, `env_file`,
   `ports`, `volumes`(이름 붙은 볼륨과 경로), `depends_on`(시작 순서만), 최상위 `volumes`.
@@ -220,7 +287,7 @@ sbx run --rm --connect db:5432 app        # 앱 안에서 db:5432로 닿는다. 
 - `up`, `down`, `ps`, `logs`, `build`. 상태는 샌드박스 라벨(`io.github.toollyst.sandbox.compose.project`)에만 둔다.
   따로 저장하지 않는다.
 
-## 9. 단계
+## 10. 단계
 
 모든 단계는 CLI와 `sbx tui`를 함께 한다. "끝났다는 기준"은 fake 실행기 e2e와 CI `vm` 작업의 smoke 둘 다다.
 
@@ -232,27 +299,21 @@ sbx run --rm --connect db:5432 app        # 앱 안에서 db:5432로 닿는다. 
 | D4 | 출력 `type=docker`, `type=oci`, `SOURCE_DATE_EPOCH` | `docker run`으로 같은 결과. `COPY`와 결정적인 `RUN`만 있는 Dockerfile을 두 번 빌드하면 digest가 같다 |
 | D5 | `sbx push`, `build --push` | 로컬 레지스트리(`registry:2`)와 GHCR에 올리고 다른 도구로 받는다 |
 | D6 | bench: 같은 Dockerfile을 `docker build`와 견준다(처음, 캐시, 한 줄 바꿈) | README에 숫자를 싣는다 |
+| N1 | 투명 TCP(8장): `Lookup`, 가짜 주소 DNS, 게스트 리스너, `resolv.conf` 덮기, 막힌 이름 기록 | ssh로 `git clone`(`--allow github.com:22`)과 바깥 postgres에 `psql`이 되고, 목록에 없는 이름은 호스트가 풀지 않은 채 `refuse`로 남는다. `HOST:*`는 프록시로만 나간다 |
 | V1 | 볼륨 | postgres 데이터가 `rm` 뒤에도 남고, 두 번째 쓰기 붙이기는 거부된다 |
 | V2 | `--connect` | 앱 샌드박스에서 `psql -h db`가 되고, 열지 않은 포트와 다른 샌드박스는 닿지 않는다 |
 | V3 | 실시간 마운트 안내와 smoke(7.3) | `live_share`가 없는 실행기에서 오류가 다른 길을 알리고, 있는 실행기에서 smoke가 호스트의 변경을 본다 |
 | R1 | 문서, README 문구와 비교표, `build` → `run` → `--connect`로 postgres까지 잇는 데모 → 0.3.0 | docs-before-main 확인 |
 | C1 | `sbx compose`(0.3 뒤) | 앱 + postgres + redis 예제가 `up` 한 번으로 뜨고 `down`으로 정리된다 |
 
-## 10. 위험
+## 11. 위험
 
 - **Dockerfile 호환.** 사용자는 "내 Dockerfile이 그냥 돈다"를 기대한다. 처음 범위로 흔한 Dockerfile 대부분은 되지만
   `--mount=type=cache`를 쓰는 Dockerfile이 늘고 있다. 공개 저장소의 Dockerfile 묶음으로 얼마나 되는지 재고, 그
   숫자로 "나중" 순서를 정한다.
 - **빌드 네트워크 기본 차단.** 처음 쓰는 사람은 막힌 연결부터 만난다. 막힌 `host:port`와 그대로 붙여 쓸 수 있는
-  `--allow`를 오류에 넣는 것이 이 기능의 첫인상이다. 또 나가는 길은 HTTP 프록시뿐이라 프록시를 따르지 않는 것
-  (`git`의 ssh·`git://`, 일부 언어의 자체 다운로더)은 허용해도 나가지 못한다. 흔한 Dockerfile 묶음으로 어떤 도구가
-  걸리는지 D1·D3에서 재고 문서에 적는다.
-- **실시간 마운트가 0.3에 없을 수 있다.** 개발할 때 Docker Desktop을 쓰는 가장 흔한 까닭이 소스 폴더 마운트와 핫
-  리로드다. wick에 virtio-fs를 넣는 일은 작지 않다. Linux의 virtiofsd는 Linux 호스트에서만 돌기 때문에, macOS(HVF)의
-  wick에는 VMM 안에서 도는 virtio-fs 서버가 따로 필요하다. 0.3의 README와 데모는 "마운트는 실행기가 갖출 때"를 분명히
-  하고, wick 쪽 일정이 나오면 이 결정(3장)을 다시 본다.
-- **macOS에는 Apple `container`가 있다.** 컨테이너마다 VM이고 빌드도 VM 안에서 한다. 그 앞에서 sbx의 차이는 기본
-  차단 네트워크와 허용 목록(빌드 포함), Linux, 열린 실행기 규약, MCP다. README의 비교는 이 넷으로 한다.
+  `--allow`를 오류에 넣는 것이 이 기능의 첫인상이다(8.5). 투명 TCP 뒤에도 남는 것(`HOST:*`, UDP)은 흔한 Dockerfile
+  묶음으로 얼마나 걸리는지 D3에서 재고 문서에 적는다.
 - **이름.** Docker Sandboxes도 `sbx`다. Docker의 영역으로 들어갈수록 헷갈림이 커진다. README의 "Not Docker
   Sandboxes" 절을 위로 올리는 것을 0.3에서 함께 본다.
 - **범위가 커진다.** Docker Desktop 대체로 보이면 Compose 전체, 브리지 네트워크, Engine API 요청이 온다. 2장의
