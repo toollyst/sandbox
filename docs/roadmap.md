@@ -200,7 +200,7 @@ VM 안에서, 나가는 연결은 허용 목록으로만. 기획: [docs/plan/dev
 | V4 | 시계 맞추기(게스트 init, vsock으로 받은 호스트 시각) | 없음 | 완료 (소유 프로세스가 시작 직후, 60초마다, 벽시계가 단조 시계와 어긋나거나 타이머가 늦게 깨면 곧바로 `ClockSync`를 보낸다. 게스트는 왕복 시간으로 차이를 재고 128 ms 이상이면 바로, 아니면 천천히 맞춘다. 옵션은 없다. 실제 VM(macOS arm64, wick, 2026-11-13): 부팅 시계가 0.234초 늦은 것을 시작 때 맞추고, `date -s 2020-01-01` 뒤 shim을 SIGSTOP·SIGCONT하면 곧바로, 그냥 두면 63초 안에 호스트와 같아진다. 남음: 실제 호스트 잠자기, 하루 어긋남, 실제 커널의 천천히 맞추기 테스트(`SANDBOX_CLOCK_TESTS=1`, 버릴 VM 안에서만)) |
 | V3 | 실시간 마운트: 어댑터의 기능 확인과 `extensions.fs`, 호스트 변경 알림, 안내, smoke(`live_share`일 때만) | virtio-fs(선택) | 계획. sbx 쪽은 fake 실행기로 끝낸다. 0.3은 wick을 기다리지 않는다 |
 | D6 | bench: 같은 Dockerfile을 `docker build`와 견준다 | 없음 | 계획 |
-| E1 | 깔면 바로 돈다(기획서 2.1): 설치 스크립트가 기본 실행기까지 깔고, 실행기가 없으면 `run`·`create`·`start`·`build`가 서명된 공식 저장소에서 기본 실행기(wick)를 받아 깔고 이어서 한다. 끄는 길(`SBX_EXECUTOR=none`, `SBX_NO_AUTO_EXECUTOR=1`), 호환 표·README·install 문서 | 없음. 공식 저장소에 wick·어댑터가 올라가 있어야 한다(2026-11-13: 없음) | 계획 |
+| E1 | 깔면 바로 돈다(기획서 2.1): sbx 릴리스마다 맞는 실행기 버전 하나를 못 박는다(`default-executor.toml` → `sbx` 안, 플랫폼마다 `wick@버전`과 어댑터). 설치 스크립트가 그 버전까지 깔고, 실행기가 없으면 `run`·`create`·`start`·`build`가 서명된 공식 저장소에서 그 버전을 받아 깔고 이어서 한다. 설치 스크립트를 버전마다 고정(`…/v<버전>/install.sh`, 릴리스 자산). `sbx upgrade` 뒤 자동으로 깔린 기본 실행기는 새 못 박은 버전으로. `release.yml`은 못 박은 버전이 공식 색인에 있는지 보고 그것으로 smoke. 끄는 길(`SBX_EXECUTOR=none`, `SBX_NO_AUTO_EXECUTOR=1`), 호환 표·README·install·testing-and-releasing 문서 | 없음. 공식 저장소의 첫 버전은 2026-11-14쯤 | 계획 |
 | T4 | `sbx tui`: 이미지 탭에서 빌드와 다시 빌드, 볼륨 탭, 샌드박스 상세에 `--connect`와 허용 목록 | 없음 | 계획 |
 | R1 | 문서(usage, SECURITY 위협 모델의 빌드·투명 TCP·볼륨, COMPATIBILITY의 규약 3, CHANGELOG), README 첫 줄·비교표·데모(`build` → `run` → `--connect`로 postgres까지) → `v0.3.0` | 없음 | 계획 |
 

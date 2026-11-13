@@ -53,11 +53,24 @@ Compose 명세, podman volume.
   (`SBX_NO_AUTO_EXECUTOR=1`). 터미널이 아니어도 묻지 않고 한다: 서명을 확인한 공식 저장소의 것만 받기 때문이다.
 - 받는 길은 지금의 `sbx executor install`과 같다. 색인의 minisign 서명(공개키는 `sbx` 안), `serial`·`expires`, 묶음의
   sha256. 다른 저장소가 앞에 있어도 자동 설치는 공식 저장소의 이름만 본다.
-- 기본 실행기의 이름은 `sbx` 안의 상수 하나다(플랫폼마다). 실행기를 하나라도 깔았거나 `--executor`를 줬으면 자동 설치는
-  하지 않는다. 바꾸는 것은 지금처럼 `sbx executor install NAME`, `sbx executor use NAME`이다.
-- 릴리스 묶음에는 넣지 않는다. sbx의 릴리스와 CI는 여전히 wick 빌드를 기다리지 않는다. 대신 "깔면 바로 돈다"는 공식
-  저장소(toollyst/sandbox-executors)에 wick과 어댑터가 올라가 있어야 참이다. 2026-11-13에는 아무것도 없다(404).
-  0.3을 내기 전에 그것부터 올린다.
+- **sbx 릴리스마다 맞는 실행기 버전 하나를 못 박는다.** 기본 실행기는 이름만이 아니라 버전까지다(플랫폼마다
+  `wick@<버전>`과 그 어댑터 `firecracker@<버전>`). 값은 저장소의 파일 하나(`default-executor.toml`)에 두고 빌드가
+  `sbx` 안에 넣는다. 자동 설치와 설치 스크립트는 "가장 새 것"이 아니라 **그 버전**을 받는다. 그래서 같은 sbx 버전은
+  언제 깔아도 같은 VMM으로 돈다. 그 조합이 그 릴리스의 smoke가 돈 조합이다.
+- **설치 스크립트도 버전마다 고정한다.** 릴리스마다 그 버전의 `install.sh`·`install.ps1`을 릴리스 자산과
+  `…/sandbox/v<버전>/install.sh`로 올린다. 그 스크립트는 그 sbx 버전과 못 박은 실행기 버전만 깐다(묶음의 sha256도 그
+  안에). 버전 없는 주소(`…/sandbox/install.sh`)는 가장 새 릴리스의 스크립트를 가리킨다. 지금의 `SBX_VERSION`은 버전
+  있는 스크립트를 받아 돌리는 것으로 바꾼다.
+- `sbx upgrade`로 sbx가 바뀌면 못 박은 실행기도 바뀐다. 기본 실행기가 자동으로 깔린 것이면(사용자가 `executor use`로
+  고르지 않았으면) 새 버전을 받아 기본으로 삼는다. 사용자가 고른 것은 건드리지 않는다. 그래서 "자동으로 깔았다"는
+  표시를 설치 기록에 둔다. 이미 만든 샌드박스는 만들 때의 실행기에 묶여 있으므로(라벨) 그대로 돈다. 옛 버전은
+  `sbx executor prune`이 치운다.
+- 실행기를 하나라도 손으로 깔았거나 `--executor`를 줬으면 자동 설치는 하지 않는다. 바꾸는 것은 지금처럼
+  `sbx executor install NAME[@VERSION]`, `sbx executor use NAME`이다.
+- 릴리스 묶음에는 넣지 않는다. 다만 릴리스는 이제 실행기 버전에 묶인다: `release.yml`이 못 박은 버전이 공식 저장소의
+  서명된 색인에 있는지 보고, 그것을 깔아 smoke를 돌린 뒤에 낸다. 없으면 내지 않는다. PR의 CI는 지금처럼 로컬 저장소와
+  upstream Firecracker로 돌고 공식 저장소를 보지 않는다("sbx의 CI는 wick을 기다리지 않는다"는 PR CI에만 남는다).
+  공식 저장소(toollyst/sandbox-executors)의 첫 버전은 2026-11-14(토)쯤 올라온다. 2026-11-13에는 아무것도 없다(404).
 - 저장소에 닿지 못하면 지금의 오류에 까닭과 손으로 하는 길(`sbx executor install`, `--from DIR`)을 보인다.
 
 ## 3. 정한 것 (2026-11-13)
