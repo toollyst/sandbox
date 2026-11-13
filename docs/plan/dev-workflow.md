@@ -160,7 +160,7 @@ sbx build -t ghcr.io/me/app:1 --push .               # 레지스트리로
   실행기의 `max_disks`보다 층이 많으면 아래 층들을 하나로 합친 EROFS를 만들어 붙인다(합친 것은 캐시이고 지울 수 있다).
 - 받은(pull) 이미지의 압축 blob은 층 EROFS를 만든 뒤 지운다. `save`·`push`는 층을 다시 tar로 바꾼다. 받은 그대로의
   digest가 필요하면(`save`가 같은 이미지 ID를 내는 지금 동작) 압축 전 tar의 digest(diff_id)는 그대로이므로 이미지 ID는
-  같고, 압축 blob의 digest만 달라질 수 있다. 이것은 `DOCKER_DIFFERENCES`에 적는다. `--keep-blobs`로 남길 수 있다.
+  같고, 압축 blob의 digest만 달라질 수 있다. 이것은 Docker 호환 표(`compat.rs`)에 적는다. `--keep-blobs`로 남길 수 있다.
 - 배치 버전(`layout-version`)을 올리고, 옛 `rootfs.erofs`는 다음 `prepare` 때 층으로 바꾼다.
 - `sbx system df`가 층을 몇 이미지가 함께 쓰는지 보여 준다.
 
@@ -203,7 +203,7 @@ sbx volume ls / inspect / rm / prune
   (4–5 ms, 2026-11-13 wick 답변). `Writeback`은 upstream Firecracker에도 있다.
 - 비어 있는 볼륨을 처음 붙이면 Docker처럼 이미지의 그 경로 내용을 먼저 채운다.
 - 쓰기로 붙인 볼륨은 한 번에 한 샌드박스만 쓴다(블록 장치는 두 커널이 함께 쓸 수 없다). 두 번째는 오류이고
-  `DOCKER_DIFFERENCES`에 적는다. 읽기 전용(`:ro`)은 쓰는 쪽이 없을 때 여럿이 붙일 수 있다.
+  Docker 호환 표(`compat.rs`)에 적는다. 읽기 전용(`:ro`)은 쓰는 쪽이 없을 때 여럿이 붙일 수 있다.
 - MCP 서버는 호스트 폴더를 붙이지 않는 것처럼, 사용자가 만든 볼륨도 붙이지 않는다. MCP로 만든 볼륨만 쓴다.
 - `-v NAME:/path`와 `-v ./dir:/path`는 Docker 규칙(첫 글자가 `/`, `.`, `~`이면 경로)으로 가른다. 지금은 이름이면
   오류를 낸다.
