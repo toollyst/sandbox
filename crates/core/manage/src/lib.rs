@@ -58,11 +58,14 @@ use sbx_store::{ImageRecord, LayerState, LeaseError, Part, Plan, Store};
 
 pub use sbx_store::write::Collected;
 
+mod build;
+mod built;
 mod error;
 mod layer;
 mod push;
 mod tarlimit;
 mod zstd;
+pub use built::{BUILD_ROOT_SOURCE, BUILT_SOURCE, BuildCacheUsage, LayerContents};
 pub use error::ManageError;
 
 /// 퍼징(`fuzz/`)만 쓰는 입구: 레이어 tar 읽기와 zstd 풀기. `fuzzing` feature를 켜야 있다.
@@ -471,6 +474,10 @@ impl Manager {
         image: &ImageId,
     ) -> Result<(Vec<u8>, Vec<u8>, sbx_store::DocumentsInfo), ManageError> {
         let layout = self.store.layout();
+        // S1 phase B / 내보내기 자리: 층 디스크에서 층 tar를 다시 만들면 만든 이미지도 manifest를 쓰고 save·push한다.
+        if self.store.image(image)?.source == BUILT_SOURCE {
+            return Err(ManageError::NotExportable(image.clone()));
+        }
         let read = |p: PathBuf| match std::fs::read(&p) {
             Ok(b) => Ok(b),
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -538,8 +545,7 @@ impl Manager {
             .filter(|_| !layout.kernel(image).is_file())
         {
             let work = WorkDir::create(layout, "prepare")?;
-            let tree = self.merge(&record.layers, work.path())?;
-            let spool = layer::Spool::new(work.path());
+            let (tree, spool) = self.merge(&record.layers, work.path())?;
             let target = layout.kernel(image);
             let temp = write::temp_path(&layout.image_dir(image), "kernel");
             let result = extract_kernel(&tree, &spool, path, &temp)
@@ -560,13 +566,36 @@ impl Manager {
     }
 
     /// 층 하나의 tar를 blob에서 읽어 항목으로 바꾼다. 내용은 `work`에 둔다. diff_id를 직접 계산해 대조한다.
-    fn read_layer(
+    ///
+    /// blob이 없고 층 디스크가 있으면(빌드가 만든 층) 그 디스크를 읽는다(`erofs::read`). 내용은 `disks`로 연다.
+    /// 디스크는 sbx가 쓴 것이고 diff_id 이름 아래에 있으므로 대조하지 않는다. 빈 층([`sbx_store::EMPTY_LAYER`])은
+    /// blob이 없어도 항목이 없다.
+    pub(crate) fn read_layer(
         &self,
         index: usize,
         l: &sbx_model::Layer,
         work: &Path,
+        disks: &mut sbx_rootfs::erofs::read::DiskContents,
     ) -> Result<Vec<sbx_rootfs::LayerEntry>, ManageError> {
-        let blob = self.store.layout().blob(&l.digest);
+        let layout = self.store.layout();
+        let blob = layout.blob(&l.digest);
+        if !blob.is_file() {
+            if sbx_store::stack::is_empty_layer(&l.diff_id) {
+                return Ok(Vec::new());
+            }
+            let disk = layout.layer_disk(&l.diff_id, RootfsFormat::Erofs);
+            if disk.is_file() {
+                let mut f = BufReader::new(File::open(&disk)?);
+                let read = sbx_rootfs::erofs::read::read_layer(&mut f, index).map_err(|e| {
+                    ManageError::Layer {
+                        index,
+                        reason: format!("layer disk {}: {e}", disk.display()),
+                    }
+                })?;
+                disks.add(index, &disk, read.offsets);
+                return Ok(read.entries);
+            }
+        }
         let file = File::open(&blob).map_err(|e| ManageError::Layer {
             index,
             reason: if e.kind() == io::ErrorKind::NotFound {
@@ -594,13 +623,18 @@ impl Manager {
         Ok(entries)
     }
 
-    /// 층들을 아래부터 합친다. 내용은 `work`에 둔다.
-    fn merge(&self, layers: &[sbx_model::Layer], work: &Path) -> Result<MergedTree, ManageError> {
+    /// 층들을 아래부터 합친다. 내용은 `work`(또는 층 디스크)에 있다.
+    fn merge(
+        &self,
+        layers: &[sbx_model::Layer],
+        work: &Path,
+    ) -> Result<(MergedTree, layer::Contents), ManageError> {
         let mut tree = MergedTree::new();
+        let mut disks = sbx_rootfs::erofs::read::DiskContents::new();
         for (index, l) in layers.iter().enumerate() {
-            tree.apply_layer(self.read_layer(index, l, work)?)?;
+            tree.apply_layer(self.read_layer(index, l, work, &mut disks)?)?;
         }
-        Ok(tree)
+        Ok((tree, layer::Contents::new(work, disks)))
     }
 
     /// 트리를 디스크로 써서 `target`에 놓는다(옆 임시 파일에 쓴 뒤 rename).
@@ -647,7 +681,9 @@ impl Manager {
             return Ok(false);
         }
         let work = WorkDir::create(layout, "layer")?;
-        let lower = sbx_rootfs::lower::lower_layer(self.read_layer(index, l, work.path())?)?;
+        let mut disks = sbx_rootfs::erofs::read::DiskContents::new();
+        let lower =
+            sbx_rootfs::lower::lower_layer(self.read_layer(index, l, work.path(), &mut disks)?)?;
         match lower.needs_lower {
             Some(why) => write::write_needs_lower(layout, &l.diff_id, &why)?,
             None => Self::write_disk(
@@ -679,8 +715,8 @@ impl Manager {
             return Ok(false);
         }
         let work = WorkDir::create(layout, "merge")?;
-        let tree = self.merge(&record.layers[..count], work.path())?;
-        Self::write_disk(builder, &tree, &layer::Spool::new(work.path()), &target)?;
+        let (tree, content) = self.merge(&record.layers[..count], work.path())?;
+        Self::write_disk(builder, &tree, &content, &target)?;
         Ok(true)
     }
 
@@ -691,10 +727,12 @@ impl Manager {
     }
 
     /// 받아 둔 이미지 목록. ID 순서.
+    /// 빌드가 잠깐 쓰는 뿌리 기록([`BUILD_ROOT_SOURCE`])은 이미지가 아니므로 빠진다.
     pub fn images(&self) -> Result<Vec<ImageInfo>, ManageError> {
         self.store
             .images()?
             .into_iter()
+            .filter(|r| r.source != BUILD_ROOT_SOURCE)
             .map(|r| self.info(r))
             .collect()
     }
@@ -864,7 +902,7 @@ pub fn migrate_from_layout_1(cache_dir: &Path) -> io::Result<Vec<PathBuf>> {
 /// 이미지 안 `path`(절대 경로, 링크는 이미지 안에서 따라간다)의 일반 파일을 `out`에 쓴다.
 fn extract_kernel(
     tree: &MergedTree,
-    spool: &layer::Spool,
+    spool: &layer::Contents,
     path: &str,
     out: &std::path::Path,
 ) -> Result<(), ManageError> {

@@ -22,6 +22,7 @@ tar.workspace = true
 # `sbx save`: OCI layout의 index.json, 받은 문서의 정보.
 serde_json.workspace = true
 sbx-image.workspace = true
-sbx-rootfs.workspace = true
+# 빌드가 만든 층은 blob 없이 층 디스크만 있다. 합칠 때 그 디스크를 다시 읽는다(erofs::read).
+sbx-rootfs = { workspace = true, features = ["erofs"] }
 sbx-store = { workspace = true, features = ["write"] }
 sbx-events.workspace = true

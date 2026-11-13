@@ -16,6 +16,9 @@
 //! 맨 아래 하나만 남았을 때(상한이 1이거나 그 아래가 첫 층뿐일 때) 첫 층이 혼자 설 수 있으면 합치지 않고 층 디스크를
 //! 그대로 쓴다. 층 하나를 합친 것과 보이는 모습이 같다.
 //!
+//! 빈 층([`EMPTY_LAYER`], 항목이 없는 tar)은 디스크를 쓰지 않는다. 보이는 것이 없으므로 건너뛴다. Docker가 만든
+//! 이미지와 `sbx build`(`WORKDIR`, 아무것도 바꾸지 않은 `RUN`)에 흔하다. chain ID에는 그대로 들어간다.
+//!
 //! [`plan`]은 위 층부터 본다. 아직 살펴보지 않은 층([`LayerState::Unknown`])을 만나면 그 번호를 돌려준다
 //! ([`Plan::Inspect`]). 관리 쪽이 그 층을 살펴(층 디스크나 `needs-lower` 표시를 만들고) 다시 부른다. 그래서 합쳐질
 //! 아래 층들은 살펴보지도, 따로 만들지도 않는다.
@@ -62,6 +65,15 @@ pub enum Plan {
     Inspect(usize),
 }
 
+/// 빈 층의 diff_id: 끝 표시(0 1024바이트)만 있는 tar의 sha256. Docker와 BuildKit이 만드는 빈 층과 같다.
+pub const EMPTY_LAYER: &str =
+    "sha256:5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef";
+
+/// 빈 층인지([`EMPTY_LAYER`]).
+pub fn is_empty_layer(diff_id: &Digest) -> bool {
+    diff_id.as_str() == EMPTY_LAYER
+}
+
 /// 층 없는 rootfs의 chain ID 자리: 빈 바이트열의 sha256.
 pub fn empty_chain() -> Digest {
     crate::digest::sha256(b"")
@@ -98,8 +110,12 @@ pub fn plan(layers: &[Layer], max: usize, state: impl Fn(&Digest) -> LayerState)
     let mut i = layers.len();
     while i > 0 {
         i -= 1;
+        if is_empty_layer(&layers[i].diff_id) {
+            continue;
+        }
         let s = state(&layers[i].diff_id);
-        if budget == 1 && i > 0 {
+        let below = layers[..i].iter().any(|l| !is_empty_layer(&l.diff_id));
+        if budget == 1 && below {
             parts.push(merged(i));
             break;
         }
@@ -114,6 +130,13 @@ pub fn plan(layers: &[Layer], max: usize, state: impl Fn(&Digest) -> LayerState)
             }
             LayerState::Unknown => return Plan::Inspect(i),
         }
+    }
+    if parts.is_empty() {
+        // 모두 빈 층이다.
+        return Plan::Parts(vec![Part::Merged {
+            chain: empty_chain(),
+            layers: 0,
+        }]);
     }
     parts.reverse();
     Plan::Parts(parts)
@@ -220,6 +243,34 @@ mod tests {
     fn an_image_without_layers_is_one_empty_rootfs() {
         assert_eq!(
             plan(&[], 8, |_| LayerState::Unknown),
+            Plan::Parts(vec![Part::Merged {
+                chain: empty_chain(),
+                layers: 0
+            }])
+        );
+    }
+
+    #[test]
+    fn empty_layers_take_no_disk() {
+        let empty = Layer {
+            digest: Digest::parse(EMPTY_LAYER).unwrap(),
+            diff_id: Digest::parse(EMPTY_LAYER).unwrap(),
+            size: 1024,
+            compression: Compression::None,
+        };
+        assert_eq!(empty.diff_id, crate::digest::sha256(&[0u8; 1024]));
+        let mut ls = layers(2);
+        ls.insert(1, empty.clone());
+        ls.push(empty.clone());
+        let (p, inspected) = settle(&ls, 8, &[true; 4]);
+        assert_eq!(short(&p, &ls), ["L0", "L2"]);
+        assert_eq!(inspected, [2, 0]);
+        // 디스크가 하나뿐이어도 아래가 빈 층뿐이면 합치지 않는다.
+        let one = vec![empty.clone(), layers(1).remove(0)];
+        assert_eq!(short(&settle(&one, 1, &[true; 2]).0, &one), ["L1"]);
+        // 모두 빈 층이면 빈 rootfs다.
+        assert_eq!(
+            plan(&[empty.clone(), empty], 8, |_| LayerState::Unknown),
             Plan::Parts(vec![Part::Merged {
                 chain: empty_chain(),
                 layers: 0

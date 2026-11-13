@@ -381,6 +381,11 @@ impl DiskContents {
         Self::default()
     }
 
+    /// 그 층 번호의 디스크가 있는지.
+    pub fn has(&self, layer: usize) -> bool {
+        self.disks.contains_key(&layer)
+    }
+
     /// 디스크 하나를 더한다(그 디스크의 [`ReadLayer::offsets`]).
     pub fn add(&mut self, layer: usize, disk: &Path, offsets: HashMap<usize, u64>) {
         self.disks.insert(layer, (disk.to_owned(), offsets));
