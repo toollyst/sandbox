@@ -2324,7 +2324,10 @@ mod unix {
             tars.push(layer_tar);
         }
         let arch = Arch::host().unwrap().oci_name();
-        let diff_ids: Vec<String> = tars.iter().map(|t| format!("\"sha256:{}\"", hex(t))).collect();
+        let diff_ids: Vec<String> = tars
+            .iter()
+            .map(|t| format!("\"sha256:{}\"", hex(t)))
+            .collect();
         let config = format!(
             r#"{{"architecture":"{arch}","os":"linux","config":{{"Cmd":["sh"],"User":"{}:{}","Labels":{{"name":"{name}"}}}},"rootfs":{{"type":"layers","diff_ids":[{}]}}}}"#,
             id_output("-u"),
@@ -2416,7 +2419,10 @@ mod unix {
         let disks = vm["disks"].as_array().unwrap();
         let roles: Vec<&str> = disks.iter().map(|d| d["role"].as_str().unwrap()).collect();
         assert_eq!(roles, ["rootfs", "scratch", "rootfs"], "{vm}");
-        assert!(disks[0]["path"].as_str().unwrap().contains("/layers/"), "{vm}");
+        assert!(
+            disks[0]["path"].as_str().unwrap().contains("/layers/"),
+            "{vm}"
+        );
         run_recorded(&e, "local/b:1", None);
         let layers = e.path("cache/layers");
         assert_eq!(entries(&layers), 3, "base, a, b");
@@ -2439,7 +2445,11 @@ mod unix {
         let im = rows.iter().find(|r| r.kind == "images").unwrap();
         // 바탕은 한 번: 전체는 두 이미지 크기의 합에서 함께 쓰는 것 하나를 뺀 것이다.
         let sum: u64 = mine.iter().map(|i| i.disk_size).sum();
-        assert_eq!(im.size + mine[0].shared_size, sum + e2e_fake_size(&list), "{rows:?} {mine:?}");
+        assert_eq!(
+            im.size + mine[0].shared_size,
+            sum + e2e_fake_size(&list),
+            "{rows:?} {mine:?}"
+        );
         assert_eq!(im.shared, mine[0].shared_size, "{rows:?}");
         let o = e.sbx(&["images"]);
         assert!(text(&o.stdout).contains("SHARED"), "{}", text(&o.stdout));
@@ -2468,14 +2478,25 @@ mod unix {
         let e = Env::new();
         let (a, _) = oci_archive_layers(
             "local/deep:1",
-            &[&[("0", b"0")], &[("1", b"1")], &[("2", b"2")], &[("3", b"3")]],
+            &[
+                &[("0", b"0")],
+                &[("1", b"1")],
+                &[("2", b"2")],
+                &[("3", b"3")],
+            ],
         );
         load(&e, "deep.tar", &a);
         let vm = run_recorded(&e, "local/deep:1", Some("3"));
         let disks = vm["disks"].as_array().unwrap();
         assert_eq!(disks.len(), 3, "{vm}");
-        assert!(disks[0]["path"].as_str().unwrap().contains("/merged/"), "{vm}");
-        assert!(disks[2]["path"].as_str().unwrap().contains("/layers/"), "{vm}");
+        assert!(
+            disks[0]["path"].as_str().unwrap().contains("/merged/"),
+            "{vm}"
+        );
+        assert!(
+            disks[2]["path"].as_str().unwrap().contains("/layers/"),
+            "{vm}"
+        );
         assert_eq!(entries(&e.path("cache/layers")), 1, "only the top layer");
         // 디스크 둘이면(지금까지와 같이) 모두 합친 것 하나와 scratch.
         let vm = run_recorded(&e, "local/deep:1", Some("2"));
@@ -2491,7 +2512,11 @@ mod unix {
         // 합친 것은 캐시다. prune이 쓰지 않는 것을 지우지는 않지만 이미지를 지우면 함께 지워진다.
         let o = e.sbx(&["rmi", "local/deep:1"]);
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
-        assert_eq!(entries(&e.path("cache/merged")), 1, "the empty rootfs of IMAGE");
+        assert_eq!(
+            entries(&e.path("cache/merged")),
+            1,
+            "the empty rootfs of IMAGE"
+        );
         assert_eq!(entries(&e.path("cache/layers")), 0);
     }
 

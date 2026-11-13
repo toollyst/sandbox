@@ -83,9 +83,7 @@ fn remove_leftovers(dir: &Path, pick: impl Fn(&str) -> bool, out: &mut Vec<Strin
 }
 
 /// 캐시에서 이미지들이 차지하는 것과 그 디스크 크기([`sbx_manage::Manager::stored_parts`]). 여럿이 쓰는 것도 한 번.
-pub(super) fn measured_parts(
-    m: &sbx_manage::Manager,
-) -> AppResult<Vec<(sbx_manage::StoredPart, u64)>> {
+fn measured_parts(m: &sbx_manage::Manager) -> AppResult<Vec<(sbx_manage::StoredPart, u64)>> {
     Ok(m.stored_parts()?
         .into_iter()
         .map(|p| {
@@ -96,7 +94,7 @@ pub(super) fn measured_parts(
 }
 
 /// 이미지 하나의 디스크 크기: 그것이 쓰는 것 모두, 그중 다른 이미지도 쓰는 것, 그 이미지만 쓰는 것(`rmi`가 비우는 것).
-pub(super) fn image_sizes(
+fn image_sizes(
     parts: &[(sbx_manage::StoredPart, u64)],
     id: &sbx_model::ImageId,
 ) -> (u64, u64, u64) {
@@ -113,6 +111,15 @@ pub(super) fn image_sizes(
 }
 
 impl Ctx {
+    /// 이미지 ID마다 (SIZE, SHARED, UNIQUE)를 주는 함수([`image_sizes`]). `images`가 쓴다.
+    pub(super) fn image_disk_sizes(
+        &self,
+        m: &sbx_manage::Manager,
+    ) -> AppResult<impl Fn(&sbx_model::ImageId) -> (u64, u64, u64)> {
+        let parts = measured_parts(m)?;
+        Ok(move |id: &sbx_model::ImageId| image_sizes(&parts, id))
+    }
+
     pub(super) async fn system_df(&self) -> AppResult<u8> {
         let m = self.manager()?;
         let images = m.images()?;
@@ -292,7 +299,9 @@ impl Ctx {
         };
         let before = stored(&layout);
         if let Ok(gone) = m.collect() {
-            report.layers.extend(gone.blobs.iter().map(|d| d.to_string()));
+            report
+                .layers
+                .extend(gone.blobs.iter().map(|d| d.to_string()));
         }
         report.reclaimed += before.saturating_sub(stored(&layout));
         // 남은 임시 것: 끝내지 못한 받기·만들기, 반쯤 만들거나 지운 샌드박스 디렉터리(이름이 `.`로 시작한다).

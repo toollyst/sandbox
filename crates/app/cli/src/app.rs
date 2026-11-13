@@ -840,26 +840,25 @@ impl Ctx {
             }
             return Ok(0);
         }
-        let parts = system::measured_parts(&m)?;
+        let sizes = self.image_disk_sizes(&m)?;
         if self.json() {
             let list: Vec<_> = images
                 .iter()
                 .map(|i| {
-                    let (disk_size, shared_size, unique_size) =
-                        system::image_sizes(&parts, &i.record.id);
+                    let (disk_size, shared_size, unique_size) = sizes(&i.record.id);
                     output::Image {
-                    id: i.record.id.to_string(),
-                    references: i.refs.clone(),
-                    arch: i.record.arch.oci_name().to_owned(),
-                    prepared: i.prepared.iter().map(|f| f.to_string()).collect(),
-                    compressed_size: i.record.compressed_size(),
-                    disk_size,
-                    shared_size,
-                    unique_size,
-                    ignored_fields: i.record.ignored_fields.clone(),
-                    exposed_ports: i.record.config.exposed_ports.clone(),
-                    volumes: i.record.config.volumes.clone(),
-                }
+                        id: i.record.id.to_string(),
+                        references: i.refs.clone(),
+                        arch: i.record.arch.oci_name().to_owned(),
+                        prepared: i.prepared.iter().map(|f| f.to_string()).collect(),
+                        compressed_size: i.record.compressed_size(),
+                        disk_size,
+                        shared_size,
+                        unique_size,
+                        ignored_fields: i.record.ignored_fields.clone(),
+                        exposed_ports: i.record.config.exposed_ports.clone(),
+                        volumes: i.record.config.volumes.clone(),
+                    }
                 })
                 .collect();
             output::print_value(&list)?;
@@ -881,7 +880,7 @@ impl Ctx {
             } else {
                 i.refs.iter().map(|r| behavior::familiar(r)).collect()
             };
-            let (size, shared, unique) = system::image_sizes(&parts, &i.record.id);
+            let (size, shared, unique) = sizes(&i.record.id);
             for r in refs {
                 println!(
                     "{:<40} {:<14} {:<12} {:<10} {:<10} {:<10} {}",

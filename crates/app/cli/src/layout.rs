@@ -88,8 +88,12 @@ fn parse(s: &str) -> Option<u32> {
 fn migrate(dir: &Path, kind: Dir, from: u32) -> Result<(), String> {
     debug_assert!(from <= CURRENT);
     if from < 2 && kind == Dir::Cache && dir.is_dir() {
-        sbx_manage::migrate_from_layout_1(dir)
-            .map_err(|e| format!("cannot move the cache directory {} to layout 2: {e}", dir.display()))?;
+        sbx_manage::migrate_from_layout_1(dir).map_err(|e| {
+            format!(
+                "cannot move the cache directory {} to layout 2: {e}",
+                dir.display()
+            )
+        })?;
     }
     Ok(())
 }
