@@ -33,6 +33,7 @@ sbx-executor-repo = { path = "../crates/spec/executor-repo" }
 sbx-release-index = { path = "../crates/spec/release-index" }
 sbx-rootfs = { path = "../crates/port/rootfs", features = ["erofs"] }
 sbx-oci = { path = "../crates/adapter/oci" }
+sbx-dockerfile = { path = "../crates/adapter/dockerfile" }
 sbx-runtime = { path = "../crates/core/runtime", features = ["fuzzing"] }
 sbx-manage = { path = "../crates/core/manage", features = ["fuzzing"] }
 sbx-shim = { path = "../crates/app/shim" }
@@ -129,6 +130,20 @@ bench = false
 [[bin]]
 name = "release_index"
 path = "fuzz_targets/release_index.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dockerfile"
+path = "fuzz_targets/dockerfile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dockerignore"
+path = "fuzz_targets/dockerignore.rs"
 test = false
 doc = false
 bench = false

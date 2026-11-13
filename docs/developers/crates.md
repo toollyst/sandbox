@@ -42,6 +42,7 @@ flowchart BT
     sbx_store[sbx-store]
   end
   subgraph adapter
+    sbx_dockerfile[sbx-dockerfile]
     sbx_executor_process[sbx-executor-process]
     sbx_oci[sbx-oci]
   end
@@ -64,6 +65,7 @@ flowchart BT
   sbx_image --> sbx_model
   sbx_rootfs --> sbx_model
   sbx_store --> sbx_model
+  sbx_dockerfile --> sbx_model
   sbx_executor_process --> sbx_executor
   sbx_executor_process --> sbx_executor_proto
   sbx_executor_process --> sbx_model
@@ -110,7 +112,7 @@ flowchart BT
 
 | Layer | Folder | Crate | Depends on | Used by |
 | --- | --- | --- | --- | --- |
-| model | [`model`](../../crates/model) | `sbx-model` | – | `sbx-executor`, `sbx-image`, `sbx-rootfs`, `sbx-store`, `sbx-executor-process`, `sbx-oci`, `sbx-manage`, `sbx-runtime`, `sbx-cli`, `sbx-shim`, `sbx-executor-fake` |
+| model | [`model`](../../crates/model) | `sbx-model` | – | `sbx-executor`, `sbx-image`, `sbx-rootfs`, `sbx-store`, `sbx-dockerfile`, `sbx-executor-process`, `sbx-oci`, `sbx-manage`, `sbx-runtime`, `sbx-cli`, `sbx-shim`, `sbx-executor-fake` |
 | spec | [`spec/executor-install`](../../crates/spec/executor-install) | `sbx-executor-install` | – | `sbx-executor-repo`, `sbx-cli` |
 | spec | [`spec/executor-proto`](../../crates/spec/executor-proto) | `sbx-executor-proto` | – | `sbx-executor-process`, `sbx-cli`, `sbx-shim`, `sbx-executor-fake`, `sbx-executor-firecracker` |
 | spec | [`spec/executor-repo`](../../crates/spec/executor-repo) | `sbx-executor-repo` | `sbx-executor-install` | `sbx-release-index`, `sbx-cli` |
@@ -121,6 +123,7 @@ flowchart BT
 | port | [`port/image`](../../crates/port/image) | `sbx-image` | `sbx-model` | `sbx-oci`, `sbx-manage`, `sbx-cli` |
 | port | [`port/rootfs`](../../crates/port/rootfs) | `sbx-rootfs` | `sbx-model` | `sbx-manage`, `sbx-cli` |
 | port | [`port/store`](../../crates/port/store) | `sbx-store` | `sbx-model` | `sbx-manage`, `sbx-runtime`, `sbx-cli` |
+| adapter | [`adapter/dockerfile`](../../crates/adapter/dockerfile) | `sbx-dockerfile` | `sbx-model` | – |
 | adapter | [`adapter/executor-process`](../../crates/adapter/executor-process) | `sbx-executor-process` | `sbx-executor`, `sbx-executor-proto`, `sbx-model` | `sbx-cli`, `sbx-shim` |
 | adapter | [`adapter/oci`](../../crates/adapter/oci) | `sbx-oci` | `sbx-image`, `sbx-model` | `sbx-cli` |
 | core | [`core/manage`](../../crates/core/manage) | `sbx-manage` | `sbx-events`, `sbx-image`, `sbx-model`, `sbx-rootfs`, `sbx-store` | `sbx-cli` |

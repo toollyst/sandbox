@@ -2458,6 +2458,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sbx-dockerfile"
+version = "0.2.2"
+dependencies = [
+ "sbx-model",
+]
+
+[[package]]
 name = "sbx-events"
 version = "0.2.2"
 dependencies = [

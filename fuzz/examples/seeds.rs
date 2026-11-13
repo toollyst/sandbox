@@ -413,6 +413,8 @@ fn main() {
         "executor_index",
         "executor_spec",
         "executor_unpack",
+        "dockerfile",
+        "dockerignore",
     ] {
         let _ = fs::remove_dir_all(out.join(t));
     }
@@ -421,13 +423,80 @@ fn main() {
     oci(&out);
     image_layer(&out);
     executor_repo(&out);
+    dockerfile(&out);
     check(&out);
     println!("{}", out.display());
+}
+
+/// Dockerfile: `sbx-dockerfile` 테스트의 Dockerfile 묶음 그대로, 그리고 `--target`·`--build-arg`를 붙인 것
+/// (NUL 뒤가 옵션이다). `.dockerignore`: 흔한 패턴과 경로.
+fn dockerfile(out: &Path) {
+    macro_rules! fixtures {
+        ($($name:literal),* $(,)?) => {
+            [$(($name, include_str!(concat!("../../crates/adapter/dockerfile/tests/dockerfiles/", $name)))),*]
+        };
+    }
+    let files = fixtures![
+        "docs-arg.Dockerfile",
+        "docs-best-practices.Dockerfile",
+        "docs-env.Dockerfile",
+        "docs-escape.Dockerfile",
+        "docs-multistage.Dockerfile",
+        "go.Dockerfile",
+        "node.Dockerfile",
+        "postgres-style.Dockerfile",
+        "python.Dockerfile",
+        "rejected-cache-mount.Dockerfile",
+        "rejected-heredoc.Dockerfile",
+        "rust.Dockerfile",
+    ];
+    for (name, text) in files {
+        put(out, "dockerfile", name, text.as_bytes());
+    }
+    let node = files
+        .iter()
+        .find(|(n, _)| *n == "node.Dockerfile")
+        .unwrap()
+        .1;
+    put(
+        out,
+        "dockerfile",
+        "node-target-args",
+        format!("{node}\0test\nNODE_VERSION=20\nUNUSED=1").as_bytes(),
+    );
+    let ignore = "# comment\nnode_modules\n**/*.log\n!keep.log\n/dist/\n*.md\n!README*.md\n[a-c]?.txt\n\0node_modules/x\nsrc/a.log\nkeep.log\nREADME.md\nb1.txt\nsrc/main.rs";
+    put(out, "dockerignore", "common", ignore.as_bytes());
+    put(
+        out,
+        "dockerignore",
+        "double-star",
+        b"**/test/**\nsrc/**/gen\n**.tmp\n\0a/test/b\nsrc/x/y/gen/z\nq.tmp\ntest",
+    );
 }
 
 /// 시작 입력이 해석의 깊은 곳까지 닿는지 본다(첫 단계에서 거부되는 입력은 시작점으로 쓸모가 적다).
 fn check(out: &Path) {
     let read = |t: &str, n: &str| fs::read(out.join(t).join(n)).unwrap();
+
+    let opts = sbx_model::build::BuildOptions {
+        build_args: vec![],
+        target: None,
+        arch: sbx_model::Arch::Aarch64,
+    };
+    for n in [
+        "node.Dockerfile",
+        "python.Dockerfile",
+        "go.Dockerfile",
+        "docs-env.Dockerfile",
+    ] {
+        let text = String::from_utf8(read("dockerfile", n)).unwrap();
+        sbx_dockerfile::plan(&text, &opts, &mut |_| Ok(vec![])).expect(n);
+    }
+    for n in ["common", "double-star"] {
+        let text = String::from_utf8(read("dockerignore", n)).unwrap();
+        let (patterns, _) = text.split_once('\0').unwrap();
+        sbx_dockerfile::DockerIgnore::parse(patterns).expect(n);
+    }
 
     let url = url::Url::parse("https://repo.example/executors/v2/index.json").unwrap();
     for n in ["v1.json", "v2.json"] {

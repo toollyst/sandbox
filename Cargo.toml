@@ -13,6 +13,7 @@ members = [
     "crates/port/store",
     "crates/port/events",
     "crates/adapter/oci",
+    "crates/adapter/dockerfile",
     "crates/adapter/executor-process",
     "crates/core/runtime",
     "crates/core/manage",
@@ -84,6 +85,7 @@ sbx-events = { path = "crates/port/events" }
 sbx-runtime = { path = "crates/core/runtime" }
 sbx-manage = { path = "crates/core/manage" }
 sbx-oci = { path = "crates/adapter/oci" }
+sbx-dockerfile = { path = "crates/adapter/dockerfile" }
 sbx-executor-fake = { path = "crates/executor/fake" }
 sbx-executor-proto = { path = "crates/spec/executor-proto" }
 sbx-executor-process = { path = "crates/adapter/executor-process" }

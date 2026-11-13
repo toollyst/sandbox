@@ -2,6 +2,8 @@
 //!
 //! 동작(파일, 프로세스, 네트워크)은 두지 않는다. 값과 값의 검증만 둔다.
 //!
+//! - 빌드 계획(스테이지와 단계, `sbx build`): [`build`]
+//!
 //! - 의존: 없음
 //! - 쓰지 않는 곳: `sbx-guest-proto`, `sbx-guest` (게스트 바이너리를 작게 유지하기 위해)
 
@@ -13,6 +15,8 @@ use std::pin::Pin;
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
+
+pub mod build;
 
 /// `Arc<dyn Trait>`으로 갈아 끼우는 인터페이스(실행기, 이미지 소스)에 쓰는 비동기 반환 타입.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;

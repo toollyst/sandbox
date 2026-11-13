@@ -86,6 +86,8 @@ const RULES: &[(&str, Allowed)] = &[
         ]),
     ),
     ("sbx-oci", Allowed::Workspace(&["sbx-model", "sbx-image"])),
+    // Dockerfile 해석(손으로 쓴 해석기, 직접 쓰는 외부 크레이트가 없다). 밖으로는 sbx-model의 빌드 계획만 나간다.
+    ("sbx-dockerfile", Allowed::Workspace(&["sbx-model"])),
     (
         "sbx-executor-fake",
         // 게스트 쪽 연결 처리를 호스트에서 그대로 돌리고, 실행기 규약을 말한다.
