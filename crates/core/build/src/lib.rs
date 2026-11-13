@@ -587,7 +587,8 @@ impl Builder<'_> {
         }
         let tar = self.tar_path();
         let vm = run.vm.as_mut().expect("the VM was just started");
-        vm.open_layer().await?;
+        let at = |e: BuildError| BuildError::step(step, e.to_string());
+        vm.open_layer().await.map_err(at)?;
         let tail = Arc::new(Mutex::new(Vec::<u8>::new()));
         let events = self.events.clone();
         let t2 = tail.clone();
@@ -603,7 +604,7 @@ impl Builder<'_> {
                 t.drain(..cut);
             }
         });
-        let code = vm.run(spec, sink).await?;
+        let code = vm.run(spec, sink).await.map_err(at)?;
         if code != 0 {
             let blocked = vm.blocked().await;
             let t = tail.lock().unwrap_or_else(|e| e.into_inner());
@@ -616,7 +617,7 @@ impl Builder<'_> {
                 blocked,
             });
         }
-        vm.export(&tar).await?;
+        vm.export(&tar).await.map_err(at)?;
         let rec = self.store_layer(&tar, &key)?;
         self.push(run, key, rec, created_by);
         Ok(())
