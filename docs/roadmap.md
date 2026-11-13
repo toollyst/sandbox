@@ -1,6 +1,6 @@
 # 로드맵
 
-2026년 11월 12일 · 현재 릴리스 `v0.2.2`(유지는 0.2부터, 0.1.x는 거뒀다, 40. 0.2.1에 들어간 것은 [CHANGELOG](../CHANGELOG.md#v021)와 M7의 P 표, 0.2.2는 [CHANGELOG](../CHANGELOG.md#v022)와 M8) · 상위 문서: sandbox 기획서, [docs/plan/architecture.md](plan/architecture.md)
+2026년 11월 13일 · 현재 릴리스 `v0.2.2`(유지는 0.2부터, 0.1.x는 거뒀다, 40. 0.2.1에 들어간 것은 [CHANGELOG](../CHANGELOG.md#v021)와 M7의 P 표, 0.2.2는 [CHANGELOG](../CHANGELOG.md#v022)와 M8) · 다음 릴리스 `v0.3.0`은 M9 · 상위 문서: sandbox 기획서, [docs/plan/architecture.md](plan/architecture.md)
 
 순서는 기획서의 성공 기준 1 "Linux에서 공개 OCI 이미지를 받아 microVM 안에서 명령을 실행하고 결과를 받는다"까지의 최단 경로다. 각 단계는 "어떻게 검증되면 끝인가"를 함께 적는다.
 
@@ -162,10 +162,67 @@ SLSA, TUF(색인 신선도), EU CRA. 범위는 sbx 자신이다. sbx는 실행�
 
 사람의 일: 묶음 키와 색인 키(각각 예비 하나 더)를 만들어 `SBX_RELEASE_SIGNING_KEY`(`release`), `SBX_RELEASE_INDEX_KEY`(`release`, `release-index`)에 넣기. 완료(2026-11-12): `.github/scripts/release-keys.sh`로 만들고 올림, 공개키는 `update.rs`·SECURITY.md·CHANGELOG. 비밀키는 메인테이너가 오프라인에 백업한다.
 
+## M9. 개발 흐름 (0.3, 2026-11-13~)
+
+Docker Desktop의 핵심(만들고, 돌리고, 개발용 서비스를 띄워 잇기)을 가져온다. 전부가 아니다. 컨테이너마다 VM이고, 빌드도
+VM 안에서, 나가는 연결은 허용 목록으로만. 기획: [docs/plan/dev-workflow.md](plan/dev-workflow.md)
+
+**규칙: 실행기에 바라는 것을 늘리지 않는다.** 새 기능은 sbx와 게스트 init이 vsock과 디스크 위에서 만든다. 실행기에
+바라는 것은 표준 virtio 장치와 그것을 `capabilities`로 알리는 것뿐이다. 실행기에 없는 기능은 그 기능만 오류로 알리고,
+다른 것은 그대로 된다. 그래서 0.3은 upstream Firecracker에서도 실시간 마운트 말고는 모두 된다.
+
+실행기에 바라는 것 (0.3):
+
+| 무엇 | 필수인가 | 쓰는 곳 | 상태 |
+|---|---|---|---|
+| 지금과 같은 것: 커널 부팅, virtio-blk, vsock | 필수 | 전부 | 있음 |
+| 디스크를 하나 더 붙이기(역할 `volume`, 규약 3) | 볼륨을 쓸 때 | V1 | 규약은 sbx가 바꾼다. Firecracker 어댑터가 `cache_type: "Writeback"`으로 붙인다(upstream에도 있다). wick: 8개, flush가 `F_FULLFSYNC`까지 가는 것을 쟀다 |
+| virtio-fs(`live_share`) | 선택 | V3 | wick에서 만드는 중. 없으면 `-v`만 오류 |
+| 기능 알림(`firecracker --features`, wick 전용) | 선택 | V3 | wick 제안. 실패하면 upstream으로 보고 확장을 쓰지 않는다 |
+
+빌드, push, 투명 TCP, `--connect`, 시계 맞추기, 호스트 변경 알림은 실행기에 아무것도 바라지 않는다.
+
+순서대로 한다. 끝났다는 기준은 [기획서](plan/dev-workflow.md) 10장이 정본이다.
+
+| 단계 | 내용 | 실행기에 바라는 것 | 상태 |
+|---|---|---|---|
+| P1 | 규약: `sbx-guest-proto`에 빌드 층(열기·내보내기), `Lookup`, 시각, 파일 변경 알림. `sbx-executor-proto` 3에 디스크 역할 `volume`(2도 계속 말한다) | 없음 | 계획 |
+| D1 | `sbx-dockerfile`: 해석, 처음 범위, 빌드 계획 자료형, 퍼징 | 없음 | 계획 |
+| D2 | 게스트 빌드 모드: 층 쌓기, 층 내보내기(whiteout 바꾸기) | 없음 | 계획 |
+| D3 | `sbx-build`와 `sbx build`: 스테이지당 VM 하나, COPY·RUN, 캐시, `type=sbx` | 없음 | 계획 |
+| N1 | 투명 TCP: 가짜 주소 DNS, 게스트 리스너, `resolv.conf` 덮기, 막힌 이름 기록 | 없음 | 계획 |
+| V2 | `--connect NAME:PORT` (N1 위에) | 없음 | 계획 |
+| D4 | 빌드 출력 `type=docker`, `type=oci`, `SOURCE_DATE_EPOCH` | 없음 | 계획 |
+| D5 | `sbx tag`, `sbx push`, `build --push` | 없음 | 계획 |
+| V1 | 이름 붙은 볼륨(`sbx volume`, `-v NAME:/path`) | 디스크 하나 더 | 계획 |
+| V4 | 시계 맞추기(게스트 init, vsock으로 받은 호스트 시각) | 없음 | 계획 |
+| V3 | 실시간 마운트: 어댑터의 기능 확인과 `extensions.fs`, 호스트 변경 알림, 안내, smoke(`live_share`일 때만) | virtio-fs(선택) | 계획. sbx 쪽은 fake 실행기로 끝낸다. 0.3은 wick을 기다리지 않는다 |
+| D6 | bench: 같은 Dockerfile을 `docker build`와 견준다 | 없음 | 계획 |
+| T4 | `sbx tui`: 이미지 탭에서 빌드와 다시 빌드, 볼륨 탭, 샌드박스 상세에 `--connect`와 허용 목록 | 없음 | 계획 |
+| R1 | 문서(usage, SECURITY 위협 모델의 빌드·투명 TCP·볼륨, COMPATIBILITY의 규약 3, CHANGELOG), README 첫 줄·비교표·데모(`build` → `run` → `--connect`로 postgres까지) → `v0.3.0` | 없음 | 계획 |
+
 ## 그 뒤
 
+0.3 바로 뒤(0.4 후보), 실행기에 바라는 것 없음:
+
+- `sbx compose`: `compose.yaml`의 일부를 위 기능으로 옮긴다(기획서 9장)
+- Dockerfile "나중": `RUN --mount=type=cache`(볼륨 위에), `type=secret`, `type=ssh`, heredoc, `ADD <URL>`, git 컨텍스트
+- `HEALTHCHECK`(compose의 `depends_on: service_healthy`), `--restart`(데몬이 없으므로 launchd·systemd 등록),
+  `rename`·`top`·`port`·`update`, `commit`·`history`·`diff`
+- UDP(나가기, `-p`), `--add-host`·`--dns`(N1 위에서), MCP 도구 `build`
+
+실행기가 갖추면 붙인다(규약의 선택 기능으로, 없으면 그 기능만 오류):
+
+- GPU: wick이 조사 중(Vulkan만, macOS는 Venus → MoltenVK, shared memory 작업이 먼저). 켜면 위협 모델을 다시 쓴다.
+  게스트 드라이버(Mesa Venus)는 렌더러와 버전을 맞춰야 하므로 실행기 묶음이 싣는 쪽을 권했다
+- 스냅샷과 빠른 시작: wick에서 된다. 복원한 VM의 boot_id는 게스트 init이 새로 덮는다(커널 값은 읽기 전용)
+- 일시 정지(`pause`), 메모리 돌려주기(balloon, free page reporting): wick에서 된다
+- Windows: wick의 WHP가 거의 된다. sbx 쪽 어댑터와 shim의 Windows 확인이 남는다
+
+그 밖:
+
 - 다른 외부 실행기 (libkrun 등). 규약(`sbx-executor-proto`)만 지키면 된다.
-- Kubernetes·containerd(shim v2, RuntimeClass), 스냅샷과 빠른 시작(복제본마다 난수·boot_id를 새로), 다중 테넌트 서버 배포
+- Kubernetes·containerd(shim v2, RuntimeClass), 다중 테넌트 서버 배포
 - 언어 바인딩
-- OCI에서 남은 "나중"(`docs/plan/architecture.md` 3장): push, keyless(Fulcio·Rekor)와 GPG 서명, 런타임 번들 입력. 0.2.1에 넣은 것: 레지스트리 인증, 미러, 서명 정책, `load`/`save`, `ExposedPorts`·`Volumes`
+- OCI에서 남은 "나중"(`docs/plan/architecture.md` 3장): keyless(Fulcio·Rekor)와 GPG 서명, 런타임 번들 입력. push는 M9로 옮겼다
 - 유휴 시간 상한(P7): 게스트가 활동을 알려 주는 규약이 먼저다
