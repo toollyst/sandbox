@@ -453,7 +453,11 @@ fn dockerfile(out: &Path) {
     for (name, text) in files {
         put(out, "dockerfile", name, text.as_bytes());
     }
-    let node = files.iter().find(|(n, _)| *n == "node.Dockerfile").unwrap().1;
+    let node = files
+        .iter()
+        .find(|(n, _)| *n == "node.Dockerfile")
+        .unwrap()
+        .1;
     put(
         out,
         "dockerfile",
@@ -479,7 +483,12 @@ fn check(out: &Path) {
         target: None,
         arch: sbx_model::Arch::Aarch64,
     };
-    for n in ["node.Dockerfile", "python.Dockerfile", "go.Dockerfile", "docs-env.Dockerfile"] {
+    for n in [
+        "node.Dockerfile",
+        "python.Dockerfile",
+        "go.Dockerfile",
+        "docs-env.Dockerfile",
+    ] {
         let text = String::from_utf8(read("dockerfile", n)).unwrap();
         sbx_dockerfile::plan(&text, &opts, &mut |_| Ok(vec![])).expect(n);
     }

@@ -24,13 +24,18 @@ use std::collections::BTreeSet;
 
 use libfuzzer_sys::fuzz_target;
 use sbx_dockerfile::plan;
-use sbx_model::build::{BuildOptions, BuildPlan, CopyKind, CopySource, PlanError, StageBase, StepKind};
+use sbx_model::build::{
+    BuildOptions, BuildPlan, CopyKind, CopySource, PlanError, StageBase, StepKind,
+};
 use sbx_model::{Arch, Signal};
 
 fn run(text: &str, o: &BuildOptions) -> Result<BuildPlan, PlanError> {
     let mut asked = BTreeSet::new();
-    let r = plan(text, o, &mut |image: &str| {
-        assert!(asked.insert(image.to_owned()), "base env of {image:?} asked twice");
+    plan(text, o, &mut |image: &str| {
+        assert!(
+            asked.insert(image.to_owned()),
+            "base env of {image:?} asked twice"
+        );
         if image == "fail" {
             return Err("no such image".into());
         }
@@ -38,8 +43,7 @@ fn run(text: &str, o: &BuildOptions) -> Result<BuildPlan, PlanError> {
             ("PATH".into(), "/usr/bin:/bin".into()),
             ("HOME".into(), "/root".into()),
         ])
-    });
-    r
+    })
 }
 
 fn keyword(kind: &StepKind) -> &'static [&'static str] {
@@ -118,7 +122,10 @@ fn check(p: &BuildPlan, lines: usize, target: Option<&str>) {
         }
     }
     if let Some(t) = target {
-        assert_eq!(p.output().name.as_deref(), Some(t.to_ascii_lowercase().as_str()));
+        assert_eq!(
+            p.output().name.as_deref(),
+            Some(t.to_ascii_lowercase().as_str())
+        );
     }
 }
 
@@ -148,7 +155,11 @@ fuzz_target!(|data: &[u8]| {
         more.push('\n');
     }
     more.push_str("#sbx-fuzz\n");
-    assert_eq!(first, run(&more, &o), "a trailing comment changed the result");
+    assert_eq!(
+        first,
+        run(&more, &o),
+        "a trailing comment changed the result"
+    );
 
     match &first {
         Err(e) => {
