@@ -80,6 +80,47 @@ fn sorted_children(dir: &Path) -> Result<Vec<fs::DirEntry>, RuntimeError> {
     Ok(v)
 }
 
+/// 부르는 쪽이 정한 항목 하나를 보낸다(빌드의 `COPY`). 파일 내용은 알린 크기만큼 정확히 보낸다.
+pub fn send_placed(
+    e: crate::Placed,
+    emit: &mut dyn FnMut(HostMsg) -> io::Result<()>,
+) -> Result<(), RuntimeError> {
+    check_relative_path(&e.path).map_err(RuntimeError::Invalid)?;
+    let (kind, content) = match e.kind {
+        crate::PlacedKind::Dir => (FileKind::Dir, None),
+        crate::PlacedKind::Symlink(target) => (FileKind::Symlink { target }, None),
+        crate::PlacedKind::File { size, open } => (FileKind::File { size }, Some((size, open))),
+    };
+    emit(HostMsg::Entry(Entry {
+        path: e.path.clone(),
+        kind,
+        mode: e.mode & 0o7777,
+        uid: e.uid,
+        gid: e.gid,
+        mtime: e.mtime,
+    }))?;
+    if let Some((size, open)) = content {
+        let mut r = open()?.take(size);
+        let mut buf = vec![0; CHUNK_LEN];
+        let mut sent = 0u64;
+        loop {
+            let n = r.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            emit(HostMsg::Data(buf[..n].to_vec()))?;
+            sent += n as u64;
+        }
+        if sent != size {
+            return Err(RuntimeError::Invalid(format!(
+                "{} shrank while copying",
+                e.path
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn walk(
     p: &Path,
     rel: String,

@@ -127,6 +127,7 @@ mod tests {
             lifetime_secs: None,
             ports: Vec::new(),
             egress_limit_bytes: None,
+            hold: false,
         }
     }
 

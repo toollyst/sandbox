@@ -88,6 +88,49 @@ pub use records::{OWNER_GONE, StateRecord};
 use client::Guest;
 use records::{OwnerLock, Paths};
 
+/// [`Sandbox::copy_entries`]의 항목 하나. 경로는 놓을 디렉터리 기준 상대 경로다.
+pub struct Placed {
+    /// 상대 경로(`check_relative_path`를 통과해야 한다).
+    pub path: String,
+    /// 종류와 내용.
+    pub kind: PlacedKind,
+    /// 권한 비트.
+    pub mode: u32,
+    /// 소유자.
+    pub uid: u32,
+    /// 그룹.
+    pub gid: u32,
+    /// 수정 시각(Unix 초).
+    pub mtime: i64,
+}
+
+/// 파일 내용을 여는 함수. 한 번 부른다.
+pub type OpenContent = Box<dyn FnOnce() -> std::io::Result<Box<dyn std::io::Read>> + Send>;
+
+/// [`Placed`]의 종류.
+pub enum PlacedKind {
+    /// 디렉터리.
+    Dir,
+    /// 일반 파일. 내용은 `open`이 주고, 정확히 `size` 바이트를 보낸다(모자라면 오류).
+    File {
+        /// 크기.
+        size: u64,
+        /// 내용.
+        open: OpenContent,
+    },
+    /// 심볼릭 링크(대상 그대로).
+    Symlink(String),
+}
+
+impl fmt::Debug for Placed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Placed")
+            .field("path", &self.path)
+            .field("mode", &self.mode)
+            .finish_non_exhaustive()
+    }
+}
+
 /// 게스트가 연결을 받을 때까지 기다리는 시간.
 pub const START_TIMEOUT: Duration = Duration::from_secs(30);
 /// 시작할 때 소유 잠금을 얻으려고 기다리는 시간 (다른 프로세스가 잠깐 쥐는 경우).
@@ -762,6 +805,8 @@ impl Sandbox {
             .map_err(|e| record_failure(e.into()))?;
 
         let guest = rt.guest(&control);
+        let layer_count = lease.disks().len();
+        let hold = spec.hold;
         let mut main = to_proto_exec(&spec.process, io, true);
         let mounts = spec.mounts.clone();
         let network = spec.network.clone();
@@ -773,6 +818,8 @@ impl Sandbox {
             let r = (|| {
                 let mut alive = || !chan::block_on(vm.wait(Duration::ZERO)).unwrap_or(true);
                 guest.wait_ready(START_TIMEOUT, &mut alive)?;
+                // 실행기가 디스크를 빠뜨리면 게스트는 모자란 뿌리로 뜬다. 붙인 층 수를 알려 게스트가 견주게 한다.
+                guest.check_layers(layer_count)?;
                 let binds = mounts.iter().filter(|m| m.kind == MountKind::Bind);
                 for (i, m) in binds.enumerate() {
                     guest.share(&share_tag(i), &m.destination, m.readonly)?;
@@ -817,9 +864,8 @@ impl Sandbox {
                 };
                 let forwarding =
                     (!bound.listeners_empty()).then(|| ports::serve(bound, guest.clone()));
-                guest
-                    .exec(main)
-                    .map(|(c, pid)| (c, pid, egress_port, forwarding))
+                let started = if hold { guest.hold() } else { guest.exec(main) };
+                started.map(|(c, pid)| (c, pid, egress_port, forwarding))
             })();
             if r.is_err() {
                 let _ = vm.kill();
@@ -907,6 +953,43 @@ impl Sandbox {
             rt.emit("exec_die", &id, Some(&spec), &extra);
         });
         Ok(Process::spawn(conn, pid, None, Some(on_exit)))
+    }
+
+    /// 빌드 단계 하나를 실행한다(`RUN`). [`Sandbox::exec`]와 같고, 끝나면 게스트가 그 단계가 남긴 프로세스를 모두
+    /// 끝낸다(`HostMsg::ExecStep`). 빌드 층이 열려 있어야 한다([`Sandbox::open_layer`]).
+    pub async fn exec_step(&self, spec: ExecSpec) -> Result<Process, RuntimeError> {
+        let (info, guest) = self.require_running("build")?;
+        let p = process::for_exec(&info.spec.process, &spec)?;
+        let mut x = to_proto_exec(&p, IoMode::default(), false);
+        if let Some(port) = info.egress_port {
+            process::add_proxy_env(&mut x.env, port);
+        }
+        let (conn, pid) = blocking(move || guest.exec_step(x)).await?;
+        Ok(Process::spawn(conn, pid, None, None))
+    }
+
+    /// 항목들을 게스트 디렉터리 `dest_dir`(절대 경로, 있어야 한다) 아래에 놓는다. 경로, 소유자, 권한, 시각은 부르는
+    /// 쪽이 정한 그대로다(빌드의 `COPY`). 같은 이름은 덮고 디렉터리끼리는 합친다(`CopyIn`). `running`에서만.
+    pub async fn copy_entries(
+        &self,
+        dest_dir: &str,
+        entries: Vec<Placed>,
+    ) -> Result<(), RuntimeError> {
+        let (_, guest) = self.require_running("copy")?;
+        require_absolute(dest_dir)?;
+        let dest = dest_dir.to_owned();
+        blocking(move || guest.copy_entries(&dest, entries)).await
+    }
+
+    /// 게스트 경로 정보(심볼릭 링크는 게스트 안에서 따라간다). 없으면 `None`. `running`에서만.
+    pub async fn stat(
+        &self,
+        guest_path: &str,
+    ) -> Result<Option<sbx_guest_proto::Entry>, RuntimeError> {
+        let (_, guest) = self.require_running("stat")?;
+        require_absolute(guest_path)?;
+        let p = guest_path.to_owned();
+        blocking(move || guest.stat(&p)).await
     }
 
     /// 게스트가 보고하는 자원 사용량(`sbx stats`). `running`에서만.
