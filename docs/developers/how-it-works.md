@@ -125,7 +125,8 @@ The kernel unpacks the initramfs and runs `/init` = `sbx-guest` as PID 1
    it to `/`, and chroots. It brings up loopback and sets the hostname.
 4. It re-executes itself as the **agent**, which listens on vsock port 1024 and serves each connection on its own
    thread. It also starts a loopback DNS responder that answers NXDOMAIN at once, so name lookups without network
-   fail instantly instead of after a 5 s timeout.
+   fail instantly instead of after a 5 s timeout (with `--network allow` it answers from the allow list instead;
+   see "The network").
 5. PID 1 then only reaps orphans. When the agent exits, the VM powers off.
 
 ### 6. Run the command (host ↔ guest)
