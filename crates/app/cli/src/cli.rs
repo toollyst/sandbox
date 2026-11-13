@@ -187,6 +187,27 @@ pub enum Command {
         #[arg(add = complete::image())]
         image: String,
     },
+    #[command(about = about("push"))]
+    Push {
+        /// Push every local tag of the repository NAME (give it without a tag).
+        #[arg(short, long)]
+        all_tags: bool,
+        /// Only print the pushed reference(s), no progress or layer lines.
+        #[arg(short, long)]
+        quiet: bool,
+        /// Image reference to push, e.g. ghcr.io/me/app:1. It must exist locally (`sbx tag` names it).
+        #[arg(add = complete::image())]
+        name: String,
+    },
+    #[command(about = about("tag"))]
+    Tag {
+        /// Image reference or ID.
+        #[arg(add = complete::image())]
+        source: String,
+        /// New reference, e.g. ghcr.io/me/app:1 (a tag, not a digest).
+        #[arg(add = complete::image())]
+        target: String,
+    },
     #[command(about = about("prepare"))]
     Prepare {
         /// Root filesystem format.

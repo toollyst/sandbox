@@ -49,6 +49,7 @@ use crate::{choose, dirs, executors, guest, host};
 
 mod load;
 mod login;
+mod push;
 mod stats;
 mod system;
 mod upgrade;
@@ -131,6 +132,12 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
     let ctx = Ctx::new(&cli)?;
     match &cli.command {
         Command::Pull { platform, image } => ctx.pull(platform.as_deref(), image).await,
+        Command::Push {
+            all_tags,
+            quiet,
+            name,
+        } => ctx.push(*all_tags, *quiet, name).await,
+        Command::Tag { source, target } => ctx.tag(source, target),
         Command::Executor { command } => ctx.executor_cmd(command).await,
         Command::Login {
             username,

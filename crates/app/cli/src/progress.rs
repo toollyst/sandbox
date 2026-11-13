@@ -4,7 +4,7 @@ use std::io::{self, IsTerminal, Write};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use sbx_manage::PullProgress;
+use sbx_manage::{PullProgress, PushProgress};
 
 use crate::behavior::human_size;
 
@@ -32,6 +32,11 @@ impl Status {
     /// 받기 진행을 그린다. 끝났을 때는 간격과 상관없이 그린다.
     pub fn pull(&self, label: &str, p: PullProgress) {
         self.draw(&render_pull(label, p), p.layers_done == p.layers);
+    }
+
+    /// 올리기 진행을 그린다. 끝났을 때는 간격과 상관없이 그린다.
+    pub fn push(&self, label: &str, p: PushProgress) {
+        self.draw(&render_push(label, p), p.blobs_done == p.blobs);
     }
 
     /// 진행 줄에 글을 쓴다(오래 걸리는 단계 앞에).
@@ -83,24 +88,42 @@ impl Drop for Status {
     }
 }
 
-/// `Pulling alpine:3.20 [=======>            ] 1.2MB/3.6MB, 1/2 layers`
-pub fn render_pull(label: &str, p: PullProgress) -> String {
-    let filled = if p.bytes == 0 {
+/// `[=======>            ]`: `done`/`total`만큼 찬 막대.
+fn bar(done: u64, total: u64) -> String {
+    let filled = if total == 0 {
         BAR
     } else {
-        ((p.bytes_done.min(p.bytes) as u128 * BAR as u128) / p.bytes as u128) as usize
+        ((done.min(total) as u128 * BAR as u128) / total as u128) as usize
     };
     let mut bar = "=".repeat(filled);
     if filled < BAR {
         bar.push('>');
         bar.push_str(&" ".repeat(BAR - filled - 1));
     }
+    bar
+}
+
+/// `Pulling alpine:3.20 [=======>            ] 1.2MB/3.6MB, 1/2 layers`
+pub fn render_pull(label: &str, p: PullProgress) -> String {
     format!(
-        "Pulling {label} [{bar}] {}/{}, {}/{} layers",
+        "Pulling {label} [{}] {}/{}, {}/{} layers",
+        bar(p.bytes_done, p.bytes),
         human_size(p.bytes_done),
         human_size(p.bytes),
         p.layers_done,
         p.layers
+    )
+}
+
+/// `Pushing ghcr.io/me/app:1 [=======>            ] 1.2MB/3.6MB, 1/3 blobs`
+pub fn render_push(label: &str, p: PushProgress) -> String {
+    format!(
+        "Pushing {label} [{}] {}/{}, {}/{} blobs",
+        bar(p.bytes_done, p.bytes),
+        human_size(p.bytes_done),
+        human_size(p.bytes),
+        p.blobs_done,
+        p.blobs
     )
 }
 
@@ -127,6 +150,20 @@ mod tests {
         assert_eq!(
             render_pull("alpine", p(4_000_000, 2)),
             "Pulling alpine [====================] 4.0MB/4.0MB, 2/2 layers"
+        );
+    }
+
+    #[test]
+    fn push_line() {
+        let p = PushProgress {
+            blobs: 3,
+            blobs_done: 1,
+            bytes: 4_000_000,
+            bytes_done: 1_000_000,
+        };
+        assert_eq!(
+            render_push("ghcr.io/me/app:1", p),
+            "Pushing ghcr.io/me/app:1 [=====>              ] 1.0MB/4.0MB, 1/3 blobs"
         );
     }
 }

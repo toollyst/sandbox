@@ -67,6 +67,8 @@ pub const JSON_OUTPUT: &[(&str, Form)] = &[
     ("logs", Form::Lines("LogLine")),
     ("cp", Form::Empty),
     ("pull", Form::Value("Pulled")),
+    ("push", Form::Lines("Pushed")),
+    ("tag", Form::Value("Tagged")),
     ("prepare", Form::Value("Prepared")),
     ("images", Form::Value("[Image]")),
     ("rmi", Form::Lines("Removed")),
@@ -329,6 +331,48 @@ pub struct Pulled {
     pub id: String,
     /// Architecture in OCI terms (`amd64`, `arm64`).
     pub arch: String,
+}
+
+/// An image pushed to a registry (`push`; one line per tag with `-a`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct Pushed {
+    /// Normalized reference it was pushed to, e.g. `ghcr.io/me/app:1`.
+    pub reference: String,
+    /// Image ID: the `sha256:…` of the manifest, the same as before the push (it is sent as it was pulled).
+    pub id: String,
+    /// Size of the manifest in bytes.
+    pub size: u64,
+    /// Layers (each once), then the image config.
+    pub blobs: Vec<PushedBlob>,
+}
+
+/// One blob of a pushed image.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct PushedBlob {
+    /// Digest (`sha256:…`).
+    pub digest: String,
+    /// Size in bytes.
+    pub size: u64,
+    /// `exists` (the registry had it, nothing sent), `mounted` (taken from another repository of the same
+    /// registry, nothing sent) or `uploaded`.
+    pub status: String,
+    /// For `mounted`: the repository it came from (`registry/repository`).
+    pub mounted_from: Option<String>,
+}
+
+/// A reference added to an image (`tag`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct Tagged {
+    /// Normalized new reference, e.g. `docker.io/library/app:1`.
+    pub reference: String,
+    /// Image ID it now points at.
+    pub id: String,
 }
 
 /// A root filesystem that is ready (`prepare`).
@@ -769,12 +813,12 @@ pub struct Event {
     /// `sandbox` or `image`.
     #[serde(rename = "type")]
     pub kind: String,
-    /// Sandbox: `create`, `start`, `stop`, `remove`. Image: `pull`, `prepare`, `untag`, `delete`.
+    /// Sandbox: `create`, `start`, `stop`, `remove`. Image: `pull`, `prepare`, `tag`, `untag`, `push`, `delete`.
     pub action: String,
     /// Sandbox ID or image ID.
     pub id: String,
     /// Details. Sandbox: `image`, `name`; on `stop` also `exit_code` and `error`. Image: `reference` (`pull`,
-    /// `untag`), `rootfs_format` (`prepare`).
+    /// `tag`, `untag`, `push`: the reference pushed to), `rootfs_format` (`prepare`).
     pub attributes: BTreeMap<String, String>,
 }
 
@@ -1169,6 +1213,8 @@ mod tests {
         let mut g = schemars::generate::SchemaSettings::draft2020_12().into_generator();
         g.subschema_for::<ErrorLine>();
         g.subschema_for::<Pulled>();
+        g.subschema_for::<Pushed>();
+        g.subschema_for::<Tagged>();
         g.subschema_for::<Prepared>();
         g.subschema_for::<Image>();
         g.subschema_for::<Removed>();
