@@ -8,7 +8,7 @@
 //!   - [`Form::Unsupported`]: 출력이 게스트 프로세스의 바이트 그대로이거나 다른 규약이다. `--format json`이면 아무것도
 //!     하지 않고 오류로 끝난다.
 //!   - [`Form::Detached`]: 붙지 않을 때(`run -d`, `start`)는 `Value`, 붙을 때(`run`, `start -a`)는 `Unsupported`.
-//! - `-q`가 있는 명령(`ps`, `images`)은 `-q`가 이긴다: 한 줄에 ID 하나.
+//! - `-q`가 있는 명령(`ps`, `images`, `push`)은 `-q`가 이긴다: 한 줄에 ID 하나(`push`는 올린 참조 하나).
 //! - stdout에는 JSON만 나온다. 진행 표시와 안내는 stderr로 간다.
 //! - 오류는 stderr에 [`ErrorLine`] 한 줄이다. 명령 전체가 실패하면 마지막 줄이고, 여러 대상 중 하나가 실패하면 그 대상의
 //!   줄(`target`이 있다)이다. stderr의 그 밖의 줄은 사람이 읽는 안내이고 모양을 약속하지 않는다.
@@ -1273,7 +1273,8 @@ mod tests {
              If one argument fails, the others still run. Streams (`events`, `logs`) print one per item.\n\
              - **empty**: nothing on success.\n\
              - **not supported**: sbx refuses `--format json` and exits with an error.\n\
-             - `-q` (`ps`, `images`) wins over `--format`: one ID per line.\n\
+             - `-q` (`ps`, `images`, `push`) wins over `--format`: one ID (for `push`, the pushed reference) \
+             per line.\n\
              - `--jq EXPR` (only with `--format json`, like gh) runs a jq expression on each value or line \
              and prints each result on its own line, strings without quotes. A bad expression fails before \
              the command does anything. jq is built in (jaq).\n\

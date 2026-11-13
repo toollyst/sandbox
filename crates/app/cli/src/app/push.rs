@@ -8,7 +8,8 @@
 //!   ([`push_targets`]). 하나가 실패해도 나머지를 올리고(JSON이면 그 태그의 오류 줄), 끝에 실패로 끝난다.
 //! - 사람에게는 Docker처럼 `The push refers to repository [...]`, 레이어마다 `<12자리>: Pushed`(`Layer already
 //!   exists`, `Mounted from <저장소>`), 끝에 `<태그>: digest: <ID> size: <manifest 바이트>`를 쓴다. config는 줄을 내지
-//!   않는다(Docker와 같다). `-q`면 올린 참조만 한 줄씩. 진행 막대는 stderr가 터미널일 때만.
+//!   않는다(Docker와 같다). `-q`면 올린 참조만 한 줄씩(`--format json`보다 앞선다). 진행 막대는 stderr가
+//!   터미널일 때만.
 //! - 올릴 곳은 pull과 같은 자격 증명 파일과 `registries.conf`를 쓴다. `policy.json`은 보지 않는다(받을 이미지의
 //!   정책이다).
 
@@ -166,8 +167,9 @@ impl Ctx {
                 .await;
             drop(status);
             match r {
-                Ok(p) if self.json() => output::print_line(&json(&p))?,
+                // `-q`가 `--format`을 이긴다(`ps`, `images`와 같다).
                 Ok(p) if quiet => println!("{}", p.reference),
+                Ok(p) if self.json() => output::print_line(&json(&p))?,
                 Ok(p) => report(&p).iter().for_each(|l| println!("{l}")),
                 Err(e) => {
                     self.target_error(reference, &e);

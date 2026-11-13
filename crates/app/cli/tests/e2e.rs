@@ -2731,6 +2731,8 @@ mod unix {
         // -q는 참조만, JSON은 Pushed 한 줄.
         let o = e.sbx(&["push", "-q", &target]);
         assert_eq!(text(&o.stdout), format!("{target}\n"));
+        let o = e.sbx(&["--format", "json", "push", "-q", &target]);
+        assert_eq!(text(&o.stdout), format!("{target}\n"));
         let o = e.sbx(&["--format", "json", "push", &target]);
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
         let p: sbx_cli::output::Pushed = serde_json::from_slice(&o.stdout).unwrap();

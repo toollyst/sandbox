@@ -121,6 +121,23 @@ it). `save` writes the manifest, config and layers exactly as they were pulled, 
 gives the same image ID. An image pulled by `sbx` older than 0.2.1 has to be pulled again before it can be saved. In
 `sbx tui`, `I` and `O` on the Images tab fill in `load -i` and `save -o`.
 
+`tag` adds a name to an image, and `push` uploads it to the registry that name points at, as with Docker:
+
+```sh
+sbx tag alpine:3.20 ghcr.io/me/alpine:3.20    # a reference that pointed at another image moves
+sbx push ghcr.io/me/alpine:3.20
+sbx push -a ghcr.io/me/alpine                 # every local tag of the repository
+sbx --format json push ghcr.io/me/alpine:3.20  # one Pushed line per tag
+```
+
+`push` sends the layers, the config and last the manifest, exactly as they were pulled or loaded, so the image keeps
+its ID (the registry reports the same digest). A layer the registry already has is not sent again; one that came
+from another repository of the same registry is mounted from there instead of uploaded. If anything fails before the
+manifest, the tag on the registry is left as it was. Credentials are the same as for pulls below; `sbx login` with an
+account that may push. `-q` prints only the pushed reference; `--format json` prints one `Pushed` line per tag, with
+what happened to each layer (`exists`, `mounted`, `uploaded`). An image without a name can't be pushed: `tag` it
+first. In `sbx tui`, `t` and `p` on the Images tab fill in `tag` and `push`.
+
 Private images use the credentials you already have: `sbx` reads Docker's `config.json` (`$DOCKER_CONFIG` or
 `~/.docker`), including its `credHelpers` and `credsStore` (`docker-credential-*`), then `REGISTRY_AUTH_FILE` and
 the containers `auth.json` that podman and skopeo use. It has no credential store of its own, so `docker login` is
@@ -148,7 +165,8 @@ location = "docker.io"
 location = "mirror.gcr.io"
 ```
 
-Mirrors are tried in order, then the registry itself; the image keeps the name you asked for. `prefix`, `blocked`,
+Mirrors are tried in order, then the registry itself; the image keeps the name you asked for. `push` never uses a
+mirror or a rewritten `location`: it goes to the registry the name points at, and refuses a `blocked` one. `prefix`, `blocked`,
 `insecure` (falls back to plain HTTP; unlike podman, certificates are still checked, so add a self-signed CA to the
 system trust store), `mirror-by-digest-only` and `pull-from-mirror` work as
 the containers documentation describes. `unqualified-search-registries` and short-name aliases are not used: like
@@ -179,7 +197,8 @@ The check runs before any layer is downloaded, and a `reject` before `sbx` conta
 signs a repository without a tag, so a tag pull needs `matchRepository` (or `exactRepository`, `remapIdentity`), as
 with podman. Requirements `sbx` can't check (`signedBy` GPG signatures, keyless `fulcio`/`pki` and `rekorPublicKey*`)
 make the images they cover fail to pull, never pass. `sbx load` follows the `oci-archive` (tar) or `oci` (directory)
-transport and refuses an archive whose policy asks for signatures.
+transport and refuses an archive whose policy asks for signatures. The policy is about what may come in, so `push`
+doesn't consult it (neither does podman for the registry it pushes to).
 
 The guest kernel comes with the executor. An image can bring its own instead, with the label
 `io.github.toollyst.sandbox.kernel=/path/in/image`; other labels under `io.github.toollyst.sandbox.` are reserved
