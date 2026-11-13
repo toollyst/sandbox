@@ -42,11 +42,29 @@ postinstall이나 `pip install`의 빌드 스크립트가 그렇다. Docker는 �
 쓰기), kaniko(컨테이너 안에서 rootfs 스냅샷으로 층 만들기), Apple `container`(컨테이너마다 VM, macOS 전용), Docker
 Compose 명세, podman volume.
 
+### 2.1 깔면 바로 돈다 (2026-11-13)
+
+지금은 설치한 뒤 `sbx executor install wick`을 따로 해야 하고, 하지 않으면 첫 `sbx run`이 실행기가 없다는 오류로 끝난다.
+이 한 단계가 처음 쓰는 사람을 놓친다. 그래서 이렇게 바꾼다.
+
+- 설치 스크립트(`install.sh`, `install.ps1`)가 `sbx`를 깐 뒤 기본 실행기를 깐다. 끄는 길을 둔다(`SBX_EXECUTOR=none`).
+- 실행기가 하나도 없을 때 VM이 필요한 명령(`run`, `create`, `start`, `build`)은 공식 저장소에서 기본 실행기를 받아 깔고
+  이어서 한다. 한 줄로 무엇을 하는지 알린다(`installing the default executor wick@… from official`). 끄는 길을 둔다
+  (`SBX_NO_AUTO_EXECUTOR=1`). 터미널이 아니어도 묻지 않고 한다: 서명을 확인한 공식 저장소의 것만 받기 때문이다.
+- 받는 길은 지금의 `sbx executor install`과 같다. 색인의 minisign 서명(공개키는 `sbx` 안), `serial`·`expires`, 묶음의
+  sha256. 다른 저장소가 앞에 있어도 자동 설치는 공식 저장소의 이름만 본다.
+- 기본 실행기의 이름은 `sbx` 안의 상수 하나다(플랫폼마다). 실행기를 하나라도 깔았거나 `--executor`를 줬으면 자동 설치는
+  하지 않는다. 바꾸는 것은 지금처럼 `sbx executor install NAME`, `sbx executor use NAME`이다.
+- 릴리스 묶음에는 넣지 않는다. sbx의 릴리스와 CI는 여전히 wick 빌드를 기다리지 않는다. 대신 "깔면 바로 돈다"는 공식
+  저장소(toollyst/sandbox-executors)에 wick과 어댑터가 올라가 있어야 참이다. 2026-11-13에는 아무것도 없다(404).
+  0.3을 내기 전에 그것부터 올린다.
+- 저장소에 닿지 못하면 지금의 오류에 까닭과 손으로 하는 길(`sbx executor install`, `--from DIR`)을 보인다.
+
 ## 3. 정한 것 (2026-11-13)
 
 | 질문 | 결정 | 버린 길과 까닭 |
 |---|---|---|
-| 실행기 추상화 | 그대로 둔다. wick은 실행기 하나다 | wick에 직접 기대고 함께 배포: 빨라지거나 단순해지는 것이 거의 없고 열린 규약을 잃는다 |
+| 실행기 | 규약과 추상화는 그대로 둔다. 다만 **깔면 바로 돈다**: wick이 기본 실행기이고, 설치 스크립트와 첫 실행이 서명된 공식 저장소에서 자동으로 받는다(2.1). 다른 실행기로 바꿀 수 있다 | wick에 직접 기대기: 열린 규약을 잃는다. 릴리스 묶음에 wick 넣기: sbx 릴리스가 wick 빌드에 묶이고 묶음이 20 MB 넘게 커진다. 지금처럼 따로 고르게 하기: 깔고 나서 한 단계가 더 있으면 쓰지 않는다 |
 | 빌더 | **직접 만든다.** Dockerfile을 읽고 스테이지마다 VM 하나를 띄워 `RUN`을 거기서 돌린다(4장) | BuildKit을 VM 안에서: Dockerfile 호환은 완벽하지만 게스트에 컨테이너 런타임(runc, cgroup, namespace)과 buildkitd 이미지가 필요하고, VM 안에 컨테이너를 또 띄우므로 빠르다는 이야기가 약해진다 |
 | 실시간 마운트 | **실행기의 virtio-fs**(wick에 넣는다). sbx 쪽에 동기화를 따로 만들지 않는다(7.3) | sbx 쪽 한 방향 sync: 양방향이 아니어서 `-v`와 다르게 동작하고, 감시와 지우기 처리를 sbx가 떠안는다 |
 | 릴리스 범위 | **0.3에 개발 흐름 전부**: build, push, 볼륨, `--connect`. compose는 그 뒤 | 0.3은 build와 push만: 빨리 내지만 "postgres까지 이어 쓰는" 데모가 안 된다 |
