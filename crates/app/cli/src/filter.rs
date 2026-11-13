@@ -50,6 +50,8 @@ pub const ACTIONS: &[&str] = &[
     "pull",
     "prepare",
     "untag",
+    "tag",
+    "push",
     "delete",
     "connect",
     "refuse",

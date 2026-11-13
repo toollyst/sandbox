@@ -449,6 +449,7 @@ fn the_whole_path_over_the_guest_protocol() {
         layers: None,
         sweep: crate::exec::Sweep::Group,
         layer_disks: None,
+        clock: None,
     });
     let conn = || {
         let (mut host, guest) = UnixStream::pair().unwrap();

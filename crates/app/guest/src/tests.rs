@@ -55,6 +55,7 @@ impl Fixture {
                     layers: None,
                     sweep: crate::exec::Sweep::Group,
                     layer_disks: None,
+                    clock: None,
                 },
             )
         });
@@ -152,6 +153,7 @@ fn version_mismatch_is_reported() {
                 layers: None,
                 sweep: crate::exec::Sweep::Group,
                 layer_disks: None,
+                clock: None,
             },
         )
     });
@@ -174,6 +176,7 @@ fn request_before_hello_is_a_protocol_error() {
                 layers: None,
                 sweep: crate::exec::Sweep::Group,
                 layer_disks: None,
+                clock: None,
             },
         )
     });
@@ -538,6 +541,7 @@ fn shutdown_syncs_replies_then_calls_back() {
                 layers: None,
                 sweep: crate::exec::Sweep::Group,
                 layer_disks: None,
+                clock: None,
             },
         )
     });
@@ -829,6 +833,7 @@ fn connect_with(
                 layers: layers.then(|| Box::new(OpenLayers) as Box<dyn crate::layer::Layers>),
                 sweep: crate::exec::Sweep::Group,
                 layer_disks,
+                clock: None,
             },
         )
     });
@@ -968,6 +973,7 @@ fn privileged_pid1_a_build_step_ends_even_detached_daemons() {
                 layers: Some(Box::new(OpenLayers)),
                 sweep: crate::exec::Sweep::Everything,
                 layer_disks: None,
+                clock: None,
             },
         )
     });
@@ -1000,4 +1006,12 @@ fn privileged_pid1_a_build_step_ends_even_detached_daemons() {
         !crate::exec::is_live_user_process(pid, &stat, std::process::id()),
         "the daemon {pid} survived: {stat}"
     );
+}
+
+#[test]
+fn a_guest_without_a_clock_refuses_clock_sync() {
+    let f = Fixture::new("noclock");
+    let mut c = f.connect();
+    send(&mut c, HostMsg::ClockSync);
+    assert_eq!(error_kind(&mut c), ErrorKind::InvalidArgument);
 }

@@ -237,6 +237,10 @@ mod unix {
             "a_missing_layer_disk_stops_the_start",
             a_missing_layer_disk_stops_the_start,
         ),
+        (
+            "the_guest_clock_follows_the_host",
+            the_guest_clock_follows_the_host,
+        ),
     ];
 
     /// 인자: 이름 일부(걸러 내기). `--`로 시작하는 인자(cargo test가 넘기는 것)는 무시한다.
@@ -620,6 +624,94 @@ mod unix {
         assert_eq!(found.len(), 1, "{found:?}");
         assert_eq!(std::fs::read(&found[0]).unwrap(), bytes);
         assert!(found[0].to_string_lossy().contains("sha256-"));
+    }
+
+    /// 게스트 시계(fake 실행기: 호스트 시계는 그대로 두고 scratch 옆 파일이 게스트 시계다)가 틀려 있으면 시작 직후 맞고,
+    /// 소유 프로세스가 멈췄다 풀리면(잠자기에서 깬 것처럼 타이머가 늦게 깬다) 1분 주기를 기다리지 않고 곧바로 맞는다.
+    /// attached(`start -a`, sbx가 소유)와 detached(`start`, shim이 소유) 둘 다.
+    fn the_guest_clock_follows_the_host() {
+        use sbx_executor_fake::clock;
+        let e = Env::new();
+        let sandbox_dir = |id: &str| e.path("data").join("sandboxes").join(id);
+        let clock_of =
+            |id: &str| sbx_executor_fake::clock_file(&sandbox_dir(id).join("scratch.img"));
+        let wait_right = |file: &Path, steps: u64| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let st = clock::read(file).unwrap();
+                if st.offset.unsigned_abs() < 50_000_000 && st.steps >= steps {
+                    return st;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "the guest clock is still off: {st:?}"
+                );
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        };
+        let signal = |sig: &str, pid: u32| {
+            let ok = Command::new("kill")
+                .args([sig, &pid.to_string()])
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "kill {sig} {pid}");
+        };
+        let create = || {
+            let o = e.sbx(&["create", IMAGE, "sleep", "60"]);
+            assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+            let id = text(&o.stdout).trim().to_owned();
+            // 부팅한 게스트 시계가 한 시간 늦다.
+            clock::skew(&clock_of(&id), -3_600_000_000_000).unwrap();
+            id
+        };
+        let check = |id: &str, owner: u32| {
+            let file = clock_of(id);
+            let st = wait_right(&file, 1);
+            assert_eq!(st.steps, 1, "{st:?}");
+            // 게스트 안에서 누가 시계를 10초 뒤로 돌렸다(`date -s`). 다음 주기 맞추기는 1분 뒤다.
+            clock::skew(&file, -10_000_000_000).unwrap();
+            let t = Instant::now();
+            signal("-STOP", owner);
+            std::thread::sleep(Duration::from_millis(2500));
+            signal("-CONT", owner);
+            let st = wait_right(&file, 2);
+            assert_eq!(st.steps, 2, "{st:?}");
+            assert!(t.elapsed() < Duration::from_secs(20), "{:?}", t.elapsed());
+            let log = std::fs::read_to_string(sandbox_dir(id).join("logs/executor.log"))
+                .unwrap_or_default();
+            assert!(!log.contains("guest clock"), "{log}");
+        };
+
+        // attached: sbx가 소유한다.
+        let id = create();
+        let child = e.spawn(&["start", "-a", &id]);
+        assert_eq!(e.wait_running(), id);
+        check(&id, child.id());
+        assert_eq!(e.sbx(&["stop", "-t", "0", &id]).status.code(), Some(0));
+        let out = wait_with_timeout(child, Duration::from_secs(20));
+        assert_eq!(text(&out.stdout), "", "{}", text(&out.stderr));
+        assert_eq!(e.sbx(&["rm", &id]).status.code(), Some(0));
+
+        // detached: shim이 소유한다. shim은 이 테스트 실행 파일이고 인자는 `start … <ID>`다.
+        let id = create();
+        let o = e.sbx(&["start", &id]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let me = std::env::current_exe().unwrap();
+        let o = Command::new("ps")
+            .args(["-ax", "-o", "pid=,command="])
+            .output()
+            .unwrap();
+        let ps = text(&o.stdout);
+        let shims: Vec<u32> = ps
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.contains(&format!("{} start ", me.display())) && l.ends_with(id.as_str()))
+            .filter_map(|l| l.split_whitespace().next()?.parse().ok())
+            .collect();
+        assert_eq!(shims.len(), 1, "{ps}");
+        check(&id, shims[0]);
+        assert_eq!(e.sbx(&["rm", "-f", &id]).status.code(), Some(0));
     }
 
     fn network_allow_list() {

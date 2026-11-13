@@ -9,7 +9,7 @@ use sbx_guest_proto::{Error, ErrorKind, GuestMsg, HostMsg, PROTOCOL_VERSION};
 use crate::egress::{Egress, Slot};
 use crate::layer::{self, Layers};
 use crate::wire::{Conn, Out, protocol};
-use crate::{copy, exec, sys};
+use crate::{clock, copy, exec, sys};
 
 /// 게스트 쪽 설정.
 pub struct Ctx {
@@ -30,6 +30,8 @@ pub struct Ctx {
     pub sweep: exec::Sweep,
     /// 부팅 때 쌓은 층 디스크 수(`CheckLayers`가 견준다). 모르면 `None`이고 그때는 어느 수든 받는다.
     pub layer_disks: Option<u32>,
+    /// 맞출 시계(`ClockSync`). 없으면 그 요청은 `InvalidArgument` 오류다. 규칙은 [`clock`] 모듈에 있다.
+    pub clock: Option<Box<dyn clock::Clock>>,
 }
 
 /// 공유 폴더를 붙이는 방법.
@@ -167,6 +169,13 @@ pub fn serve<C: Conn>(conn: C, ctx: &Ctx) {
                 let _ = out.send(&GuestMsg::Usage(u));
             }
             Err(e) => out.error(crate::wire::io_error("usage", &e)),
+        },
+        Ok(HostMsg::ClockSync) => match &ctx.clock {
+            Some(c) => clock::sync(&**c, &mut input, &out),
+            None => out.error(Error::new(
+                ErrorKind::InvalidArgument,
+                "this guest cannot set its clock",
+            )),
         },
         Ok(HostMsg::OpenLayer) => layer::open(ctx.layers.as_deref(), &out),
         Ok(HostMsg::ExportLayer) => layer::export(ctx.layers.as_deref(), &out),

@@ -43,7 +43,10 @@
 //! 속성은 `image`(ID)와 `name`(있으면)이다. 기록하지 못해도 동작은 계속한다(알림이다).
 //! 소유 프로세스가 갑자기 죽으면 아무도 `stopped`를 기록하지 않으므로(읽는 쪽이 `stopped`로 본다) `stop` 이벤트도 없다.
 //!
-//! **층**: `lib` → `egress` → `client` → `hostfs`, `layer`, `records` → `process`, `validate`, `cpplan`, `chan` → `error`.
+//! **시계**: VM을 소유한 프로세스는 게스트 시계를 호스트에 맞춘다(시작 직후, 1분마다, 호스트 시계가 뛰면 곧바로).
+//! 시작을 기다리게 하지 않고, 실패는 `logs/executor.log`에 종류마다 한 번 쓴다. 규칙은 [`clock`]에 있다.
+//!
+//! **층**: `lib` → `egress`, `clock` → `client` → `hostfs`, `layer`, `records` → `process`, `validate`, `cpplan`, `chan` → `error`.
 //!
 //! - 의존: `sbx-model`, `sbx-guest-proto`, `sbx-executor`, `sbx-store`(읽기), `sbx-events`
 
@@ -63,6 +66,7 @@ use sbx_store::{LeaseError, RootfsLease, Store};
 
 mod chan;
 mod client;
+pub mod clock;
 pub mod cpplan;
 pub mod egress;
 mod error;
@@ -126,6 +130,8 @@ struct Owned {
     ended_by: Option<String>,
     /// `-p`의 듣기. 버리면(정리할 때) 멈춘다.
     _ports: Option<ports::Forwarding>,
+    /// 게스트 시계 맞추기. 버리면 멈춘다. 끝낼 때 VM에 종료를 요청하기 전에 먼저 버린다.
+    clock: Option<clock::Running>,
     _lease: RootfsLease,
     _lock: OwnerLock,
 }
@@ -481,6 +487,8 @@ impl Runtime {
             return;
         };
         let error = owned.ended_by.take().or(error);
+        // 꺼지는 VM과 시계를 맞추다 실패를 기록하지 않게 먼저 멈춘다.
+        owned.clock.take();
         let _ = self.guest(&owned.control).shutdown();
         if !chan::block_on(owned.vm.wait(grace)).unwrap_or(false) {
             let _ = owned.vm.kill();
@@ -771,13 +779,19 @@ impl Sandbox {
         let egress_limit = spec.egress_limit_bytes;
         let data_dir = rt.inner.config.data_dir.clone();
         let id_for_egress = id.as_str().to_owned();
+        let clock_log = paths.executor_log();
         let (vm, started) = blocking(move || {
             let mut vm = vm;
             let r = (|| {
                 let mut alive = || !chan::block_on(vm.wait(Duration::ZERO)).unwrap_or(true);
                 guest.wait_ready(START_TIMEOUT, &mut alive)?;
                 // 실행기가 디스크를 빠뜨리면 게스트는 모자란 뿌리로 뜬다. 붙인 층 수를 알려 게스트가 견주게 한다.
+                // 시계보다 먼저 한다: 견주기가 끝나기 전에는 이 VM에 다른 연결을 열지 않는다(틀리면 게스트가 꺼진다).
                 guest.check_layers(layer_count)?;
+                // 시계는 따로 맞춘다. 아래(공유 폴더, 복사, 기본 프로세스)는 기다리지 않는다. 빌드 VM(`hold`)도 맞춘다:
+                // `RUN`의 TLS 검사와 파일 시각이 호스트 시각을 본다. 시계 맞추기는 파일 시스템을 보지 않으므로 빌드 층을
+                // 여닫는 차례와 섞여도 된다(`sbx-guest`의 `layer` 모듈).
+                let clock = clock::start(guest.clone(), clock_log);
                 let binds = mounts.iter().filter(|m| m.kind == MountKind::Bind);
                 for (i, m) in binds.enumerate() {
                     guest.share(&share_tag(i), &m.destination, m.readonly)?;
@@ -823,7 +837,7 @@ impl Sandbox {
                 let forwarding =
                     (!bound.listeners_empty()).then(|| ports::serve(bound, guest.clone()));
                 let started = if hold { guest.hold() } else { guest.exec(main) };
-                started.map(|(c, pid)| (c, pid, egress_port, forwarding))
+                started.map(|(c, pid)| (c, pid, egress_port, forwarding, clock))
             })();
             if r.is_err() {
                 let _ = vm.kill();
@@ -831,7 +845,7 @@ impl Sandbox {
             (vm, r)
         })
         .await;
-        let (conn, pid, egress_port, forwarding) = started.map_err(record_failure)?;
+        let (conn, pid, egress_port, forwarding, clock) = started.map_err(record_failure)?;
 
         let state = StateRecord {
             state: State::Running,
@@ -853,6 +867,7 @@ impl Sandbox {
                 started,
                 ended_by: None,
                 _ports: forwarding,
+                clock: Some(clock),
                 _lease: lease,
                 _lock: owner,
             },

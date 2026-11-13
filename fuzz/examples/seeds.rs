@@ -62,6 +62,7 @@ fn guest_msgs(out: &Path) {
         GuestMsg::Lookup {
             name: "github.com".into(),
         },
+        GuestMsg::ClockAsk,
     ];
     let host = [
         HostMsg::Hello { version: 2 },
@@ -97,6 +98,10 @@ fn guest_msgs(out: &Path) {
         HostMsg::Resolved {
             ports: vec![22, 443],
             any_port: true,
+        },
+        HostMsg::ClockSync,
+        HostMsg::ClockNow {
+            unix_nanos: 1_763_000_000_123_456_789,
         },
     ];
     let mut stream = Vec::new();

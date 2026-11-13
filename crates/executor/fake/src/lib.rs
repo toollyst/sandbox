@@ -25,8 +25,11 @@
 //! - 루프백 DNS는 53번 대신 `127.0.0.1`의 빈 포트에서 듣고, 투명 TCP(`Transparent`)는 경로 표를 바꾸지 않는다.
 //!   가짜 주소에서 듣는 대신 `127.0.0.1`의 빈 포트에서 듣는다. 어디서 듣는지는 [`net_dir`]의 파일에 적는다.
 //!   호스트에서 도는 프로그램은 그 DNS와 가짜 주소를 모르므로, 테스트가 그 파일을 읽고 직접 묻고 붙는다.
+//! - 게스트 시계(`ClockSync`)는 호스트 시계를 건드리지 않고 scratch 디스크 옆 파일 하나([`clock_file`])의 "호스트와의
+//!   차이"를 바꾼다. 테스트는 그 파일로 게스트 시계를 틀고 맞았는지 본다. 규칙은 [`clock`] 모듈에 있다.
 //!
-//! 모듈 층: `lib`, `process` → `guest`, `probe` → `layers`, `vm`, `netdir` → `rootdir`. `probe`는 테스트가 쓰는 도구다.
+//! 모듈 층: `lib`, `process` → `guest`, `probe` → `layers`, `vm`, `netdir`, `clock` → `rootdir`. `probe`는 테스트가
+//! 쓰는 도구다.
 //!
 //! - 의존: `sbx-model`, `sbx-executor`, `sbx-executor-proto`, `sbx-guest-proto`, `sbx-guest`(Unix),
 //!   `sbx-rootfs`(Unix, 층 디스크 읽기)
@@ -39,6 +42,7 @@ use sbx_executor::{
 };
 use sbx_model::{Arch, BoxFuture, RootfsFormat};
 
+pub mod clock;
 mod guest;
 #[cfg(unix)]
 mod layers;
@@ -50,6 +54,7 @@ pub mod process;
 mod rootdir;
 mod vm;
 
+pub use clock::clock_file;
 pub use netdir::{NET_DNS, NET_ROUTES, net_dir};
 pub use vm::{FakeVm, REASON_GUEST_SHUTDOWN, REASON_KILLED};
 
@@ -118,8 +123,9 @@ impl Executor for FakeExecutor {
             let scratch = vm
                 .disks
                 .iter()
-                .find(|d| d.role == sbx_executor::DiskRole::Scratch)
-                .map(|d| (build_root(&d.path), net_dir(&d.path)));
+                .find(|d| d.role == sbx_executor::DiskRole::Scratch);
+            let dirs = scratch.map(|d| (build_root(&d.path), net_dir(&d.path)));
+            let clock = scratch.map(|d| clock_file(&d.path));
             let layer_disks = vm
                 .disks
                 .iter()
@@ -129,8 +135,9 @@ impl Executor for FakeExecutor {
             guest::start(
                 &vm.control_channel.host_endpoint,
                 shares,
-                scratch,
+                dirs,
                 layer_disks,
+                clock,
             )
             .map(|v| Box::new(v) as Box<dyn VmHandle>)
         })

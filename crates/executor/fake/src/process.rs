@@ -81,11 +81,9 @@ fn run() -> ExitCode {
         .iter()
         .map(|s| (s.tag.clone(), s.host_path.clone()))
         .collect();
-    let build = vm
-        .disks
-        .iter()
-        .find(|d| d.role == proto::DiskRole::Scratch)
-        .map(|d| (crate::build_root(&d.path), crate::net_dir(&d.path)));
+    let scratch = vm.disks.iter().find(|d| d.role == proto::DiskRole::Scratch);
+    let build = scratch.map(|d| (crate::build_root(&d.path), crate::net_dir(&d.path)));
+    let clock = scratch.map(|d| crate::clock_file(&d.path));
     let mut layer_disks: Vec<std::path::PathBuf> = vm
         .disks
         .iter()
@@ -96,7 +94,7 @@ fn run() -> ExitCode {
         // 디스크 하나를 빠뜨린 실행기를 흉내 낸다. 게스트는 받은 것만 센다.
         layer_disks.pop();
     }
-    let handle = match guest::start(&vm.control_socket, shares, build, layer_disks) {
+    let handle = match guest::start(&vm.control_socket, shares, build, layer_disks, clock) {
         Ok(h) => h,
         Err(e) => return fail(&mut out, format!("cannot open control socket: {e}")),
     };
