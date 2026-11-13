@@ -175,6 +175,12 @@ sbx volume ls / inspect / rm / prune
 
 - 볼륨 하나는 `data_dir/volumes/<이름>/`의 sparse 디스크 이미지 하나다. VM에 디스크로 하나 더 붙이고(실행기의
   `max_disks` 안에서), 게스트가 처음 쓸 때 scratch처럼 포맷한 뒤 대상 경로에 마운트한다.
+- 실행기 규약의 디스크 역할(`DiskRole`, 지금은 `rootfs`·`scratch`)에 `volume`을 더하고 규약 버전을 올린다.
+  `DiskSpec`은 모르는 값을 거부하므로 옛 실행기에는 볼륨을 보내지 않는다.
+- 볼륨의 flush는 호스트 디스크까지 가야 한다(DB 데이터). Firecracker 어댑터는 `volume` 디스크를
+  `cache_type: "Writeback"`으로 붙인다. 지금 어댑터는 `cache_type`을 주지 않아 기본값 `Unsafe`이고, 그러면 게스트에
+  flush 기능이 보이지 않는다. wick(macOS)에서 게스트 `fdatasync` 한 번이 호스트 `F_FULLFSYNC`까지 가는 것을 쟀다
+  (4–5 ms, 2026-11-13 wick 답변). `Writeback`은 upstream Firecracker에도 있다.
 - 비어 있는 볼륨을 처음 붙이면 Docker처럼 이미지의 그 경로 내용을 먼저 채운다.
 - 쓰기로 붙인 볼륨은 한 번에 한 샌드박스만 쓴다(블록 장치는 두 커널이 함께 쓸 수 없다). 두 번째는 오류이고
   `DOCKER_DIFFERENCES`에 적는다. 읽기 전용(`:ro`)은 쓰는 쪽이 없을 때 여럿이 붙일 수 있다.
@@ -209,6 +215,32 @@ sbx run --rm --connect db:5432 app        # 앱 안에서 db:5432로 닿는다. 
 - sbx 0.3은 이것을 기다리지 않는다. wick이 갖추면 `sbx executor install`로 받은 새 wick에서 바로 된다.
 - 0.3에서 sbx가 하는 것: `live_share`가 없을 때의 오류에 "이 실행기는 실시간 공유가 없다, `--mount type=copy`나
   virtio-fs가 있는 실행기를 쓰라"를 넣고, smoke에 실행기가 `live_share`를 알릴 때만 도는 실시간 공유 확인을 더한다.
+
+wick 답변(2026-11-13)에서 sbx 쪽 일로 정해진 것:
+
+- **기능 알아내기.** wick은 config 최상위 `extensions`(`fs`, 나중에 `gpu`)로 새 장치를 받는다. upstream Firecracker는
+  모르는 키를 조용히 무시하므로, 어댑터는 `firecracker --features`(wick 전용, JSON)가 성공하고 그 확장을 알릴 때만
+  `extensions`를 넣고 `live_share: true`를 알린다. 실패하면 upstream으로 보고 아무것도 넣지 않는다.
+- **호스트 변경 알림.** virtio-fs는 호스트 쪽 변경을 게스트 inotify로 전하지 않는다. 그러면 핫 리로드(vite, webpack,
+  nodemon)가 돌지 않는다. sbx가 호스트에서 공유 폴더를 감시하고(FSEvents, inotify, ReadDirectoryChangesW) vsock으로
+  게스트에 알리면, 게스트가 거기서 알림을 만든다. 바뀐 파일은 게스트에서 시각을 그대로 다시 써서 `IN_ATTRIB`을
+  만들 수 있지만, 생기고 지워진 파일은 그렇게 흉내 낼 수 없다. 어떤 감시 도구가 무엇을 보는지(libuv, chokidar,
+  watchdog, notify) 재고 방법을 정한다. wick은 내용이 곧바로 맞게 보이도록 캐시 무효화를 맡는다.
+- **소유자와 권한.** sbx가 바라는 동작: 호스트의 파일은 언제나 호스트 사용자 소유, 게스트에서는 접근하는 uid가 주인처럼
+  보이고, 게스트 안 `chown`은 성공해 xattr로 남는다. Docker Desktop의 동작과 같다. 정하는 것은 wick이다.
+- 게스트 커널에 `CONFIG_VIRTIO_FS`를 켠다(어댑터 묶음의 커널, `cargo xtask kernel`).
+- virtio-fs가 붙은 VM은 스냅샷을 거부한다(wick).
+
+### 7.4 시계
+
+개발용 DB처럼 며칠씩 도는 샌드박스는 시계가 맞아야 한다(TLS, 토큰, 로그). wick 답변으로는 호스트가 잠자는 동안 게스트
+시계가 멈추고 깬 뒤 자동으로 보정하지 않는다. 잠자기가 없어도 하루 약 0.35초 늦어진다.
+
+- 게스트 init(PID 1, sbx의 것)이 맞춘다. 소유 프로세스(`sbx`나 `sbx-shim`)가 vsock으로 호스트의 시각을 주기적으로,
+  그리고 벽시계가 단조 시계보다 크게 뛰었을 때(잠자기에서 깸) 곧바로 보낸다. 게스트는 차이가 크면 바로 맞추고,
+  작으면 천천히 맞춘다(`clock_adjtime`).
+- 이미지에 chrony가 없어도 되고, 실행기 기능(`ptp_kvm`)에도 기대지 않는다. 그래서 어느 이미지, 어느 실행기에서나 된다.
+- `sbx-guest-proto`에 시각 메시지를 더한다.
 
 ## 8. 나가는 길: 프록시를 모르는 프로그램
 
@@ -302,7 +334,8 @@ VM에 네트워크 장치를 붙이지 않고, 이름 단위 허용 목록과 �
 | N1 | 투명 TCP(8장): `Lookup`, 가짜 주소 DNS, 게스트 리스너, `resolv.conf` 덮기, 막힌 이름 기록 | ssh로 `git clone`(`--allow github.com:22`)과 바깥 postgres에 `psql`이 되고, 목록에 없는 이름은 호스트가 풀지 않은 채 `refuse`로 남는다. `HOST:*`는 프록시로만 나간다 |
 | V1 | 볼륨 | postgres 데이터가 `rm` 뒤에도 남고, 두 번째 쓰기 붙이기는 거부된다 |
 | V2 | `--connect` | 앱 샌드박스에서 `psql -h db`가 되고, 열지 않은 포트와 다른 샌드박스는 닿지 않는다 |
-| V3 | 실시간 마운트 안내와 smoke(7.3) | `live_share`가 없는 실행기에서 오류가 다른 길을 알리고, 있는 실행기에서 smoke가 호스트의 변경을 본다 |
+| V3 | 실시간 마운트(7.3): 어댑터의 `--features` 확인과 `extensions.fs`, 호스트 변경 알림, 안내와 smoke | `live_share`가 없는 실행기에서 오류가 다른 길을 알리고, upstream에는 `extensions`를 넣지 않는다. wick에서 vite 개발 서버가 호스트에서 고친 파일에 다시 읽는다 |
+| V4 | 시계 맞추기(7.4) | 호스트를 재운 뒤 깨워도 게스트 시계가 1초 안에 맞고, 하루 돌려도 어긋남이 0.1초 아래다 |
 | R1 | 문서, README 문구와 비교표, `build` → `run` → `--connect`로 postgres까지 잇는 데모 → 0.3.0 | docs-before-main 확인 |
 | C1 | `sbx compose`(0.3 뒤) | 앱 + postgres + redis 예제가 `up` 한 번으로 뜨고 `down`으로 정리된다 |
 
