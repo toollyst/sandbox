@@ -1,28 +1,65 @@
 #!/bin/sh
-# Install sbx.
+# Install sbx and its default executor.
 #
 #   curl -fsSL https://toollyst.github.io/sandbox/install.sh | sh
+#   curl -fsSL https://toollyst.github.io/sandbox/install.sh | sh -s -- --version    # show what it installs
+#
+# This script has its own version, separate from sbx's. Each version is published once as install-<version>.sh and
+# never changed, so the same file always installs the same things; install.sh is a copy of the newest. The block
+# below says which sbx release and which executor (with its adapter) this version installs. That pairing is a
+# recommendation that was tested together: after installing, sbx and the executor are upgraded separately
+# (`sbx upgrade`, `sbx executor install`), and nothing checks that they still match.
 #
 # Environment:
-#   SBX_VERSION       release tag to install (default: the latest release), e.g. v0.2.0
+#   SBX_VERSION       release tag to install instead of the pinned one, e.g. v0.2.0
 #   SBX_INSTALL_DIR   where sbx and sbx-shim go (default: ~/.local/bin)
 #   SBX_DOWNLOAD_URL  where the release files are (default: GitHub Releases of toollyst/sandbox)
 #   SBX_VERIFY        auto (default), require or off: check the release's Sigstore signature with cosign.
 #                     auto checks it when cosign is on PATH (and then a missing signature is an error);
 #                     require also fails without cosign.
-#                     With SBX_VERSION, the signature must come from that exact tag.
+#                     The signature must come from the tag being installed.
+#   SBX_EXECUTOR      none: install no executor. Any other value: an executor you chose, so none is installed.
 #
 # What it does: downloads sbx-<os>-<arch>.tar.gz and its .sha256, checks the checksum and (see SBX_VERIFY) the
-# Sigstore signature that release.yml made for it, and copies sbx and sbx-shim into
-# SBX_INSTALL_DIR. It does not install an executor (the VMM that runs sandboxes); choosing one is the next step it
-# prints. Nothing is written outside SBX_INSTALL_DIR, and nothing runs as root.
+# Sigstore signature that release.yml made for it, and copies sbx and sbx-shim into SBX_INSTALL_DIR. Then it has the
+# new sbx install the pinned executor from the official executor repository (`sbx executor install`, which checks the
+# repository's signed index and the package's SHA-256), unless you already use another one. If that fails, sbx is
+# still installed, and sbx installs the newest default executor the first time it needs one. Nothing runs as root.
 
 set -eu
 
 REPO=toollyst/sandbox
 
+# BEGIN INSTALLER PINS: written by `cargo xtask installer` from installer.env. Edit installer.env, not this block.
+installer_version=0.0.1
+pin_sbx=0.3.0
+pin_executor=
+pin_adapter=
+# END INSTALLER PINS
+
 say() { printf '%s\n' "sbx-install: $*" >&2; }
 die() { say "error: $*"; exit 1; }
+
+summary() {
+    s="installer $installer_version: sbx $pin_sbx"
+    if [ -n "$pin_executor" ]; then
+        s="$s, executor $pin_executor"
+        [ -z "$pin_adapter" ] || s="$s (adapter $pin_adapter)"
+    else
+        s="$s, no executor pinned (sbx installs the default one on first use)"
+    fi
+    printf '%s\n' "$s"
+}
+
+case "${1:-}" in
+    "") ;;
+    --version | -V)
+        summary
+        exit 0
+        ;;
+    *) die "unknown argument $1 (the only one is --version)" ;;
+esac
+say "$(summary)"
 
 case "$(uname -s)" in
     Linux) os=linux ;;
@@ -45,19 +82,20 @@ if [ "$os" = darwin ]; then
     fi
 fi
 
+tag="v$pin_sbx"
 if [ -n "${SBX_VERSION:-}" ]; then
     case "$SBX_VERSION" in
         v[0-9]*) ;;
         *) die "SBX_VERSION must be a release tag like v0.2.0 (got $SBX_VERSION)" ;;
     esac
     case "$SBX_VERSION" in *[!0-9A-Za-z.+-]*) die "SBX_VERSION must be a release tag like v0.2.0 (got $SBX_VERSION)" ;; esac
+    tag=$SBX_VERSION
+    [ "$tag" = "v$pin_sbx" ] || say "installing sbx $tag (SBX_VERSION) instead of $pin_sbx"
 fi
 if [ -n "${SBX_DOWNLOAD_URL:-}" ]; then
     base=${SBX_DOWNLOAD_URL%/}
-elif [ -n "${SBX_VERSION:-}" ]; then
-    base="https://github.com/$REPO/releases/download/$SBX_VERSION"
 else
-    base="https://github.com/$REPO/releases/latest/download"
+    base="https://github.com/$REPO/releases/download/$tag"
 fi
 dir=${SBX_INSTALL_DIR:-$HOME/.local/bin}
 asset="sbx-$os-$arch.tar.gz"
@@ -81,16 +119,12 @@ want=$(cut -d' ' -f1 <"$tmp/$asset.sha256")
 got=$(sha256 "$tmp/$asset")
 [ "$want" = "$got" ] || die "checksum mismatch for $asset (expected $want, got $got)"
 
-# The signature says the archive was built by this repository's release workflow from a v* tag. The checksum above
-# only says the download is complete; whoever controls the download URL controls both files.
+# The signature says the archive was built by this repository's release workflow from the tag being installed (so an
+# older signed release can't be served in its place). The checksum above only says the download is complete; whoever
+# controls the download URL controls both files.
 verify=${SBX_VERIFY:-auto}
 case "$verify" in auto | require | off) ;; *) die "SBX_VERIFY must be auto, require or off (got $verify)" ;; esac
-# Which tag the signature must come from: SBX_VERSION exactly (so an older signed release can't be served in its
-# place), or any v* tag for the latest release.
-tag_re='v'
-if [ -n "${SBX_VERSION:-}" ]; then
-    tag_re="$(printf '%s' "$SBX_VERSION" | sed 's/[.]/[.]/g; s/[+]/[+]/g')\$"
-fi
+tag_re="$(printf '%s' "$tag" | sed 's/[.]/[.]/g; s/[+]/[+]/g')\$"
 if [ "$verify" != off ]; then
     if ! command -v cosign >/dev/null 2>&1; then
         [ "$verify" = auto ] || die "SBX_VERIFY=require needs cosign (https://docs.sigstore.dev/cosign/system_config/installation/)"
@@ -105,7 +139,7 @@ if [ "$verify" != off ]; then
             --certificate-identity-regexp "^https://github[.]com/$REPO/[.]github/workflows/release[.]yml@refs/tags/$tag_re" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             "$tmp/$asset" >/dev/null 2>&1 || die "the Sigstore signature of $asset does not verify"
-        say "verified the Sigstore signature (built by $REPO release.yml from a v* tag)"
+        say "verified the Sigstore signature (built by $REPO release.yml from tag $tag)"
     fi
 fi
 
@@ -122,6 +156,39 @@ for f in sbx sbx-shim; do
 done
 say "installed $("$dir/sbx" --version) to $dir"
 
+# The executor: the VMM that runs sandboxes. Any executor that speaks the open executor protocol works; this installer
+# pins the default one from the official repository. It doesn't replace one you chose.
+later="sbx installs the newest default executor from the official repository the first time it needs one"
+executor_ok=false
+if [ "${SBX_EXECUTOR:-}" = none ]; then
+    say "SBX_EXECUTOR=none: no executor installed (choose one later with: sbx executor search)"
+elif [ -n "${SBX_EXECUTOR:-}" ]; then
+    say "SBX_EXECUTOR is set, so no executor is installed (sbx uses yours)"
+elif [ -z "$pin_executor" ]; then
+    say "no executor installed now: $later"
+else
+    # What new sandboxes use now, asked away from any .sbx-executor folder file: "NAME@VERSION (why)", or nothing.
+    current=$(cd / && "$dir/sbx" executor current 2>/dev/null) || current=
+    current=${current%% *}
+    want_name=${pin_executor%%@*}
+    if [ -n "$current" ] && [ "${current%%@*}" != "$want_name" ]; then
+        say "keeping your executor $current (this installer pins $pin_executor; install it with: sbx executor install $pin_executor)"
+    else
+        say "installing the executor $pin_executor from the official repository"
+        if [ -n "$pin_adapter" ] && ! "$dir/sbx" executor adapter install --repo official "$pin_adapter" >&2; then
+            say "warning: could not install the adapter $pin_adapter (see above)"
+        elif ! "$dir/sbx" executor install --repo official "$pin_executor" >&2; then
+            say "warning: could not install $pin_executor (see above); $later, or run: sbx executor install $pin_executor"
+        else
+            executor_ok=true
+            # An older version of the same executor was the default: the pinned one takes its place.
+            if [ -n "$current" ] && [ "$current" != "$pin_executor" ]; then
+                "$dir/sbx" executor use "$pin_executor" >/dev/null && say "now using $pin_executor (was $current)"
+            fi
+        fi
+    fi
+fi
+
 if [ "$os" = linux ]; then
     if [ ! -e /dev/kvm ]; then
         say "note: /dev/kvm is missing. sbx needs KVM (bare metal, or a VM with nested virtualization)."
@@ -137,7 +204,5 @@ case ":$PATH:" in
         sbx="$dir/sbx"
         ;;
 esac
-say "done. Next, pick an executor (the VMM that runs sandboxes) from your repositories and install it:"
-say "    $sbx executor search"
-say "    $sbx executor install NAME"
-say "then check with: $sbx info   and try: $sbx run --rm alpine echo hello"
+say "done. Try: $sbx run --rm alpine echo hello"
+$executor_ok || say "(to pick an executor yourself instead: $sbx executor search, then $sbx executor install NAME)"
