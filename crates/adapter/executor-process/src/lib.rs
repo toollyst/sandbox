@@ -197,6 +197,18 @@ impl Executor for ProcessExecutor {
         })
     }
 
+    /// 실행 파일과, 어댑터면 넘기는 VMM 묶음 디렉터리([`proto::VMM_DIR_ENV`]).
+    fn files(&self) -> Vec<PathBuf> {
+        std::iter::once(self.binary.clone())
+            .chain(
+                self.env
+                    .iter()
+                    .filter(|(k, _)| k == proto::VMM_DIR_ENV)
+                    .map(|(_, v)| PathBuf::from(v)),
+            )
+            .collect()
+    }
+
     fn connect(&self, channel: &ChannelSpec) -> io::Result<Box<dyn GuestConn>> {
         connect_channel(channel)
     }

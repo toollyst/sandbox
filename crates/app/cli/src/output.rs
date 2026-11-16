@@ -535,8 +535,8 @@ pub struct DiskUsage {
     /// How many there are (executors count installed executors and adapters; the build cache counts cached
     /// steps).
     pub total: u64,
-    /// Images some sandbox uses; sandboxes that are running; volumes a running sandbox has attached. Always 0 for
-    /// the build cache and executors.
+    /// Images some sandbox uses; sandboxes that are running; volumes a running sandbox has attached; executors and
+    /// adapters a running sandbox was started with. Always 0 for the build cache.
     pub active: u64,
     /// Bytes they take on disk (a sandbox's writable disk counts what it wrote, not its size). A layer several images
     /// share is counted once.

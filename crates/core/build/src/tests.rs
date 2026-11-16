@@ -604,8 +604,13 @@ fn context_sources_stay_inside_the_context_and_honor_dockerignore() {
     assert!(ctx.find("dir/secret").unwrap_err().contains("not found"));
     let d = &ctx.find("dir").unwrap()[0];
     let rels: Vec<&str> = d.entries.iter().map(|e| e.rel.as_str()).collect();
-    #[cfg(unix)]
-    assert_eq!(rels, ["", "up", "x"]);
+    // 링크(`up`)는 Unix에서만 만든다.
+    let want: &[&str] = if cfg!(unix) {
+        &["", "up", "x"]
+    } else {
+        &["", "x"]
+    };
+    assert_eq!(rels, want);
     // 와일드카드는 맞는 것이 없어도 오류가 아니다.
     assert!(ctx.find("*.none").unwrap().is_empty());
     assert_eq!(ctx.find("*.txt").unwrap().len(), 1);

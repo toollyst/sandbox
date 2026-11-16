@@ -311,7 +311,7 @@
       "description": "One row of `system df`.",
       "properties": {
         "active": {
-          "description": "Images some sandbox uses; sandboxes that are running; volumes a running sandbox has attached. Always 0 for\nthe build cache and executors.",
+          "description": "Images some sandbox uses; sandboxes that are running; volumes a running sandbox has attached; executors and\nadapters a running sandbox was started with. Always 0 for the build cache.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"

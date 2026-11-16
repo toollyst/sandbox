@@ -153,14 +153,24 @@ impl Ctx {
             .filter(|s| s.state != State::Running)
             .map(sandbox_size)
             .sum();
-        let ex = executors::installed(&self.data_dir)
-            .list()
-            .map(|v| v.len())
-            .unwrap_or(0)
-            + executors::adapters(&self.data_dir)
-                .list()
-                .map(|v| v.len())
-                .unwrap_or(0);
+        // 실행기와 어댑터. 실행 중인 샌드박스가 그 설치 디렉터리의 파일로 띄웠으면 쓰는 중이다.
+        let installed: Vec<_> = [
+            executors::installed(&self.data_dir),
+            executors::adapters(&self.data_dir),
+        ]
+        .iter()
+        .flat_map(|x| x.list().unwrap_or_default())
+        .collect();
+        let ex = installed.len();
+        let ex_active = installed
+            .iter()
+            .filter(|i| {
+                sandboxes.iter().any(|s| {
+                    s.state == State::Running
+                        && s.executor_files.iter().any(|f| f.starts_with(&i.dir))
+                })
+            })
+            .count() as u64;
         // 빌드 캐시: 캐시 기록만 쥔 층(이미지도 쓰는 층은 images에서 센다).
         let cache = m.build_cache_usage()?;
         let cache_only: u64 = cache.only_cache.iter().map(|p| disk_usage(p)).sum();
@@ -221,7 +231,7 @@ impl Ctx {
             output::DiskUsage {
                 kind: "executors".into(),
                 total: ex as u64,
-                active: 0,
+                active: ex_active,
                 size: ex_size,
                 shared: 0,
                 reclaimable: 0,

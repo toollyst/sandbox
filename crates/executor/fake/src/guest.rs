@@ -1,7 +1,7 @@
 //! 가짜 게스트: 제어 소켓에서 vsock 방식으로 연결을 받아 `sbx-guest`의 연결 처리를 돌린다.
 
 #[cfg(not(unix))]
-pub(crate) use other::{connect, start};
+pub(crate) use other::connect;
 #[cfg(unix)]
 pub(crate) use unix::{connect, start};
 
@@ -303,28 +303,13 @@ mod unix {
 mod other {
     use std::io;
 
-    use sbx_executor::{ChannelSpec, ExecutorError, GuestConn};
+    use sbx_executor::{ChannelSpec, GuestConn};
 
-    use crate::vm::FakeVm;
-
+    /// 띄우기는 `FakeExecutor::launch`가 Unix가 아니면 곧바로 거부한다. 붙기도 할 수 없다.
     pub(crate) fn connect(_channel: &ChannelSpec) -> io::Result<Box<dyn GuestConn>> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "the fake guest needs Unix sockets",
-        ))
-    }
-
-    pub(crate) fn start(
-        _socket: &std::path::Path,
-        _shares: Vec<(String, std::path::PathBuf)>,
-        _dirs: Option<(std::path::PathBuf, std::path::PathBuf)>,
-        _layer_disks: Vec<std::path::PathBuf>,
-        _clock: Option<std::path::PathBuf>,
-        _disks: Vec<crate::vm::FakeDisk>,
-        _procs: std::sync::Arc<crate::vm::Procs>,
-    ) -> Result<FakeVm, ExecutorError> {
-        Err(ExecutorError::Unsupported(
-            "the fake guest needs Unix sockets".into(),
         ))
     }
 }
