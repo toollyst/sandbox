@@ -33,6 +33,13 @@ The MCP server adds no policy of its own. Tool arguments go through the same par
   that resolves to such an address is refused for everyone, CLI included.)
 - Host folders are never mounted, and tools only see sandboxes created through MCP, not the ones you started with
   the CLI (`sbx mcp --all-sandboxes` changes that).
+- `run` and `create` take `connect: ["db:5432", …]` (the CLI's `--connect`): programs in the new sandbox reach that
+  TCP port of another sandbox by its name, and nothing else opens. The target must be a sandbox created through MCP,
+  so an agent can't reach the database you started with the CLI. That is checked when the sandbox is created and
+  again at every connection: if the agent's `db` is removed and you later start a CLI sandbox named `db`, the agent's
+  connections to `db` are refused (the `refuse` event says why). With `--all-sandboxes` the agent may connect to any
+  sandbox the server sees. The other way round is not limited: a sandbox you start with the CLI may `--connect` to a
+  sandbox an agent made, because you own both and you are the one opening it.
 - Arguments can't be turned into other `sbx` options.
 - Tools don't publish ports (`-p`): nothing an agent starts listens on your machine.
 - Images are pulled with your registry credentials (see [Images](usage.md#images)), so an agent can run private
@@ -45,8 +52,8 @@ The MCP server adds no policy of its own. Tool arguments go through the same par
   `sbx mcp --max-sandboxes 2 --max-memory 1g --max-disk 4g`.
 - `create` takes `lifetime` (e.g. `30m`): the sandbox stops that long after it starts. `sbx mcp --max-lifetime 1h`
   caps it and gives the cap to sandboxes that don't ask, so a forgotten sandbox doesn't run for ever.
-- `sbx mcp --max-egress 1g` gives every MCP sandbox that has network access an egress limit (`--egress-limit`), so an
-  agent can't download or upload without bound. `sbx events --filter type=network` shows what each one connected to.
+- `sbx mcp --max-egress 1g` gives every MCP sandbox that has network access or a `connect` an egress limit
+  (`--egress-limit`), so an agent can't download or upload without bound. `sbx events --filter type=network` shows what each one connected to.
 - `sbx mcp --max-image-size 2g` refuses images whose layers add up to more than that (compressed), before any
   download, so an agent can't fill your image cache.
 - Every tool declares an `outputSchema` (its `structuredContent`) and annotations: `list` and `read_file` are

@@ -846,7 +846,7 @@ mod unix {
         assert_eq!(
             lines,
             [
-                "# Written by sbx (--network allow): names are answered by the sandbox's loopback DNS.",
+                "# Written by sbx (--network allow or --connect): names are answered by the sandbox's loopback DNS.",
                 "nameserver 127.0.0.1",
                 "blocked.invalid: rcode 3 []",
                 "ok.invalid: rcode 0 [198.18.0.1] port 5432: closed",

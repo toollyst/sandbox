@@ -147,6 +147,7 @@ Two principles shape most review comments:
 | What an executor must support for a given request | [`crates/core/runtime/src/validate.rs`](../../crates/core/runtime/src/validate.rs) |
 | Sandbox records in `data_dir` | [`crates/core/runtime/src/records.rs`](../../crates/core/runtime/src/records.rs) |
 | Egress allow list | `AllowRule` in `sbx-model`, enforced in [`crates/core/runtime/src/egress.rs`](../../crates/core/runtime/src/egress.rs) |
+| Connecting sandboxes (`--connect`) | `ConnectRule` and `check_connect` in `sbx-model`, enforced in [`crates/core/runtime/src/connect.rs`](../../crates/core/runtime/src/connect.rs) |
 | Cache layout, locks, in-use protection | [`sbx-store`](../../crates/port/store/src/lib.rs) |
 | Layer merge rules (whiteouts, opaque dirs, hard links) | [`sbx-rootfs`](../../crates/port/rootfs/src/lib.rs) |
 | Image references and the OCI scope | [`reference.rs`](../../crates/adapter/oci/src/reference.rs), [`scope.rs`](../../crates/adapter/oci/src/scope.rs) |

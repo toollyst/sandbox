@@ -23,7 +23,7 @@
 //!    남는 주소가 없으면 거부.
 //!
 //! **투명 TCP** (프록시를 모르는 프로그램의 길, 게스트 쪽 규칙은 `sbx-guest`의 `transparent` 모듈)
-//! - [`start`]는 맡길 연결을 돌린 뒤 게스트에 `HostMsg::Transparent`를 보낸다. IP 규칙 가운데 게스트가 들을 수 있는
+//! - `start`는 맡길 연결을 돌린 뒤 게스트에 `HostMsg::Transparent`를 보낸다. IP 규칙 가운데 게스트가 들을 수 있는
 //!   것([`AllowRule::reach`]가 [`Reach::Literal`])을 함께 보낸다. 프록시로만 닿는 규칙은 하나마다 `proxy_only`(호스트,
 //!   포트, `reason`)로 기록한다(CLI도 만들 때 경고한다). 게스트가 하지 못한 것이 있으면 `notice`(`reason`)로 기록하고
 //!   시작은 계속한다(프록시는 그대로다).
@@ -37,8 +37,8 @@
 //!   맞추기뿐이고 입출력은 기록 한 줄이다.
 //! - 가짜 주소로 온 연결은 게스트가 이름으로 되돌린 `Connect { host, port }`로 온다. 그 뒤는 위와 한 줄도 다르지 않다.
 //!
-//! **샌드박스 잇기** (`--connect`, 규칙은 [`crate::connect`])
-//! - [`start`]에 잇기 목록이 있으면 네트워크 정책이 `Disabled`여도 맡길 연결과 투명 TCP를 켠다. 그때 허용 규칙은
+//! **샌드박스 잇기** (`--connect`, 규칙은 `connect` 모듈)
+//! - `start`에 잇기 목록이 있으면 네트워크 정책이 `Disabled`여도 맡길 연결과 투명 TCP를 켠다. 그때 허용 규칙은
 //!   비었으므로 잇기 이름 말고는 어느 이름도 허용되지 않는다(프록시는 띄우지 않는다. 띄우는 것은 실행 코어다).
 //! - 이름 묻기([`lookup`])는 허용 목록과 잇기 목록을 함께 본다(둘의 이름은 겹치지 않는다, `sbx_model::check_connect`).
 //!   잇기 이름의 `lookup` 기록에는 `target`(대상)이 붙는다.
@@ -459,7 +459,7 @@ fn serve(mut conn: Box<dyn GuestConn>, opened: Opened, host: &str, port: u16) {
     shared.record.append("close", host, port, &extra);
 }
 
-/// 잇기 규칙에 맞은 연결: 대상 샌드박스의 게스트에 잇는다. 규칙은 모듈 문서와 [`crate::connect`]에 있다.
+/// 잇기 규칙에 맞은 연결: 대상 샌드박스의 게스트에 잇는다. 규칙은 모듈 문서와 `connect` 모듈에 있다.
 fn serve_peer(mut conn: Box<dyn GuestConn>, opened: Opened, rule: &ConnectRule) {
     let shared = &opened.0;
     let Some(peers) = &shared.peers else {
