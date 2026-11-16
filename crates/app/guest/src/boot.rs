@@ -264,7 +264,7 @@ pub fn agent() -> ! {
     let layer_devs =
         found.unwrap_or_else(|| vec![std::path::Path::new("/dev").join(crate::disks::device(0))]);
     // 볼륨은 층 디스크와 scratch 뒤다. 층 수를 몰라도 장치가 EROFS이면 붙이기가 거부한다.
-    let volumes = crate::volume::Attach {
+    let volumes = crate::volume::linux::Attach {
         dev: "/dev".into(),
         staging: crate::volume::STAGING.into(),
         first: crate::volume::first_volume_disk(layer_devs.len()),

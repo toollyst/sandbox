@@ -403,7 +403,7 @@ pub fn format(
     format_with(w, bytes, uuid, disk, Journal::None)
 }
 
-/// [`format`]과 같고, `journal`이면 저널이 있는 ext4(볼륨)를 만든다(모듈 문서의 "형식").
+/// [`format()`]과 같고, `journal`이면 저널이 있는 ext4(볼륨)를 만든다(모듈 문서의 "형식").
 pub fn format_with(
     w: &mut (impl Write + Seek),
     bytes: u64,

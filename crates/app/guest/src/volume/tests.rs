@@ -104,7 +104,7 @@ fn privileged_volumes_format_fill_survive_a_crash_and_mount_read_only() {
     let loop_dev = sh(&format!("losetup -f --show {}", img.display()));
     // 볼륨은 셋째 디스크(vdc): 층 하나, scratch 다음.
     symlink(&loop_dev, dev.join("vdc")).unwrap();
-    let attach = Attach {
+    let attach = linux::Attach {
         dev: dev.clone(),
         staging: d.join("stage"),
         first: first_volume_disk(1),

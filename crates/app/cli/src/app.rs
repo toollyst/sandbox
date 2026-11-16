@@ -57,8 +57,6 @@ mod system;
 mod upgrade;
 mod volume;
 
-pub(crate) use volume::VolumeScope;
-
 /// `logs -f`, `events`가 새 기록을 보러 가는 간격.
 const FOLLOW_POLL: Duration = Duration::from_millis(100);
 
@@ -318,6 +316,35 @@ impl LogSink {
                 true
             }
         })
+    }
+}
+
+/// 이 Ctx가 쓰고 만들 수 있는 볼륨.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum VolumeScope {
+    /// 모두(CLI).
+    All,
+    /// 이 라벨이 있는 것만. 처음 쓸 때 만드는 볼륨에 이 라벨을 붙이고, 그런 볼륨은 `max`개까지다(`sbx mcp`).
+    Labeled {
+        /// 라벨 키.
+        key: &'static str,
+        /// 라벨 값.
+        value: &'static str,
+        /// 그 라벨의 볼륨 수 상한.
+        max: u32,
+        /// 만드는 볼륨의 크기(MiB).
+        size_mib: u32,
+    },
+}
+
+impl VolumeScope {
+    fn allows(&self, v: &sbx_runtime::volume::VolumeInfo) -> bool {
+        match self {
+            VolumeScope::All => true,
+            VolumeScope::Labeled { key, value, .. } => {
+                v.record.labels.get(*key).map(String::as_str) == Some(*value)
+            }
+        }
     }
 }
 

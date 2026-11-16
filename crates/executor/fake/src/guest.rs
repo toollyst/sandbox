@@ -5,22 +5,6 @@ pub(crate) use other::{connect, start};
 #[cfg(unix)]
 pub(crate) use unix::{connect, start};
 
-/// 받은 디스크 하나(받은 차례). 볼륨 흉내에 쓴다.
-#[derive(Debug, Clone)]
-pub(crate) struct FakeDisk {
-    pub(crate) path: std::path::PathBuf,
-    pub(crate) volume: bool,
-    #[cfg_attr(not(unix), allow(dead_code))]
-    pub(crate) readonly: bool,
-}
-
-/// 볼륨 디스크 흉내의 내용 디렉터리: 디스크 파일 이름 뒤에 `.content`. 없으면 포맷하지 않은(처음 쓰는) 볼륨이다.
-pub fn volume_content(disk: &std::path::Path) -> std::path::PathBuf {
-    let mut s = disk.as_os_str().to_owned();
-    s.push(".content");
-    s.into()
-}
-
 #[cfg(unix)]
 mod unix {
     use std::io;
@@ -99,11 +83,11 @@ mod unix {
         }
     }
 
-    /// 볼륨 흉내: 디스크 옆 내용 디렉터리([`super::volume_content`])를 대상 경로에 링크로 둔다. 실제 게스트처럼
+    /// 볼륨 흉내: 디스크 옆 내용 디렉터리([`crate::vm::volume_content`])를 대상 경로에 링크로 둔다. 실제 게스트처럼
     /// 처음 쓰는 볼륨은 쓰기로만 붙고(내용 디렉터리를 만든다), 빈 볼륨이면 대상 경로의 지금 내용으로 채운다. 그 뒤
     /// 대상(디렉터리면 지우고, 앞 샌드박스가 둔 링크면 바꾼다)을 링크로 바꾼다. 읽기 전용은 강제하지 않는다.
     fn link_volume(
-        disk: &super::FakeDisk,
+        disk: &crate::vm::FakeDisk,
         target: &Path,
         readonly: bool,
         copy: bool,
@@ -120,7 +104,7 @@ mod unix {
                 "a read-only volume must be attached read-only",
             ));
         }
-        let content = super::volume_content(&disk.path);
+        let content = crate::vm::volume_content(&disk.path);
         if !content.is_dir() {
             if readonly {
                 return Err(io::Error::new(
@@ -170,7 +154,7 @@ mod unix {
         dirs: Option<(PathBuf, PathBuf)>,
         layer_disks: Vec<PathBuf>,
         clock: Option<PathBuf>,
-        disks: Vec<super::FakeDisk>,
+        disks: Vec<crate::vm::FakeDisk>,
     ) -> Result<FakeVm, ExecutorError> {
         let (build_root, net) = dirs.unzip();
         let path: PathBuf = socket.to_owned();
@@ -327,7 +311,7 @@ mod other {
         _dirs: Option<(std::path::PathBuf, std::path::PathBuf)>,
         _layer_disks: Vec<std::path::PathBuf>,
         _clock: Option<std::path::PathBuf>,
-        _disks: Vec<super::FakeDisk>,
+        _disks: Vec<crate::vm::FakeDisk>,
     ) -> Result<FakeVm, ExecutorError> {
         Err(ExecutorError::Unsupported(
             "the fake guest needs Unix sockets".into(),

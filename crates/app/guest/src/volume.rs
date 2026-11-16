@@ -5,7 +5,7 @@
 //! 멈추므로(`crate::disks`) 볼륨(ext4)은 층으로 읽히지 않는다. 어느 디스크가 어느 볼륨이고 어디에 마운트할지는
 //! 호스트가 부팅 뒤 이 메시지로 알린다. 기본 프로세스보다 먼저다.
 //!
-//! **붙이기** ([`Attach::attach`], Linux)
+//! **붙이기** (`linux::Attach::attach`, Linux)
 //!
 //! 1. 디스크 차례가 층 디스크와 scratch 뒤인지 본다([`first_volume_disk`]). 아니면 오류다. 장치가 EROFS여도
 //!    오류다(호스트는 그런 볼륨을 붙이지 않는다. 게스트가 볼륨 장치에 직접 쓸 수 있으므로 붙일 때마다 본다).
@@ -147,11 +147,9 @@ fn copy_entry(from: &Path, to: &Path) -> io::Result<()> {
     fs::set_permissions(to, fs::Permissions::from_mode(meta.mode() & 0o7777))
 }
 
+/// 리눅스에서 붙이는 일(장치를 열고, 포맷하고, 채우고, 마운트한다).
 #[cfg(target_os = "linux")]
-pub use linux::Attach;
-
-#[cfg(target_os = "linux")]
-mod linux {
+pub mod linux {
     use std::fs::{self, OpenOptions};
     use std::io::{self, Read, Seek, SeekFrom};
     use std::path::{Path, PathBuf};

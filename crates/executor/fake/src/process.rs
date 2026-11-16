@@ -114,7 +114,7 @@ fn run() -> ExitCode {
     let disks = vm
         .disks
         .iter()
-        .map(|d| guest::FakeDisk {
+        .map(|d| crate::vm::FakeDisk {
             path: d.path.clone(),
             volume: d.role == proto::DiskRole::Volume,
             readonly: d.readonly,

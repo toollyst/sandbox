@@ -58,9 +58,8 @@ mod rootdir;
 mod vm;
 
 pub use clock::clock_file;
-pub use guest::volume_content;
 pub use netdir::{NET_DNS, NET_ROUTES, net_dir};
-pub use vm::{FakeVm, REASON_GUEST_SHUTDOWN, REASON_KILLED};
+pub use vm::{FakeVm, REASON_GUEST_SHUTDOWN, REASON_KILLED, volume_content};
 
 /// 기본으로 붙일 수 있는 디스크 수. Firecracker 어댑터와 같다(층 디스크 7개와 scratch).
 pub const MAX_DISKS: usize = 8;
@@ -140,7 +139,7 @@ impl Executor for FakeExecutor {
             let disks = vm
                 .disks
                 .iter()
-                .map(|d| guest::FakeDisk {
+                .map(|d| vm::FakeDisk {
                     path: d.path.clone(),
                     volume: d.role == sbx_executor::DiskRole::Volume,
                     readonly: d.readonly,

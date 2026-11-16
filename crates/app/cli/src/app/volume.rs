@@ -6,7 +6,7 @@
 //!   ([`behavior::DEFAULT_VOLUME_MIB`])로 만든다(Docker와 같다). 이미지를 받기 전이 아니라 샌드박스를 만들기 바로 전이다.
 //! - **이름 없는 볼륨**(`-v /path`)은 만들지 않고 거부한다(`parse::volume`). 그래서 sbx에는 Docker가 `--rm`과 함께
 //!   지우는 이름 없는 볼륨이 없고, `volume prune`은 `-a`일 때만 무엇을 지운다(Docker 23 이후와 같은 뜻).
-//! - **범위**([`VolumeScope`]): `sbx mcp`는 MCP로 만든 볼륨(라벨 `OWNER_LABEL=mcp`)만 쓰고 만든다. 사용자가 만든 같은
+//! - **범위**([`super::VolumeScope`]): `sbx mcp`는 MCP로 만든 볼륨(라벨 `OWNER_LABEL=mcp`)만 쓰고 만든다. 사용자가 만든 같은
 //!   이름의 볼륨이 있으면 쓰지 않고 오류다. CLI는 모든 볼륨을 쓴다.
 //! - `volume rm`은 샌드박스 기록이 가리키는 볼륨(멈춘 샌드박스도)을 지우지 않는다(Docker와 같다). `-f`는 없는 이름을
 //!   오류로 보지 않을 뿐이다. 샌드박스를 지워도 볼륨은 남는다.
@@ -20,35 +20,6 @@ use sbx_runtime::volume::VolumeInfo;
 
 use super::*;
 use crate::cli::VolumeCommand;
-
-/// 이 Ctx가 쓰고 만들 수 있는 볼륨.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum VolumeScope {
-    /// 모두(CLI).
-    All,
-    /// 이 라벨이 있는 것만. 처음 쓸 때 만드는 볼륨에 이 라벨을 붙이고, 그런 볼륨은 `max`개까지다(`sbx mcp`).
-    Labeled {
-        /// 라벨 키.
-        key: &'static str,
-        /// 라벨 값.
-        value: &'static str,
-        /// 그 라벨의 볼륨 수 상한.
-        max: u32,
-        /// 만드는 볼륨의 크기(MiB).
-        size_mib: u32,
-    },
-}
-
-impl VolumeScope {
-    fn allows(&self, v: &VolumeInfo) -> bool {
-        match self {
-            VolumeScope::All => true,
-            VolumeScope::Labeled { key, value, .. } => {
-                v.record.labels.get(*key).map(String::as_str) == Some(*value)
-            }
-        }
-    }
-}
 
 /// `--opt KEY=VALUE`(Docker의 `local` 드라이버 옵션 자리). 지금 키는 `size`뿐이다. 모르는 키는 오류다.
 fn size_opt(opts: &[String]) -> AppResult<Option<u32>> {

@@ -66,6 +66,39 @@ are paths or devices on the host are refused.
 Live sharing (`-v ./dir:/work[:ro]`) needs an executor with virtio-fs. The Firecracker executor doesn't have it yet,
 and `sbx` says so instead of silently copying.
 
+## Volumes
+
+A volume keeps data after its sandbox is gone, such as a database's files:
+
+```sh
+sbx volume create pgdata                       # optional: run creates a name it hasn't seen
+sbx run -d --name db -v pgdata:/var/lib/postgresql/data -e POSTGRES_PASSWORD=x postgres:17
+sbx rm -f db                                   # the sandbox goes, pgdata stays
+sbx run -d --name db -v pgdata:/var/lib/postgresql/data -e POSTGRES_PASSWORD=x postgres:17
+sbx volume ls                                  # size, what it uses on disk, the sandboxes that point at it
+sbx volume rm pgdata                           # refused while a sandbox (even a stopped one) points at it
+```
+
+- `-v NAME:/path[:ro]` and `--mount type=volume,source=NAME,target=/path[,readonly]` attach one. A source that starts
+  with `/`, `.` or `~` (or has a `/` in it) is a host path; anything else is a volume name. `-v /path` alone (an
+  anonymous volume in Docker) is refused: name it.
+- Each volume is a disk of its own, a sparse file under the data directory (`volumes/<name>/disk.img`), 16 GiB by
+  default (`sbx volume create --opt size=50g NAME`); the host only spends what is written. The guest formats it (ext4
+  with a journal) the first time a sandbox attaches it, and fills it with what the image has at that path, keeping
+  owners and modes, so an image that ships files or a directory owned by its service user works as in Docker.
+  `nocopy` (`-v NAME:/path:nocopy`, `volume-nocopy` in `--mount`) skips that.
+- A volume attached read-write is used by **one running sandbox at a time**: a second one is refused with the name of
+  the sandbox that has it, until that one stops. Read-only attaches (`:ro`, enforced on the host too) can share a
+  volume while nobody writes it. A sandbox whose owner was killed releases its volumes with it.
+- Writes reach the disk when the program inside asks for it (`fsync`), so a database that committed a transaction
+  keeps it even if the VM is killed. Each volume uses one of the executor's disks: with the Firecracker executor's 8,
+  a sandbox takes up to 6 volumes (fewer leaves more disks for the image's layers). An executor that speaks an
+  executor protocol older than 3 can't attach volumes, and `sbx` says so.
+- `sbx volume prune -a` removes every volume no sandbox points at (without `-a` there is nothing to remove, since
+  sbx makes no anonymous volumes), and so does `sbx system prune -a --volumes`. `sbx volume inspect` shows the disk
+  file, the sandboxes that point at the volume and whether one has it attached now. `sbx events` records volume
+  `create` and `remove`. The Volumes tab of `sbx tui` lists them (`c` create, `D` rm, `P` prune).
+
 ## Network
 
 The VM never gets a network interface. With `--network allow`, every outgoing TCP connection is handed to the host
@@ -296,15 +329,16 @@ reason it stopped. `sbx start` starts the clock again. Which executor a sandbox 
 ## Disk usage and cleanup
 
 ```sh
-sbx system df                  # images, build cache, sandboxes and executors: count, in use, size, reclaimable
+sbx system df                  # images, build cache, sandboxes, volumes and executors: count, in use, size, reclaimable
 sbx system prune               # stopped sandboxes, the build cache, unused layers, leftovers (asks first)
 sbx system prune -a -f         # also every image no sandbox uses; -f doesn't ask
 sbx system prune --filter until=24h --filter label=ci=1
+sbx system prune -a -f --volumes   # also every volume no sandbox points at
 ```
 
 Sizes are what is actually on disk: a sandbox's writable disk counts what it wrote, and a layer several images use
-counts once (the `SHARED` column). `prune` never touches running
-sandboxes or the images they use, and only removes leftovers older than an hour (another `sbx` may still be writing
+counts once (the `SHARED` column). `prune` never touches running sandboxes, the images they use, or volumes unless
+asked with `--volumes`, and only removes leftovers older than an hour (another `sbx` may still be writing
 them). Without a terminal it needs `-f`. In `sbx tui`, `U` and `P` on the Images tab do the same.
 
 ## Scripting
