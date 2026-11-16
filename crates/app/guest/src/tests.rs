@@ -56,6 +56,7 @@ impl Fixture {
                     sweep: crate::exec::Sweep::Group,
                     layer_disks: None,
                     clock: None,
+                    volume: None,
                 },
             )
         });
@@ -154,6 +155,7 @@ fn version_mismatch_is_reported() {
                 sweep: crate::exec::Sweep::Group,
                 layer_disks: None,
                 clock: None,
+                volume: None,
             },
         )
     });
@@ -177,6 +179,7 @@ fn request_before_hello_is_a_protocol_error() {
                 sweep: crate::exec::Sweep::Group,
                 layer_disks: None,
                 clock: None,
+                volume: None,
             },
         )
     });
@@ -542,6 +545,7 @@ fn shutdown_syncs_replies_then_calls_back() {
                 sweep: crate::exec::Sweep::Group,
                 layer_disks: None,
                 clock: None,
+                volume: None,
             },
         )
     });
@@ -834,6 +838,7 @@ fn connect_with(
                 sweep: crate::exec::Sweep::Group,
                 layer_disks,
                 clock: None,
+                volume: None,
             },
         )
     });
@@ -932,6 +937,11 @@ fn a_layer_count_mismatch_powers_the_guest_off() {
         GuestMsg::Error(e) => assert!(e.message.contains("found 3"), "{}", e.message),
         other => panic!("{other:?}"),
     }
+    // 게스트는 오류를 보낸 뒤에 끈다. 그 사이를 기다린다.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !off.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     assert!(off.load(Ordering::SeqCst));
 }
 
@@ -974,6 +984,7 @@ fn privileged_pid1_a_build_step_ends_even_detached_daemons() {
                 sweep: crate::exec::Sweep::Everything,
                 layer_disks: None,
                 clock: None,
+                volume: None,
             },
         )
     });

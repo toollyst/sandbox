@@ -28,6 +28,11 @@ The JSON Schema (draft 2020-12) of every type is in [cli-output.schema.json](cli
 | `ps` | value: `[Sandbox]` |
 | `inspect` | value: `Sandbox` |
 | `stats` | value: `[Stats]` |
+| `volume create` | value: `Volume` |
+| `volume ls` | value: `[Volume]` |
+| `volume inspect` | lines: `Volume` |
+| `volume rm` | lines: `VolumeRef` |
+| `volume prune` | value: `VolumePrune` |
 | `exec` | not supported: its output is the process's own bytes |
 | `attach` | not supported: its output is the process's own bytes |
 | `logs` | lines: `LogLine` |

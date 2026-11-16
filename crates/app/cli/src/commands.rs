@@ -113,6 +113,11 @@ pub const COMMANDS: &[Command] = &[
         "Show running sandboxes' CPU, memory, disk and process count",
     ),
     cmd(
+        "volume",
+        Section::Sandboxes,
+        "Manage volumes: disks that outlive sandboxes (create, ls, inspect, rm, prune)",
+    ),
+    cmd(
         "exec",
         Section::Inside,
         "Run a command in a running sandbox",
@@ -190,7 +195,7 @@ pub const COMMANDS: &[Command] = &[
     cmd(
         "tui",
         Section::Watch,
-        "Watch and manage sandboxes, images, events and executors on one screen",
+        "Watch and manage sandboxes, images, volumes, events and executors on one screen",
     ),
     cmd(
         "events",

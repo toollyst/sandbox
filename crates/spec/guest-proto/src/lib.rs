@@ -7,7 +7,7 @@
 //!
 //! 1. 호스트가 [`HostMsg::Hello`]를 보낸다. 게스트는 버전이 같으면 [`GuestMsg::HelloAck`],
 //!    다르면 [`GuestMsg::Error`]를 보내고 연결을 닫는다. 1.0 전까지 호환 규칙은 "같아야 한다"이다.
-//! 2. 호스트가 요청 하나를 보낸다: [`HostMsg::Exec`], [`HostMsg::ExecDetached`], [`HostMsg::CopyIn`], [`HostMsg::CopyOut`], [`HostMsg::Stat`], [`HostMsg::Share`], [`HostMsg::EgressListen`], [`HostMsg::EgressSlot`], [`HostMsg::SignalMain`], [`HostMsg::Usage`], [`HostMsg::Forward`], [`HostMsg::OpenLayer`], [`HostMsg::ExportLayer`], [`HostMsg::Transparent`], [`HostMsg::ClockSync`], [`HostMsg::Shutdown`].
+//! 2. 호스트가 요청 하나를 보낸다: [`HostMsg::Exec`], [`HostMsg::ExecDetached`], [`HostMsg::CopyIn`], [`HostMsg::CopyOut`], [`HostMsg::Stat`], [`HostMsg::Share`], [`HostMsg::EgressListen`], [`HostMsg::EgressSlot`], [`HostMsg::SignalMain`], [`HostMsg::Usage`], [`HostMsg::Forward`], [`HostMsg::OpenLayer`], [`HostMsg::ExportLayer`], [`HostMsg::Transparent`], [`HostMsg::ClockSync`], [`HostMsg::Volume`], [`HostMsg::Shutdown`].
 //! 3. 요청별 흐름은 각 메시지 문서에 있다. 실패는 언제든 [`GuestMsg::Error`] 하나로 끝난다.
 //!
 //! **버전**: 메시지를 **더하는 것**으로는 [`PROTOCOL_VERSION`]을 올리지 않는다. 있던 메시지의 모양이나 뜻을 바꿀 때만 올린다.
@@ -22,6 +22,7 @@
 //! 보낸다. 모르는 게스트의 `CheckLayers` 오류는 층 디스크가 하나일 때만 넘어간다(그런 게스트는 하나만 쌓는다).
 //! 시계([`HostMsg::ClockSync`], 그 안의 [`GuestMsg::ClockAsk`]와 [`HostMsg::ClockNow`]): 소유 프로세스가 혼자 보낸다.
 //! 모르는 게스트면 그 VM에서 맞추기를 조용히 그만둔다(기록은 한 줄).
+//! 볼륨([`HostMsg::Volume`]): 시작할 때만 보내므로 언제나 같은 판의 게스트가 받는다.
 //!
 //! **인코딩**: 프레임([`frame`]) 하나에 메시지 하나. 본문의 첫 바이트가 메시지 종류이고,
 //! 필드는 정해진 순서로 이어진다. 정수는 big-endian, 바이트열과 문자열은 길이(u32) 다음에 내용,

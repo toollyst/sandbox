@@ -97,6 +97,18 @@ fn host_samples() -> Vec<HostMsg> {
             unix_nanos: 1_763_000_000_123_456_789,
         },
         HostMsg::ClockNow { unix_nanos: -1 },
+        HostMsg::Volume {
+            disk: 2,
+            target: "/var/lib/postgresql/data".into(),
+            readonly: false,
+            copy: true,
+        },
+        HostMsg::Volume {
+            disk: 9,
+            target: "/v".into(),
+            readonly: true,
+            copy: false,
+        },
         HostMsg::ExecDetached(Exec {
             args: vec!["sleep".into(), "9".into()],
             env: vec![],

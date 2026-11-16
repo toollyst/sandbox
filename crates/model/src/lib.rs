@@ -528,6 +528,28 @@ pub struct Mount {
     pub readonly: bool,
 }
 
+/// 이름 붙은 볼륨 하나를 붙이는 것(`-v NAME:/path`, `--mount type=volume`). 볼륨은 샌드박스를 지워도 남는 디스크다.
+/// 규칙(한 번에 쓰는 쪽 하나, 처음 붙일 때 이미지 내용으로 채우기)은 `sbx-runtime`의 `volume` 모듈에 있다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VolumeMount {
+    /// 볼륨 이름. 규칙은 [`check_volume_name`].
+    pub name: String,
+    /// 게스트 절대 경로.
+    pub destination: String,
+    /// 읽기 전용으로 붙인다. 쓰는 샌드박스가 없을 때 여럿이 함께 붙일 수 있다.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub readonly: bool,
+    /// 빈 볼륨을 이미지의 그 경로 내용으로 채우지 않는다(Docker `volume-nocopy`, `-v NAME:/path:nocopy`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_copy: bool,
+}
+
+/// 볼륨 이름 규칙(Docker와 같다): 영문자나 숫자로 시작하고, 영문자, 숫자, `_`, `.`, `-`로 이어지는 2자 이상
+/// 128자 이하. 그래서 이름은 경로 구분자나 `..`를 담지 못하고 호스트 디렉터리 이름으로 그대로 쓸 수 있다.
+pub fn check_volume_name(name: &str) -> Result<(), ParseError> {
+    check_sandbox_name(name).map_err(|_| ParseError::new("volume name", name))
+}
+
 /// 네트워크 정책.
 ///
 /// 무엇을 허용할지는 호출자가 정하고, 샌드박스는 강제만 한다. 어느 경우든 VM에는 네트워크 장치가 없다.
@@ -1016,6 +1038,9 @@ pub struct SandboxSpec {
     pub resources: Resources,
     /// 폴더 공유.
     pub mounts: Vec<Mount>,
+    /// 이름 붙은 볼륨. 이 필드가 없던 기록은 볼륨이 없다.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volumes: Vec<VolumeMount>,
     /// 네트워크 정책.
     pub network: NetworkPolicy,
     /// 게스트 hostname.
@@ -1412,6 +1437,28 @@ mod tests {
         ] {
             assert!(check_sandbox_name(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn volume_names_follow_docker_and_are_safe_directory_names() {
+        for ok in ["pgdata", "db.v2", "cache_1-x", "0a"] {
+            assert!(check_volume_name(ok).is_ok(), "{ok}");
+        }
+        for bad in ["", "p", ".", "..", "../x", "a/b", "-v", "a b", "a:b", "~x"] {
+            let e = check_volume_name(bad).unwrap_err().to_string();
+            assert!(e.contains("volume name"), "{bad}: {e}");
+        }
+        // 옛 기록(볼륨 필드 없음)도 읽힌다. 볼륨이 없으면 쓰지 않는다.
+        let v = VolumeMount {
+            name: "pg".into(),
+            destination: "/data".into(),
+            readonly: false,
+            no_copy: false,
+        };
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            r#"{"name":"pg","destination":"/data"}"#
+        );
     }
 
     #[test]

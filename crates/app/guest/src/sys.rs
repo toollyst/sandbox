@@ -211,6 +211,17 @@ pub fn is_root() -> bool {
     unsafe { libc::geteuid() == 0 }
 }
 
+/// 특수 파일(FIFO, 장치)을 만든다(`mknod(2)`). `mode`는 종류와 권한, `rdev`는 장치 번호(`st_rdev` 그대로).
+// mode_t, dev_t의 C 형은 OS마다 다르다(macOS는 u16, i32).
+#[allow(clippy::unnecessary_cast)]
+pub fn mknod(path: &std::path::Path, mode: u32, rdev: u64) -> io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    // SAFETY: c는 이 호출 동안 살아 있는 NUL 종료 문자열이다. mknod는 그 밖의 메모리를 건드리지 않는다.
+    check(unsafe { libc::mknod(c.as_ptr(), mode as libc::mode_t, rdev as libc::dev_t) })
+}
+
 /// 버퍼에 있는 파일 시스템 쓰기를 디스크로 내린다.
 pub fn sync() {
     // SAFETY: sync는 인자가 없고 실패하지 않는다.

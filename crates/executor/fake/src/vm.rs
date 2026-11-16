@@ -111,3 +111,19 @@ impl Drop for FakeVm {
         (self.stop)(REASON_KILLED);
     }
 }
+
+/// 받은 디스크 하나(받은 차례). 볼륨 흉내에 쓴다.
+#[derive(Debug, Clone)]
+pub(crate) struct FakeDisk {
+    pub(crate) path: std::path::PathBuf,
+    pub(crate) volume: bool,
+    #[cfg_attr(not(unix), allow(dead_code))]
+    pub(crate) readonly: bool,
+}
+
+/// 볼륨 디스크 흉내의 내용 디렉터리: 디스크 파일 이름 뒤에 `.content`. 없으면 포맷하지 않은(처음 쓰는) 볼륨이다.
+pub fn volume_content(disk: &std::path::Path) -> std::path::PathBuf {
+    let mut s = disk.as_os_str().to_owned();
+    s.push(".content");
+    s.into()
+}

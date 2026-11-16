@@ -23,6 +23,9 @@ Other clients take the same command in their configuration:
 | `write_file` / `read_file` | Move files in and out, as text or base64. Parent directories are created |
 | `list` / `remove` | See and clean up sandboxes |
 
+`run` and `create` take `volumes: [{name, path, readonly}]`: named volumes, disks that outlive the sandbox (a
+database's data, a cache the agent builds up). A name used for the first time creates the volume.
+
 ## What an agent can and can't do
 
 The MCP server adds no policy of its own. Tool arguments go through the same parser and rules as the CLI:
@@ -33,6 +36,11 @@ The MCP server adds no policy of its own. Tool arguments go through the same par
   that resolves to such an address is refused for everyone, CLI included.)
 - Host folders are never mounted, and tools only see sandboxes created through MCP, not the ones you started with
   the CLI (`sbx mcp --all-sandboxes` changes that).
+- Volumes take a name, never a host path. Tools only attach volumes created through MCP, so an agent can't read or
+  change a volume you made with the CLI (`--all-sandboxes` lifts that too). A server creates a volume only while
+  fewer than 8 MCP volumes exist on your data directory (`--max-volumes`), each the size of `--max-disk`; one sandbox
+  at a time attaches a volume read-write. Volumes stay after the server exits:
+  `sbx volume ls --filter label=io.github.toollyst.sandbox.owner=mcp` lists them, and `sbx volume rm` removes them.
 - `run` and `create` take `connect: ["db:5432", …]` (the CLI's `--connect`): programs in the new sandbox reach that
   TCP port of another sandbox by its name, and nothing else opens. The target must be a sandbox created through MCP,
   so an agent can't reach the database you started with the CLI. That is checked when the sandbox is created and

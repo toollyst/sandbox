@@ -98,7 +98,7 @@ pub const IMAGES: &[Key] = &[
 pub const EVENTS: &[Key] = &[
     key(
         "type",
-        Value::OneOf(&["sandbox", "image", "network"]),
+        Value::OneOf(&["sandbox", "image", "network", "volume"]),
         "event type is VALUE",
     ),
     key("event", Value::OneOf(ACTIONS), "action is VALUE"),
@@ -115,6 +115,24 @@ pub const EVENTS: &[Key] = &[
          the reference is the event's own, else the one in the cache, so a deleted image matches by ID only)",
     ),
 ];
+
+/// `volume ls --filter`(Docker와 같은 키, `driver`는 없다).
+pub const VOLUMES: &[Key] = &[
+    key("name", Value::Any, "name contains VALUE"),
+    key("label", Value::Any, "has label KEY, or KEY=VALUE exactly"),
+    key(
+        "dangling",
+        Value::Bool,
+        "true: no sandbox uses it (running or not); false: one does",
+    ),
+];
+
+/// `volume prune --filter`.
+pub const VOLUME_PRUNE: &[Key] = &[key(
+    "label",
+    Value::Any,
+    "has label KEY, or KEY=VALUE exactly",
+)];
 
 /// `system prune --filter`(Docker와 같은 키). 샌드박스에 적용한다.
 pub const PRUNE: &[Key] = &[

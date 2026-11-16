@@ -8,7 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use sbx_executor_proto::{
-    Arch, Capabilities, Event, Request, VERSION, VmSpec, read_line, write_line,
+    Arch, Capabilities, Event, MIN_VERSION, Request, VERSION, VmSpec, read_line, write_line,
 };
 
 use crate::config::firecracker_config;
@@ -27,7 +27,8 @@ const POLL: Duration = Duration::from_millis(2);
 pub fn capabilities_value() -> Capabilities {
     Capabilities {
         version: VERSION,
-        min_version: None,
+        // 규약 2를 말하는 sbx(볼륨 없음)도 쓸 수 있다.
+        min_version: Some(MIN_VERSION),
         name: "firecracker".into(),
         arch: if cfg!(target_arch = "aarch64") {
             Arch::Arm64
@@ -81,10 +82,20 @@ enum Stop {
 pub fn run() -> ExitCode {
     let mut input = io::BufReader::new(io::stdin());
     let vm: VmSpec = match read_line(&mut input) {
-        Ok(Some(Request::Launch { version, vm })) if version == VERSION => vm,
+        Ok(Some(Request::Launch { version, vm }))
+            if (MIN_VERSION..=VERSION).contains(&version) && vm.min_version() <= version =>
+        {
+            vm
+        }
+        Ok(Some(Request::Launch { version, vm })) if (MIN_VERSION..=VERSION).contains(&version) => {
+            return fail(format!(
+                "protocol version {version} has no volume disks; this VM needs {}",
+                vm.min_version()
+            ));
+        }
         Ok(Some(Request::Launch { version, .. })) => {
             return fail(format!(
-                "protocol version {version} is not supported (this executor speaks {VERSION})"
+                "protocol version {version} is not supported (this executor speaks {MIN_VERSION} to {VERSION})"
             ));
         }
         Ok(Some(other)) => return fail(format!("expected launch, got {other:?}")),

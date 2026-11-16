@@ -43,6 +43,22 @@ to release a tag without one. Changes land under `## Unreleased` first, and the 
   from the image or the executor and never delays the start. A clock set inside with `date -s` is put back at the
   next correction. Sandboxes started before upgrading keep their old behaviour until restarted. The guest protocol
   gains `ClockSync`, `ClockAsk` and `ClockNow`; its version stays 2.
+- Named volumes: `sbx volume create [--opt size=50g] [--label k=v] NAME`, `volume ls [-q] [--filter]`,
+  `volume inspect`, `volume rm [-f]` and `volume prune -a`, and `run`/`create` take `-v NAME:/path[:ro|:nocopy]` and
+  `--mount type=volume,source=NAME,target=/path[,readonly][,volume-nocopy]`. A name used for the first time creates
+  the volume (16 GiB, sparse). Each volume is a disk of its own in `data_dir/volumes/`, formatted by the guest (ext4
+  with a journal) on first use and filled with what the image has at that path; it outlives the sandbox (`rm` keeps
+  it). One running sandbox at a time attaches a volume read-write (a second is refused with the name of the one that
+  has it); `:ro` attaches share it while nobody writes. `fsync`ed writes survive the VM being killed. `-v /path`
+  alone (an anonymous volume) is refused. `sbx system df` shows volumes, `sbx system prune -a --volumes` removes
+  unused ones, `sbx events` records volume `create` and `remove`, shell completion offers volume names, and
+  `sbx tui` has a Volumes tab. `--format json` adds `Volume`, `VolumeRef` and `VolumePrune`, `volumes` in `Sandbox`
+  and in the prune report. MCP tools `run` and `create` take `volumes`; they only attach volumes created through MCP
+  (`sbx mcp --max-volumes`, 8 by default).
+- Executor protocol 3: the disk role `volume`, whose writes the executor must flush through to the host file. `sbx`
+  still speaks version 2, so installed executors keep working; one that speaks only 2 can't attach volumes, and a
+  sandbox that asks for one is refused with that reason. The `firecracker` adapter speaks 3 and attaches volume
+  disks with `cache_type: Writeback`.
 - `sbx run|create --connect [NAME=]SANDBOX:PORT` (repeatable, `db:5432,6379` for more ports): programs inside reach
   TCP `PORT` of another running sandbox in the same data directory by its name, with any protocol and without proxy
   settings (`sbx run --connect db:5432 postgres:17 psql -h db`). Nothing else opens: with `--connect` alone no other

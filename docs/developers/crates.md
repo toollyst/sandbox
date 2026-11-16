@@ -181,7 +181,8 @@ The messages between the host and the guest init, over vsock port `GUEST_PORT` (
 
 - **One connection per operation.** One `exec`, one file copy or one shutdown request opens its own connection,
   so there is no multiplexing. Each connection starts with `Hello`/`HelloAck` (versions must match before 1.0),
-  then one request: `Exec`, `CopyIn`, `CopyOut`, `Stat`, `Share`, `EgressListen`, `EgressSlot` or `Shutdown`.
+  then one request: `Exec`, `CopyIn`, `CopyOut`, `Stat`, `Share`, `Volume`, `EgressListen`, `EgressSlot` or
+  `Shutdown`.
 - **Binary encoding** (`codec`, `frame`): one message per length-prefixed frame. Big-endian integers,
   length-prefixed strings and lists.
 - **The guest is untrusted.** The host rejects oversized frames before reading them, never preallocates from a length
@@ -200,10 +201,13 @@ guest. **This is what a new VMM integration implements.**
   `OK …\n`, and the socket becomes a byte stream to that guest vsock port. This is the Firecracker and Cloud Hypervisor
   convention.
 - **Promises to the guest:** the guest init boots as the initrd (`/init`, no `root=`), disks attach in order (`vda`
-  rootfs read-only, `vdb` scratch), the kernel command line carries `sbx.hostname=` and `sbx.halt=`, the kernel has
-  the listed features (erofs, overlay, vsock, …), and there is no network device.
-- `VERSION` changes are incompatible. Readers check `CapabilitiesHeader` first. The version history table is in the
-  doc comment.
+  rootfs read-only, `vdb` scratch, then upper layers, then volumes), the kernel command line carries `sbx.hostname=`
+  and `sbx.halt=`, the kernel has the listed features (erofs, overlay, vsock, …), and there is no network device.
+  A disk with the role `volume` (version 3) is writable unless marked read-only, and the guest's flushes reach the
+  host file before they complete.
+- Each side speaks a range of versions and they use the highest common one; `sbx` speaks 2 and 3. A `Launch` that
+  needs a newer version than the session's (`VmSpec::min_version`: volumes need 3) is refused on both sides. Readers
+  check `CapabilitiesHeader` first. The version history table is in the doc comment.
 - Depends only on `serde` and `serde_json`, so another repository can take just this crate.
 
 ### `sbx-executor-install` · [`crates/spec/executor-install`](../../crates/spec/executor-install)
@@ -362,13 +366,17 @@ The sandbox lifecycle: `Runtime::create`, `resolve` (ID, name or ID prefix) and 
   claimed with a hard link so two processes can't take the same name.
 - **Events:** every time it records a sandbox as created, running, stopped or removed, it appends an event to
   `<data_dir>/events/sandboxes`. A failed append never fails the operation.
+- **Volumes** (`volume`): `<data_dir>/volumes/<name>/` holds `volume.json`, a sparse `disk.img` and `use.lock`.
+  `start` holds the lock for the VM's life (exclusive to write, shared for read-only), so one sandbox writes a
+  volume at a time and a dead owner releases it. Volume disks go after the layer disks; `remove_volume` refuses a
+  volume a sandbox record names. Volume `create` and `remove` events go to `<data_dir>/events/volumes`.
 - **Egress** (`egress`): runs in the VM's owner. It checks each connection the guest proxy asks for against the
   allow list, refuses names that resolve to private addresses, and relays bytes.
 - **Connecting sandboxes** (`connect`): also in the VM's owner. For a `--connect` name it looks the target up at
   each connection (same data directory, exact ID or name), checks it, and joins the connection to the target's
   guest through `Forward`, the `-p` path.
-- Modules: `lib` → `egress`, `clock` → `connect` → `client` → `hostfs`, `layer`, `records` → `process`, `validate`,
-  `cpplan`, `chan` → `error`.
+- Modules: `lib` → `egress`, `clock` → `connect` → `client` → `hostfs`, `layer`, `volume` → `records` →
+  `process`, `validate`, `cpplan`, `chan` → `error`.
 
 ### `sbx-manage` · [`crates/core/manage`](../../crates/core/manage)
 
@@ -456,7 +464,8 @@ boot                         PID 1 and the connection-handling process (Linux)
 server                       one connection: version check, dispatch
 exec   copy   egress  clock  one request each (egress: HTTP proxy and the connections lent by the host, clock: setting the guest clock)
 transparent                  transparent TCP: stand-in addresses for allowed names, listeners (egress owns it)
-wire   passwd  mkfs  cmdline  dns   messages, user lookup, formatting scratch, kernel command line, loopback DNS
+volume                       attaching a volume: format on first use (ext4 with a journal), fill from the image, mount
+wire   passwd  mkfs  cmdline  dns   messages, user lookup, formatting scratch and volumes, kernel command line, loopback DNS
 sys                          system calls (the only place with unsafe)
 ```
 

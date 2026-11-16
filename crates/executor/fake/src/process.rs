@@ -5,6 +5,9 @@
 //! - `SBX_FAKE_RECORD=<파일>`: 받은 `Launch`의 VM 설정을 JSON으로 그 파일에 쓴다.
 //! - `SBX_FAKE_DROP_LAYER_DISK=1`: 받은 층 디스크 가운데 마지막 것을 게스트에 주지 않는다(디스크를 빠뜨린 실행기).
 //! - `SBX_FAKE_MAX_DISKS=<수>`: `capabilities`가 알리는 `max_disks`(기본 [`crate::MAX_DISKS`]). 더 많이 받으면 거부한다.
+//! - `SBX_FAKE_PROTOCOL=<버전>`: 그 규약 버전 하나만 말한다(옛 실행기 흉내). 없으면 2부터 [`proto::VERSION`]까지.
+//! - `SBX_FAKE_LINGER_MS=<밀리초>`: 표준 입력이 닫힌 뒤(소유 프로세스가 죽은 뒤) VM을 끄기까지 그만큼 둔다. 그동안
+//!   제어 소켓도 그대로 듣는다(VM을 천천히 끄는 실행기 흉내). `Kill`에는 곧바로 끈다.
 
 use std::io::{self, BufReader, Write};
 use std::process::ExitCode;
@@ -18,9 +21,10 @@ use crate::vm::REASON_KILLED;
 
 /// 이 실행기의 capability.
 pub fn capabilities() -> proto::Capabilities {
+    let (min, max) = versions();
     proto::Capabilities {
-        version: proto::VERSION,
-        min_version: None,
+        version: max,
+        min_version: Some(min),
         name: "fake".into(),
         arch: if cfg!(target_arch = "aarch64") {
             proto::Arch::Arm64
@@ -38,6 +42,17 @@ pub fn capabilities() -> proto::Capabilities {
     }
 }
 
+/// 말하는 규약 버전 범위. `SBX_FAKE_PROTOCOL`이 있으면 그 하나다.
+fn versions() -> (u32, u32) {
+    match std::env::var("SBX_FAKE_PROTOCOL")
+        .ok()
+        .and_then(|v| v.parse().ok())
+    {
+        Some(v) => (v, v),
+        None => (2, proto::VERSION),
+    }
+}
+
 fn emit<T: serde::Serialize>(out: &mut impl Write, e: &T) {
     // 표준 출력이 닫혔으면 sbx가 없는 것이다. 보낼 곳이 없으므로 무시한다.
     let _ = proto::write_line(out, e);
@@ -51,14 +66,18 @@ fn fail(out: &mut impl Write, message: String) -> ExitCode {
 fn run() -> ExitCode {
     let mut input = BufReader::new(io::stdin());
     let mut out = io::stdout();
+    let (min, max) = versions();
     let vm = match proto::read_line::<Request>(&mut input) {
-        Ok(Some(Request::Launch { version, vm })) if version == proto::VERSION => vm,
+        Ok(Some(Request::Launch { version, vm }))
+            if (min..=max).contains(&version) && vm.min_version() <= version =>
+        {
+            vm
+        }
         Ok(Some(Request::Launch { version, .. })) => {
             return fail(
                 &mut out,
                 format!(
-                    "fake executor speaks protocol {}, got {version}",
-                    proto::VERSION
+                    "fake executor speaks protocol {min} to {max}, got {version} (or a disk that version lacks)"
                 ),
             );
         }
@@ -94,7 +113,16 @@ fn run() -> ExitCode {
         // 디스크 하나를 빠뜨린 실행기를 흉내 낸다. 게스트는 받은 것만 센다.
         layer_disks.pop();
     }
-    let handle = match guest::start(&vm.control_socket, shares, build, layer_disks, clock) {
+    let disks = vm
+        .disks
+        .iter()
+        .map(|d| crate::vm::FakeDisk {
+            path: d.path.clone(),
+            volume: d.role == proto::DiskRole::Volume,
+            readonly: d.readonly,
+        })
+        .collect();
+    let handle = match guest::start(&vm.control_socket, shares, build, layer_disks, clock, disks) {
         Ok(h) => h,
         Err(e) => return fail(&mut out, format!("cannot open control socket: {e}")),
     };
@@ -105,7 +133,14 @@ fn run() -> ExitCode {
         let handle = handle.clone();
         thread::spawn(move || {
             // Kill이 오거나 표준 입력이 닫히면 끝낸다(규약 3, 5). 해석할 수 없는 줄도 끝낸다.
-            let _ = proto::read_line::<Request>(&mut input);
+            if let Ok(None) = proto::read_line::<Request>(&mut input) {
+                let linger = std::env::var("SBX_FAKE_LINGER_MS")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok());
+                if let Some(ms) = linger {
+                    thread::sleep(Duration::from_millis(ms));
+                }
+            }
             handle.stop(REASON_KILLED);
         });
     }

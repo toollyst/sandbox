@@ -181,3 +181,24 @@ fn negotiation_matches_its_definition_everywhere() {
         }
     }
 }
+
+/// 볼륨 디스크(규약 3)는 `"volume"`으로 쓰고, 그것이 든 VM은 3보다 낮은 버전으로 보낼 수 없다.
+/// 규약 2의 실행기가 이 줄을 읽으면 모르는 역할이라 거부한다(그래서 2에는 보내지 않는다).
+#[test]
+fn volume_disks_need_protocol_3() {
+    let mut v = vm();
+    assert_eq!(v.min_version(), MIN_VERSION);
+    v.disks.push(DiskSpec {
+        path: "/d/volumes/pgdata/disk.img".into(),
+        role: DiskRole::Volume,
+        readonly: false,
+    });
+    assert_eq!(v.min_version(), 3);
+    let line = serde_json::to_string(&v.disks[2]).unwrap();
+    assert_eq!(
+        line,
+        r#"{"path":"/d/volumes/pgdata/disk.img","role":"volume","readonly":false}"#
+    );
+    assert!(serde_json::from_str::<DiskSpec>(&line.replace("volume", "cache")).is_err());
+    const { assert!(MIN_VERSION <= 2 && VERSION >= 3) };
+}

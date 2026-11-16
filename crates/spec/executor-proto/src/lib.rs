@@ -56,8 +56,15 @@
 //!   (`/dev/vda`, `/dev/vdb`, …). 첫째는 이미지의 맨 아래 층(`rootfs`, 읽기 전용), 둘째는 scratch다. 셋째부터의
 //!   `rootfs` 디스크는 이미지의 위 층들이고 아래부터 차례다(sbx 0.3부터. 이미지를 층 단위로 저장해 같은 층을 이미지끼리
 //!   한 번만 둔다). sbx는 [`Capabilities::max_disks`]보다 많이 보내지 않는다. `max_disks`가 2인 실행기에는 지금처럼
-//!   모든 층을 합친 rootfs 하나와 scratch만 간다. 그래서 규약 버전은 그대로 2다. 실행기는 디스크의 역할을 보고
-//!   다르게 붙이지 않는다. 역할은 진단과 이름(설정 파일의 drive id 같은 것)에만 쓴다.
+//!   모든 층을 합친 rootfs 하나와 scratch만 간다. 층 디스크는 규약 2에서 그대로 된다.
+//! - 층 뒤에는 이름 붙은 볼륨(역할 `volume`, 규약 3부터)이 온다. 볼륨은 샌드박스를 지워도 남는 데이터(DB 같은 것)를
+//!   담는다. 그래서 **볼륨 디스크에서는 게스트의 flush가 호스트 저장 장치까지 가야 한다**: 실행기는 게스트에 flush
+//!   기능(virtio-blk `VIRTIO_BLK_F_FLUSH`)을 보이고, 받은 flush를 호스트 파일의 `fsync`(macOS는 `F_FULLFSYNC`)로
+//!   넘긴다. 쓰기 캐시를 쓰더라도 flush를 버리지 않는다(Firecracker의 `cache_type: "Writeback"`이 그렇다). 그 밖의
+//!   역할(`rootfs`, `scratch`)은 VM이 끝나면 버려도 되는 내용이라 flush를 넘기지 않아도 된다. 그 밖에 실행기는 역할을
+//!   보고 다르게 붙이지 않는다. 역할은 진단과 이름(설정 파일의 drive id 같은 것)에만 쓴다. 볼륨이 무슨 파일 시스템인지,
+//!   어디에 마운트할지는 sbx와 게스트 init이 정한다(게스트는 EROFS가 아닌 첫 디스크에서 층 세기를 멈춘다).
+//!   볼륨은 읽기 전용으로 올 수 있다. 그때는 게스트가 쓰지 못하게 읽기 전용으로 붙인다.
 //!   디스크 파일은 받은 그대로 붙인다(내용을 바꾸지 않는다). 받은 디스크를 빼거나 순서를 바꾸면 게스트가 다른 rootfs로
 //!   부팅한다. 게스트는 처음 보는 scratch가 0으로 채워져 있다고 믿는다(sbx가 새 sparse 파일로 만든다).
 //! - 커널 명령줄에 `sbx.hostname=<hostname>`과 `sbx.halt=poweroff|reboot`을 넣는다. `sbx.halt`는 그 VMM에서
@@ -86,6 +93,11 @@
 //! |---|---|
 //! | 1 | 처음 |
 //! | 2 | `Capabilities::custom_kernel`, `VmSpec::kernel` (이미지가 담은 커널로 부팅) |
+//! | 3 | [`DiskRole::Volume`] (이름 붙은 볼륨, flush를 호스트까지 넘긴다). `capabilities`는 2와 같다 |
+//!
+//! 규약 2만 말하는 실행기에는 볼륨 디스크를 보내지 않는다. 그 실행기로 볼륨을 쓰는 샌드박스는 시작하지 않고 오류다
+//! (2의 [`DiskSpec`]은 모르는 역할을 거부하고, 필드를 더하는 것도 모르는 필드로 거부되므로 2 안에서는 알릴 길이 없다).
+//! [`VmSpec::min_version`]이 그 VM에 필요한 가장 낮은 버전이다. 실행기는 고른 버전이 그보다 낮은 `Launch`를 거부한다.
 //!
 //! - 의존: `serde`, `serde_json`만 (실행기 저장소가 이것만 가져다 쓸 수 있게)
 
@@ -97,7 +109,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 pub mod vsock;
 
 /// 이 sbx가 말하는 가장 높은 규약 버전.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 /// 이 sbx가 아직 말하는 가장 낮은 규약 버전.
 pub const MIN_VERSION: u32 = 2;
@@ -172,6 +184,19 @@ pub enum DiskRole {
     Rootfs,
     /// 샌드박스별 쓰기 가능 디스크.
     Scratch,
+    /// 이름 붙은 볼륨(규약 3부터). 층 디스크 뒤에 온다. 게스트의 flush를 호스트 저장 장치까지 넘긴다
+    /// (크레이트 문서의 "게스트에 대한 약속").
+    Volume,
+}
+
+impl DiskRole {
+    /// 이 역할을 처음 말한 규약 버전.
+    pub const fn since(self) -> u32 {
+        match self {
+            DiskRole::Rootfs | DiskRole::Scratch => 1,
+            DiskRole::Volume => 3,
+        }
+    }
 }
 
 /// 디스크 하나.
@@ -221,6 +246,16 @@ pub struct VmSpec {
     pub control_socket: PathBuf,
     /// 게스트 호스트 이름.
     pub hostname: String,
+}
+
+impl VmSpec {
+    /// 이 VM을 보낼 수 있는 가장 낮은 규약 버전: 디스크 역할([`DiskRole::since`])과 [`MIN_VERSION`] 가운데 큰 것.
+    pub fn min_version(&self) -> u32 {
+        self.disks
+            .iter()
+            .map(|d| d.role.since())
+            .fold(MIN_VERSION, u32::max)
+    }
 }
 
 /// sbx → 실행기.

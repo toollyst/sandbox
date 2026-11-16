@@ -1,7 +1,7 @@
 # How it works
 
 This page follows `sbx run --rm alpine echo hello` from the command line into a VM and back. Then it covers the
-detached path, `exec` and `cp` from another process, the network, `sbx build`, and the image pipeline. Each step names the code
+detached path, `exec` and `cp` from another process, volumes, the network, `sbx build`, and the image pipeline. Each step names the code
 that does it. The doc comment there is the precise rule.
 
 ## The pieces at run time
@@ -12,7 +12,8 @@ that does it. The doc comment there is the precise rule.
  sbx (sbx-cli) ──────────── cache_dir: blobs, images/<id>/, layers/<diff_id>/layer.erofs,       (sbx-manage writes)
      │                                 merged/<chain_id>/rootfs.erofs, build/<key>, guest/…/initramfs, events/images/
      │  sbx-runtime ─────── data_dir:  sandboxes/<id>/{spec.json,state.json,scratch.img,owner.lock,logs/},
-     │                                 events/sandboxes/, events/network/, executors/, adapters/ (the last two: sbx executor)
+     │                                 volumes/<name>/{volume.json,disk.img,use.lock},
+     │                                 events/{sandboxes,volumes,network}/, executors/, adapters/ (the last two: sbx executor)
      │                      socket_dir: short paths for Unix sockets (macOS caps them at 104 bytes)
      │  stdin/stdout: executor protocol (line-delimited JSON)
      ▼
@@ -23,6 +24,7 @@ that does it. The doc comment there is the precise rule.
                                                    │  /dev/vda bottom layer (EROFS, read-only)
                                                    │  /dev/vdb scratch.img  (writable)
                                                    │  /dev/vdc… upper layers (EROFS, read-only)
+                                                   │  then volumes (ext4, writable unless :ro)
 ```
 
 There are three directories, each passed in by the caller. The CLI's defaults are in
@@ -80,7 +82,7 @@ neither. The CLI then calls the management core:
   directory: a whiteout is a character device 0/0, an opaque directory has `trusted.overlay.opaque=y`. Nothing is
   unpacked onto your disk, so the result is the same on macOS, Linux and Windows. The plan
   ([`stack.rs`](../../crates/port/store/src/stack.rs)) walks from the top layer down and gives each layer its own
-  disk while the executor has disks left (`max_disks` minus one for scratch, at most 16). The layers below that are
+  disk while the executor has disks left (`max_disks` minus one for scratch and one per volume, at most 16). The layers below that are
   merged into one EROFS, `merged/<chain_id>/rootfs.erofs`, the same in-memory merge (whiteouts, opaque directories,
   hard links) that 0.2 did for the whole image. A layer that can't stand on its own as a lower (a hard link to a
   file in a lower layer, a whiteout of the root) is merged with everything below it. Two processes preparing images
@@ -118,9 +120,12 @@ layout 1, or a `prepare` for an executor with fewer disks).
 3. **Launches through the executor.** [`sbx-executor-process`](../../crates/adapter/executor-process) runs
    `sbx-executor run` and sends `Launch` (disks, initrd, kernel, vCPUs, memory, `control_socket`). Then it waits for
    `Started`. The executor's stderr goes to `logs/executor.log`. The disks are, in order: the bottom layer (or the
-   merged disk), scratch, then the upper layers, bottom to top. Each is attached as the next virtio-blk device, so
-   the order alone tells the guest what it is. The executor protocol stays at version 2: an executor only has to
-   attach up to its `max_disks` disks in order.
+   merged disk), scratch, the upper layers bottom to top, then the sandbox's volumes. Each is attached as the next
+   virtio-blk device, so the order alone tells the guest what it is. An executor only has to attach up to its
+   `max_disks` disks in order. Volume disks have the role `volume` (executor protocol 3): the executor must pass the
+   guest's flushes through to the host file, so what a program `fsync`ed survives the VM being killed (the Firecracker
+   executor attaches them with `cache_type: Writeback`). With an executor that speaks only version 2 nothing changes
+   until a sandbox asks for a volume, which is then refused.
 4. **The executor starts the VMM.** [`sbx-executor-firecracker`](../../crates/executor/firecracker) writes a
    Firecracker config with vsock at `control_socket`, guest CID 3 and the kernel command line
    (`sbx.hostname=…`, `sbx.halt=reboot`), and runs `firecracker --no-api --config-file`. The config file sits next to
@@ -166,8 +171,8 @@ Stdin / Resize / Signal   ───────►
                           ◄───────     Exited{code}
 ```
 
-Before the main process starts, the runtime copies in `--mount type=copy` sources and asks the guest to mount live
-shares. The CLI's [`attach.rs`](../../crates/app/cli/src/attach.rs) connects your terminal: raw mode with `-t`,
+Before the main process starts, the runtime asks the guest to attach each volume (`Volume{disk, target, readonly,
+copy}`), copies in `--mount type=copy` sources and asks the guest to mount live shares. The CLI's [`attach.rs`](../../crates/app/cli/src/attach.rs) connects your terminal: raw mode with `-t`,
 stdin with `-i`, window resizes, and signals.
 
 ### 7. Exit and clean up
@@ -199,6 +204,33 @@ These don't go through the owner. Any process with the same `data_dir` reads `st
 `CopyOut` or `Shutdown`. That is why `sbx exec` takes milliseconds and works the same for attached and detached
 sandboxes. `cp` targets follow `docker cp` ([`cpplan.rs`](../../crates/core/runtime/src/cpplan.rs)).
 
+## Volumes
+
+A volume ([`volume.rs`](../../crates/core/runtime/src/volume.rs)) is a directory in `data_dir/volumes/<name>/`: the
+record (`volume.json`: size, labels, creation time), a sparse zero-filled `disk.img`, and `use.lock`. It belongs to no
+sandbox, so `rm` leaves it; `volume rm` refuses one that a sandbox record still names.
+
+- **Who may attach it.** `start` takes `use.lock` before launching (`Runtime::hold_volumes`): exclusive for a
+  read-write attach, shared for `:ro`. The lock is the OS file lock, held by the process that owns the VM (`sbx`, or
+  `sbx-shim` for `-d`) for the VM's life, so it goes away with that process just like `owner.lock`. A second writer
+  finds it taken and is told which running sandbox names the volume. The lock goes the moment the owner dies, but its
+  VM lives until the executor powers it off, so after taking the lock `start` also checks every other sandbox that
+  names the volume (and would conflict: one of the two writes) and is still recorded as running: if its
+  `control_socket` still accepts a connection, the VM is alive, and `start` waits for it up to 3 s
+  (`volume::VM_GONE_WAIT`), then refuses. Two kernels never write one disk.
+- **How the guest tells it from a layer.** The guest counts layers up to the first disk that isn't EROFS, so a
+  volume must never look like one: the host refuses to attach a disk with the EROFS magic at byte 1024 (the guest can
+  write anything to a volume, and a crafted one could otherwise pass for a layer of the next sandbox).
+- **First use.** The runtime sends `Volume{disk, target, readonly, copy}` after the root filesystem is up and before
+  the main process ([`volume.rs`](../../crates/app/guest/src/volume.rs) in the guest). A disk without a filesystem is
+  formatted as ext4 with an internal journal ([`mkfs.rs`](../../crates/app/guest/src/mkfs.rs), the same code that
+  formats scratch, plus the journal). If the volume is empty and `copy` is set, the guest copies what the image has at
+  the target into it (owners, modes, times, symlinks, device nodes), removes `lost+found` so programs that want an
+  empty directory (`initdb`) get one, and `sync`s. Then it moves the mount over the target. A read-only attach of a
+  volume that was never formatted is an error: there is nothing to read.
+- **Durability.** Writable volumes are mounted with `errors=remount-ro`; the journal keeps the filesystem consistent
+  after a crash, and the executor's flush passthrough makes `fsync` reach the host file.
+
 ## The guest clock
 
 A VM's clock stops while the host sleeps and is not corrected when it wakes, and it drifts a little even without
@@ -222,7 +254,7 @@ a guest init too old to know `ClockSync` is left alone. Rules: [`clock.rs`](../.
 
 There is no daemon to ask what changed, so the process that changes something writes it down.
 `sbx-runtime` appends a line to `data_dir/events/sandboxes` whenever it records a sandbox as created, running,
-stopped or removed, and `sbx-manage` appends to `cache_dir/events/images` after a pull, build, prepare, tag, untag, push or
+stopped or removed (and to `data_dir/events/volumes` when it creates or removes a volume), and `sbx-manage` appends to `cache_dir/events/images` after a pull, build, prepare, tag, untag, push or
 delete.
 Both use [`sbx-events`](../../crates/port/events/src/lib.rs): one JSON object per line, appended under a file lock,
 two generations of 1 MiB. `sbx events` reads both directories and the outgoing-connection records in
@@ -235,9 +267,9 @@ records, so the storage format can change without breaking scripts. [cli-output.
 those types. `--jq` runs on that output in-process.
 
 `sbx tui` ([`tui/`](../../crates/app/cli/src/tui/mod.rs)) is the first user of that contract. It never calls the
-cores. It runs the same `sbx` binary as children: `ps -a`, `images` and the `executor` listings with
-`--format json`, and `events --since 1h` followed in the background. A sandbox event re-reads `ps -a`, an image
-event re-reads `images`. Every key becomes an `sbx` command line, shown in the status bar, and commands that need the
+cores. It runs the same `sbx` binary as children: `ps -a`, `images`, `volume ls` and the `executor` listings with
+`--format json`, and `events --since 1h` followed in the background. A sandbox event re-reads `ps -a` and
+`volume ls`, an image event re-reads `images`, a volume event `volume ls`. Every key becomes an `sbx` command line, shown in the status bar, and commands that need the
 terminal (`exec -it`, `attach`, `logs -f`, the `:` prompt) get it handed over until they exit. A child's error is
 its JSON error line; the TUI shows its `message`, never the JSON. Enter shows the selected row's public type as
 `name  value` lines (`detail`), in the JSON's field names and order, with the command that prints the same JSON.

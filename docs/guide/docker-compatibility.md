@@ -24,24 +24,24 @@ The table is code, [`compat.rs`](../../crates/app/cli/src/compat.rs), and a test
 ## Progress
 
 <!-- compat-progress:begin -->
-Counted from the 398 rows below. "What applies to sbx" leaves out ⚫, ⚪ and ➕ rows.
+Counted from the 413 rows below. "What applies to sbx" leaves out ⚫, ⚪ and ➕ rows.
 
 | | |
 | --- | --- |
-| **Works (🟢 or 🟡), of what applies to sbx** | **`████░░░░░░` 44% (138 of 312)** |
-| **The Docker CLI alone** (without `build`, the Dockerfile and Compose) | **`██████░░░░` 57% (109 of 189)** |
-| 🟢 Same as Docker | 66 |
-| 🟡 Works, with differences | 72 |
-| 🔴 Not yet | 174 (13 of them in 0.3) |
-| ⚫ Will not do | 23 |
-| ⚪ Not applicable in a VM | 39 |
+| **Works (🟢 or 🟡), of what applies to sbx** | **`█████░░░░░` 48% (157 of 323)** |
+| **The Docker CLI alone** (without `build`, the Dockerfile and Compose) | **`██████░░░░` 64% (128 of 200)** |
+| 🟢 Same as Docker | 71 |
+| 🟡 Works, with differences | 86 |
+| 🔴 Not yet | 166 (4 of them in 0.3) |
+| ⚫ Will not do | 25 |
+| ⚪ Not applicable in a VM | 41 |
 | ➕ sbx only | 24 |
 
 | Area | Works, of what applies to sbx |
 | --- | --- |
-| [Commands](#commands) | `█████░░░░░` 54% (31 of 57) |
+| [Commands](#commands) | `██████░░░░` 63% (37 of 58) |
 | [Global options](#global-options) | `███░░░░░░░` 25% (1 of 4) |
-| [docker run, docker create](#docker-run-docker-create) | `█████░░░░░` 46% (23 of 49) |
+| [docker run, docker create](#docker-run-docker-create) | `█████░░░░░` 51% (25 of 49) |
 | [docker exec](#docker-exec) | `█████████░` 87% (7 of 8) |
 | [docker start](#docker-start) | `█████░░░░░` 50% (2 of 4) |
 | [docker stop, docker restart](#docker-stop-docker-restart) | `██████████` 100% (2 of 2) |
@@ -61,8 +61,13 @@ Counted from the 398 rows below. "What applies to sbx" leaves out ⚫, ⚪ and �
 | [docker save](#docker-save) | `█████░░░░░` 50% (1 of 2) |
 | [docker load](#docker-load) | `███████░░░` 66% (2 of 3) |
 | [docker login](#docker-login) | `██████████` 100% (2 of 2) |
+| [docker volume create](#docker-volume-create) | `██████████` 100% (2 of 2) |
+| [docker volume ls](#docker-volume-ls) | `██████████` 100% (3 of 3) |
+| [docker volume inspect](#docker-volume-inspect) | `██████████` 100% (1 of 1) |
+| [docker volume rm](#docker-volume-rm) | `██████████` 100% (1 of 1) |
+| [docker volume prune](#docker-volume-prune) | `██████████` 100% (3 of 3) |
 | [docker system df](#docker-system-df) | `█████░░░░░` 50% (1 of 2) |
-| [docker system prune](#docker-system-prune) | `████████░░` 75% (3 of 4) |
+| [docker system prune](#docker-system-prune) | `██████████` 100% (4 of 4) |
 | [Behavior](#behavior) | `██████████` 100% (6 of 6) |
 | [docker build](#docker-build) | `███░░░░░░░` 32% (9 of 28) |
 | [Dockerfile](#dockerfile) | `██████░░░░` 60% (20 of 33) |
@@ -98,12 +103,12 @@ Every `docker` command and management command. The flags of the commands sbx has
 | `load` | 🟡 | Reads OCI image layout archives or directories: `docker save` from Docker 25 on, `podman save --format oci-archive`, skopeo. | `load_and_save_round_trip_an_oci_archive` |
 | `login` | 🟢 | Writes Docker's `config.json` or its credential helper, so `docker login` works too. | `login_and_logout_use_dockers_config` |
 | `logout` | 🟢 |  | `login_and_logout_use_dockers_config` |
-| `events` | 🟡 | Kinds `sandbox`, `image` and `network`; actions create, start, stop, remove, `exec_start`, `exec_die`, pull, prepare, tag, untag, push, delete, and for `network` connect, close, refuse, lookup, `proxy_only`, notice. RFC 3339 times with nanoseconds. Keeps the last 1-2 MiB (Docker: the last 256 events). *Why:* No daemon: the process that changes a state records it, so a sandbox whose owner dies suddenly has no stop event. | `events_replay_and_follow`, `tag_and_push_to_a_registry` |
+| `events` | 🟡 | Kinds `sandbox`, `image`, `volume` and `network`; actions create, start, stop, remove, `exec_start`, `exec_die`, pull, prepare, tag, untag, push, delete, and for `network` connect, close, refuse, lookup, `proxy_only`, notice. RFC 3339 times with nanoseconds. Keeps the last 1-2 MiB (Docker: the last 256 events). *Why:* No daemon: the process that changes a state records it, so a sandbox whose owner dies suddenly has no stop event. | `events_replay_and_follow`, `tag_and_push_to_a_registry`, `volume_data_outlives_the_sandbox` |
 | `info` | 🟡 | Shows the host, the executor and the storage sbx uses. | `commands_that_do_not_launch_need_no_executor` |
 | `version` | 🟡 | sbx: `--version`. There is no `version` command. | `docker_options_reach_the_sandbox` |
 | `system` | 🟡 | `df` and `prune`. | `system_df_and_prune_free_what_nothing_uses` |
-| `system df` | 🟡 | Images, sandboxes and executors, by what is actually on disk. A layer several images use is counted once; `SHARED` is that part. | `system_df_and_prune_free_what_nothing_uses`, `images_on_one_base_store_it_once` |
-| `system prune` | 🟡 | Stopped sandboxes, unused layers (blobs and layer disks) and leftovers of interrupted pulls older than an hour. | `system_df_and_prune_free_what_nothing_uses` |
+| `system df` | 🟡 | Images, sandboxes, volumes and executors, by what is actually on disk. A layer several images use is counted once; `SHARED` is that part. | `system_df_and_prune_free_what_nothing_uses`, `images_on_one_base_store_it_once` |
+| `system prune` | 🟡 | Stopped sandboxes, unused layers (blobs and layer disks) and leftovers of interrupted pulls older than an hour; volumes only with `--volumes`. | `system_df_and_prune_free_what_nothing_uses` |
 | `system events` | 🔴 | `sbx events` does this. | not planned yet |
 | `system info` | 🔴 | `sbx info` does this. | not planned yet |
 | `build` | 🟡 | Each stage's `RUN` steps run in one microVM with the network closed unless `--allow` opens it; `COPY`, `ADD` and `WORKDIR` layers are made on the host, so a `FROM scratch` stage of copies needs no VM. The image goes to the sbx image store (`--output type=sbx`); `save` and `push` of a built image come with the layer export step. | `build_runs_stages_and_caches_steps`, `build_scratch_without_a_vm_and_shared_base_layers` |
@@ -111,12 +116,13 @@ Every `docker` command and management command. The flags of the commands sbx has
 | `builder` | 🔴 | `sbx system prune` clears the build cache; `sbx system df` shows it. | not planned yet |
 | `push` | 🟡 | Sends the layers, config and manifest exactly as they were pulled, so the image keeps its digest; one blob at a time (Docker sends several at once). Only to the registry the name points at: never to a `registries.conf` mirror, and a blocked registry is refused. | `tag_and_push_to_a_registry`, `app::push::tests::report_reads_like_docker_push` |
 | `tag` | 🟢 | Moves a reference that pointed at another image, as Docker does, and records an image `tag` event. | `tag_and_push_to_a_registry` |
-| `volume` | 🔴 | Named volumes: a sparse disk per volume. | V1 (0.3) |
-| `volume create` | 🔴 |  | V1 (0.3) |
-| `volume ls` | 🔴 |  | V1 (0.3) |
-| `volume inspect` | 🔴 |  | V1 (0.3) |
-| `volume rm` | 🔴 |  | V1 (0.3) |
-| `volume prune` | 🔴 |  | V1 (0.3) |
+| `volume` | 🟡 | `create`, `ls`, `inspect`, `rm`, `prune`. A volume is a sparse disk that outlives sandboxes. One running sandbox at a time attaches a volume read-write; read-only attaches share it while nobody writes. A second writer is refused and told which sandbox holds it. *Why:* A volume is a block device with one file system on it. Two kernels writing it at once would corrupt it, so the host locks it for the VM's lifetime. | `volume_data_outlives_the_sandbox`, `a_volume_has_one_writer_at_a_time` |
+| `volume create` | 🟡 | 16 GiB by default (sparse: the host spends only what is written). Creating an existing name again returns it, as Docker does; with another size or labels it is an error. | `volume_data_outlives_the_sandbox`, `app::volume::tests::only_the_size_option_is_known` |
+| `volume ls` | 🟡 | Also shows the size, what the disk uses on the host and the sandboxes that point at each volume. | `volume_data_outlives_the_sandbox` |
+| `volume inspect` | 🟡 | Size, labels, the disk file, the sandboxes that point at it and whether one has it attached now. No `Mountpoint`: the data lives inside the disk. | `volume_data_outlives_the_sandbox`, `mcp_uses_only_its_own_volumes` |
+| `volume rm` | 🟢 | Refused while a sandbox points at the volume, even a stopped one. | `volume_data_outlives_the_sandbox`, `a_volume_has_one_writer_at_a_time` |
+| `volume prune` | 🟡 | Removes nothing without `-a`, because sbx has no anonymous volumes; `-a` removes every volume no sandbox points at (Docker 23 and later: the same). | `volume_data_outlives_the_sandbox` |
+| `volume update` | 🔴 | Docker's only takes cluster volumes. | not planned yet |
 | `compose` | 🔴 |  | C1 (after 0.3) |
 | `commit` | 🔴 |  | after 0.3 |
 | `diff` | 🔴 |  | after 0.3 |
@@ -145,7 +151,7 @@ Every `docker` command and management command. The flags of the commands sbx has
 | `secret` | ⚫ | *Why:* Swarm is out of scope. |  |
 | `config` | ⚫ | *Why:* Swarm is out of scope. |  |
 | `prepare` | ➕ | Builds an image's layer disks ahead of time, one per layer and shared between images, for the executor `run` would use (`run` does it on first use). |  |
-| `tui` | ➕ | Sandboxes, images, events and executors on one screen, like Docker Desktop or lazydocker. Every key runs an `sbx` command and shows its command line. |  |
+| `tui` | ➕ | Sandboxes, images, volumes, events and executors on one screen, like Docker Desktop or lazydocker. Every key runs an `sbx` command and shows its command line. |  |
 | `mcp` | ➕ | Serves sandboxes to AI agents over the Model Context Protocol ([guide](mcp.md)). |  |
 | `executor` | ➕ | Installs and picks executors, the programs that run the VMs ([guide](executors.md)). |  |
 | `upgrade` | ➕ | Replaces sbx with the newest signed release. |  |
@@ -188,7 +194,7 @@ Options that go before the command (`docker --debug ps`).
 | `-l, --label` | 🟢 |  | `filters`, `docker_options_reach_the_sandbox` |
 | `-m, --memory` | 🟡 | 512 MiB by default (Docker: no limit). *Why:* A VM is started with a fixed size. | `docker_options_reach_the_sandbox`, `parse::tests::memory_units` |
 | `--cpus` | 🟡 | Whole vCPUs only; 1 by default (Docker: no limit). *Why:* A VM is started with a fixed number of vCPUs. | `docker_options_reach_the_sandbox`, `parse::tests::cpus_must_be_whole` |
-| `--mount` | 🟡 | `type=bind` (needs an executor with live sharing; an error otherwise) and `type=copy` (below). No `volume` or `tmpfs` yet. | `docker_options_reach_the_sandbox`, `parse::tests::mounts` |
+| `--mount` | 🟡 | `type=bind` (needs an executor with live sharing; an error otherwise), `type=volume` and `type=copy` (below). No `tmpfs` yet. | `docker_options_reach_the_sandbox`, `parse::tests::mounts` |
 | `--name` | 🟡 | Without it a sandbox has no name and is found by its ID (Docker makes a name up). *Why:* A made-up name shows up for people who don't use names and only adds clashes. A caller that wants one picks it. | `names_work_in_place_of_ids` |
 | `--network` | 🟡 | `none` (the default; Docker's is `bridge`) or `allow`: TCP to the `--allow` destinations only, checked by the host by name. Programs that use `HTTP_PROXY` go through a proxy in the guest; others reach `HOST:PORT` rules through the guest's DNS, which answers from the allow list with stand-in addresses the guest listens on. `HOST:*` rules, IPv6 and UDP (beyond DNS) go through the proxy only or not at all. *Why:* The network is closed by default and opened by name. The allow list is enforced on every OS without help from the executor, and the VM still has no network interface. | `network_allow_list`, `transparent_tcp_reaches_allowed_names`, `behavior::tests::network_policy_table` |
 | `--network bridge, host, container:NAME, NAME` | ⚫ | *Why:* Docker networks (bridge, overlay) are out of scope: the VM has no network interface. `--connect SANDBOX:PORT` opens one port of another sandbox instead. |  |
@@ -202,9 +208,10 @@ Options that go before the command (`docker --debug ps`).
 | `--storage-opt` | 🟡 | Only `size=`: the writable disk, 1 GiB by default, at least 64 MiB. Sparse, so the host only spends what the sandbox writes. | `docker_options_reach_the_sandbox`, `parse::tests::storage_opt_sets_the_writable_disk_size` |
 | `-t, --tty` | 🟢 |  | `run_t_gives_the_main_process_a_terminal` |
 | `-u, --user` | 🟢 |  | `docker_options_reach_the_sandbox` |
-| `-v, --volume` | 🟡 | Live-shares a host directory (`SRC:DST[:ro]`), which needs an executor with virtio-fs; without one it is an error, never a silent copy. *Why:* Executors differ in what they can do. sbx doesn't switch to another way of sharing behind your back. | `volume_is_shared_live`, `parse::tests::volumes` |
-| `-v, --volume NAME:/path` | 🔴 | Today a name is an error. | V1 (0.3) |
-| `--mount type=volume` | 🔴 |  | V1 (0.3) |
+| `-v, --volume` | 🟡 | With a host path, live-shares a host directory (`SRC:DST[:ro]`), which needs an executor with virtio-fs; without one it is an error, never a silent copy. With a name, attaches a volume (below). *Why:* Executors differ in what they can do. sbx doesn't switch to another way of sharing behind your back. | `volume_is_shared_live`, `parse::tests::volumes` |
+| `-v, --volume NAME:/path` | 🟡 | Attaches a named volume; a name used for the first time creates it. The first attach fills an empty volume with what the image has at that path (owner, mode, times), unless `nocopy`. `ro` is read-only on the host too. A volume attached read-write by a running sandbox is refused, naming that sandbox. *Why:* Each volume is a disk of the VM, attached after the root file system and the writable disk, so an executor's disk count limits how many a sandbox takes. | `volume_data_outlives_the_sandbox`, `a_volume_has_one_writer_at_a_time`, `volume_disks_limits_and_old_executors`, `parse::tests::volume_names_are_told_from_paths_like_docker` |
+| `-v, --volume /path` | ⚫ | *Why:* An anonymous volume is a disk nobody named that lingers after the sandbox. Name it (`-v NAME:/path`); `--storage-opt size=` sizes the writable disk. |  |
+| `--mount type=volume` | 🟡 | `source`, `target`, `readonly`, `volume-nocopy`. No `volume-driver`, `volume-opt` or `volume-subpath`. | `volume_data_outlives_the_sandbox`, `parse::tests::volume_names_are_told_from_paths_like_docker` |
 | `--mount type=tmpfs` | 🔴 |  | not planned yet |
 | `-w, --workdir` | 🟢 |  | `docker_options_reach_the_sandbox` |
 | `--add-host` | 🔴 |  | after 0.3 |
@@ -305,7 +312,7 @@ Options that go before the command (`docker --debug ps`).
 | --- | --- | --- | --- |
 | `-f, --force` | 🟡 | Powers the guest off without a signal. | `system_df_and_prune_free_what_nothing_uses`, `docker_options_reach_the_sandbox` |
 | `-l, --link` | ⚫ | *Why:* Legacy in Docker, and sbx has no links. |  |
-| `-v, --volumes` | ⚪ | *Why:* sbx makes no anonymous volumes: a sandbox's writable disk goes with it. |  |
+| `-v, --volumes` | ⚪ | *Why:* sbx makes no anonymous volumes: a sandbox's writable disk goes with it, and named volumes stay (as in Docker). |  |
 
 ## docker ps
 
@@ -433,6 +440,46 @@ Options that go before the command (`docker --debug ps`).
 | `--password-stdin` | 🟢 |  | `login_and_logout_use_dockers_config` |
 | `-p, --password` | ⚫ | *Why:* A password on the command line ends up in shell history and `ps`. Use `--password-stdin`, or let sbx ask. |  |
 
+## docker volume create
+
+A volume is a sparse disk of its own, formatted (ext4 with a journal) by the guest the first time a sandbox attaches it. Only the `local` kind exists.
+
+| Docker | | Notes | Evidence or step |
+| --- | --- | --- | --- |
+| `--label` | 🟢 |  | `volume_data_outlives_the_sandbox` |
+| `-o, --opt` | 🟡 | Only `size=` (e.g. `size=50g`, at least 64m). An unknown option is an error. | `volume_data_outlives_the_sandbox`, `app::volume::tests::only_the_size_option_is_known` |
+| `-d, --driver` | ⚫ | *Why:* Extensions are out of scope: a volume is a disk of the VM. |  |
+| `--availability, --group, --limit-bytes, --required-bytes, --scope, --secret, --sharing, --topology-preferred, --topology-required, --type` | ⚪ | *Why:* Swarm is out of scope. |  |
+
+## docker volume ls
+
+| Docker | | Notes | Evidence or step |
+| --- | --- | --- | --- |
+| `-f, --filter` | 🟡 | Keys `name` (a substring), `label`, `dangling`. No `driver`. | `volume_data_outlives_the_sandbox` |
+| `--format` | 🟡 | sbx: `--format`. `--format` takes `text` or `json`, not a Go template. Pick fields with `--jq`. | `volume_data_outlives_the_sandbox` |
+| `-q, --quiet` | 🟢 |  | `volume_data_outlives_the_sandbox` |
+| `--cluster` | ⚪ | *Why:* Swarm is out of scope. |  |
+
+## docker volume inspect
+
+| Docker | | Notes | Evidence or step |
+| --- | --- | --- | --- |
+| `-f, --format` | 🟡 | sbx: `--format`. `--format` takes `text` or `json`, not a Go template. Pick fields with `--jq`. | `volume_data_outlives_the_sandbox` |
+
+## docker volume rm
+
+| Docker | | Notes | Evidence or step |
+| --- | --- | --- | --- |
+| `-f, --force` | 🟡 | Only makes a missing volume no error; a volume in use is never removed. *Why:* Docker's `-f` doesn't remove a volume in use either. | `volume_data_outlives_the_sandbox` |
+
+## docker volume prune
+
+| Docker | | Notes | Evidence or step |
+| --- | --- | --- | --- |
+| `-a, --all` | 🟢 |  | `volume_data_outlives_the_sandbox` |
+| `-f, --force` | 🟢 |  | `volume_data_outlives_the_sandbox` |
+| `--filter` | 🟡 | Key `label` only. | `volume_data_outlives_the_sandbox` |
+
 ## docker system df
 
 | Docker | | Notes | Evidence or step |
@@ -446,8 +493,8 @@ Options that go before the command (`docker --debug ps`).
 | --- | --- | --- | --- |
 | `-a, --all` | 🟢 |  | `system_df_and_prune_free_what_nothing_uses` |
 | `-f, --force` | 🟢 |  | `system_df_and_prune_free_what_nothing_uses` |
-| `--filter` | 🟡 | Keys `until` and `label`, for sandboxes. | `system_df_and_prune_free_what_nothing_uses` |
-| `--volumes` | 🔴 |  | V1 (0.3) |
+| `--filter` | 🟡 | Keys `until` and `label`, for sandboxes; `label` also for volumes. | `system_df_and_prune_free_what_nothing_uses` |
+| `--volumes` | 🟡 | Only with `-a` does it remove anything: every volume no sandbox points at (sbx has no anonymous volumes). | `system_df_and_prune_free_what_nothing_uses` |
 
 ## Behavior
 

@@ -19,6 +19,7 @@
 //! **연결 처리** ([`agent`]): vsock [`GUEST_PORT`]에서 연결마다 스레드 하나로 `server::serve`를 돌린다.
 //! 루프백 DNS([`crate::dns`])도 띄운다: 이름 풀기가 시간 초과(5초)를 기다리지 않고 곧바로 실패하게 한다.
 //! 시계는 호스트가 `ClockSync`를 보낼 때 커널 시계를 맞춘다([`crate::clock`]).
+//! 이름 붙은 볼륨은 호스트가 시작할 때 `Volume`으로 알리면 붙인다([`crate::volume`]). 부팅은 볼륨을 모른다.
 //! `Shutdown` 요청이면 sync 뒤 `sbx.halt` 방법으로 VM을 끝낸다.
 //! 빌드 층(`OpenLayer`)은 이 프로세스의 뿌리를 층 안으로 옮긴다. 규칙은 `overlay` 모듈에 있다. PID 1은 처음 뿌리에 남는다.
 //!
@@ -267,6 +268,12 @@ pub fn agent() -> ! {
     let layer_disks = found.as_ref().and_then(|d| u32::try_from(d.len()).ok());
     let layer_devs =
         found.unwrap_or_else(|| vec![std::path::Path::new("/dev").join(crate::disks::device(0))]);
+    // 볼륨은 층 디스크와 scratch 뒤다. 층 수를 몰라도 장치가 EROFS이면 붙이기가 거부한다.
+    let volumes = crate::volume::linux::Attach {
+        dev: "/dev".into(),
+        staging: crate::volume::STAGING.into(),
+        first: crate::volume::first_volume_disk(layer_devs.len()),
+    };
     let transparent_on = {
         let e = egress.clone();
         move || e.transparent_on()
@@ -286,6 +293,9 @@ pub fn agent() -> ! {
         layer_disks,
         // 시계 맞추기: 호스트가 보낼 때만 한다. 규칙은 clock 모듈에 있다.
         clock: Some(Box::new(crate::clock::Kernel)),
+        volume: Some(Box::new(move |disk, target, readonly, copy| {
+            volumes.attach(disk, target, readonly, copy)
+        })),
     }));
     loop {
         match sys::accept(&listener) {

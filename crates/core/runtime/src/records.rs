@@ -124,7 +124,7 @@ impl Paths {
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
-fn temp(dir: &Path, name: &str) -> PathBuf {
+pub(crate) fn temp(dir: &Path, name: &str) -> PathBuf {
     dir.join(format!(
         ".{name}.tmp-{}-{}",
         std::process::id(),
@@ -160,7 +160,7 @@ pub fn private_dir(path: &Path) -> io::Result<()> {
 }
 
 /// 이 사용자만 읽고 쓰는 새 파일(Unix 0600). 있으면 비운다.
-fn private_file(path: &Path) -> io::Result<File> {
+pub(crate) fn private_file(path: &Path) -> io::Result<File> {
     let mut o = OpenOptions::new();
     o.write(true).create(true).truncate(true);
     #[cfg(unix)]
@@ -168,7 +168,7 @@ fn private_file(path: &Path) -> io::Result<File> {
     o.open(path)
 }
 
-fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let dir = path.parent().unwrap_or(Path::new("."));
     let name = path
         .file_name()
@@ -187,7 +187,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     r
 }
 
-fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, RuntimeError> {
+pub(crate) fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, RuntimeError> {
     let bytes = fs::read(path)?;
     serde_json::from_slice(&bytes).map_err(|e| RuntimeError::Corrupt {
         path: path.to_owned(),
@@ -195,7 +195,7 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, RuntimeEr
     })
 }
 
-fn to_json<T: Serialize>(v: &T) -> io::Result<Vec<u8>> {
+pub(crate) fn to_json<T: Serialize>(v: &T) -> io::Result<Vec<u8>> {
     serde_json::to_vec_pretty(v).map_err(io::Error::other)
 }
 
@@ -260,7 +260,7 @@ pub fn write_state(paths: &Paths, state: &StateRecord) -> Result<(), RuntimeErro
 
 /// Windows에서 "Access is denied"가 잠깐의 경합(다른 쪽이 파일을 열고 있거나 지우는 중)일 때 다시 해 본다.
 /// 다른 OS에서는 한 번만 한다(그곳의 권한 오류는 진짜 권한 문제다).
-fn transient<T, E>(
+pub(crate) fn transient<T, E>(
     mut f: impl FnMut() -> Result<T, E>,
     denied: impl Fn(&E) -> bool,
 ) -> Result<T, E> {
@@ -283,7 +283,7 @@ fn transient<T, E>(
     }
 }
 
-fn io_denied(e: &io::Error) -> bool {
+pub(crate) fn io_denied(e: &io::Error) -> bool {
     e.kind() == io::ErrorKind::PermissionDenied
 }
 
@@ -318,6 +318,17 @@ fn read_present(paths: &Paths) -> Result<Option<(SandboxSpec, StateRecord)>, Run
         };
     }
     Ok(Some((spec, state)))
+}
+
+/// 기록에 적힌 그대로의 제어 소켓: `running`으로 적혀 있을 때만. [`read`]와 달리 소유자가 사라졌어도 고치지 않는다
+/// (소유자가 죽은 뒤에도 VM이 아직 사는지 보려고 쓴다).
+pub(crate) fn recorded_control(paths: &Paths) -> Option<PathBuf> {
+    let state: StateRecord = read_json(&paths.state()).ok()?;
+    if state.state == State::Running {
+        state.control
+    } else {
+        None
+    }
 }
 
 /// 지운다.

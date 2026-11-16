@@ -72,7 +72,7 @@ virtualization. It is made for running code you don't trust: **AI agents** (with
 | Commands | `docker …` | `sbx …`, with the same names and flags |
 
 <!-- docker-compat:begin -->
-**Docker compatibility:** 57% of the Docker CLI's commands and flags that apply to a VM work today (109 of 189); counting `build`, the Dockerfile and Compose too, 44% (138 of 312). [The table](docs/guide/docker-compatibility.md) gives every row, its difference and its test, and CI keeps it in step with the code.
+**Docker compatibility:** 64% of the Docker CLI's commands and flags that apply to a VM work today (128 of 200); counting `build`, the Dockerfile and Compose too, 48% (157 of 323). [The table](docs/guide/docker-compatibility.md) gives every row, its difference and its test, and CI keeps it in step with the code.
 <!-- docker-compat:end -->
 
 `cargo xtask bench` on an Apple Silicon Mac, 1 vCPU and 512 MiB per sandbox: `sbx run --rm alpine:3.20 true` (boot,
@@ -142,7 +142,7 @@ sbx rm -f dev
 sbx run --rm --network allow --allow pypi.org:443 --allow files.pythonhosted.org:443 \
     python:3.12-alpine pip install requests          # only these two hosts are reachable
 
-sbx tui                                              # sandboxes, images, events and executors on one screen
+sbx tui                                              # sandboxes, images, volumes, events and executors on one screen
 ```
 
 Give an AI agent its own machine through MCP:

@@ -311,13 +311,13 @@
       "description": "One row of `system df`.",
       "properties": {
         "active": {
-          "description": "Images some sandbox uses; sandboxes that are running. Always 0 for the build cache and executors.",
+          "description": "Images some sandbox uses; sandboxes that are running; volumes a running sandbox has attached. Always 0 for\nthe build cache and executors.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
         },
         "reclaimable": {
-          "description": "Bytes `system prune -a` would free: unused images with the layers only they use, stopped sandboxes, the\nlayers only the build cache holds (`system prune` frees those too).",
+          "description": "Bytes `system prune -a` would free: unused images with the layers only they use, stopped sandboxes, the\nlayers only the build cache holds (`system prune` frees those too); for volumes, the ones no sandbox uses\n(`system prune -a --volumes`).",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
@@ -342,7 +342,7 @@
           "type": "integer"
         },
         "type": {
-          "description": "`images`, `build cache`, `sandboxes` or `executors`.",
+          "description": "`images`, `build cache`, `sandboxes`, `volumes` or `executors`.",
           "type": "string"
         }
       },
@@ -424,7 +424,7 @@
       "description": "Something that changed (`events`).",
       "properties": {
         "action": {
-          "description": "Sandbox: `create`, `start`, `stop`, `remove`. Image: `pull`, `build`, `prepare`, `tag`, `untag`, `push`,\n`delete`.",
+          "description": "Sandbox: `create`, `start`, `stop`, `remove`. Image: `pull`, `build`, `prepare`, `tag`, `untag`, `push`,\n`delete`. Volume: `create`, `remove`.",
           "type": "string"
         },
         "attributes": {
@@ -435,7 +435,7 @@
           "type": "object"
         },
         "id": {
-          "description": "Sandbox ID or image ID.",
+          "description": "Sandbox ID, image ID or volume name.",
           "type": "string"
         },
         "time": {
@@ -443,7 +443,7 @@
           "type": "string"
         },
         "type": {
-          "description": "`sandbox` or `image`.",
+          "description": "`sandbox`, `image`, `network` or `volume`.",
           "type": "string"
         }
       },
@@ -1111,6 +1111,14 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "volumes": {
+          "default": [],
+          "description": "Names of removed volumes (`-a --volumes`).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -1448,6 +1456,13 @@
         "tty": {
           "description": "Whether the main process has a terminal (`-t`).",
           "type": "boolean"
+        },
+        "volumes": {
+          "description": "Named volumes attached (`-v NAME:/path`).",
+          "items": {
+            "$ref": "#/$defs/SandboxVolume"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -1532,6 +1547,35 @@
           "type": "string"
         }
       ]
+    },
+    "SandboxVolume": {
+      "additionalProperties": false,
+      "description": "A named volume a sandbox attaches.",
+      "properties": {
+        "destination": {
+          "description": "Guest path.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Volume name.",
+          "type": "string"
+        },
+        "no_copy": {
+          "default": false,
+          "description": "An empty volume is not filled from the image (`nocopy`).",
+          "type": "boolean"
+        },
+        "readonly": {
+          "description": "Attached read-only.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "destination",
+        "readonly"
+      ],
+      "type": "object"
     },
     "Stats": {
       "additionalProperties": false,
@@ -1733,6 +1777,103 @@
         "current",
         "security",
         "yanked"
+      ],
+      "type": "object"
+    },
+    "Volume": {
+      "additionalProperties": false,
+      "description": "A named volume (`volume create`, `volume ls`, `volume inspect`).",
+      "properties": {
+        "created": {
+          "description": "When it was created (RFC 3339).",
+          "type": "string"
+        },
+        "disk": {
+          "description": "The disk image on the host.",
+          "type": "string"
+        },
+        "disk_usage": {
+          "description": "Bytes the disk takes on the host. The disk is sparse, so this grows with what sandboxes write.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "in_use": {
+          "description": "Whether a running sandbox has it attached now.",
+          "type": "boolean"
+        },
+        "labels": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Labels (`--label`).",
+          "type": "object"
+        },
+        "name": {
+          "description": "Name.",
+          "type": "string"
+        },
+        "sandboxes": {
+          "description": "IDs of the sandboxes that attach it, running or not. `volume rm` refuses while there are any.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "size": {
+          "description": "Disk size in bytes: the most it can hold.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "created",
+        "size",
+        "disk_usage",
+        "disk",
+        "labels",
+        "sandboxes",
+        "in_use"
+      ],
+      "type": "object"
+    },
+    "VolumePrune": {
+      "additionalProperties": false,
+      "description": "What `volume prune` removed.",
+      "properties": {
+        "reclaimed": {
+          "description": "Bytes freed on disk.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "volumes": {
+          "description": "Names of removed volumes.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "volumes",
+        "reclaimed"
+      ],
+      "type": "object"
+    },
+    "VolumeRef": {
+      "additionalProperties": false,
+      "description": "One volume `volume rm` removed.",
+      "properties": {
+        "name": {
+          "description": "Name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
       ],
       "type": "object"
     }
