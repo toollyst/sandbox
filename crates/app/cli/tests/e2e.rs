@@ -265,6 +265,11 @@ mod unix {
             "mcp_uses_only_its_own_volumes",
             mcp_uses_only_its_own_volumes,
         ),
+        (
+            "a_volume_waits_for_the_vm_of_a_dead_owner",
+            a_volume_waits_for_the_vm_of_a_dead_owner,
+        ),
+        ("volumes_and_connect_together", volumes_and_connect_together),
     ];
 
     /// 인자: 이름 일부(걸러 내기). `--`로 시작하는 인자(cargo test가 넘기는 것)는 무시한다.
@@ -6086,5 +6091,197 @@ CMD [\"cat\", \"/app/out.txt\"]
         assert_eq!(v.size, 2 << 30, "--max-disk");
         // 사용자의 볼륨은 그대로다.
         assert!(volume_info(&e, "mine").labels.is_empty());
+    }
+
+    /// 소유 프로세스가 죽으면 볼륨 잠금은 곧바로 풀리지만 VM은 실행기가 끌 때까지 조금 더 산다(`SBX_FAKE_LINGER_MS`가
+    /// 그 틈을 흉내 낸다). 그사이 쓰기로 붙이려는 샌드박스는 그 VM이 꺼지기를 기다리고, 기다리는 시간(3초) 안에 꺼지지
+    /// 않으면 그 샌드박스를 말하며 거부된다. 꺼지면 붙는다.
+    fn a_volume_waits_for_the_vm_of_a_dead_owner() {
+        let e = Env::new();
+        let rw = format!("gap-vol:{}", e.path("gap").display());
+        let mut child = e
+            .cmd(&["run", "--name", "holder", "-v", &rw, IMAGE, "sleep", "60"])
+            .env("SBX_FAKE_LINGER_MS", "5000")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        wait_named(&e, "holder");
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let killed = Instant::now();
+        // 기다려도 VM이 남아 있다: 거부.
+        let o = e.sbx(&["run", "--rm", "-v", &rw, IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(125), "{}", text(&o.stderr));
+        assert!(
+            text(&o.stderr).contains("still attached to sandbox holder"),
+            "{}",
+            text(&o.stderr)
+        );
+        assert!(killed.elapsed() >= Duration::from_secs(3), "it waited");
+        // 다시 하면 그 VM이 꺼지기를 기다렸다가 붙는다.
+        let o = e.sbx(&["run", "--rm", "-v", &rw, IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(
+            killed.elapsed() >= Duration::from_secs(5),
+            "after the VM went"
+        );
+        // 읽기 전용끼리는 겹치지 않으므로 기다리지 않는다.
+        let ro = format!("{rw}:ro");
+        let mut child = e
+            .cmd(&["run", "--name", "reader", "-v", &ro, IMAGE, "sleep", "60"])
+            .env("SBX_FAKE_LINGER_MS", "5000")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        wait_named(&e, "reader");
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let started = Instant::now();
+        let o = e.sbx(&["run", "--rm", "-v", &ro, IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(started.elapsed() < Duration::from_secs(3), "no wait");
+        let o = e.sbx(&["rm", "-f", "holder", "reader"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    }
+
+    /// 볼륨과 `--connect`를 함께: 볼륨을 쓰기로 붙인 `db`에 다른 샌드박스가 이름으로 닿고, 그 샌드박스도 제 볼륨을
+    /// 붙인다. `db`의 볼륨은 그동안 다른 쪽이 붙이지 못한다. MCP에서는 볼륨 범위와 잇기 범위가 함께 걸린다.
+    fn volumes_and_connect_together() {
+        let e = Env::new();
+        let data = e.path("data");
+        let port = echo_service();
+        let db_path = e.path("dbdata");
+        let app_path = e.path("appdata");
+        let db_vol = format!("dbdata:{}", db_path.display());
+        let o = e.sbx(&[
+            "run",
+            "-d",
+            "--name",
+            "db",
+            "-v",
+            &db_vol,
+            IMAGE,
+            "sh",
+            "-c",
+            &format!("echo row > {}/t; sleep 60", db_path.display()),
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        wait_named(&e, "db");
+        let connect = format!("db:{port}");
+        let script = format!(
+            "{}; echo seen > {}/f",
+            probe_script(&data, "app", &[("db", port)]),
+            app_path.display()
+        );
+        let app_vol = format!("appdata:{}", app_path.display());
+        let o = e.sbx(&[
+            "run",
+            "--rm",
+            "--name",
+            "app",
+            "--connect",
+            &connect,
+            "-v",
+            &app_vol,
+            IMAGE,
+            "sh",
+            "-c",
+            &script,
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(
+            text(&o.stdout),
+            format!("db: rcode 0 [198.18.0.1] port {port}: got \"hello\\n\"\n")
+        );
+        // 잇는 쪽이 대상의 볼륨까지 붙일 수는 없다(쓰는 쪽이 있다).
+        let o = e.sbx(&[
+            "run",
+            "--rm",
+            "--connect",
+            &connect,
+            "-v",
+            &format!("{db_vol}:ro"),
+            IMAGE,
+            "true",
+        ]);
+        assert_eq!(o.status.code(), Some(125));
+        assert!(
+            text(&o.stderr).contains("in use by sandbox db"),
+            "{}",
+            text(&o.stderr)
+        );
+        let o = e.sbx(&["rm", "-f", "db"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        // 두 볼륨 모두 남는다.
+        let o = e.sbx(&[
+            "run",
+            "--rm",
+            "-v",
+            &format!("{db_vol}:ro"),
+            "-v",
+            &format!("{app_vol}:ro"),
+            IMAGE,
+            "cat",
+            &format!("{}/t", db_path.display()),
+            &format!("{}/f", app_path.display()),
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "row\nseen\n");
+
+        // MCP: 사용자의 볼륨도 사용자의 샌드박스도 쓰지 못하고, MCP로 만든 것끼리는 둘 다 된다.
+        let o = e.sbx(&["run", "-d", "--name", "userdb", IMAGE, "sleep", "60"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let mut child = e
+            .cmd(&["mcp"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let out = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut m = Mcp {
+            child,
+            out,
+            next: 0,
+        };
+        m.request("initialize", serde_json::json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "e2e", "version": "0"}}));
+        let mpath = e.path("mcp-data").display().to_string();
+        let err = m
+            .call(
+                "create",
+                serde_json::json!({"image": IMAGE, "connect": [format!("userdb:{port}")],
+                    "volumes": [{"name": "agentvol", "path": mpath}]}),
+            )
+            .unwrap_err();
+        assert!(err.contains("created through MCP"), "{err}");
+        let err = m
+            .call(
+                "run",
+                serde_json::json!({"image": IMAGE, "command": ["true"], "volumes": [{"name": "dbdata", "path": mpath}]}),
+            )
+            .unwrap_err();
+        assert!(err.contains("not created through MCP"), "{err}");
+        m.call(
+            "create",
+            serde_json::json!({"image": IMAGE, "name": "mdb", "command": ["sleep", "60"],
+                "volumes": [{"name": "mdbdata", "path": e.path("mdb").display().to_string()}]}),
+        )
+        .unwrap();
+        let r = m
+            .call(
+                "run",
+                serde_json::json!({"image": IMAGE, "connect": [format!("mdb:{port}")],
+                    "command": ["sh", "-c", format!("echo ok > {mpath}/f")],
+                    "volumes": [{"name": "agentvol", "path": mpath}]}),
+            )
+            .unwrap();
+        assert_eq!(r["exit_code"], 0, "{r}");
+        drop(m);
+        let v = volume_info(&e, "agentvol");
+        assert_eq!(v.labels["io.github.toollyst.sandbox.owner"], "mcp");
+        let o = e.sbx(&["rm", "-f", "userdb", "mdb"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
     }
 }

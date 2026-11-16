@@ -320,6 +320,17 @@ fn read_present(paths: &Paths) -> Result<Option<(SandboxSpec, StateRecord)>, Run
     Ok(Some((spec, state)))
 }
 
+/// 기록에 적힌 그대로의 제어 소켓: `running`으로 적혀 있을 때만. [`read`]와 달리 소유자가 사라졌어도 고치지 않는다
+/// (소유자가 죽은 뒤에도 VM이 아직 사는지 보려고 쓴다).
+pub(crate) fn recorded_control(paths: &Paths) -> Option<PathBuf> {
+    let state: StateRecord = read_json(&paths.state()).ok()?;
+    if state.state == State::Running {
+        state.control
+    } else {
+        None
+    }
+}
+
 /// 지운다.
 pub fn remove(paths: &Paths) -> Result<(), RuntimeError> {
     let (Some(parent), Some(name)) = (paths.dir.parent(), paths.dir.file_name()) else {

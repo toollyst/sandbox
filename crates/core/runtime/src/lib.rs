@@ -69,7 +69,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use sbx_executor::{ChannelSpec, Disk, DiskRole, Executor, GuestConn, VmConfig, VmHandle};
 use sbx_guest_proto::{ExitStatus, GuestMsg, HostMsg, WinSize};
@@ -386,6 +386,14 @@ impl Runtime {
                     holder: self.volume_holder(id, &m.name),
                 });
             };
+            // 잠금은 소유 프로세스와 함께 사라지지만 VM은 실행기가 끌 때까지 조금 더 산다. 그 VM이 아직 이 볼륨을
+            // 붙이고 있으면 꺼지기를 기다리고, 끝내 꺼지지 않으면 거부한다(잠금을 놓는다).
+            if let Some(holder) = self.vm_left_running(id, m, volume::VM_GONE_WAIT) {
+                return Err(RuntimeError::VolumeStillAttached {
+                    name: m.name.clone(),
+                    holder,
+                });
+            }
             let disk = v.disk();
             if volume::looks_like_layer(&disk)? {
                 return Err(RuntimeError::Invalid(format!(
@@ -396,6 +404,42 @@ impl Runtime {
             held.push((hold, disk));
         }
         Ok(held)
+    }
+
+    /// 소유 프로세스가 죽었는데 VM이 아직 살아 있어 볼륨 `m`과 겹치는 다른 샌드박스(이름이나 짧은 ID). `wait`까지
+    /// 꺼지기를 기다린다. 겹친다는 것은 둘 중 하나라도 쓰기로 붙인다는 것이다.
+    ///
+    /// VM이 살아 있는지는 기록의 제어 소켓(`state.control`)에 붙어 보아 안다: 실행기 규약에서 그 소켓은 VM이 사는
+    /// 동안 실행기가 연다(Firecracker는 VMM이, 가짜 실행기는 실행기가 듣는다). VM이 끝나면 파일이 없거나 붙지 않는다.
+    /// 붙기만 하고 아무것도 보내지 않으므로 게스트에는 끊긴 연결 하나다. Unix가 아니면 보지 않는다.
+    fn vm_left_running(&self, me: &SandboxId, m: &VolumeMount, wait: Duration) -> Option<String> {
+        let ids = records::ids(&self.inner.config.data_dir).ok()?;
+        let mut live: Vec<(String, PathBuf)> = ids
+            .into_iter()
+            .filter(|id| id != me)
+            .filter_map(|id| self.read_info(&id).ok().flatten())
+            .filter(|i| {
+                i.spec
+                    .volumes
+                    .iter()
+                    .any(|v| v.name == m.name && !(v.readonly && m.readonly))
+            })
+            .filter_map(|i| {
+                let control = records::recorded_control(&self.paths(&i.id))?;
+                Some((sandbox_label(&i), control))
+            })
+            .collect();
+        let deadline = Instant::now() + wait;
+        loop {
+            live.retain(|(_, control)| control_socket_alive(control));
+            if live.is_empty() {
+                return None;
+            }
+            if Instant::now() >= deadline {
+                return live.into_iter().next().map(|(label, _)| label);
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 
     /// 그 볼륨을 붙이고 실행 중인 다른 샌드박스(이름이나 짧은 ID). 시작하는 중이라 아직 실행 중으로 적히지 않았으면 없다.
@@ -678,6 +722,17 @@ fn to_proto_user(u: &UserSpec) -> sbx_guest_proto::User {
 }
 
 /// 이름(있으면)이나 짧은 ID. 오류 메시지에 쓴다.
+/// VM의 제어 소켓이 아직 연결을 받는지([`Runtime::vm_left_running`]).
+#[cfg(unix)]
+fn control_socket_alive(control: &Path) -> bool {
+    std::os::unix::net::UnixStream::connect(control).is_ok()
+}
+
+#[cfg(not(unix))]
+fn control_socket_alive(_control: &Path) -> bool {
+    false
+}
+
 fn sandbox_label(s: &SandboxInfo) -> String {
     s.spec
         .name

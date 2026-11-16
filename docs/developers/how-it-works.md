@@ -213,7 +213,11 @@ sandbox, so `rm` leaves it; `volume rm` refuses one that a sandbox record still 
 - **Who may attach it.** `start` takes `use.lock` before launching (`Runtime::hold_volumes`): exclusive for a
   read-write attach, shared for `:ro`. The lock is the OS file lock, held by the process that owns the VM (`sbx`, or
   `sbx-shim` for `-d`) for the VM's life, so it goes away with that process just like `owner.lock`. A second writer
-  finds it taken and is told which running sandbox names the volume. Two kernels never write one disk.
+  finds it taken and is told which running sandbox names the volume. The lock goes the moment the owner dies, but its
+  VM lives until the executor powers it off, so after taking the lock `start` also checks every other sandbox that
+  names the volume (and would conflict: one of the two writes) and is still recorded as running: if its
+  `control_socket` still accepts a connection, the VM is alive, and `start` waits for it up to 3 s
+  (`volume::VM_GONE_WAIT`), then refuses. Two kernels never write one disk.
 - **How the guest tells it from a layer.** The guest counts layers up to the first disk that isn't EROFS, so a
   volume must never look like one: the host refuses to attach a disk with the EROFS magic at byte 1024 (the guest can
   write anything to a volume, and a crafted one could otherwise pass for a layer of the next sandbox).

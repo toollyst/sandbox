@@ -6,6 +6,8 @@
 //! - `SBX_FAKE_DROP_LAYER_DISK=1`: 받은 층 디스크 가운데 마지막 것을 게스트에 주지 않는다(디스크를 빠뜨린 실행기).
 //! - `SBX_FAKE_MAX_DISKS=<수>`: `capabilities`가 알리는 `max_disks`(기본 [`crate::MAX_DISKS`]). 더 많이 받으면 거부한다.
 //! - `SBX_FAKE_PROTOCOL=<버전>`: 그 규약 버전 하나만 말한다(옛 실행기 흉내). 없으면 2부터 [`proto::VERSION`]까지.
+//! - `SBX_FAKE_LINGER_MS=<밀리초>`: 표준 입력이 닫힌 뒤(소유 프로세스가 죽은 뒤) VM을 끄기까지 그만큼 둔다. 그동안
+//!   제어 소켓도 그대로 듣는다(VM을 천천히 끄는 실행기 흉내). `Kill`에는 곧바로 끈다.
 
 use std::io::{self, BufReader, Write};
 use std::process::ExitCode;
@@ -131,7 +133,14 @@ fn run() -> ExitCode {
         let handle = handle.clone();
         thread::spawn(move || {
             // Kill이 오거나 표준 입력이 닫히면 끝낸다(규약 3, 5). 해석할 수 없는 줄도 끝낸다.
-            let _ = proto::read_line::<Request>(&mut input);
+            if let Ok(None) = proto::read_line::<Request>(&mut input) {
+                let linger = std::env::var("SBX_FAKE_LINGER_MS")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok());
+                if let Some(ms) = linger {
+                    thread::sleep(Duration::from_millis(ms));
+                }
+            }
             handle.stop(REASON_KILLED);
         });
     }

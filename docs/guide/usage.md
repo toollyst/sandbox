@@ -89,7 +89,8 @@ sbx volume rm pgdata                           # refused while a sandbox (even a
   `nocopy` (`-v NAME:/path:nocopy`, `volume-nocopy` in `--mount`) skips that.
 - A volume attached read-write is used by **one running sandbox at a time**: a second one is refused with the name of
   the sandbox that has it, until that one stops. Read-only attaches (`:ro`, enforced on the host too) can share a
-  volume while nobody writes it. A sandbox whose owner was killed releases its volumes with it.
+  volume while nobody writes it. A sandbox whose owner was killed releases its volumes once its VM has powered off;
+  until then (usually a moment) a new attach waits up to 3 seconds.
 - Writes reach the disk when the program inside asks for it (`fsync`), so a database that committed a transaction
   keeps it even if the VM is killed. Each volume uses one of the executor's disks: with the Firecracker executor's 8,
   a sandbox takes up to 6 volumes (fewer leaves more disks for the image's layers). An executor that speaks an

@@ -106,6 +106,13 @@ pub enum RuntimeError {
         /// 붙이고 있는 샌드박스(이름이나 짧은 ID, 알면).
         holder: Option<String>,
     },
+    /// 소유 프로세스는 죽었지만 그 VM이 아직 꺼지지 않아 볼륨을 붙이고 있음.
+    VolumeStillAttached {
+        /// 볼륨 이름.
+        name: String,
+        /// 그 VM의 샌드박스(이름이나 짧은 ID).
+        holder: String,
+    },
     /// 샌드박스 기록이 가리키는 볼륨은 지울 수 없음.
     VolumeReferenced {
         /// 볼륨 이름.
@@ -204,6 +211,11 @@ impl fmt::Display for RuntimeError {
                     "volume {name} is in use by another sandbox that is starting or running; stop it first"
                 ),
             },
+            RuntimeError::VolumeStillAttached { name, holder } => write!(
+                f,
+                "volume {name} is still attached to sandbox {holder}: its owner exited but its VM is still shutting \
+                 down; try again in a moment"
+            ),
             RuntimeError::VolumeReferenced { name, sandboxes } => write!(
                 f,
                 "volume {name} is in use by sandbox{} {}; remove {} first",
