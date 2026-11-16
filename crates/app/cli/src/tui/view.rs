@@ -248,6 +248,18 @@ fn no_executor(model: &Model) -> bool {
         .is_some_and(|x| x.executors.is_empty() && x.current.is_err())
 }
 
+/// 실행기가 없고, 첫 `run`이 기본 실행기를 받아 깐다(`executor current`가 그렇게 말한다: [`AUTO_INSTALL`]).
+///
+/// [`AUTO_INSTALL`]: crate::executors::AUTO_INSTALL
+fn auto_install(model: &Model) -> bool {
+    no_executor(model)
+        && model.executors.as_ref().is_some_and(|x| {
+            x.current
+                .as_ref()
+                .is_err_and(|e| e.contains(crate::executors::AUTO_INSTALL))
+        })
+}
+
 fn sandboxes(frame: &mut Frame, model: &mut Model, area: Rect, now_ns: u64) {
     // 표 위치는 꺼내 쓰고 돌려놓는다(줄은 모델을 빌린 채로 그린다).
     let mut cursor = *model.cursor(Tab::Sandboxes);
@@ -269,7 +281,15 @@ fn sandboxes(frame: &mut Frame, model: &mut Model, area: Rect, now_ns: u64) {
         // "Less than a second ago"가 다 들어간다.
         Constraint::Length(22),
     ];
-    let next = if no_executor(model) {
+    let next = if auto_install(model) {
+        hint(&[
+            "Press ",
+            ":",
+            " and type ",
+            "run -it alpine sh",
+            "; the first run installs the default executor",
+        ])
+    } else if no_executor(model) {
         hint(&[
             "Install an executor first: press ",
             "4",
@@ -483,13 +503,23 @@ fn executors(frame: &mut Frame, model: &mut Model, area: Rect) {
         filter: &model.filter,
         empty: Empty::new(
             "No executors installed",
-            hint(&[
-                "Press ",
-                "S",
-                " to search the repositories, or ",
-                "i",
-                " to install one",
-            ]),
+            if auto_install(model) {
+                hint(&[
+                    "The first run installs the default one. Press ",
+                    "S",
+                    " to search the repositories, or ",
+                    "i",
+                    " to install another",
+                ])
+            } else {
+                hint(&[
+                    "Press ",
+                    "S",
+                    " to search the repositories, or ",
+                    "i",
+                    " to install one",
+                ])
+            },
         ),
     };
     table(frame, list, &mut cursor, spec, |range| {

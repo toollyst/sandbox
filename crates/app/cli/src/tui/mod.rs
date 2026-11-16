@@ -108,8 +108,16 @@ fn event_loop(
                 Msg::Images(_) => lists.done(List::Images, sbx, tx),
                 Msg::Volumes(_) => lists.done(List::Volumes, sbx, tx),
                 Msg::Executors(_) => lists.done(List::Executors, sbx, tx),
-                // 실행기는 이벤트를 내지 않는다. `executor` 명령이 끝나면 다시 읽는다.
-                Msg::Done { args, .. } if args.first().is_some_and(|a| a == "executor") => {
+                // 실행기는 이벤트를 내지 않는다. `executor` 명령이 끝나면, 그리고 VM을 띄우는 명령이 끝나면(기본
+                // 실행기를 자동으로 받았을 수 있다) 다시 읽는다.
+                Msg::Done { args, .. }
+                    if args.first().is_some_and(|a| {
+                        matches!(
+                            a.as_str(),
+                            "executor" | "run" | "create" | "start" | "restart" | "build"
+                        )
+                    }) =>
+                {
                     lists.refresh(List::Executors, sbx, tx)
                 }
                 _ => {}

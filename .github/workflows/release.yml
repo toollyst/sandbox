@@ -10,8 +10,12 @@
 #    sbx는 VMM 런타임에 묶이지 않는다.
 # 3. sign: 각 묶음에 Sigstore 번들(`.sigstore.json`, keyless: 이 워크플로 release.yml의 GitHub OIDC 신원).
 # 4. publish (environment `release`: 승인자가 승인해야 돈다, 태그 v*만): GitHub Release에 1과 3의 파일을 올리고,
-#    `install.sh`와 `install.ps1`을 gh-pages 맨 위에 둔다.
+#    gh-pages의 sbx 릴리스 색인(releases.json)에 더한다.
 #    (저장소 설정의 Pages 소스를 gh-pages 브랜치로 해 두어야 https://toollyst.github.io/sandbox/ 로 보인다.)
+#
+# 설치 스크립트(install.sh, install.ps1)는 여기서 올리지 않는다. 스크립트는 자기 버전이 있고(installer.env), 깔 sbx와
+# 실행기 버전을 고정한다. 그 짝을 실제로 깔아 확인한 뒤 installer.yml이 손으로 올린다. 그래서 sbx 릴리스는 실행기
+# 릴리스에도 공식 저장소의 내용에도 묶이지 않는다.
 #
 # 실행기(wick VMM 묶음, firecracker 어댑터)는 여기서 만들지 않는다. 공식 실행기 저장소는 따로 있는
 # toollyst/sandbox-executors가 이 저장소의 한 커밋에서 어댑터를 만들어 올린다(의존은 그쪽 → 여기 한 방향).
@@ -48,6 +52,10 @@ jobs:
             [ "${GITHUB_REF_NAME}" = "v$want" ] || { echo "::error::tag ${GITHUB_REF_NAME} does not match the workspace version $want"; exit 1; }
             # 릴리스 노트는 CHANGELOG.md의 그 태그 절이다(Breaking·Security를 사람이 쓴다). 없으면 빌드 전에 멈춘다.
             .github/scripts/release-notes.sh "$GITHUB_REF_NAME" >/dev/null
+            # 알림만: 설치 스크립트가 이 릴리스를 깔게 하려면 installer.env의 SBX와 INSTALLER_VERSION을 올리고
+            # 릴리스 뒤에 installer.yml을 돌린다(docs/developers/testing-and-releasing.md).
+            pinned=$(sed -n 's/^SBX=//p' installer.env)
+            [ "$pinned" = "$want" ] || echo "::warning::installer.env pins sbx $pinned, not $want: the install scripts keep installing $pinned until a new installer version is published"
           else
             # 리허설: Unreleased가 있으면 그것, 태그 직전(절 이름을 바꾼 뒤)이면 이 버전의 절.
             .github/scripts/release-notes.sh Unreleased >/dev/null 2>&1 || .github/scripts/release-notes.sh "v$want" >/dev/null
@@ -191,10 +199,11 @@ jobs:
             artifacts/sbx-*/sbx-*.tar.gz artifacts/sbx-*/sbx-*.tar.gz.sha256 artifacts/sbx-*/sbx-*.tar.gz.sigstore.json \
             artifacts/sbx-*/sbx-*.zip artifacts/sbx-*/sbx-*.zip.sha256 artifacts/sbx-*/sbx-*.zip.sigstore.json \
             "artifacts/sbx-$VERSION.spdx.json" "$@"
-      # gh-pages: 설치 스크립트와 sbx 릴리스 색인(releases.json, 색인 키로 서명). 색인은 묶음이 서명됐을 때만 더한다.
+      # gh-pages: sbx 릴리스 색인(releases.json, 색인 키로 서명). 묶음이 서명됐을 때만 더한다. 설치 스크립트는
+      # installer.yml이 올린다.
       # 있던 releases.json은 색인 키로 서명된 것이어야 한다(xtask가 확인한다). 보안 고침 표시(`security`)는 이 태그의
       # CHANGELOG 절의 `### Security` 아래가 GHSA나 CVE를 말할 때다(강화만 적은 Security 절은 아니다).
-      - name: install.sh, install.ps1 and releases.json (gh-pages)
+      - name: releases.json (gh-pages)
         env:
           SBX_RELEASE_INDEX_KEY: ${{ secrets.SBX_RELEASE_INDEX_KEY }}
         run: |
@@ -204,7 +213,6 @@ jobs:
             git worktree add --detach pages
             (cd pages && git checkout --orphan gh-pages && git rm -rfq .)
           fi
-          cp install.sh install.ps1 pages/
           touch pages/.nojekyll
           set -- artifacts/sbx-*/sbx-*.tar.gz.minisig
           if [ -z "$SBX_RELEASE_INDEX_KEY" ] || [ ! -e "$1" ]; then

@@ -167,6 +167,9 @@ pub struct Index {
     pub serial: Option<u64>,
     /// 이 색인을 믿는 기한(schema 2, 선택. Unix 초). 서명된 색인에는 있어야 한다. 지나면 거부한다(동결).
     pub expires: Option<u64>,
+    /// 이 저장소가 권하는 기본 실행기 이름(schema 2, 선택). 실행기가 하나도 없을 때 sbx가 받아 까는 것을 저장소가
+    /// 정하게 한다(sbx 바이너리에는 실행기 이름이 없다). 고르는 규칙은 [`Index::default_executor`].
+    pub default: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -184,6 +187,8 @@ struct RawIndex {
     serial: Option<u64>,
     #[serde(default)]
     expires: Option<u64>,
+    #[serde(default)]
+    default: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -260,17 +265,44 @@ impl Index {
             (Kind::ExecutorV2, raw.adapters)
         };
         // schema 1에는 없다. 같은 이름의 필드가 있어도 모르는 필드로 본다.
-        let (serial, expires) = if schema.schema == 1 {
-            (None, None)
+        let (serial, expires, default) = if schema.schema == 1 {
+            (None, None, None)
         } else {
-            (raw.serial, raw.expires)
+            (raw.serial, raw.expires, raw.default)
         };
+        if let Some(d) = &default
+            && !d
+                .parse::<Spec>()
+                .is_ok_and(|s| s.name == *d && s.version.is_none())
+        {
+            return Err(format!(
+                "\"default\" must be an executor name without a version, not {d:?}"
+            ));
+        }
         Ok(Self {
             executors: entries(raw.executors, executor_kind, url)?,
             adapters: entries(adapters, Kind::Adapter, url)?,
             serial,
             expires,
+            default,
         })
+    }
+
+    /// 이 저장소의 기본 실행기 이름: 색인의 `default`, 없으면 실행기가 하나뿐일 때 그 이름. `default`가 색인에 없는
+    /// 실행기를 가리키거나, `default`가 없는데 실행기가 여럿이거나 없으면 오류다(어느 것을 받을지 짐작하지 않는다).
+    pub fn default_executor(&self) -> Result<&str, String> {
+        match (&self.default, self.executors.as_slice()) {
+            (Some(d), _) if self.executor(d).is_some() => Ok(d),
+            (Some(d), _) => Err(format!(
+                "its index names {d} as the default executor but does not list {d}"
+            )),
+            (None, [only]) => Ok(&only.name),
+            (None, []) => Err("its index lists no executors".into()),
+            (None, many) => Err(format!(
+                "its index lists {} executors and names no default (\"default\")",
+                many.len()
+            )),
+        }
     }
 
     /// 이름으로 찾는다.

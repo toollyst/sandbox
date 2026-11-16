@@ -10,8 +10,9 @@
 //!
 //! | detached 소유 | `--shim <실행 파일>`(`SBX_SHIM`, 기본 sbx 옆의 `sbx-shim`, 없으면 PATH): `sbx-shim` |
 //!
-//! 실행기 실행 파일은 VM을 띄우는 명령(`run`, `create`, `start`)에만 필요하다. 나머지는 떠 있는 VM에 규약대로 연결만 한다
-//! ([`sbx_executor_process::ConnectOnly`]).
+//! 실행기 실행 파일은 VM을 띄우는 명령(`run`, `create`, `start`, `build`)에만 필요하다. 나머지는 떠 있는 VM에 규약대로
+//! 연결만 한다([`sbx_executor_process::ConnectOnly`]). 그 명령들이 실행기를 고르지 못하면 기본 실행기를 받아 깐다
+//! (`Ctx::choose`, 규칙은 [`executors`]의 "기본 실행기 자동 설치").
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -354,8 +355,10 @@ pub(crate) struct Ctx {
     cache_dir: PathBuf,
     socket_dir: PathBuf,
     guest_init: Option<PathBuf>,
-    /// `--executor`로 준 것.
+    /// `--executor`로 준 것. [`executors::NONE`]이면 `None`이고 `executor_none`이 참이다.
     executor: Option<PathBuf>,
+    /// `--executor none`: 고르지 않고, 기본 실행기를 자동으로 받지도 않는다.
+    executor_none: bool,
     shim: Option<PathBuf>,
     format: Format,
     /// 고른 실행기마다 실행 코어를 한 번만 만든다(실행기 `capabilities`와 게스트 init 확인을 되풀이하지 않는다).
@@ -381,6 +384,10 @@ impl Ctx {
         // 더 새 sbx가 바꾼 배치는 짐작하지 않고 거부한다(COMPATIBILITY.md).
         crate::layout::check(&data_dir, crate::layout::Dir::Data).map_err(msg)?;
         crate::layout::check(&cache_dir, crate::layout::Dir::Cache).map_err(msg)?;
+        let executor_none = cli
+            .executor
+            .as_deref()
+            .is_some_and(|e| e.as_os_str() == executors::NONE);
         Ok(Self {
             socket_dir: cli
                 .socket_dir
@@ -390,7 +397,8 @@ impl Ctx {
             guest_init: cli.guest_init.clone(),
             data_dir,
             cache_dir,
-            executor: cli.executor.clone(),
+            executor: cli.executor.clone().filter(|_| !executor_none),
+            executor_none,
             shim: cli.shim.clone(),
             format: cli.format,
             launchers: std::sync::Mutex::new(Vec::new()),
@@ -613,21 +621,54 @@ impl Ctx {
             .labels
             .get(choose::PIN_LABEL)
             .cloned();
-        self.choose(pinned.as_deref())
+        self.choose(pinned.as_deref()).await
     }
 
-    /// 쓸 실행기. 순서는 [`crate::choose`]에 있다. `pinned`는 샌드박스에 고정된 것.
-    pub(crate) fn choose(&self, pinned: Option<&str>) -> AppResult<choose::Chosen> {
-        self.try_choose(pinned)?.ok_or_else(|| {
-            // 무엇을 하면 되는지 알린다. 실행기가 없는 OS(지금은 Windows)에서는 설치할 것도 없다.
-            msg(match std::env::consts::OS {
-                "linux" | "macos" => choose::NO_EXECUTOR.to_owned(),
-                os => format!(
-                    "sandboxes cannot run on {os} yet: there is no executor for this platform \
-                     (pull, prepare and images work)"
-                ),
-            })
-        })
+    /// VM을 띄울 때 쓸 실행기. 순서는 [`crate::choose`]에 있다. `pinned`는 샌드박스에 고정된 것. 고를 것이 없으면
+    /// 공식 저장소의 기본 실행기를 받아 깔고 그것을 쓴다(규칙은 [`executors`]의 "기본 실행기 자동 설치").
+    pub(crate) async fn choose(&self, pinned: Option<&str>) -> AppResult<choose::Chosen> {
+        if let Some(c) = self.try_choose(pinned)? {
+            return Ok(c);
+        }
+        if let Some(off) = self.auto_install_off() {
+            return Err(msg(self.nothing_chosen(Some(&off))));
+        }
+        // 두 명령이 함께 처음 돌면 하나씩: 뒤의 것은 앞의 것이 설치한 것을 쓴다.
+        let lock = executors::auto_install_lock(&self.cache_dir).await?;
+        if let Some(c) = self.try_choose(pinned)? {
+            return Ok(c);
+        }
+        executors::install_default(&self.executors_ctx(&[])).await?;
+        drop(lock);
+        self.try_choose(pinned)?
+            .ok_or_else(|| msg(self.nothing_chosen(self.auto_install_off().as_deref())))
+    }
+
+    /// 기본 실행기를 자동으로 받지 않는 까닭([`executors::auto_install_off`]).
+    fn auto_install_off(&self) -> Option<String> {
+        executors::auto_install_off(&self.data_dir, self.executor_none)
+    }
+
+    /// 고를 실행기가 없을 때 무엇을 하면 되는지. 실행기가 없는 OS(지금은 Windows)에서는 설치할 것도 없다.
+    fn nothing_chosen(&self, off: Option<&str>) -> String {
+        match std::env::consts::OS {
+            "linux" | "macos" => executors::nothing_chosen(&self.data_dir, off),
+            os => format!(
+                "sandboxes cannot run on {os} yet: there is no executor for this platform \
+                 (pull, prepare and images work)"
+            ),
+        }
+    }
+
+    fn executors_ctx<'a>(&'a self, pins: &'a [(String, String)]) -> executors::Ctx<'a> {
+        executors::Ctx {
+            data_dir: &self.data_dir,
+            cache_dir: &self.cache_dir,
+            json: self.json(),
+            flag: self.executor.as_deref(),
+            pins,
+            auto_off: self.auto_install_off(),
+        }
     }
 
     /// [`Ctx::choose`]와 같고, 아무것도 없으면 `None`.
@@ -659,17 +700,7 @@ impl Ctx {
         } else {
             Vec::new()
         };
-        executors::run(
-            &executors::Ctx {
-                data_dir: &self.data_dir,
-                cache_dir: &self.cache_dir,
-                json: self.json(),
-                flag: self.executor.as_deref(),
-                pins: &pins,
-            },
-            c,
-        )
-        .await
+        executors::run(&self.executors_ctx(&pins), c).await
     }
 
     fn lookup(&self, m: &Manager, name: &str) -> AppResult<Option<ImageMatch>> {
@@ -753,7 +784,7 @@ impl Ctx {
                     sbx_executor::ExecutorError::Launch(m) => m,
                     e => e.to_string(),
                 }),
-            Ok(None) => Err(choose::NO_EXECUTOR.to_owned()),
+            Ok(None) => Err(self.nothing_chosen(self.auto_install_off().as_deref())),
             Err(e) => Err(e.clone()),
         };
         let chosen = chosen.ok().flatten();
@@ -1066,7 +1097,7 @@ impl Ctx {
         on_pull: &(dyn Fn(sbx_manage::PullProgress) + Sync),
     ) -> AppResult<SandboxId> {
         // 실행기를 먼저 고른다. 없으면 이미지를 받기 전에 실패한다.
-        let chosen = self.choose(None)?;
+        let chosen = self.choose(None).await?;
         let network = behavior::network_policy(&a.network, &a.allow)?;
         for w in behavior::proxy_only_warnings(&network) {
             eprintln!("warning: {w}");

@@ -53,6 +53,9 @@ The MCP server adds no policy of its own. Tool arguments go through the same par
 - Images are pulled with your registry credentials (see [Images](usage.md#images)), so an agent can run private
   images you can pull. It never sees the credentials.
 - `read_file` reads into memory and never follows a link on the host.
+- With no executor installed, the first `run` or `create` installs the default executor from the signed official
+  repository, as the CLI does ([install guide](install.md#the-executor)); the line saying so goes to the server's
+  stderr, never into the protocol. Start the server with `SBX_NO_AUTO_EXECUTOR=1` to have those calls fail instead.
 - Agents get at most 8 sandboxes at once per MCP server, each with at most 4 vCPUs, 4 GiB of memory and a 16 GiB
   writable disk (`disk`, 1 GiB unless asked). MCP sandboxes that other servers on your data directory already made
   count too, but two servers creating at the same moment can each take the last place. Change these with

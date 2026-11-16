@@ -3,7 +3,13 @@
 `sbx` doesn't hard-code a VMM. It hands each sandbox to an **executor**: a program that speaks the small, documented
 [executor protocol](../../crates/spec/executor-proto/src/lib.rs) and starts the VM. Executors come from
 [repositories](#repositories) or from a directory of your own, and install and switch the way Node or Go versions do
-with nvm or gvm. `sbx` alone has none; the first one you install becomes the default.
+with nvm or gvm. The first one installed becomes the default.
+
+`sbx` comes without one, but you rarely install the first by hand: the installer installs the **default executor**
+from the official repository, and so does the first `run`, `create`, `start` or `build` when there is none
+([install guide](install.md#the-executor)). Which executor that is, the official repository's index says (its
+`default`); `sbx` itself names none. Today it is `wick`. It is a default, not a requirement: install any other
+executor, make it the default with `sbx executor use`, and `sbx` never fetches one again.
 
 - [Kinds of executor](#kinds-of-executor)
 - [Install and switch versions](#install-and-switch-versions)
@@ -46,7 +52,9 @@ sbx executor prune -n                      # what prune would remove: old versio
 ```
 
 A new sandbox uses the first of: `--executor` (an installed `NAME[@VERSION]` or a path to a program),
-`.sbx-executor` in the current folder or the nearest one above it, the default, and `sbx-executor` on `PATH`. A
+`.sbx-executor` in the current folder or the nearest one above it, the default, and `sbx-executor` on `PATH`. When
+none applies and no executor is installed at all, the default executor is installed first (`--executor none` or
+`SBX_NO_AUTO_EXECUTOR=1` turns that off). A
 sandbox remembers the installed executor it was created with, so changing the default never changes what `start` or
 `restart` boots. The rules are in [`choose.rs`](../../crates/app/cli/src/choose.rs).
 
@@ -136,6 +144,10 @@ cargo xtask repo-sign --repo ./executors --key ./mine.key     # again after ever
 cargo xtask repo-yank --repo ./executors --schema 2 --name myvmm --version 0.1.0 \
     --advisory "CVE-2026-0001: upgrade to 0.1.1"                # then repo-sign again; --undo takes it back
 ```
+
+`--default` on `repo-add` names that executor as the repository's default (the `default` field of the index):
+what `sbx` installs from the official repository when it has no executor. Without it, a repository with a single
+executor has that one as its default.
 
 Then upload the directory as is. The official repository is built exactly this way; its workflow in
 [toollyst/sandbox-executors](https://github.com/toollyst/sandbox-executors) is a complete example.

@@ -3,13 +3,15 @@
 //! ```text
 //! cargo xtask repo-add --repo <디렉터리> --bundle <디렉터리> --name <이름> --version <버전>
 //!     [--os <os>] [--capabilities <파일>] [--url <접두사>] [--description <글>]
-//!     [--schema 1|2] [--adapter-package | --vmm-for <어댑터> --arch <arch>]
+//!     [--schema 1|2] [--adapter-package | --vmm-for <어댑터> --arch <arch>] [--default]
 //! ```
 //!
 //! - `--schema 2`: `index.json` 대신 `v2/index.json`에 적는다(schema 2). 기본은 1.
 //! - `--adapter-package`: 실행기가 아니라 어댑터로 `adapters`에 더한다(schema 2). 묶음은 자체 완결 묶음과 같다.
 //! - `--vmm-for <어댑터>`: VMM 묶음으로 더한다(schema 2). 실행기 규약을 말하지 않으므로 `capabilities`를 돌리지
 //!   않고 `--arch`(OCI 이름: `amd64`, `arm64`)를 받는다. 색인의 그 버전에는 `protocol` 대신 `adapter`가 적힌다.
+//! - `--default`: 이 실행기를 저장소의 기본 실행기로 적는다(색인 맨 위의 `default`, schema 2, 어댑터는 아니다).
+//!   실행기가 하나도 없는 sbx가 이 저장소(공식 저장소)에서 받아 까는 것이 이것이다.
 //!
 //! - 묶음의 `sbx-executor capabilities`를 돌려 규약 버전(`protocol`)과 아키텍처(`architecture`)를 읽는다.
 //!   여기서 돌릴 수 없는 묶음(다른 OS, 아키텍처)은 그 호스트에서 저장해 둔 출력을 `--capabilities`로 준다.
@@ -53,6 +55,7 @@ struct Options {
     description: Option<String>,
     schema: u32,
     kind: Kind,
+    default: bool,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -74,6 +77,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         (None, None, None, None, None, None);
     let (mut capabilities, mut url) = (None, None);
     let (mut schema, mut adapter_package, mut vmm_for, mut arch) = (1, false, None, None);
+    let mut default = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut v = || it.next().cloned().ok_or(format!("{a} needs a value"));
@@ -96,6 +100,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--adapter-package" => adapter_package = true,
             "--vmm-for" => vmm_for = Some(v()?),
             "--arch" => arch = Some(v()?),
+            "--default" => default = true,
             other => return Err(format!("unknown argument {other}")),
         }
     }
@@ -135,6 +140,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
     if kind != Kind::Executor && schema != 2 {
         return Err("adapters and VMM packages need --schema 2".into());
     }
+    if default && (schema != 2 || kind == Kind::Adapter) {
+        return Err("--default is for an executor or VMM package with --schema 2".into());
+    }
     if matches!(kind, Kind::Vmm { .. }) && capabilities.is_some() {
         return Err("a VMM package has no capabilities".into());
     }
@@ -154,6 +162,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         description,
         schema,
         kind,
+        default,
     })
 }
 
@@ -318,6 +327,9 @@ pub fn add(args: &[String]) -> Result<PathBuf, String> {
         "size": bytes.len(),
     }));
     ver["artifacts"] = Value::Array(artifacts);
+    if o.default {
+        index["default"] = json!(o.name);
+    }
     std::fs::create_dir_all(index_path.parent().expect("has a parent"))
         .map_err(|e| e.to_string())?;
     let tmp = index_path.with_extension("json.tmp");
@@ -437,6 +449,9 @@ mod tests {
             a
         };
         assert!(parse(&args("fake", "1.0", &[])).is_ok());
+        // 기본 실행기는 실행기나 VMM 묶음만(어댑터는 아니다).
+        assert!(parse(&args("fake", "1.0", &["--default"])).unwrap().default);
+        assert!(parse(&args("fc", "1.0", &["--adapter-package", "--default"])).is_err());
         assert!(
             parse(&args(
                 "wick",

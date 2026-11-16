@@ -14,6 +14,8 @@
 //! - VMM 묶음(어댑터가 있는 설치)은 그 어댑터(설치한 것 중 가장 높은 버전)를 띄우고, 묶음 디렉터리를
 //!   `sbx-executor-proto`의 `VMM_DIR_ENV`로 넘긴다.
 //! - 고른 것이 설치돼 있지 않으면 무엇을 설치하면 되는지 알린다. 다른 것으로 넘어가지 않는다.
+//! - 아무것도 고르지 못하면 `None`이다. VM을 띄우는 명령은 그때 기본 실행기를 받아 깔 수 있다(그 규칙은
+//!   [`crate::executors`]의 "기본 실행기 자동 설치"). 여기서는 받지 않는다(고르기는 입출력이 없다).
 
 use std::ffi::OsString;
 use std::fmt;
@@ -27,7 +29,8 @@ pub const PIN_LABEL: &str = "io.github.toollyst.sandbox.executor";
 /// 폴더별 실행기 파일.
 pub const VERSION_FILE: &str = ".sbx-executor";
 
-/// 실행기가 하나도 없을 때의 안내. 특정 실행기나 저장소를 권하지 않는다(sbx는 어느 VMM에도 묶이지 않는다).
+/// 실행기가 하나도 없고 자동으로 받지도 않을 때의 안내. 특정 실행기나 저장소를 권하지 않는다(sbx는 어느 VMM에도
+/// 묶이지 않는다). 자동 설치가 될 때의 안내는 [`crate::executors::nothing_chosen`].
 pub const NO_EXECUTOR: &str = "no executor is installed; find one with `sbx executor search` and install it with \
      `sbx executor install NAME`, or install your own with `sbx executor install --from DIR NAME@VERSION`";
 

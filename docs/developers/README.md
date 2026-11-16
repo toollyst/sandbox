@@ -43,9 +43,10 @@ docs/
   plan/              design notes (Korean)
   roadmap.md         what is done and what is next (Korean)
 assets/demo.svg      the README recording, made by cargo xtask demo
-install.sh           the macOS and Linux installer served from GitHub Pages
+install.sh           the macOS and Linux installer served from GitHub Pages (each version also as install-<version>.sh)
 install.ps1          the Windows installer served from GitHub Pages
-.github/workflows/   ci.yml and fuzz.yml (every push), release.yml (tags v*). The official executor repository is published from toollyst/sandbox-executors
+installer.env        the installers' own version and the sbx and executor versions they install (cargo xtask installer)
+.github/workflows/   ci.yml and fuzz.yml (every push), release.yml (tags v*), installer.yml (publishes an installer version, by hand). The official executor repository is published from toollyst/sandbox-executors
 .github/scripts/     shell steps the workflows share (upstream VMM package, kernel notice, local-repository smoke, installer tests)
 ```
 

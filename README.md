@@ -22,8 +22,7 @@
 > against before you trust it with anything that matters.
 
 ```sh
-curl -fsSL https://toollyst.github.io/sandbox/install.sh | sh
-sbx executor install wick          # a VMM to run sandboxes with; any executor that speaks the open protocol works
+curl -fsSL https://toollyst.github.io/sandbox/install.sh | sh     # sbx and its default executor
 sbx run --rm -it python:3.12-alpine python
 ```
 
@@ -82,14 +81,18 @@ finish in **0.50 s**. Try it on your machine ([source](xtask/src/bench.rs)).
 ## Install
 
 > [!NOTE]
-> The official executor repository has nothing published yet, so `sbx executor install wick` reports
-> `no executor named "wick" in any repository` for now. You can install an executor from a directory meanwhile
+> The official executor repository has nothing published yet, so for now neither the installer nor the first
+> `sbx run` can fetch an executor; `sbx` says so. You can install one from a directory meanwhile
 > ([install guide](docs/guide/install.md#build-from-source)), or add another repository.
 
-The installer puts `sbx` and `sbx-shim` in your OS's place for user programs (`~/.local/bin`, or
-`%LOCALAPPDATA%\Programs\sbx` on Windows), never in the directory you run it from, after checking their SHA-256
-(and their Sigstore signature when `cosign` is installed). Then you pick an executor. Later, `sbx upgrade` moves to
-the newest signed release, and `sbx` tells you when one is out (`SBX_NO_UPDATE_CHECK=1` turns that off).
+One command and `sbx run` works. The installer puts `sbx` and `sbx-shim` in your OS's place for user programs
+(`~/.local/bin`, or `%LOCALAPPDATA%\Programs\sbx` on Windows) after checking their SHA-256 (and their Sigstore
+signature when `cosign` is installed), then installs the default executor from the signed official repository. Each
+installer version pins the `sbx` and executor versions it installs (`sh -s -- --version` shows them). Installed
+another way? The first `run`, `create`, `start` or `build` fetches the newest default executor itself, and says so.
+The default is only a default: any executor that speaks the open protocol can take its place
+([executors](docs/guide/executors.md)). Later, `sbx upgrade` moves `sbx` to the newest signed release, and `sbx`
+tells you when one is out (`SBX_NO_UPDATE_CHECK=1` turns that off).
 
 ### macOS
 
@@ -97,7 +100,6 @@ macOS 15 or later on Apple Silicon. No setup needed.
 
 ```sh
 curl -fsSL https://toollyst.github.io/sandbox/install.sh | sh
-sbx executor install wick        # Firecracker for Hypervisor.framework, with its adapter and guest kernel
 sbx info                         # check it worked
 ```
 
@@ -108,7 +110,6 @@ x86_64 or aarch64 with KVM (bare metal, or a VM with nested virtualization), and
 ```sh
 sudo usermod -aG kvm "$USER"     # if `ls -l /dev/kvm` shows you can't use it; then log out and back in
 curl -fsSL https://toollyst.github.io/sandbox/install.sh | sh
-sbx executor install wick        # Firecracker for KVM, with its adapter and guest kernel
 sbx info                         # says what's missing if /dev/kvm isn't usable
 ```
 
@@ -126,8 +127,8 @@ sbx info
 `sbx` on Windows can `pull`, `prepare` and list images, but there is no tested executor for Windows yet, so it can't
 run sandboxes.
 
-Installer options (`SBX_VERSION`, `SBX_INSTALL_DIR`, `SBX_VERIFY`, the same for both installers), building from source, upgrading and
-uninstalling are in the [install guide](docs/guide/install.md).
+Installer options (`SBX_VERSION`, `SBX_INSTALL_DIR`, `SBX_VERIFY`, `SBX_EXECUTOR=none`), installer versions, building
+from source, upgrading and uninstalling are in the [install guide](docs/guide/install.md).
 
 ## Use it
 

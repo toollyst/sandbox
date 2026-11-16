@@ -46,7 +46,8 @@ pub struct Cli {
     #[arg(long, global = true, env = "SBX_GUEST_INIT", hide_env_values = true)]
     pub guest_init: Option<PathBuf>,
     /// Executor to use: an installed `NAME[@VERSION]`, or a program that speaks the executor protocol (a path, or a
-    /// name on PATH). Without it, `sbx executor current` shows which one is used and why.
+    /// name on PATH). `none` chooses as if it were not given and never installs the default executor. Without it,
+    /// `sbx executor current` shows which one is used and why.
     //
     // 문단을 하나로 둔다: 긴 도움말이 하나라도 있으면 clap이 모든 명령의 `--help`를 두 줄씩 띄워 찍는다.
     // 고르는 순서(샌드박스의 것, `.sbx-executor`, 기본, PATH)는 `executor current`와 사용자 안내서에 있다.
@@ -495,7 +496,9 @@ pub enum ExecutorCommand {
     ///
     /// The first that applies: --executor (or SBX_EXECUTOR), the executor a sandbox was created with (for start and
     /// restart), `.sbx-executor` in this folder or the nearest one above, the default (`sbx executor use`), then
-    /// `sbx-executor` on PATH.
+    /// `sbx-executor` on PATH. When no executor is installed at all, run, create, start and build install the
+    /// default executor from the official repository first (SBX_NO_AUTO_EXECUTOR=1 or --executor none turns that
+    /// off).
     Current,
     /// Print the program that runs an installed executor (for a VMM package, its adapter)
     Which {
