@@ -339,3 +339,38 @@ fn volumes_tab_shows_size_disk_use_and_users() {
     }
     assert!(s.contains("D rm") && s.contains("P prune"), "{s}");
 }
+
+#[test]
+fn executors_in_use_show_their_sandboxes_and_rm_shows_the_refusal() {
+    let mut m = loaded();
+    m.tab = Tab::Executors;
+    let mut x = executors();
+    x.executors[1].running = vec!["web".into()];
+    x.adapters[0].running = vec!["web".into()];
+    m.apply(Msg::Executors(Ok(x)));
+    let s = render(&mut m, 160, 20);
+    assert!(s.contains("RUNNING"), "{s}");
+    let wick = s.lines().find(|l| l.contains("/d/executors/wick")).unwrap();
+    assert!(wick.contains("web"), "{wick}");
+    // D는 묻고 `executor rm`을 부른다. 거부는 CLI가 하고, 그 까닭이 상태 줄에 나온다.
+    m.key(KeyEvent::from(KeyCode::Char('j')));
+    m.key(KeyEvent::from(KeyCode::Char('D')));
+    m.key(KeyEvent::from(KeyCode::Char('y')));
+    let args: Vec<String> = ["executor", "rm", "wick@1.18.0"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    m.apply(Msg::Done {
+        args,
+        ok: false,
+        message: "executor wick@1.18.0 is in use by running sandbox web; stop it first, or use -f"
+            .into(),
+    });
+    let s = render(&mut m, 160, 20);
+    assert!(
+        s.contains(
+            "✗ sbx executor rm wick@1.18.0: executor wick@1.18.0 is in use by running sandbox web"
+        ),
+        "{s}"
+    );
+}

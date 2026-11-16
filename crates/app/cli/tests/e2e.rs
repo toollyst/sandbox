@@ -177,6 +177,7 @@ mod unix {
             "vmm_packages_pins_and_version_files",
             vmm_packages_pins_and_version_files,
         ),
+        ("executors_in_use_are_kept", executors_in_use_are_kept),
         (
             "signed_repositories_and_names_that_stay_put",
             signed_repositories_and_names_that_stay_put,
@@ -6533,5 +6534,140 @@ CMD [\"cat\", \"/app/out.txt\"]
         assert_eq!(v.labels["io.github.toollyst.sandbox.owner"], "mcp");
         let o = e.sbx(&["rm", "-f", "userdb", "mdb"]);
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    }
+
+    /// 실행 중인 샌드박스가 쓰는 실행기·어댑터는 `executor prune`이 남기고(알린다) `rm`이 거부한다(그 샌드박스를 댄다).
+    /// 새 버전을 깔고 `executor use`로 바꿔도(설치 스크립트가 하는 길) 옛 버전으로 도는 VM은 그대로다. `rm -f`는 경고하고
+    /// 지우며, 도는 VM은 멈추기 전까지 계속 쓸 수 있다.
+    fn executors_in_use_are_kept() {
+        let e = Env::new();
+        let me = std::env::current_exe().unwrap();
+        let me = me.to_str().unwrap();
+        let without = |args: &[&str]| {
+            let mut c = e.cmd(args);
+            c.env_remove("SBX_EXECUTOR");
+            c.output().unwrap()
+        };
+        let ok = |o: &Output| assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        ok(&without(&["executor", "install", "--from", me, "fake@1.0"]));
+        let o = without(&["run", "-d", "--name", "old", IMAGE, "sleep", "60"]);
+        ok(&o);
+        wait_named(&e, "old");
+        // 새 버전으로 바꾼다. 옛 버전으로 도는 샌드박스는 그대로 돈다.
+        ok(&without(&["executor", "install", "--from", me, "fake@2.0"]));
+        ok(&without(&["executor", "use", "fake@2.0"]));
+        let o = without(&["executor", "ls", "--format", "json"]);
+        ok(&o);
+        let list: Vec<sbx_cli::output::InstalledExecutor> =
+            serde_json::from_slice(&o.stdout).unwrap();
+        let running: Vec<(&str, Vec<String>)> = list
+            .iter()
+            .map(|i| (i.version.as_str(), i.running.clone()))
+            .collect();
+        assert_eq!(running, [("1.0", vec!["old".to_owned()]), ("2.0", vec![])]);
+        // prune은 남긴다(샌드박스가 고정한 버전이기도 하다).
+        let o = without(&["executor", "prune"]);
+        ok(&o);
+        assert!(!text(&o.stdout).contains("fake@1.0"), "{}", text(&o.stdout));
+        // rm은 거부한다.
+        let o = without(&["executor", "rm", "fake@1.0"]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("executor fake@1.0 is in use by running sandbox old"),
+            "{}",
+            text(&o.stderr)
+        );
+        ok(&without(&["exec", "old", "true"]));
+        // -f는 경고하고 지운다. 도는 VM은 멈추기 전까지 그대로 쓴다.
+        let o = without(&["executor", "rm", "-f", "fake@1.0"]);
+        ok(&o);
+        assert!(
+            text(&o.stderr).contains("can't be started with it again"),
+            "{}",
+            text(&o.stderr)
+        );
+        let o = without(&["exec", "old", "echo", "still"]);
+        ok(&o);
+        assert_eq!(text(&o.stdout), "still\n");
+        ok(&without(&["stop", "-t", "0", "old"]));
+        // 그 버전으로는 다시 시작하지 못한다(고정한 실행기가 없다).
+        let o = without(&["start", "old"]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(text(&o.stderr).contains("fake@1.0"), "{}", text(&o.stderr));
+        ok(&without(&["rm", "-f", "old"]));
+        ok(&without(&["executor", "rm", "fake@2.0"]));
+
+        // 어댑터: 실행 중인 샌드박스가 쓰는 어댑터 버전은 다른 버전이 있어도 지우지 않는다.
+        let vmm = e.path("wick-src");
+        std::fs::create_dir_all(&vmm).unwrap();
+        std::fs::write(vmm.join("vmm"), "x").unwrap();
+        let vmm = vmm.to_str().unwrap();
+        ok(&without(&[
+            "executor",
+            "adapter",
+            "install",
+            "--from",
+            me,
+            "fakead@0.1",
+        ]));
+        ok(&without(&[
+            "executor",
+            "install",
+            "--from",
+            vmm,
+            "--adapter",
+            "fakead",
+            "wick@1.0",
+        ]));
+        ok(&without(&[
+            "run", "-d", "--name", "vm", IMAGE, "sleep", "60",
+        ]));
+        wait_named(&e, "vm");
+        ok(&without(&[
+            "executor",
+            "adapter",
+            "install",
+            "--from",
+            me,
+            "fakead@0.2",
+        ]));
+        let o = without(&["executor", "adapter", "ls", "--format", "json"]);
+        ok(&o);
+        let list: Vec<sbx_cli::output::InstalledAdapter> =
+            serde_json::from_slice(&o.stdout).unwrap();
+        let running: Vec<(&str, Vec<String>)> = list
+            .iter()
+            .map(|i| (i.version.as_str(), i.running.clone()))
+            .collect();
+        assert_eq!(running, [("0.1", vec!["vm".to_owned()]), ("0.2", vec![])]);
+        let o = without(&["executor", "adapter", "rm", "fakead@0.1"]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("adapter fakead@0.1 is in use by running sandbox vm"),
+            "{}",
+            text(&o.stderr)
+        );
+        let o = without(&["executor", "prune"]);
+        ok(&o);
+        assert!(
+            text(&o.stderr).contains("kept adapter fakead@0.1: in use by running sandbox vm"),
+            "{}",
+            text(&o.stderr)
+        );
+        // 실행기 쪽에서도 VMM 묶음은 쓰는 중이다.
+        let o = without(&["executor", "rm", "wick@1.0"]);
+        assert!(
+            text(&o.stderr).contains("in use by running sandbox vm"),
+            "{}",
+            text(&o.stderr)
+        );
+        ok(&without(&["rm", "-f", "vm"]));
+        let o = without(&["executor", "prune"]);
+        ok(&o);
+        assert!(
+            text(&o.stdout).contains("adapter fakead@0.1"),
+            "{}",
+            text(&o.stdout)
+        );
     }
 }

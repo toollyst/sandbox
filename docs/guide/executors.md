@@ -47,8 +47,8 @@ echo wick@1.18.0 > .sbx-executor           # this folder and everything below it
 sbx executor current                       # what a new sandbox would use here, and why
 sbx executor which wick                    # the program that runs it (for a VMM package, its adapter)
 sbx run --executor wick@1.18.0+wick.2 --rm alpine true   # just this once (or SBX_EXECUTOR)
-sbx executor rm wick@1.18.0+wick.1         # refused while a sandbox is pinned to it, unless -f
-sbx executor prune -n                      # what prune would remove: old versions nothing uses
+sbx executor rm wick@1.18.0+wick.1         # refused while a sandbox is pinned to it or runs on it, unless -f
+sbx executor prune -n                      # what prune would remove: old versions nothing uses or runs on
 ```
 
 A new sandbox uses the first of: `--executor` (an installed `NAME[@VERSION]` or a path to a program),
@@ -57,6 +57,13 @@ none applies and no executor is installed at all, the default executor is instal
 `SBX_NO_AUTO_EXECUTOR=1` turns that off). A
 sandbox remembers the installed executor it was created with, so changing the default never changes what `start` or
 `restart` boots. The rules are in [`choose.rs`](../../crates/app/cli/src/choose.rs).
+
+Installing a newer version and switching to it (`executor use`, or the installer doing so) leaves the older one in
+place, so sandboxes running on it keep running. `executor ls` and `executor adapter ls` show which running
+sandboxes use each version (`running` in JSON, a column in `sbx tui`). `executor rm` and `executor adapter rm`
+refuse a version a running sandbox uses and name the sandbox, and `executor prune` keeps it and says so. With `-f`
+the files go anyway: on macOS and Linux the running VM is not affected (stopping it, `exec` and `cp` don't need the
+executor's files), but it can't be started with that version again.
 
 A version has a **main version** and a **patch**, like Python's 3.12 and 3.12.4: the main version is everything
 before the first `-` or `+`. Name the main version and you get its newest patch; name the full version to pin one

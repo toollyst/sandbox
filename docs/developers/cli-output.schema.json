@@ -766,6 +766,14 @@
           "description": "Path of its executable.",
           "type": "string"
         },
+        "running": {
+          "default": [],
+          "description": "Running sandboxes started with it (name or short ID). `executor adapter rm` refuses it while there are any,\nand `executor prune` keeps it.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "used_by": {
           "description": "Installed VMM packages (`name@version`) that use an adapter of this name.",
           "items": {
@@ -827,6 +835,14 @@
         "path": {
           "description": "Path of its executable; for a VMM package, its directory.",
           "type": "string"
+        },
+        "running": {
+          "default": [],
+          "description": "Running sandboxes started with it (name or short ID). `executor rm` refuses it while there are any, and\n`executor prune` keeps it.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "version": {
           "description": "Version.",

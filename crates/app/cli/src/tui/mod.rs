@@ -98,9 +98,11 @@ fn event_loop(
         }
         while let Ok(msg) = rx.try_recv() {
             match &msg {
+                // 샌드박스가 바뀌면 볼륨과 실행기를 쓰는 샌드박스도 바뀐다.
                 Msg::Event(e) if e.kind == "sandbox" => {
                     lists.refresh(List::Sandboxes, sbx, tx);
                     lists.refresh(List::Volumes, sbx, tx);
+                    lists.refresh(List::Executors, sbx, tx);
                 }
                 Msg::Event(e) if e.kind == "image" => lists.refresh(List::Images, sbx, tx),
                 Msg::Event(e) if e.kind == "volume" => lists.refresh(List::Volumes, sbx, tx),

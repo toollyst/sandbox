@@ -470,7 +470,7 @@ fn executors(frame: &mut Frame, model: &mut Model, area: Rect) {
     let mut cursor = *model.cursor(Tab::Executors);
     let rows = model.visible_executor_rows();
     // 칸마다 내용만큼(넘치면 자른다). 남는 자리는 경로 칸이 갖는다.
-    let cells: Vec<[String; 7]> = rows
+    let cells: Vec<[String; 8]> = rows
         .iter()
         .map(|r| executor_cells(r, current.as_deref()))
         .collect();
@@ -484,6 +484,7 @@ fn executors(frame: &mut Frame, model: &mut Model, area: Rect) {
         Constraint::Length(w(3, 7, 24)),
         Constraint::Length(w(4, 17, 32)),
         Constraint::Length(w(5, 4, 16)),
+        Constraint::Length(w(6, 7, 24)),
         Constraint::Fill(1),
     ];
     let spec = Spec {
@@ -497,6 +498,7 @@ fn executors(frame: &mut Frame, model: &mut Model, area: Rect) {
             "VERSION",
             "ADAPTER / USED BY",
             "FROM",
+            "RUNNING",
             "PATH",
         ],
         widths: &widths,
@@ -531,9 +533,11 @@ fn executors(frame: &mut Frame, model: &mut Model, area: Rect) {
     *model.cursor(Tab::Executors) = cursor;
 }
 
-/// 실행기 탭 한 줄의 칸: 표시(`>` 지금 쓸 것, `*` 기본), 종류, 이름, 버전, 어댑터나 그것을 쓰는 VMM 묶음, 출처, 경로.
-fn executor_cells(r: &ExecutorRow, current: Option<&str>) -> [String; 7] {
+/// 실행기 탭 한 줄의 칸: 표시(`>` 지금 쓸 것, `*` 기본), 종류, 이름, 버전, 어댑터나 그것을 쓰는 VMM 묶음, 출처,
+/// 그것으로 띄운 실행 중 샌드박스(있으면 `rm`이 거부한다), 경로.
+fn executor_cells(r: &ExecutorRow, current: Option<&str>) -> [String; 8] {
     let dash = |v: Option<String>| v.unwrap_or_else(|| "-".into());
+    let running = |v: &[String]| dash((!v.is_empty()).then(|| v.join(", ")));
     // 저장소가 거둔 버전은 뒤에 표시를 붙인다(알림 문구는 상세 창에).
     let version = |v: &str, yanked: bool| {
         if yanked {
@@ -558,6 +562,7 @@ fn executor_cells(r: &ExecutorRow, current: Option<&str>) -> [String; 7] {
                 version(&e.version, e.yanked),
                 dash(e.adapter.clone()),
                 dash(e.origin.clone()),
+                running(&e.running),
                 e.path.clone(),
             ]
         }
@@ -568,6 +573,7 @@ fn executor_cells(r: &ExecutorRow, current: Option<&str>) -> [String; 7] {
             version(&a.version, a.yanked),
             dash((!a.used_by.is_empty()).then(|| a.used_by.join(", "))),
             dash(a.origin.clone()),
+            running(&a.running),
             a.path.clone(),
         ],
     }
