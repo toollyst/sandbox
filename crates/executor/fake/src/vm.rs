@@ -17,10 +17,6 @@ pub(crate) struct Procs;
 
 #[cfg(not(unix))]
 impl Procs {
-    pub(crate) fn new(_record: Option<std::path::PathBuf>) -> Self {
-        Self
-    }
-
     pub(crate) fn alive(&self) -> Vec<u32> {
         Vec::new()
     }
@@ -136,12 +132,12 @@ impl Drop for FakeVm {
     }
 }
 
-/// 받은 디스크 하나(받은 차례). 볼륨 흉내에 쓴다.
+/// 받은 디스크 하나(받은 차례). 볼륨 흉내에 쓴다. 게스트 흉내가 Unix에만 있으므로 Unix에만 있다.
+#[cfg(unix)]
 #[derive(Debug, Clone)]
 pub(crate) struct FakeDisk {
     pub(crate) path: std::path::PathBuf,
     pub(crate) volume: bool,
-    #[cfg_attr(not(unix), allow(dead_code))]
     pub(crate) readonly: bool,
 }
 

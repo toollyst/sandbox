@@ -196,6 +196,9 @@ pub struct SandboxInfo {
     pub egress_port: Option<u16>,
     /// 공개한 포트(`-p`, 실행 중일 때): (듣는 호스트 주소, 게스트 포트). 포트 0을 준 것은 OS가 고른 포트다.
     pub published: Vec<(std::net::SocketAddr, u16)>,
+    /// VM을 띄운 실행기의 파일(실행 중일 때, [`sbx_executor::Executor::files`]). 실행 중인 샌드박스가 어느 설치한
+    /// 실행기·어댑터를 쓰는지 알려 준다.
+    pub executor_files: Vec<PathBuf>,
     /// 만든 시각. 만든 뒤 바뀌지 않는 설정 파일의 수정 시각이다. 파일 시스템이 주지 않으면 `None`.
     pub created: Option<std::time::SystemTime>,
 }
@@ -579,6 +582,7 @@ impl Runtime {
             control: state.control,
             egress_port: state.egress_port,
             published: state.published,
+            executor_files: state.executor_files,
             created: std::fs::metadata(paths.spec())
                 .and_then(|m| m.modified())
                 .ok(),
@@ -685,6 +689,7 @@ impl Runtime {
             control: None,
             egress_port: None,
             published: Vec::new(),
+            executor_files: Vec::new(),
         };
         if records::write_state(&self.paths(id), &state).is_ok() {
             let spec = records::read(&self.paths(id))
@@ -1102,6 +1107,7 @@ impl Sandbox {
             control: Some(control.clone()),
             egress_port,
             published,
+            executor_files: rt.inner.executor.files(),
         };
         records::write_state(&paths, &state)?;
         rt.emit("start", &id, Some(&spec), &[]);

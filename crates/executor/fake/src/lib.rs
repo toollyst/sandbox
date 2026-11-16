@@ -152,46 +152,54 @@ impl Executor for FakeExecutor {
             if let Ok(mut l) = self.launches.lock() {
                 l.push(vm.clone());
             }
-            let shares = vm
-                .shares
-                .iter()
-                .map(|s| (s.tag.clone(), s.host_path.clone()))
-                .collect();
-            let scratch = vm
-                .disks
-                .iter()
-                .find(|d| d.role == sbx_executor::DiskRole::Scratch);
-            let dirs = scratch.map(|d| (build_root(&d.path), net_dir(&d.path)));
-            let clock = scratch.map(|d| clock_file(&d.path));
-            let layer_disks = vm
-                .disks
-                .iter()
-                .filter(|d| d.role == sbx_executor::DiskRole::Rootfs)
-                .map(|d| d.path.clone())
-                .collect();
-            let disks = vm
-                .disks
-                .iter()
-                .map(|d| vm::FakeDisk {
-                    path: d.path.clone(),
-                    volume: d.role == sbx_executor::DiskRole::Volume,
-                    readonly: d.readonly,
-                })
-                .collect();
-            let procs = Arc::new(vm::Procs::new(None));
-            let v = guest::start(
-                &vm.control_channel.host_endpoint,
-                shares,
-                dirs,
-                layer_disks,
-                clock,
-                disks,
-                procs.clone(),
-            )?;
-            if let Ok(mut l) = self.vms.lock() {
-                l.push((v.life.clone(), procs));
+            // 게스트 흉내는 Unix 소켓이 있어야 한다(`guest`).
+            #[cfg(not(unix))]
+            return Err(ExecutorError::Unsupported(
+                "the fake guest needs Unix sockets".into(),
+            ));
+            #[cfg(unix)]
+            {
+                let shares = vm
+                    .shares
+                    .iter()
+                    .map(|s| (s.tag.clone(), s.host_path.clone()))
+                    .collect();
+                let scratch = vm
+                    .disks
+                    .iter()
+                    .find(|d| d.role == sbx_executor::DiskRole::Scratch);
+                let dirs = scratch.map(|d| (build_root(&d.path), net_dir(&d.path)));
+                let clock = scratch.map(|d| clock_file(&d.path));
+                let layer_disks = vm
+                    .disks
+                    .iter()
+                    .filter(|d| d.role == sbx_executor::DiskRole::Rootfs)
+                    .map(|d| d.path.clone())
+                    .collect();
+                let disks = vm
+                    .disks
+                    .iter()
+                    .map(|d| vm::FakeDisk {
+                        path: d.path.clone(),
+                        volume: d.role == sbx_executor::DiskRole::Volume,
+                        readonly: d.readonly,
+                    })
+                    .collect();
+                let procs = Arc::new(vm::Procs::new(None));
+                let v = guest::start(
+                    &vm.control_channel.host_endpoint,
+                    shares,
+                    dirs,
+                    layer_disks,
+                    clock,
+                    disks,
+                    procs.clone(),
+                )?;
+                if let Ok(mut l) = self.vms.lock() {
+                    l.push((v.life.clone(), procs));
+                }
+                Ok(Box::new(v) as Box<dyn VmHandle>)
             }
-            Ok(Box::new(v) as Box<dyn VmHandle>)
         })
     }
 

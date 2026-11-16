@@ -4104,6 +4104,21 @@ mod unix {
         let o = without(&["run", "--rm", IMAGE, "echo", "via", "installed"]);
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
         assert_eq!(text(&o.stdout), "via installed\n");
+        // system df: 실행 중인 샌드박스가 쓰는 실행기는 active다. 멈추면 아니다.
+        let executors_row = || {
+            let o = without(&["--format", "json", "system", "df"]);
+            assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+            let rows: Vec<sbx_cli::output::DiskUsage> = serde_json::from_slice(&o.stdout).unwrap();
+            let r = rows.into_iter().find(|r| r.kind == "executors").unwrap();
+            (r.total, r.active)
+        };
+        assert_eq!(executors_row(), (1, 0));
+        let o = without(&["run", "-d", "--name", "busy", IMAGE, "sleep", "30"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        wait_named(&e, "busy");
+        assert_eq!(executors_row(), (1, 1));
+        assert_eq!(without(&["rm", "-f", "busy"]).status.code(), Some(0));
+        assert_eq!(executors_row(), (1, 0));
         // 규약을 말하지 않는 것은 설치하지 않는다.
         let bad = e.path("not-an-executor");
         std::fs::write(&bad, "#!/bin/sh\nexit 3\n").unwrap();
@@ -4218,6 +4233,16 @@ mod unix {
         let o = without(&["run", "--rm", IMAGE, "echo", "via", "wick"]);
         ok(&o);
         assert_eq!(text(&o.stdout), "via wick\n");
+        // system df: 실행 중인 샌드박스가 쓰는 VMM 묶음과 그 어댑터는 둘 다 active다(shim이 띄운 것도).
+        let o = without(&["run", "-d", "--name", "via-shim", IMAGE, "sleep", "30"]);
+        ok(&o);
+        wait_named(&e, "via-shim");
+        let o = without(&["--format", "json", "system", "df"]);
+        ok(&o);
+        let rows: Vec<sbx_cli::output::DiskUsage> = serde_json::from_slice(&o.stdout).unwrap();
+        let r = rows.iter().find(|r| r.kind == "executors").unwrap();
+        assert_eq!((r.total, r.active), (2, 2), "{rows:?}");
+        ok(&without(&["rm", "-f", "via-shim"]));
 
         // 만든 샌드박스는 그 실행기에 고정된다. 기본을 바꿔도 그것으로 시작한다.
         let o = without(&["create", "--name", "pinned", IMAGE, "echo", "pinned"]);

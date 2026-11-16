@@ -240,6 +240,12 @@ pub trait Executor: Send + Sync {
     /// 채널 위치만으로 열 수 있어야 한다. 그래서 VM을 띄운 프로세스가 아니어도 연결할 수 있다.
     /// 게스트가 아직 듣지 않으면 `ConnectionRefused`나 `NotFound` 종류의 오류다.
     fn connect(&self, channel: &ChannelSpec) -> io::Result<Box<dyn GuestConn>>;
+
+    /// 이 실행기를 이루는 파일과 디렉터리(실행 파일, VMM 묶음 디렉터리). 실행 코어가 실행 중인 샌드박스의 기록에
+    /// 적어, 무엇이 쓰는 중인지 보이게 한다(`system df`). 알릴 것이 없으면 비어 있다.
+    fn files(&self) -> Vec<PathBuf> {
+        Vec::new()
+    }
 }
 
 /// 띄운 VM 하나. 버려지면 VM을 강제로 끝낸다.

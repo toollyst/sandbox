@@ -60,6 +60,9 @@ pub struct StateRecord {
     /// 공개한 포트(`-p`, 실행 중일 때): (듣는 호스트 주소, 게스트 포트).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub published: Vec<(std::net::SocketAddr, u16)>,
+    /// VM을 띄운 실행기의 파일(실행 중일 때, [`sbx_executor::Executor::files`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub executor_files: Vec<PathBuf>,
 }
 
 impl StateRecord {
@@ -73,6 +76,7 @@ impl StateRecord {
             control: None,
             egress_port: None,
             published: Vec::new(),
+            executor_files: Vec::new(),
         }
     }
 }
@@ -315,6 +319,7 @@ fn read_present(paths: &Paths) -> Result<Option<(SandboxSpec, StateRecord)>, Run
             control: None,
             egress_port: None,
             published: Vec::new(),
+            executor_files: Vec::new(),
         };
     }
     Ok(Some((spec, state)))

@@ -93,6 +93,11 @@ to release a tag without one. Changes land under `## Unreleased` first, and the 
   creation and at every connection). `sbx build` has no `--connect`. Needs a sandbox started by this `sbx`; the
   guest protocol is unchanged.
 
+### Fixed
+
+- `sbx system df` counts the executors and adapters that running sandboxes were started with as active (it always
+  showed 0).
+
 ## v0.2.2
 
 Only additions: `sbx` tells you about newer releases and upgrades itself, checking signatures.
