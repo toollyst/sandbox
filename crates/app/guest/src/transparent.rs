@@ -1,7 +1,7 @@
 //! 투명 TCP (게스트 쪽): 프록시를 모르는 프로그램도 허용된 `HOST:PORT`에 닿게 한다. VM에는 여전히 네트워크 장치가
 //! 없고, 허용 목록은 여전히 이름 단위이고, 확인은 여전히 호스트가 한다.
 //!
-//! `HostMsg::Transparent`로 켠다(`--network allow`일 때 시작에서 한 번). 켜기 전에는 아무것도 하지 않는다:
+//! `HostMsg::Transparent`로 켠다(`--network allow`나 `--connect`일 때 시작에서 한 번). 켜기 전에는 아무것도 하지 않는다:
 //! DNS는 모든 이름에 NXDOMAIN이고 `/etc/resolv.conf`는 이미지 그대로다.
 //!
 //! **켜기** ([`Transparent::enable`], 이 차례로)
@@ -59,7 +59,7 @@ pub const MAX_LISTENERS: usize = 1024;
 pub const MAX_REFUSED: usize = 4096;
 
 /// `resolv.conf` 내용.
-pub const RESOLV_CONF: &str = "# Written by sbx (--network allow): names are answered by the sandbox's loopback DNS.\nnameserver 127.0.0.1\n";
+pub const RESOLV_CONF: &str = "# Written by sbx (--network allow or --connect): names are answered by the sandbox's loopback DNS.\nnameserver 127.0.0.1\n";
 
 /// 게스트 커널에 하는 일. 게스트에서는 `KernelNet`(Linux), fake 실행기는 호스트에서 흉내 낸다.
 pub trait Net: Send + Sync {

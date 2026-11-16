@@ -24,7 +24,7 @@ The table is code, [`compat.rs`](../../crates/app/cli/src/compat.rs), and a test
 ## Progress
 
 <!-- compat-progress:begin -->
-Counted from the 397 rows below. "What applies to sbx" leaves out ⚫, ⚪ and ➕ rows.
+Counted from the 398 rows below. "What applies to sbx" leaves out ⚫, ⚪ and ➕ rows.
 
 | | |
 | --- | --- |
@@ -35,7 +35,7 @@ Counted from the 397 rows below. "What applies to sbx" leaves out ⚫, ⚪ and �
 | 🔴 Not yet | 174 (13 of them in 0.3) |
 | ⚫ Will not do | 23 |
 | ⚪ Not applicable in a VM | 39 |
-| ➕ sbx only | 23 |
+| ➕ sbx only | 24 |
 
 | Area | Works, of what applies to sbx |
 | --- | --- |
@@ -134,7 +134,7 @@ Every `docker` command and management command. The flags of the commands sbx has
 | `manifest` | 🔴 |  | not planned yet |
 | `container` | 🔴 | The same commands exist at the top level (`sbx ps`, `sbx rm`). | not planned yet |
 | `image` | 🔴 | The same commands exist at the top level (`sbx images`, `sbx rmi`). | not planned yet |
-| `network` | ⚫ | *Why:* Docker networks (bridge, overlay) are out of scope: the VM has no network interface. `--connect NAME:PORT` (V2) opens one port of another sandbox instead. |  |
+| `network` | ⚫ | *Why:* Docker networks (bridge, overlay) are out of scope: the VM has no network interface. `--connect SANDBOX:PORT` opens one port of another sandbox instead. |  |
 | `context` | ⚪ | `--executor` and `sbx executor use` pick what runs the VMs. *Why:* There is no daemon: each `sbx` command reads and writes the data and cache directories itself. |  |
 | `plugin` | ⚫ | *Why:* Extensions are out of scope. |  |
 | `trust` | ⚪ | *Why:* sbx has no Docker Content Trust. Signatures follow the containers `policy.json` (cosign). |  |
@@ -191,7 +191,7 @@ Options that go before the command (`docker --debug ps`).
 | `--mount` | 🟡 | `type=bind` (needs an executor with live sharing; an error otherwise) and `type=copy` (below). No `volume` or `tmpfs` yet. | `docker_options_reach_the_sandbox`, `parse::tests::mounts` |
 | `--name` | 🟡 | Without it a sandbox has no name and is found by its ID (Docker makes a name up). *Why:* A made-up name shows up for people who don't use names and only adds clashes. A caller that wants one picks it. | `names_work_in_place_of_ids` |
 | `--network` | 🟡 | `none` (the default; Docker's is `bridge`) or `allow`: TCP to the `--allow` destinations only, checked by the host by name. Programs that use `HTTP_PROXY` go through a proxy in the guest; others reach `HOST:PORT` rules through the guest's DNS, which answers from the allow list with stand-in addresses the guest listens on. `HOST:*` rules, IPv6 and UDP (beyond DNS) go through the proxy only or not at all. *Why:* The network is closed by default and opened by name. The allow list is enforced on every OS without help from the executor, and the VM still has no network interface. | `network_allow_list`, `transparent_tcp_reaches_allowed_names`, `behavior::tests::network_policy_table` |
-| `--network bridge, host, container:NAME, NAME` | ⚫ | *Why:* Docker networks (bridge, overlay) are out of scope: the VM has no network interface. `--connect NAME:PORT` (V2) opens one port of another sandbox instead. |  |
+| `--network bridge, host, container:NAME, NAME` | ⚫ | *Why:* Docker networks (bridge, overlay) are out of scope: the VM has no network interface. `--connect SANDBOX:PORT` opens one port of another sandbox instead. |  |
 | `-p, --publish` | 🟡 | Without an IP it listens on 127.0.0.1 (Docker: every address). TCP only. The process that owns the VM listens, and connects to 127.0.0.1:PORT in the guest. *Why:* Closed by default: write `0.0.0.0:` to open a port beyond this machine. The VM has no network interface, so the port is reached on the guest's loopback. | `published_ports_reach_the_sandbox` |
 | `-p, --publish …/udp` | 🔴 |  | after 0.3 |
 | `--pull` | 🟢 |  | `run_failures_before_the_command_are_125`, `behavior::tests::pull_policy_default_matches_docker` |
@@ -230,8 +230,8 @@ Options that go before the command (`docker --debug ps`).
 | `--ulimit` | 🔴 |  | not planned yet |
 | `--volumes-from` | 🔴 |  | not planned yet |
 | `--platform` | ⚫ | `sbx pull --platform` downloads another architecture's image. *Why:* Emulating another architecture is out of scope: a sandbox runs the host's architecture. |  |
-| `--link` | ⚫ | *Why:* Legacy in Docker. `--connect NAME:PORT` (V2) is sbx's way to reach another sandbox. |  |
-| `--network-alias` | ⚫ | *Why:* Docker networks (bridge, overlay) are out of scope: the VM has no network interface. `--connect NAME:PORT` (V2) opens one port of another sandbox instead. |  |
+| `--link` | ⚫ | `--link NAME:ALIAS` is `--connect ALIAS=NAME:PORT`, one port at a time. *Why:* Legacy in Docker. `--connect SANDBOX:PORT` is sbx's way to reach another sandbox: one port, by name, looked up at each connection. |  |
+| `--network-alias` | ⚫ | The connecting side picks the name: `--connect ALIAS=SANDBOX:PORT`. *Why:* Docker networks (bridge, overlay) are out of scope: the VM has no network interface. `--connect SANDBOX:PORT` opens one port of another sandbox instead. |  |
 | `--volume-driver` | ⚫ | *Why:* Extensions are out of scope. |  |
 | `--privileged` | ⚪ | *Why:* It hardens a kernel shared with the host. Each sandbox has its own kernel behind the VM, and root in the guest owns only the guest. |  |
 | `--cap-add, --cap-drop` | ⚪ | *Why:* It hardens a kernel shared with the host. Each sandbox has its own kernel behind the VM, and root in the guest owns only the guest. |  |
@@ -249,7 +249,7 @@ Options that go before the command (`docker --debug ps`).
 | `--device-read-bps, --device-read-iops, --device-write-bps, --device-write-iops` | ⚪ | *Why:* A cgroup knob for a process on a shared kernel. The VM's size (`--cpus`, `-m`) is the limit. |  |
 | `--device, --device-cgroup-rule` | ⚪ | *Why:* The VM sees only the devices the executor gives it. |  |
 | `--ip, --ip6, --link-local-ip, --mac-address` | ⚪ | *Why:* The VM has no network interface. Connections leave through the host, by name. |  |
-| `--expose` | ⚪ | *Why:* Nothing reaches a sandbox except a port published with `-p`, so declaring a port changes nothing. |  |
+| `--expose` | ⚪ | *Why:* Nothing reaches a sandbox except a port published with `-p` or named by another sandbox's `--connect`, so declaring a port changes nothing. |  |
 | `--init` | ⚪ | *Why:* Always on: sbx's guest init is PID 1 and reaps orphans. |  |
 | `--annotation` | ⚪ | *Why:* Annotations go to an OCI runtime; sbx has none. |  |
 | `--disable-content-trust` | ⚪ | *Why:* sbx has no Docker Content Trust. Signatures follow the containers `policy.json` (cosign). |  |
@@ -258,7 +258,8 @@ Options that go before the command (`docker --debug ps`).
 | `--rootfs-format` | ➕ | The root filesystem disk format; `erofs` by default. *Why:* Different executors and kernels read different formats. |  |
 | `--mount type=copy` | ➕ | Copies a host directory in when the sandbox starts; take results out with `sbx cp`. *Why:* Works on every executor, including those without live sharing. |  |
 | `--allow` | ➕ | With `--network allow`: a `HOST:PORT` the sandbox may connect to (`*.example.com:443`, `10.0.0.5:*`). A `*` port, an IPv6 address or `localhost` works only for programs that use `HTTP_PROXY`; `run` warns about each. |  |
-| `--egress-limit` | ➕ | With `--network allow`: the most bytes all connections may move in each start. |  |
+| `--egress-limit` | ➕ | With `--network allow` or `--connect`: the most bytes all connections may move in each start, both ways (`--connect` traffic counts for the sandbox that connects). |  |
+| `--connect` | ➕ | `[NAME=]SANDBOX:PORT`: programs inside reach TCP `PORT` of another running sandbox (same data directory) as `NAME:PORT`, with any protocol, and nothing else opens. The other sandbox needs no option. The target is looked up at each connection, so a restarted one works on the next; a stopped one fails that connection and is recorded in `events`. An MCP sandbox may only connect to MCP sandboxes. *Why:* Docker networks open every port of every container on the network to each other. `--connect` opens one port, by name, like `--allow`, and the VM still has no network interface. |  |
 | `--timeout` | ➕ | Stops the sandbox this long after each start (like podman's `--timeout`). |  |
 
 ## docker exec
@@ -588,7 +589,7 @@ Keys `sbx compose` will read. An unknown key is an error.
 | --- | --- | --- | --- |
 | `services` | 🔴 |  | C1 (after 0.3) |
 | `volumes` (top level) | 🔴 |  | C1 (after 0.3) |
-| `networks` (top level) | ⚫ | Services reach each other through `--connect`, made from their ports. *Why:* Docker networks (bridge, overlay) are out of scope: the VM has no network interface. `--connect NAME:PORT` (V2) opens one port of another sandbox instead. |  |
+| `networks` (top level) | ⚫ | Services reach each other through `--connect`, made from their ports. *Why:* Docker networks (bridge, overlay) are out of scope: the VM has no network interface. `--connect SANDBOX:PORT` opens one port of another sandbox instead. |  |
 | `configs`, `secrets` (top level) | 🔴 |  | after 0.3 |
 | `name` | 🔴 |  | after 0.3 |
 | `include` | 🔴 |  | after 0.3 |
@@ -620,7 +621,7 @@ Keys `sbx compose` will read. An unknown key is an error.
 | `services.*.tmpfs` | 🔴 |  | after 0.3 |
 | `services.*.extra_hosts`, `dns` | 🔴 |  | after 0.3 |
 | `services.*.develop.watch` | 🔴 |  | after 0.3 |
-| `services.*.networks`, `network_mode` | ⚫ | *Why:* Docker networks (bridge, overlay) are out of scope: the VM has no network interface. `--connect NAME:PORT` (V2) opens one port of another sandbox instead. |  |
+| `services.*.networks`, `network_mode` | ⚫ | *Why:* Docker networks (bridge, overlay) are out of scope: the VM has no network interface. `--connect SANDBOX:PORT` opens one port of another sandbox instead. |  |
 | `services.*.platform` | ⚫ | *Why:* Out of scope: a sandbox runs the host's architecture. |  |
 | `services.*.logging` | 🔴 | The shim writes each detached sandbox's log. | not planned yet |
 | `services.*.privileged`, `cap_add`, `cap_drop`, `security_opt` | ⚪ | *Why:* It hardens a kernel shared with the host. Each sandbox has its own kernel behind the VM, and root in the guest owns only the guest. |  |

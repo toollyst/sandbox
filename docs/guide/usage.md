@@ -129,6 +129,46 @@ loopback (or on all addresses). It works with `--network none`: published ports 
 The process that owns the VM (`sbx` for an attached sandbox, `sbx-shim` for a detached one) does the listening, so a
 port that is already in use makes the start fail. A sandbox started by an older `sbx` needs a restart first.
 
+### Connecting sandboxes
+
+`--connect SANDBOX:PORT` lets the programs in one sandbox reach one TCP port of another running sandbox, by its
+name. A development database, for example:
+
+```sh
+sbx run -d --name db -e POSTGRES_PASSWORD=dev postgres:17
+sbx run --rm --connect db:5432 -e PGPASSWORD=dev postgres:17 psql -h db -U postgres -c 'select 1'
+```
+
+Inside the second sandbox, `db` resolves (through the same guest DNS as transparent TCP) to a stand-in address that
+listens on 5432 only. Each connection goes to the process that owns the VM, which looks `db` up, opens the target's
+guest connection and joins it to `127.0.0.1:5432` inside `db`, the same way `-p` reaches a port. Any TCP protocol
+works (postgres, redis, gRPC, HTTP), and the client doesn't need to know about proxies.
+
+- **Nothing else opens.** With `--connect` alone, no other name resolves and there is no proxy. Other ports of `db`
+  and every other sandbox stay unreachable. Add `--network allow --allow ...` for the outside world; a `--connect`
+  name may not also be an `--allow` name.
+- **The target needs nothing.** No flag, no network, no `-p`. Its service must listen on its loopback (or on all
+  addresses), as for `-p`. The connection never touches a host port.
+- **Looked up at each connection.** Stop `db` and the next connection fails at once (the program sees the connection
+  close) and a `refuse` event records why; start it again, or recreate it under the same name, and the next
+  connection works. The target must exist when you create the connecting sandbox.
+- **Names.** `pg=db:5432` uses the name `pg` inside. `db:5432,6379` opens two ports. A target given by ID (or a unique
+  ID prefix) is recorded by its full ID and keeps its own name inside; give one with `NAME=` if it has none. A
+  sandbox cannot connect to itself or to its egress proxy port inside the target.
+- **Same data directory only.** Sandboxes under another `--data-dir` are not visible.
+- **Counting.** The bytes count against the connecting sandbox's `--egress-limit` (both directions; the target's own
+  limit is not touched), and its connections count toward its open-connection cap.
+
+`sbx inspect` and `ps --format json` show the list under `network.connect`. The `network` events (`lookup`,
+`connect`, `close`, `refuse`) carry `target` (as recorded) and `target_id`; `--filter sandbox=` matches either side:
+
+```sh
+sbx events --since 1h --until 0s --filter type=network --filter sandbox=db
+```
+
+A sandbox created through `sbx mcp` can only connect to other sandboxes created through MCP ([MCP](mcp.md)).
+`sbx build` has no `--connect`.
+
 ## Images
 
 `pull` (with a progress bar), `prepare` (build the disk images ahead of time), `images [-q]` and `rmi [-f]`. `run`

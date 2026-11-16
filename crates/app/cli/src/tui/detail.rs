@@ -208,6 +208,21 @@ mod tests {
     }
 
     #[test]
+    fn a_sandboxs_connect_list_is_shown() {
+        let mut s = crate::tui::model::tests::sandbox(Some("app"), '2', "running");
+        s.network.connect = vec![crate::output::Connect {
+            name: "db".into(),
+            sandbox: "db".into(),
+            port: 5432,
+        }];
+        let text = plain(&readable(&s));
+        assert!(
+            text.contains("connect\n  - name     db\n    sandbox  db\n    port     5432"),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn long_lists_and_lists_of_objects_get_bullets() {
         let v = serde_json::json!({
             "env": ["A=".to_owned() + &"x".repeat(40), "B=".to_owned() + &"y".repeat(40)],

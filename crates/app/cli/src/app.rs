@@ -988,6 +988,34 @@ impl Ctx {
         }
     }
 
+    /// `--connect` 값들을 기록할 규칙으로 바꾼다. 대상은 다른 명령과 같은 규칙으로 찾고(이름, ID, ID 앞부분), 기록하는
+    /// 꼴은 [`behavior::connect_rule`]이 정한다. 대상이 없으면 이미지를 받기 전에 실패한다.
+    pub(crate) async fn connect_rules(
+        &self,
+        given: &[String],
+    ) -> AppResult<Vec<sbx_model::ConnectRule>> {
+        let mut out = Vec::new();
+        if given.is_empty() {
+            return Ok(out);
+        }
+        let rt = self.runtime()?;
+        for v in given {
+            for c in parse::connect(v)? {
+                let target = rt
+                    .find(&c.target)
+                    .await
+                    .map_err(|e| msg(format!("--connect {v}: {e}")))?;
+                let info = target.info();
+                out.push(behavior::connect_rule(
+                    &c,
+                    &info.id,
+                    info.spec.name.as_deref(),
+                )?);
+            }
+        }
+        Ok(out)
+    }
+
     /// `run`과 `create`: 옵션을 먼저 모두 해석하고, [`behavior::create_steps`] 순서로 코어를 부른다.
     pub(crate) async fn create(&self, a: &RunArgs) -> AppResult<SandboxId> {
         self.create_with(a, &|_| {}).await
@@ -1005,6 +1033,7 @@ impl Ctx {
         for w in behavior::proxy_only_warnings(&network) {
             eprintln!("warning: {w}");
         }
+        let connect = self.connect_rules(&a.connect).await?;
         let user = a.user.as_deref().map(str::parse::<UserSpec>).transpose()?;
         let stop_signal = a
             .stop_signal
@@ -1123,6 +1152,8 @@ impl Ctx {
                         ports: a.publish.clone(),
                         egress_limit_bytes: a.egress_limit,
                         hold: false,
+                        connect: connect.clone(),
+                        connect_scope: a.connect_scope.clone(),
                     };
                     let sandbox = self.launcher_with(&chosen)?.create(spec).await?;
                     return Ok(sandbox.id().clone());
@@ -1465,13 +1496,27 @@ impl Ctx {
         use std::io::Write as _;
         let f = Filters::parse(filters, filter::EVENTS).map_err(msg)?;
         let store = sbx_store::Store::open(&self.cache_dir);
+        // 네트워크 기록에는 이름이 없다. 지금 있는 샌드박스의 이름으로 ID를 찾는다.
+        let names: BTreeMap<String, String> = sbx_runtime::sandbox_names(&self.data_dir)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(id, name)| Some((name?, id.to_string())))
+            .collect();
         let wanted = |e: &sbx_events::Event| {
             let attr = |k: &str| e.attributes.get(k).map(String::as_str);
+            let network = e.kind == sbx_runtime::NETWORK_EVENT_KIND;
             f.allows("type", |v| v == e.kind)
                 && f.allows("event", |v| v == e.action)
                 && f.allows("sandbox", |v| {
-                    (e.kind == sbx_runtime::EVENT_KIND || e.kind == sbx_runtime::NETWORK_EVENT_KIND)
-                        && (e.id.starts_with(v) || attr("name") == Some(v))
+                    let named = names.get(v).map(String::as_str);
+                    (e.kind == sbx_runtime::EVENT_KIND || network)
+                        && (e.id.starts_with(v)
+                            || attr("name") == Some(v)
+                            || (network && named == Some(e.id.as_str()))
+                            // `--connect`의 대상 쪽에서도 보인다.
+                            || (network
+                                && (attr("target") == Some(v)
+                                    || attr("target_id").is_some_and(|t| t.starts_with(v)))))
                 })
                 && f.allows("image", |v| {
                     let id = if e.kind == sbx_manage::EVENT_KIND {

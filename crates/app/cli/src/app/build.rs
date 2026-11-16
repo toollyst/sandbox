@@ -226,6 +226,8 @@ impl Machines for BuildMachines {
                     ports: Vec::new(),
                     egress_limit_bytes: None,
                     hold: true,
+                    connect: Vec::new(),
+                    connect_scope: Default::default(),
                 };
                 let sb = self.rt.create(spec).await.map_err(backend)?;
                 match sb.start(IoMode::default()).await {

@@ -731,6 +731,13 @@ pub struct RunArgs {
     /// (e.g. 500m, 2g). Reaching it closes them and refuses new ones.
     #[arg(long = "egress-limit", value_name = "SIZE", value_parser = crate::parse::transfer_bytes, help_heading = "Network")]
     pub egress_limit: Option<u64>,
+    /// Reach TCP PORT of another running sandbox by its name (`db:5432`; `pg=db:5432` to use another name inside;
+    /// `db:5432,8080` for more ports). Nothing else opens, and the other sandbox needs no option. Repeatable.
+    #[arg(long = "connect", value_name = "[NAME=]SANDBOX:PORT", value_parser = crate::parse::connect_value, help_heading = "Network", add = complete::connect_targets_arg())]
+    pub connect: Vec<String>,
+    /// Labels every `--connect` target must have (set by `sbx mcp`, not an option).
+    #[arg(skip)]
+    pub connect_scope: std::collections::BTreeMap<String, String>,
     /// Publish a sandbox TCP port on the host: PORT, HOST_PORT:PORT or IP:HOST_PORT:PORT (e.g. 8080:80). IP defaults
     /// to 127.0.0.1, so only this machine can connect (Docker's default is every address; write 0.0.0.0: for that).
     /// Without HOST_PORT a free port is picked; `sbx inspect` shows it.

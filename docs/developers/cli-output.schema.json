@@ -279,6 +279,33 @@
       ],
       "type": "object"
     },
+    "Connect": {
+      "additionalProperties": false,
+      "description": "One `--connect`: a port of another sandbox, reached by a name inside.",
+      "properties": {
+        "name": {
+          "description": "The name programs inside use (`db` in `db:5432`).",
+          "type": "string"
+        },
+        "port": {
+          "description": "The TCP port inside that sandbox.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sandbox": {
+          "description": "The sandbox it reaches: a name (a sandbox recreated under that name is reached too) or a full ID. Looked up\nagain at each connection.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "sandbox",
+        "port"
+      ],
+      "type": "object"
+    },
     "DiskUsage": {
       "additionalProperties": false,
       "description": "One row of `system df`.",
@@ -945,6 +972,13 @@
           "description": "`HOST:PORT` rules (`--allow`). Empty for `none`.",
           "items": {
             "type": "string"
+          },
+          "type": "array"
+        },
+        "connect": {
+          "description": "Ports of other sandboxes it reaches by name (`--connect`), with either mode. Absent when there are none.",
+          "items": {
+            "$ref": "#/$defs/Connect"
           },
           "type": "array"
         },

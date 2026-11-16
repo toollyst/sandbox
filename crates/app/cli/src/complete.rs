@@ -11,6 +11,7 @@
 //! |---|---|
 //! | `start`, `stop`, `restart`, `kill`, `wait`, `rm`, `attach`, `inspect`, `logs`의 샌드박스, `exec`의 첫 인자 | [`sandboxes`] |
 //! | `cp`의 양쪽 | [`cp_endpoints`]: `이름:`·`ID:`와 호스트 경로 |
+//! | `run`·`create`의 `--connect` | [`connect_targets`]: `이름:`·`ID:`(앞 항목과 `NAME=`은 그대로) |
 //! | `pull`, `push`, `prepare`, `rmi`의 이미지, `tag`의 양쪽, `run`·`create`의 첫 인자 | [`images`] |
 //! | `executor use`, `executor rm` | [`executors`] |
 //!
@@ -210,6 +211,29 @@ pub fn cp_endpoints(data_dir: &Path, current: &str) -> Vec<CompletionCandidate> 
     out
 }
 
+/// `--connect`의 후보: 친 값의 마지막 항목(쉼표 뒤)이 아직 `:` 앞이면 샌드박스 이름·짧은 ID에 `:`를 붙인 것.
+/// 앞의 항목과 `NAME=`은 그대로 앞에 둔다. `:` 뒤(포트)는 완성하지 않는다(대상 안에서 무엇이 듣는지는 VM에 물어야 한다).
+pub fn connect_targets(data_dir: &Path, current: &str) -> Vec<CompletionCandidate> {
+    let (before, piece) = match current.rfind(',') {
+        Some(i) => current.split_at(i + 1),
+        None => ("", current),
+    };
+    let (alias, typed) = match piece.split_once('=') {
+        Some((a, t)) => (&piece[..=a.len()], t),
+        None => ("", piece),
+    };
+    if typed.contains(':') {
+        return Vec::new();
+    }
+    sandboxes(data_dir, typed)
+        .into_iter()
+        .map(|c| {
+            let value = format!("{before}{alias}{}:", c.get_value().to_string_lossy());
+            CompletionCandidate::new(value).help(c.get_help().cloned())
+        })
+        .collect()
+}
+
 /// 여러 값을 받는 인자의 첫 값만 완성할 때: clap 정의 전체와 그 인자의 id.
 type FirstOf = (fn() -> clap::Command, &'static str);
 
@@ -314,6 +338,11 @@ pub fn first_image(command: fn() -> clap::Command, id: &'static str) -> ArgValue
     completer(in_cache, Some((command, id)))
 }
 
+/// `--connect`의 완성기.
+pub fn connect_targets_arg() -> ArgValueCompleter {
+    completer(|d, c| in_data(connect_targets, d, c), None)
+}
+
 /// `cp` 끝의 완성기.
 pub fn cp_endpoint_arg() -> ArgValueCompleter {
     completer(|d, c| in_data(cp_endpoints, d, c), None)
@@ -414,6 +443,8 @@ mod tests {
             ports: Vec::new(),
             egress_limit_bytes: None,
             hold: false,
+            connect: Vec::new(),
+            connect_scope: Default::default(),
         };
         std::fs::write(dir.join("spec.json"), serde_json::to_vec(&spec).unwrap()).unwrap();
         std::fs::write(dir.join("state.json"), br#"{"state":"stopped"}"#).unwrap();
@@ -436,6 +467,27 @@ mod tests {
         assert!(!root.join("none").exists());
         // 소유 잠금을 만들지 않는다.
         assert!(!data.join("sandboxes").join(&a).join("owner.lock").exists());
+    }
+
+    #[test]
+    fn connect_offers_sandboxes_with_a_colon() {
+        let root = temp("conn");
+        let data = root.join("data");
+        let a = "a1".repeat(32);
+        plant_sandbox(&data, &a, Some("db"));
+        assert_eq!(values(&connect_targets(&data, "d")), ["db:"]);
+        assert_eq!(values(&connect_targets(&data, "pg=d")), ["pg=db:"]);
+        assert_eq!(
+            values(&connect_targets(&data, "cache:6379,d")),
+            ["cache:6379,db:"]
+        );
+        assert_eq!(
+            values(&connect_targets(&data, "a1a1")),
+            [format!("{}:", &a[..12])]
+        );
+        // 포트는 완성하지 않는다.
+        assert!(connect_targets(&data, "db:").is_empty());
+        assert!(connect_targets(&data, "db:54").is_empty());
     }
 
     #[test]

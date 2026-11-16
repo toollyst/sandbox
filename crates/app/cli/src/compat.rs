@@ -393,7 +393,7 @@ const WINDOWS_CONTAINERS: &str = "Only for Windows containers.";
 const NO_DCT: &str =
     "sbx has no Docker Content Trust. Signatures follow the containers `policy.json` (cosign).";
 const NO_NETWORKS: &str = "Docker networks (bridge, overlay) are out of scope: the VM has no network interface. \
-                           `--connect NAME:PORT` (V2) opens one port of another sandbox instead.";
+                           `--connect SANDBOX:PORT` opens one port of another sandbox instead.";
 const GO_TEMPLATES: &str =
     "`--format` takes `text` or `json`, not a Go template. Pick fields with `--jq`.";
 const SWARM: &str = "Swarm is out of scope.";
@@ -643,8 +643,10 @@ pub const ROWS: &[Row] = &[
     not_yet(Run, "--volumes-from", UNPLANNED),
     wont(Run, "--platform", "Emulating another architecture is out of scope: a sandbox runs the host's architecture.")
         .note("`sbx pull --platform` downloads another architecture's image."),
-    wont(Run, "--link", "Legacy in Docker. `--connect NAME:PORT` (V2) is sbx's way to reach another sandbox."),
-    wont(Run, "--network-alias", NO_NETWORKS),
+    wont(Run, "--link", "Legacy in Docker. `--connect SANDBOX:PORT` is sbx's way to reach another sandbox: one port, by name, looked up at each connection.")
+        .note("`--link NAME:ALIAS` is `--connect ALIAS=NAME:PORT`, one port at a time."),
+    wont(Run, "--network-alias", NO_NETWORKS)
+        .note("The connecting side picks the name: `--connect ALIAS=SANDBOX:PORT`."),
     wont(Run, "--volume-driver", "Extensions are out of scope."),
     na(Run, "--privileged", OWN_KERNEL),
     na(Run, "--cap-add, --cap-drop", OWN_KERNEL),
@@ -662,7 +664,7 @@ pub const ROWS: &[Row] = &[
     na(Run, "--device-read-bps, --device-read-iops, --device-write-bps, --device-write-iops", CGROUP),
     na(Run, "--device, --device-cgroup-rule", "The VM sees only the devices the executor gives it."),
     na(Run, "--ip, --ip6, --link-local-ip, --mac-address", NO_NIC),
-    na(Run, "--expose", "Nothing reaches a sandbox except a port published with `-p`, so declaring a port changes nothing."),
+    na(Run, "--expose", "Nothing reaches a sandbox except a port published with `-p` or named by another sandbox's `--connect`, so declaring a port changes nothing."),
     na(Run, "--init", "Always on: sbx's guest init is PID 1 and reaps orphans."),
     na(Run, "--annotation", "Annotations go to an OCI runtime; sbx has none."),
     na(Run, "--disable-content-trust", NO_DCT),
@@ -673,7 +675,9 @@ pub const ROWS: &[Row] = &[
     only(Run, "--mount type=copy", "Copies a host directory in when the sandbox starts; take results out with `sbx cp`.")
         .why("Works on every executor, including those without live sharing."),
     only(Run, "--allow", "With `--network allow`: a `HOST:PORT` the sandbox may connect to (`*.example.com:443`, `10.0.0.5:*`). A `*` port, an IPv6 address or `localhost` works only for programs that use `HTTP_PROXY`; `run` warns about each."),
-    only(Run, "--egress-limit", "With `--network allow`: the most bytes all connections may move in each start."),
+    only(Run, "--egress-limit", "With `--network allow` or `--connect`: the most bytes all connections may move in each start, both ways (`--connect` traffic counts for the sandbox that connects)."),
+    only(Run, "--connect", "`[NAME=]SANDBOX:PORT`: programs inside reach TCP `PORT` of another running sandbox (same data directory) as `NAME:PORT`, with any protocol, and nothing else opens. The other sandbox needs no option. The target is looked up at each connection, so a restarted one works on the next; a stopped one fails that connection and is recorded in `events`. An MCP sandbox may only connect to MCP sandboxes.")
+        .why("Docker networks open every port of every container on the network to each other. `--connect` opens one port, by name, like `--allow`, and the VM still has no network interface."),
     only(Run, "--timeout", "Stops the sandbox this long after each start (like podman's `--timeout`)."),
     // ── exec ─────────────────────────────────────────────────────────────
     same(Exec, "-d, --detach", &["exec_cp_stop_on_a_running_sandbox"]),
