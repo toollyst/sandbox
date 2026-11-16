@@ -6,8 +6,10 @@
 //! | 설치한 어댑터 | `<data_dir>/adapters` |
 //! | 저장소 목록 | `<data_dir>/executor-repositories` (한 줄에 `<이름> <URL>`, 줄 순서가 우선순위) |
 //! | 받는 중인 묶음 | `<cache_dir>/executor-downloads/<임시>` (끝나면 지운다) |
+//! | 기본 실행기 자동 설치를 한 번에 하나씩 하는 잠금 | `<cache_dir>/executor-downloads/.auto-install.lock` |
 //!
-//! sbx만 설치하면 실행기도 어댑터도 없다(`executor ls`가 비어 있다). 둘은 따로 설치한다.
+//! sbx만 설치하면 실행기도 어댑터도 없다(`executor ls`가 비어 있다). 둘은 따로 설치하거나, VM을 띄우는 명령이 처음
+//! 쓸 때 기본 실행기를 받아 깐다(아래 "기본 실행기 자동 설치").
 //!
 //! - `install NAME[@VERSION]`: 저장소에서 고르고(규칙은 `sbx-executor-repo` 문서), 받아서 확인하고 설치한다. 고른 버전이
 //!   이미 설치돼 있으면 아무것도 하지 않고 성공한다 (표준 오류에 알린다). 받지 못한 저장소는 경고하고 건너뛴다.
@@ -20,6 +22,32 @@
 //!   마지막 버전을 지우지 않는다(`-f`로 지운다).
 //! - `prune`: 기본도 아니고, 그 이름의 가장 높은 버전도 아니고, 샌드박스가 고정하지도 않은 실행기 버전과, 가장 높은
 //!   버전이 아닌 어댑터 버전을 지운다.
+//!
+//! # 기본 실행기 자동 설치
+//!
+//! VM을 띄우는 명령(`run`, `create`, `start`, `build`)이 실행기를 고르지 못했을 때([`crate::choose`]가 아무것도 내지
+//! 않았을 때) 공식 저장소([`OFFICIAL_REPOSITORY`])의 기본 실행기를 받아 깔고 이어서 한다([`install_default`]).
+//!
+//! - **무엇을**: 공식 저장소 색인이 말하는 기본 실행기(`default`, 없으면 실행기가 하나뿐일 때 그것:
+//!   `sbx_executor_repo::Index::default_executor`)의, 이 플랫폼·규약에 맞는 가장 새 버전. sbx 바이너리에는 실행기
+//!   이름이 없다. VMM 묶음이면 어댑터도 `install`과 같은 규칙으로 받는다.
+//! - **어디서**: 저장소 목록의 `official` 항목 하나만 본다. 다른 저장소가 앞에 있어도 보지 않는다. 그 항목이 서명된
+//!   저장소여야 한다(공개키는 sbx 안의 [`OFFICIAL_KEYS`], 또는 사용자가 그 항목에 준 키). 받는 길과 확인(색인 서명,
+//!   `serial`·`expires`, 묶음의 sha256, `capabilities`)은 `install`과 같다. 그래서 터미널이 아니어도(CI, `sbx mcp`)
+//!   묻지 않고 한다.
+//! - **알림**: 받기 전에 무엇을 어디서 받는지 표준 오류에 한 번 알린다. 표준 출력에는 아무것도 쓰지 않는다
+//!   (`run`의 출력, `--format json`, MCP의 JSON-RPC가 섞이지 않게).
+//! - **하지 않는 때** ([`auto_install_off`]): `--executor`를 줬을 때(경로든 이름이든: 고르기가 그것을 쓴다),
+//!   `--executor none`(`SBX_EXECUTOR=none`, [`NONE`]), `SBX_NO_AUTO_EXECUTOR`([`NO_AUTO_ENV`])가 비어 있지 않고 `0`이
+//!   아닐 때, 실행기가 하나라도 설치돼 있을 때(기본이 없어도: 그때는 `executor use`를 안내한다), 샌드박스에 고정된
+//!   실행기가 지워졌을 때(그 오류가 그대로 난다), 실행기가 없는 OS, 저장소 목록에 `official`이 없거나 서명되지 않았을 때.
+//! - **동시에**: 두 명령이 함께 처음 돌면 잠금(위 표)으로 하나씩 한다. 뒤의 것은 기다렸다가, 앞의 것이 설치한
+//!   실행기를 그대로 쓴다(다시 받지 않는다). 잠금 없이 다른 경로로 같은 것을 설치해도 설치는 rename 한 번이라
+//!   깨지지 않는다(`fetch_and_install`).
+//! - **받지 못하면**(오프라인, 저장소가 비어 있음, 이 플랫폼 빌드가 없음) 까닭과 손으로 하는 길(`executor install`,
+//!   `--from DIR`, 끄는 법)을 담은 오류로 끝난다. 아무것도 설치하지 않는다.
+//! - 사용자가 고른 실행기는 건드리지 않는다: 하나라도 있으면 하지 않고, 설치한 것은 `install`처럼 기본이 없을 때만
+//!   기본이 된다. `sbx upgrade`는 실행기를 올리지 않는다.
 
 use std::error::Error;
 use std::ffi::OsString;
@@ -87,6 +115,68 @@ fn upgrade_official(list: Vec<Repository>) -> Vec<Repository> {
         .collect()
 }
 
+/// `--executor`(`SBX_EXECUTOR`)에 이 값을 주면 실행기를 그것으로 고르지 않고(주지 않은 것과 같다), 기본 실행기를
+/// 자동으로 받지도 않는다. 설치 스크립트의 `SBX_EXECUTOR=none`(실행기를 깔지 않는다)과 같은 말이다.
+pub const NONE: &str = "none";
+
+/// 기본 실행기 자동 설치를 끄는 환경 변수. 비어 있지 않고 `0`이 아니면 끈다.
+pub const NO_AUTO_ENV: &str = "SBX_NO_AUTO_EXECUTOR";
+
+/// 기본 실행기를 자동으로 받아 깔지 않는 까닭. `None`이면 받아 깐다(모듈 문서 "기본 실행기 자동 설치").
+/// `executor_none`은 `--executor none`을 받았는지다. 고르기가 무엇을 냈는지는 호출자가 먼저 본다.
+pub fn auto_install_off(data_dir: &Path, executor_none: bool) -> Option<String> {
+    if executor_none {
+        return Some(format!("SBX_EXECUTOR={NONE}"));
+    }
+    if std::env::var_os(NO_AUTO_ENV).is_some_and(|v| !v.is_empty() && v != "0") {
+        return Some(format!("{NO_AUTO_ENV} is set"));
+    }
+    if !matches!(std::env::consts::OS, "linux" | "macos") {
+        return Some("there is no executor for this platform".into());
+    }
+    if installed(data_dir).list().is_ok_and(|l| !l.is_empty()) {
+        return Some("an executor is already installed".into());
+    }
+    let (name, _) = OFFICIAL_REPOSITORY;
+    match repositories(data_dir) {
+        Err(e) => Some(e.to_string()),
+        Ok(list) => match list.iter().find(|r| r.name == name) {
+            None => Some(format!(
+                "repository {name} is not in `sbx executor repo ls`"
+            )),
+            Some(r) if !r.signed() => Some(format!(
+                "repository {name} is not signed (this sbx has no public key for it)"
+            )),
+            Some(_) => None,
+        },
+    }
+}
+
+/// 자동 설치가 될 때 [`nothing_chosen`]의 안내에 들어 있는 말. `sbx tui`가 `executor current`의 오류에서 이것을
+/// 찾아 빈 화면의 안내를 고른다.
+pub const AUTO_INSTALL: &str = "installs the default executor from the official repository";
+
+/// 고를 실행기가 없을 때의 안내: 설치한 것이 있으면 기본을 고르라고, 없으면 자동 설치가 되는지와 손으로 하는 길.
+/// `off`는 [`auto_install_off`]의 결과다.
+pub fn nothing_chosen(data_dir: &Path, off: Option<&str>) -> String {
+    if installed(data_dir).list().is_ok_and(|l| !l.is_empty()) {
+        return "no default executor is set; choose one of the installed executors (`sbx executor ls`) with \
+                `sbx executor use NAME`, or give --executor"
+            .into();
+    }
+    match off {
+        None => format!(
+            "no executor is installed; the first `sbx run`, `create`, `start` or `build` {AUTO_INSTALL} \
+             (set {NO_AUTO_ENV}=1 to turn that off). To choose one yourself, find one with \
+             `sbx executor search` and install it with `sbx executor install NAME`"
+        ),
+        Some(why) => format!(
+            "{} (the default executor is not installed automatically: {why})",
+            choose::NO_EXECUTOR
+        ),
+    }
+}
+
 /// 이 sbx가 말하는 실행기 규약 버전 범위.
 fn protocols() -> index::Protocols {
     (sbx_executor_proto::MIN_VERSION..=sbx_executor_proto::VERSION).into()
@@ -109,6 +199,8 @@ pub struct Ctx<'a> {
     pub flag: Option<&'a Path>,
     /// 샌드박스(이름이나 ID)와 그것이 고정한 실행기. `rm`과 `prune`만 쓴다.
     pub pins: &'a [(String, String)],
+    /// 기본 실행기를 자동으로 받지 않는 까닭([`auto_install_off`]). `executor current`의 안내에 쓴다.
+    pub auto_off: Option<String>,
 }
 
 /// `pins`가 필요한 명령인지. 필요할 때만 샌드박스 목록을 읽는다.
@@ -142,7 +234,8 @@ pub async fn run(cx: &Ctx<'_>, c: &ExecutorCommand) -> Result<u8> {
             repo,
             ..
         } => {
-            install_remote(cx, &ex, &ad, &spec.parse()?, repo.as_deref()).await?;
+            let i = install_remote(cx, &ex, &ad, &spec.parse()?, repo.as_deref()).await?;
+            print_ref(cx, &i)?;
             Ok(0)
         }
         ExecutorCommand::Search { name, all } => {
@@ -153,7 +246,8 @@ pub async fn run(cx: &Ctx<'_>, c: &ExecutorCommand) -> Result<u8> {
             Ok(0)
         }
         ExecutorCommand::Current => {
-            let c = chosen(cx, &ex, &ad, None)?.ok_or(crate::choose::NO_EXECUTOR)?;
+            let c = chosen(cx, &ex, &ad, None)?
+                .ok_or_else(|| nothing_chosen(cx.data_dir, cx.auto_off.as_deref()))?;
             print_chosen(cx, &c, false)
         }
         ExecutorCommand::Which { spec } => {
@@ -480,10 +574,9 @@ async fn install_remote(
     ad: &Executors,
     spec: &Spec,
     repo: Option<&str>,
-) -> Result<()> {
+) -> Result<Installed> {
     let (fetcher, idx, order) = indexes(cx, repo).await?;
-    let platform = Platform::host();
-    let c = index::pick(&idx, spec, &platform, protocols())?;
+    let c = index::pick(&idx, spec, &Platform::host(), protocols())?;
     owner_was_read(
         &order,
         &idx,
@@ -491,9 +584,28 @@ async fn install_remote(
         &c.name,
         &format!("sbx executor install --repo {} {spec}", c.repository),
     )?;
+    if let Some(want) = spec.version.as_deref().filter(|w| *w != c.version) {
+        eprintln!(
+            "{}@{want}: the newest patch is {}@{}",
+            c.name, c.name, c.version
+        );
+    }
+    install_candidate(cx, ex, ad, &fetcher, &idx, &order, &c).await
+}
+
+/// 고른 `c`를 설치한다. VMM 묶음이면 어댑터부터(이미 있으면 그것을 쓰되, 그 이름의 주인에게서 받은 것이어야 한다).
+async fn install_candidate(
+    cx: &Ctx<'_>,
+    ex: &Executors,
+    ad: &Executors,
+    fetcher: &Fetcher,
+    idx: &[(String, index::Index)],
+    order: &[String],
+    c: &Candidate,
+) -> Result<Installed> {
+    let platform = Platform::host();
     // 어댑터를 받기 전에: 이 이름을 다른 저장소에서 받았으면 어댑터만 남기고 실패하지 않게 먼저 거부한다.
     ex.check_origin(&c.spec(), &c.repository)?;
-    // VMM 묶음이면 어댑터부터. 이미 있으면(어느 버전이든) 그것을 쓰되, 그 이름의 주인에게서 받은 것이어야 한다.
     if let Some(name) = &c.adapter {
         let a = Spec {
             name: name.clone(),
@@ -501,22 +613,88 @@ async fn install_remote(
         };
         match ad.find(&a)? {
             None => {
-                let ac = adapter_for(&idx, &order, &a, &platform)
+                let ac = adapter_for(idx, order, &a, &platform)
                     .map_err(|e| format!("{}@{} needs adapter {name}: {e}", c.name, c.version))?;
                 eprintln!("{}@{} needs adapter {name}", c.name, c.version);
-                fetch_and_install(cx, &fetcher, ad, &ac, adapter_check).await?;
+                fetch_and_install(cx, fetcher, ad, &ac, adapter_check).await?;
             }
-            Some(have) => installed_adapter_is_the_owners(&idx, &have)?,
+            Some(have) => installed_adapter_is_the_owners(idx, &have)?,
         }
     }
-    if let Some(want) = spec.version.as_deref().filter(|w| *w != c.version) {
-        eprintln!(
-            "{}@{want}: the newest patch is {}@{}",
-            c.name, c.name, c.version
-        );
+    fetch_and_install(cx, fetcher, ex, c, |i| verify_installed(ad, i)).await
+}
+
+/// 기본 실행기 자동 설치(모듈 문서): 공식 저장소의 기본 실행기를 받아 깐다. 표준 출력에는 쓰지 않는다.
+/// 할지 말지는 호출자가 [`auto_install_off`]로 먼저 정한다.
+pub async fn install_default(cx: &Ctx<'_>) -> Result<Installed> {
+    let (name, _) = OFFICIAL_REPOSITORY;
+    let manual = format!(
+        "install one yourself with `sbx executor install NAME` (`sbx executor search` lists them), or from a \
+         directory with `sbx executor install --from DIR NAME@VERSION`; set {NO_AUTO_ENV}=1 to stop trying"
+    );
+    let official = repositories(cx.data_dir)?
+        .into_iter()
+        .find(|r| r.name == name)
+        .ok_or_else(|| format!("repository {name} is not in `sbx executor repo ls`"))?;
+    let fetcher = Fetcher::new()?.with_seen(seen(cx.data_dir));
+    let (idx, failed) = sbx_executor_repo::indexes(&fetcher, std::slice::from_ref(&official)).await;
+    crate::notices::record(cx.cache_dir, &idx);
+    let Some((_, index)) = idx.first() else {
+        let why = failed
+            .first()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "no index".into());
+        return Err(format!(
+            "no executor is installed, and the default executor could not be installed because the {name} \
+             repository could not be read ({why}). Check the network and try again, or {manual}"
+        )
+        .into());
+    };
+    let default = index
+        .default_executor()
+        .map_err(|e| format!("the {name} repository names no default executor: {e}; {manual}"))?;
+    let spec = Spec {
+        name: default.to_owned(),
+        version: None,
+    };
+    let c = index::pick(&idx, &spec, &Platform::host(), protocols())
+        .map_err(|e| format!("the default executor cannot be installed here: {e}; {manual}"))?;
+    eprintln!(
+        "sbx: no executor is installed; installing the default executor {}@{} from {name} ({}). \
+         Set {NO_AUTO_ENV}=1 to turn this off.",
+        c.name, c.version, official.url
+    );
+    let order = vec![name.to_owned()];
+    let ex = installed(cx.data_dir);
+    let ad = adapters(cx.data_dir);
+    install_candidate(cx, &ex, &ad, &fetcher, &idx, &order, &c)
+        .await
+        .map_err(|e| {
+            format!(
+                "cannot install the default executor {}@{}: {e}; {manual}",
+                c.name, c.version
+            )
+            .into()
+        })
+}
+
+/// 기본 실행기 자동 설치를 한 번에 하나씩 하는 잠금. 다른 sbx가 쥐고 있으면 알리고 기다린다. 놓을 때 지우지 않는다.
+pub async fn auto_install_lock(cache_dir: &Path) -> Result<std::fs::File> {
+    let dir = cache_dir.join("executor-downloads");
+    std::fs::create_dir_all(&dir)?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join(".auto-install.lock"))?;
+    match file.try_lock() {
+        Ok(()) => return Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => {
+            eprintln!("sbx: waiting for another sbx that is installing the default executor");
+        }
+        Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
     }
-    let i = fetch_and_install(cx, &fetcher, ex, &c, |i| verify_installed(ad, i)).await?;
-    print_ref(cx, &i)
+    Ok(tokio::task::spawn_blocking(move || file.lock().map(|()| file)).await??)
 }
 
 /// VMM 묶음이 가리키는 어댑터를 고른다: 그 이름의 주인([`adapter_owner`])에게서만. 주인에게 이 플랫폼·규약에 맞는

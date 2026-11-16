@@ -548,7 +548,7 @@ impl Ctx {
                 eprintln!("warning: {w}");
             }
         }
-        let chosen = self.choose(None)?;
+        let chosen = self.choose(None).await?;
         let rt = self.launcher_with(&chosen)?;
         let m = Arc::new(self.manager()?);
         let work = self.cache_dir.join("tmp").join(format!(

@@ -182,6 +182,10 @@ mod unix {
             signed_repositories_and_names_that_stay_put,
         ),
         (
+            "the_default_executor_is_installed_on_first_use",
+            the_default_executor_is_installed_on_first_use,
+        ),
+        (
             "image_kernel_is_given_to_the_executor",
             image_kernel_is_given_to_the_executor,
         ),
@@ -408,6 +412,8 @@ mod unix {
                 .env("SBX_GUEST_INIT", self.root.join("initramfs"))
                 .env("SBX_EXECUTOR", std::env::current_exe().unwrap())
                 .env("SBX_SHIM", std::env::current_exe().unwrap())
+                // 실행기를 빼는 테스트도 진짜 공식 저장소에 닿지 않게. 자동 설치를 보는 테스트만 지우고 로컬 저장소를 준다.
+                .env("SBX_NO_AUTO_EXECUTOR", "1")
                 // 레지스트리 자격 증명은 테스트 안의 것만 본다.
                 .env("DOCKER_CONFIG", self.root.join("docker"))
                 .env("XDG_CONFIG_HOME", self.root.join("xdg-config"))
@@ -4338,6 +4344,159 @@ mod unix {
         std::fs::write(dir.join("v2/index.json.minisig"), sig.into_string()).unwrap();
         let o = sbx(&["executor", "search"]);
         assert!(text(&o.stderr).contains("expired"), "{}", text(&o.stderr));
+    }
+
+    /// 실행기가 없으면 VM을 띄우는 명령이 공식 저장소(여기서는 로컬 서명 저장소를 `official`로 둔다)의 기본
+    /// 실행기를 받아 깔고 이어서 한다. 끄는 길, 서명되지 않은 저장소, 닿지 않는 저장소, 동시에 두 번.
+    fn the_default_executor_is_installed_on_first_use() {
+        let e = Env::new();
+        let sbx = |args: &[&str], extra: &[(&str, &str)]| {
+            let mut c = e.cmd(args);
+            c.env_remove("SBX_EXECUTOR")
+                .env_remove("SBX_NO_AUTO_EXECUTOR");
+            for (k, v) in extra {
+                c.env(k, v);
+            }
+            c.output().unwrap()
+        };
+        let ok = |o: &Output| assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let nothing_installed = || {
+            let o = sbx(&["executor", "ls", "--format", "json"], &[]);
+            assert_eq!(text(&o.stdout).trim(), "[]", "{}", text(&o.stderr));
+        };
+        let (bytes, sha) = bundle_of_me();
+        let host = sbx_executor_repo::Platform::host();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // 실행기가 둘이다: 어느 것이 기본인지는 색인의 `default`가 말한다.
+        let dir = e.path("official");
+        std::fs::create_dir_all(dir.join("v2")).unwrap();
+        std::fs::write(dir.join("v2/fake.tar.gz"), &bytes).unwrap();
+        let art = serde_json::json!([{"os": host.os, "architecture": host.architecture,
+            "url": "fake.tar.gz", "sha256": sha, "size": bytes.len()}]);
+        let entry = |v: &str| serde_json::json!({"versions": {v: {"protocol": sbx_executor_proto::VERSION, "artifacts": art}}});
+        let index =
+            serde_json::json!({"schema": 2, "serial": 1, "expires": now + 3600, "default": "fake",
+            "executors": {"fake": entry("1.0"), "zzz": entry("9.0")}})
+            .to_string();
+        std::fs::write(dir.join("v2/index.json"), &index).unwrap();
+        let kp = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let sig = minisign::sign(None, &kp.sk, index.as_bytes(), None, None).unwrap();
+        std::fs::write(dir.join("v2/index.json.minisig"), sig.into_string()).unwrap();
+        let url = format!("file://{}", dir.display());
+        let key = kp.pk.to_base64();
+        let set_official = |url: &str, key: Option<&str>| {
+            ok(&sbx(&["executor", "repo", "rm", "official"], &[]));
+            let mut args = vec!["executor", "repo", "add", "official", url];
+            match key {
+                Some(k) => args.extend(["--key", k]),
+                None => args.push("--unsigned"),
+            }
+            ok(&sbx(&args, &[]));
+        };
+        let run = ["run", "--rm", IMAGE, "echo", "hi"];
+
+        // 이 sbx에 공식 키가 없으면(지금의 빌드) 받지 않는다. 표준 출력은 비어 있다.
+        set_official(&url, None);
+        let o = sbx(&run, &[]);
+        assert_eq!(o.status.code(), Some(125), "{}", text(&o.stderr));
+        assert!(
+            text(&o.stderr).contains("is not signed"),
+            "{}",
+            text(&o.stderr)
+        );
+        nothing_installed();
+
+        set_official(&url, Some(&key));
+        // 받기 전의 안내: 첫 run이 받는다.
+        let o = sbx(&["executor", "current"], &[]);
+        assert!(
+            text(&o.stderr).contains("the first `sbx run`"),
+            "{}",
+            text(&o.stderr)
+        );
+        // 끄는 길 둘.
+        for (k, v, why) in [
+            ("SBX_NO_AUTO_EXECUTOR", "1", "SBX_NO_AUTO_EXECUTOR is set"),
+            ("SBX_EXECUTOR", "none", "SBX_EXECUTOR=none"),
+        ] {
+            let o = sbx(&run, &[(k, v)]);
+            assert_eq!(o.status.code(), Some(125), "{}", text(&o.stderr));
+            assert!(text(&o.stderr).contains(why), "{k}: {}", text(&o.stderr));
+            nothing_installed();
+        }
+        // `SBX_NO_AUTO_EXECUTOR=0`은 끄지 않는다(아래에서 받는다).
+
+        // 닿지 않으면 까닭과 손으로 하는 길을 알리고 아무것도 깔지 않는다.
+        set_official(&format!("file://{}", e.path("gone").display()), Some(&key));
+        let o = sbx(&run, &[]);
+        assert_eq!(o.status.code(), Some(125), "{}", text(&o.stderr));
+        let err = text(&o.stderr);
+        assert!(
+            err.contains("could not be read") && err.contains("sbx executor install --from DIR"),
+            "{err}"
+        );
+        nothing_installed();
+
+        // 두 명령이 함께 처음 돈다: 하나만 받고 알리며, 둘 다 돈다. 받은 것의 알림은 표준 오류에만.
+        set_official(&url, Some(&key));
+        let spawn = || {
+            let mut c = e.cmd(&run);
+            c.env_remove("SBX_EXECUTOR")
+                .env("SBX_NO_AUTO_EXECUTOR", "0")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            c.spawn().unwrap()
+        };
+        let (a, b) = (spawn(), spawn());
+        let outs = [
+            wait_with_timeout(a, Duration::from_secs(60)),
+            wait_with_timeout(b, Duration::from_secs(60)),
+        ];
+        let mut notices = 0;
+        for o in &outs {
+            assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+            assert_eq!(text(&o.stdout), "hi\n");
+            if text(&o.stderr).contains(&format!(
+                "installing the default executor fake@1.0 from official ({url}/)"
+            )) {
+                notices += 1;
+            }
+        }
+        assert_eq!(
+            notices,
+            1,
+            "{}\n---\n{}",
+            text(&outs[0].stderr),
+            text(&outs[1].stderr)
+        );
+        let o = sbx(&["executor", "ls"], &[]);
+        assert!(
+            text(&o.stdout).contains("* fake") && text(&o.stdout).contains("official"),
+            "{}",
+            text(&o.stdout)
+        );
+        // 이제 있으니 다시 받지 않는다.
+        let o = sbx(&run, &[]);
+        ok(&o);
+        assert!(
+            !text(&o.stderr).contains("installing"),
+            "{}",
+            text(&o.stderr)
+        );
+        // 설치한 것이 있는데 기본이 없으면 받지 않고 고르라고 한다.
+        let o = sbx(&["executor", "repo", "ls"], &[]);
+        ok(&o);
+        std::fs::remove_file(e.path("data/executors/default")).unwrap();
+        let o = sbx(&run, &[]);
+        assert_eq!(o.status.code(), Some(125), "{}", text(&o.stderr));
+        assert!(
+            text(&o.stderr).contains("sbx executor use NAME"),
+            "{}",
+            text(&o.stderr)
+        );
     }
 
     fn a_repository_that_vanishes_or_turns_hostile_breaks_nothing_installed() {

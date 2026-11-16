@@ -189,6 +189,27 @@ fn executors_tab_shows_current_marks_and_adapters() {
         "{s}"
     );
     assert!(!s.contains("s start"), "{s}");
+    // 첫 run이 기본 실행기를 받아 깔면(`executor current`가 그렇게 말한다) 그대로 run하라고 한다.
+    let auto = format!(
+        "no executor is installed; the first `sbx run` {}",
+        crate::executors::AUTO_INSTALL
+    );
+    x.current = Err(auto.clone());
+    m.apply(Msg::Executors(Ok(x.clone())));
+    let s = render(&mut m, 140, 30);
+    assert!(
+        s.contains("run -it alpine sh; the first run installs the default executor")
+            && !s.contains("Install an executor first"),
+        "{s}"
+    );
+    m.tab = Tab::Executors;
+    let s = render(&mut m, 140, 20);
+    assert!(
+        s.contains("The first run installs the default one. Press S to search")
+            && !s.contains("current:"),
+        "{s}"
+    );
+    x.current = Err(crate::choose::NO_EXECUTOR.into());
     // 설치한 것이 있는데 고를 수 없으면 그 까닭은 보인다.
     x.executors = executors().executors;
     m.apply(Msg::Executors(Ok(x)));
