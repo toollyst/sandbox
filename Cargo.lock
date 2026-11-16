@@ -2512,6 +2512,7 @@ dependencies = [
 name = "sbx-executor-firecracker"
 version = "0.2.2"
 dependencies = [
+ "rustix",
  "sbx-executor-proto",
  "serde_json",
 ]

@@ -37,6 +37,10 @@
 //! - firecracker는 이 실행 파일의 `vmm` 모드(감시 프로세스) 아래에서 돈다. 감시 프로세스는 표준 입력이 닫히면
 //!   firecracker를 죽인다. 표준 입력은 `run` 세션이 쥐고 있으므로 `Kill`, 세션의 입력 끝, 세션 프로세스가
 //!   강제로 죽는 경우 모두 VM이 끝난다(고아 VM이 남지 않는다).
+//! - 거꾸로 감시 프로세스만 강제로 죽으면(SIGKILL, OOM) firecracker를 죽일 쪽이 없다. 그래서 Unix에서는 감시 프로세스를
+//!   새 프로세스 그룹으로 띄우고(firecracker가 물려받는다), 세션이 감시 프로세스의 끝을 보면 거두기 전에 그 그룹을
+//!   SIGKILL로 끝낸 뒤 `Exited`를 보낸다. 남는 경우: 세션과 감시 프로세스가 함께 강제로 죽으면 firecracker는 남는다
+//!   (둘을 이어 주는 것이 없다. Linux의 PR_SET_PDEATHSIG는 fork와 exec 사이에 unsafe가 필요해 쓰지 않는다).
 //! - VM이 끝나면 `Exited`: firecracker가 0으로 끝나면 `guest powered off`, 죽였으면 `killed`.
 
 pub mod config;

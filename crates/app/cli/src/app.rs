@@ -638,7 +638,7 @@ impl Ctx {
         if let Some(c) = self.try_choose(pinned)? {
             return Ok(c);
         }
-        executors::install_default(&self.executors_ctx(&[])).await?;
+        executors::install_default(&self.executors_ctx(&[], &[])).await?;
         drop(lock);
         self.try_choose(pinned)?
             .ok_or_else(|| msg(self.nothing_chosen(self.auto_install_off().as_deref())))
@@ -660,13 +660,18 @@ impl Ctx {
         }
     }
 
-    fn executors_ctx<'a>(&'a self, pins: &'a [(String, String)]) -> executors::Ctx<'a> {
+    fn executors_ctx<'a>(
+        &'a self,
+        pins: &'a [(String, String)],
+        running: &'a [(String, Vec<PathBuf>)],
+    ) -> executors::Ctx<'a> {
         executors::Ctx {
             data_dir: &self.data_dir,
             cache_dir: &self.cache_dir,
             json: self.json(),
             flag: self.executor.as_deref(),
             pins,
+            running,
             auto_off: self.auto_install_off(),
         }
     }
@@ -687,20 +692,31 @@ impl Ctx {
 
     /// `executor ...`.
     async fn executor_cmd(&self, c: &ExecutorCommand) -> AppResult<u8> {
-        let pins: Vec<(String, String)> = if executors::needs_pins(c) {
-            self.runtime()?
-                .list()
-                .await?
-                .into_iter()
-                .filter_map(|i| {
-                    let pin = i.spec.labels.get(choose::PIN_LABEL)?.clone();
-                    Some((i.spec.name.clone().unwrap_or_else(|| i.id.to_string()), pin))
-                })
-                .collect()
+        let sandboxes = if executors::needs_sandboxes(c) {
+            self.runtime()?.list().await?
         } else {
             Vec::new()
         };
-        executors::run(&self.executors_ctx(&pins), c).await
+        let pins: Vec<(String, String)> = sandboxes
+            .iter()
+            .filter_map(|i| {
+                let pin = i.spec.labels.get(choose::PIN_LABEL)?.clone();
+                Some((i.spec.name.clone().unwrap_or_else(|| i.id.to_string()), pin))
+            })
+            .collect();
+        let running: Vec<(String, Vec<PathBuf>)> = sandboxes
+            .iter()
+            .filter(|i| i.state == State::Running && !i.executor_files.is_empty())
+            .map(|i| {
+                let label = i
+                    .spec
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| short_id(&i.id).to_owned());
+                (label, i.executor_files.clone())
+            })
+            .collect();
+        executors::run(&self.executors_ctx(&pins, &running), c).await
     }
 
     fn lookup(&self, m: &Manager, name: &str) -> AppResult<Option<ImageMatch>> {

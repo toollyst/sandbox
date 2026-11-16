@@ -14,6 +14,10 @@ workspace = true
 sbx-executor-proto.workspace = true
 serde_json.workspace = true
 
+# 감시 프로세스가 죽었을 때 그 프로세스 그룹(firecracker)을 거두기 전에 끝낸다(session::vmm_exited).
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", default-features = false, features = ["process", "std"] }
+
 [[bin]]
 name = "sbx-executor-firecracker"
 path = "src/bin/sbx-executor-firecracker.rs"

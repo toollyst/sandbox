@@ -466,6 +466,10 @@ pub struct InstalledExecutor {
     pub yanked: bool,
     /// The repository's advisory for this version, one line, if any.
     pub advisory: Option<String>,
+    /// Running sandboxes started with it (name or short ID). `executor rm` refuses it while there are any, and
+    /// `executor prune` keeps it.
+    #[serde(default)]
+    pub running: Vec<String>,
 }
 
 /// An installed adapter (`executor adapter ls`).
@@ -488,6 +492,10 @@ pub struct InstalledAdapter {
     pub yanked: bool,
     /// The repository's advisory for this version, one line, if any.
     pub advisory: Option<String>,
+    /// Running sandboxes started with it (name or short ID). `executor adapter rm` refuses it while there are any,
+    /// and `executor prune` keeps it.
+    #[serde(default)]
+    pub running: Vec<String>,
 }
 
 /// The executor sbx would use (`executor current`, `which`).

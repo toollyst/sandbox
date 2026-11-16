@@ -20,6 +20,11 @@
 //!   맞아야 한다. 어댑터만 설치할 때는 확인하지 않는다(VMM 없이는 답하지 않을 수 있다).
 //! - `rm`은 샌드박스가 고정한 실행기([`crate::choose::PIN_LABEL`])를, `adapter rm`은 설치한 VMM 묶음이 쓰는 어댑터의
 //!   마지막 버전을 지우지 않는다(`-f`로 지운다).
+//! - **쓰는 중**: 실행 중인 샌드박스가 띄운 실행기·VMM 묶음·어댑터(실행 코어가 기록한 `executor_files`가 그 설치
+//!   디렉터리 안에 있는 것)는 `rm`과 `adapter rm`이 거부하고 그 샌드박스를 댄다. `-f`면 지우되 경고한다: macOS와
+//!   Linux에서는 열린 실행 파일을 지워도 그 VM은 계속 돌고(멈추기, `exec`, `cp`는 제어 소켓으로 하므로 실행기 파일이
+//!   필요 없다) 그 버전으로 다시 시작하지 못할 뿐이다. `prune`은 쓰는 중인 것을 건너뛰고 표준 오류에 한 줄씩 알린다.
+//!   `ls`와 `adapter ls`는 `running`(쓰는 실행 중 샌드박스)을 보인다.
 //! - `prune`: 기본도 아니고, 그 이름의 가장 높은 버전도 아니고, 샌드박스가 고정하지도 않은 실행기 버전과, 가장 높은
 //!   버전이 아닌 어댑터 버전을 지운다.
 //!
@@ -199,16 +204,64 @@ pub struct Ctx<'a> {
     pub flag: Option<&'a Path>,
     /// 샌드박스(이름이나 ID)와 그것이 고정한 실행기. `rm`과 `prune`만 쓴다.
     pub pins: &'a [(String, String)],
+    /// 실행 중인 샌드박스(이름이나 짧은 ID)와 그 VM을 띄운 실행기의 파일(`SandboxInfo::executor_files`).
+    /// `ls`, `rm`, `prune`과 어댑터의 `ls`, `rm`만 쓴다.
+    pub running: &'a [(String, Vec<PathBuf>)],
     /// 기본 실행기를 자동으로 받지 않는 까닭([`auto_install_off`]). `executor current`의 안내에 쓴다.
     pub auto_off: Option<String>,
 }
 
-/// `pins`가 필요한 명령인지. 필요할 때만 샌드박스 목록을 읽는다.
-pub fn needs_pins(c: &ExecutorCommand) -> bool {
+/// `pins`와 `running`이 필요한 명령인지. 필요할 때만 샌드박스 목록을 읽는다.
+pub fn needs_sandboxes(c: &ExecutorCommand) -> bool {
     matches!(
         c,
-        ExecutorCommand::Rm { force: false, .. } | ExecutorCommand::Prune { .. }
+        ExecutorCommand::Ls
+            | ExecutorCommand::Rm { .. }
+            | ExecutorCommand::Prune { .. }
+            | ExecutorCommand::Adapter {
+                command: AdapterCommand::Ls | AdapterCommand::Rm { .. }
+            }
     )
+}
+
+/// 그 설치(디렉터리)로 띄운 실행 중 샌드박스.
+fn running_on(cx: &Ctx<'_>, i: &Installed) -> Vec<String> {
+    cx.running
+        .iter()
+        .filter(|(_, files)| files.iter().any(|f| f.starts_with(&i.dir)))
+        .map(|(sandbox, _)| sandbox.clone())
+        .collect()
+}
+
+/// `rm`, `adapter rm` 전에: 쓰는 중이면 `-f`가 없을 때 거부하고, 있으면 경고한다.
+fn refuse_in_use(cx: &Ctx<'_>, kind: &str, found: &Installed, force: bool) -> Result<()> {
+    let users = running_on(cx, found);
+    if users.is_empty() {
+        return Ok(());
+    }
+    let (s, them) = if users.len() > 1 {
+        ("es", "them")
+    } else {
+        ("", "it")
+    };
+    if !force {
+        return Err(format!(
+            "{kind} {found} is in use by running sandbox{s} {}; stop {them} first, or use -f",
+            users.join(", ")
+        )
+        .into());
+    }
+    let keeps = if users.len() > 1 {
+        "they keep"
+    } else {
+        "it keeps"
+    };
+    eprintln!(
+        "warning: {kind} {found} is in use by running sandbox{s} {}: {keeps} running, but can't be started \
+         with it again",
+        users.join(", ")
+    );
+    Ok(())
 }
 
 /// `executor ...`를 실행한다. 종료 코드를 돌려준다.
@@ -264,6 +317,9 @@ pub async fn run(cx: &Ctx<'_>, c: &ExecutorCommand) -> Result<u8> {
         }
         ExecutorCommand::Rm { force, spec } => {
             let spec: Spec = spec.parse()?;
+            if let Some(found) = ex.find(&spec)?.filter(|_| spec.version.is_some()) {
+                refuse_in_use(cx, "executor", &found, *force)?;
+            }
             if !force && let Some(found) = ex.find(&spec)?.filter(|_| spec.version.is_some()) {
                 let users = pinned_by(cx, &found);
                 if !users.is_empty() {
@@ -359,6 +415,7 @@ fn ls(cx: &Ctx<'_>, ex: &Executors) -> Result<u8> {
                 origin: i.origin.clone(),
                 yanked: notice(i).is_some_and(|n| n.yanked),
                 advisory: notice(i).and_then(|n| n.advisory.clone()),
+                running: running_on(cx, i),
             })
             .collect();
         output::print_value(&v)?;
@@ -996,6 +1053,7 @@ async fn adapter(cx: &Ctx<'_>, ex: &Executors, ad: &Executors, c: &AdapterComman
                         origin: i.origin.clone(),
                         yanked: notice(i).is_some_and(|n| n.yanked),
                         advisory: notice(i).and_then(|n| n.advisory.clone()),
+                        running: running_on(cx, i),
                     })
                     .collect();
                 output::print_value(&v)?;
@@ -1057,6 +1115,9 @@ async fn adapter(cx: &Ctx<'_>, ex: &Executors, ad: &Executors, c: &AdapterComman
         }
         AdapterCommand::Rm { force, spec } => {
             let spec: Spec = spec.parse()?;
+            if let Some(found) = ad.find(&spec)?.filter(|_| spec.version.is_some()) {
+                refuse_in_use(cx, "adapter", &found, *force)?;
+            }
             if !force && let Some(found) = ad.find(&spec)?.filter(|_| spec.version.is_some()) {
                 let others = ad
                     .list()?
@@ -1103,6 +1164,26 @@ fn prune(cx: &Ctx<'_>, ex: &Executors, ad: &Executors, dry_run: bool) -> Result<
         default.as_ref() == Some(i) || pins.contains(&i.to_string().as_str())
     });
     let adapters = stale(&ad.list()?, &|_| false);
+    // 실행 중인 샌드박스가 쓰는 것은 남긴다(모듈 문서의 "쓰는 중").
+    let in_use = |kind: &str, i: &Installed| {
+        let users = running_on(cx, i);
+        if !users.is_empty() {
+            eprintln!(
+                "kept {kind} {i}: in use by running sandbox{} {}",
+                if users.len() > 1 { "es" } else { "" },
+                users.join(", ")
+            );
+        }
+        !users.is_empty()
+    };
+    let executors: Vec<Installed> = executors
+        .into_iter()
+        .filter(|i| !in_use("executor", i))
+        .collect();
+    let adapters: Vec<Installed> = adapters
+        .into_iter()
+        .filter(|i| !in_use("adapter", i))
+        .collect();
     let mut out = Vec::new();
     for (kind, from, list) in [("executor", ex, executors), ("adapter", ad, adapters)] {
         for i in list {

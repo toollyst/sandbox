@@ -206,6 +206,29 @@ fn closing_input_or_killing_the_executor_ends_the_vm() {
     e.assert_fake_gone();
 }
 
+/// 감시 프로세스(`vmm` 모드, `Started`의 pid)만 SIGKILL로 죽어도 firecracker는 남지 않고, 세션은 끝을 알린다.
+#[test]
+fn a_killed_monitor_does_not_leave_firecracker_behind() {
+    let e = Env::new();
+    let (mut child, _stdin, mut stdout, first) = e.launch("wait");
+    let Event::Started { pid: Some(monitor) } = first else {
+        panic!("{first:?}");
+    };
+    assert!(
+        Command::new("kill")
+            .args(["-9", &monitor.to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    match next(&mut stdout) {
+        Event::Exited { reason } => assert!(reason.contains("firecracker exited"), "{reason}"),
+        other => panic!("{other:?}"),
+    }
+    e.assert_fake_gone();
+    assert!(child.wait().unwrap().success());
+}
+
 #[test]
 fn guest_power_off_and_early_failure() {
     let e = Env::new();

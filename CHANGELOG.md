@@ -95,6 +95,14 @@ to release a tag without one. Changes land under `## Unreleased` first, and the 
 
 ### Fixed
 
+- The `firecracker` adapter no longer leaves Firecracker running when its watcher process alone is killed
+  (`kill -9`, the OOM killer): the watcher runs in its own process group, which the adapter kills before it reports
+  the VM gone.
+- `sbx executor rm`, `sbx executor adapter rm` and `sbx executor prune` no longer remove an executor, VMM package or
+  adapter that a running sandbox was started with: `rm` refuses and names the sandbox (`-f` removes it with a
+  warning), and `prune` keeps it and says so. `executor ls` and `executor adapter ls` add `running` (JSON) and the
+  Executors tab of `sbx tui` a RUNNING column. Until now `prune` could remove the older adapter version a running
+  VM used.
 - `sbx system df` counts the executors and adapters that running sandboxes were started with as active (it always
   showed 0).
 
