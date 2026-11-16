@@ -157,7 +157,19 @@ impl Env {
 
 impl Drop for Env {
     fn drop(&mut self) {
+        // 끝난 VM의 프로세스가 남았으면 가짜 실행기(VM 끄기)의 결함이다. 막 끝낸 VM의 것은 잠깐 기다린다.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut leaked = self.fake.leaked();
+        while !leaked.is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+            leaked = self.fake.leaked();
+        }
+        // 아직 도는 VM(테스트가 멈추지 않은 것, 패닉한 테스트)의 프로세스도 거둔다.
+        self.fake.kill_everything();
         let _ = std::fs::remove_dir_all(&self.root);
+        if !leaked.is_empty() && !std::thread::panicking() {
+            panic!("process groups outlived their fake VM: {leaked:?}");
+        }
     }
 }
 
@@ -794,7 +806,12 @@ fn trapping(sig: &str, code: i32) -> Vec<String> {
     vec![
         "sh".into(),
         "-c".into(),
-        format!("trap '' TERM; trap 'exit {code}' {sig}; echo ready; while :; do sleep 0.02; done"),
+        // 바쁜 루프가 아니라 1초짜리 sleep을 기다린다(wait는 트랩한 시그널에 곧바로 돌아온다). 부모(이 테스트
+        // 프로세스)가 사라지면 스스로 끝난다.
+        format!(
+            "trap '' TERM; trap 'exit {code}' {sig}; echo ready; \
+             while kill -0 $PPID 2>/dev/null; do sleep 1 >/dev/null 2>&1 & wait $!; done"
+        ),
     ]
 }
 

@@ -448,6 +448,7 @@ fn the_whole_path_over_the_guest_protocol() {
         main: Default::default(),
         layers: None,
         sweep: crate::exec::Sweep::Group,
+        procs: None,
         layer_disks: None,
         clock: None,
         volume: None,

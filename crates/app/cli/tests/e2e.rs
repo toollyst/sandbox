@@ -299,6 +299,15 @@ mod unix {
             }
         }
         let passed = selected.len() - failed.len();
+        let leaked = LEAKED.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if !leaked.is_empty() {
+            println!(
+                "\ntest result: FAILED. processes outlived {} test environment(s): {}\n",
+                leaked.len(),
+                leaked.join("; ")
+            );
+            return ExitCode::FAILURE;
+        }
         if failed.is_empty() {
             println!("\ntest result: ok. {passed} passed; 0 failed\n");
             ExitCode::SUCCESS
@@ -445,8 +454,43 @@ mod unix {
                     self.root.join("registries.conf"),
                 )
                 .env("HOME", self.root.join("home"))
+                // 가짜 실행기가 자기와 소유 프로세스, 샌드박스의 프로세스 그룹을 여기 적는다(끝날 때 남은 것을 본다).
+                .env("SBX_FAKE_PROCS", self.root.join("procs"))
+                // 이 테스트 프로세스가 kill -9로 죽어도 가짜 실행기가 VM을 끈다.
+                .env("SBX_FAKE_WATCH_PID", std::process::id().to_string())
                 .stdin(Stdio::null());
             c
+        }
+
+        /// 테스트가 남긴 샌드박스를 지우고(제품의 길), 가짜 실행기가 기록한 프로세스(실행기, 소유 프로세스,
+        /// 샌드박스의 프로세스 그룹)가 모두 사라졌는지 본다. 남은 것은 SIGKILL로 끝내고 돌려준다.
+        fn reap(&self) -> Vec<sbx_executor_fake::leftover::Left> {
+            use sbx_executor_fake::leftover;
+            if let Ok(o) = self.cmd(&["ps", "-aq"]).output() {
+                let ids: Vec<String> = text(&o.stdout)
+                    .split_whitespace()
+                    .map(str::to_owned)
+                    .collect();
+                if !ids.is_empty() {
+                    let mut args = vec!["rm", "-f"];
+                    args.extend(ids.iter().map(String::as_str));
+                    let _ = self.cmd(&args).output();
+                }
+            }
+            let record = self.root.join("procs");
+            let me = [std::process::id()];
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let left = leftover::alive(&record, &me);
+                if left.is_empty() {
+                    return left;
+                }
+                if Instant::now() >= deadline {
+                    leftover::kill(&left);
+                    return left;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
         }
 
         fn sbx(&self, args: &[&str]) -> Output {
@@ -495,8 +539,27 @@ mod unix {
         }
     }
 
+    /// 테스트가 끝난 뒤 프로세스가 남았다(새는 프로세스). 실행 전체를 실패로 끝낸다.
+    static LEAKED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
     impl Drop for Env {
         fn drop(&mut self) {
+            // 패닉 때도 이 테스트가 띄운 것을 거둔다. 남은 것은 조용히 지우지 않고 알린다.
+            let left = self.reap();
+            if !left.is_empty() {
+                let list: Vec<String> = left.iter().map(|l| l.to_string()).collect();
+                eprintln!(
+                    "e2e: processes outlived the test in {}: {}",
+                    self.root.display(),
+                    list.join(", ")
+                );
+                if !std::thread::panicking() {
+                    LEAKED
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push(format!("{} ({})", self.root.display(), list.join(", ")));
+                }
+            }
             let _ = std::fs::remove_dir_all(&self.root);
         }
     }
@@ -2797,7 +2860,7 @@ mod unix {
             IMAGE,
             "sh",
             "-c",
-            "while :; do echo y; sleep 0.05; done",
+            "while kill -0 $PPID 2>/dev/null; do echo y; sleep 0.05; done",
         ]);
         let id = text(&o.stdout).trim().to_owned();
         let soon = std::time::SystemTime::now()
@@ -2821,12 +2884,15 @@ mod unix {
         assert_eq!(e.sbx(&["rm", "-f", &id]).status.code(), Some(0));
     }
 
+    /// 셸이 시그널을 기다리는 곳: 1초짜리 `sleep`을 기다린다(`wait`는 트랩한 시그널에 곧바로 돌아와 트랩을 돈다).
+    /// 바쁜 루프가 아니다(초당 fork 한 번). 부모(게스트 처리)가 사라지면 스스로 끝나므로 무엇이 새도 1초 뒤에는 없다.
+    const BLOCK: &str =
+        "while kill -0 $PPID 2>/dev/null; do sleep 1 >/dev/null 2>&1 & wait $!; done";
+
     /// 시그널 `sig`를 받으면 `code`로 끝나고 TERM은 무시하는 기본 프로세스를 detached로 시작한다.
     /// 트랩을 건 뒤("ready"가 로그에 나온 뒤) ID를 돌려준다.
     fn run_trapping(e: &Env, extra: &[&str], sig: &str, code: i32) -> String {
-        let script = format!(
-            "trap '' TERM; trap 'exit {code}' {sig}; echo ready; while :; do sleep 0.02; done"
-        );
+        let script = format!("trap '' TERM; trap 'exit {code}' {sig}; echo ready; {BLOCK}");
         let mut args = vec!["run", "-d"];
         args.extend_from_slice(extra);
         args.extend_from_slice(&[IMAGE, "sh", "-c", &script]);
@@ -3973,7 +4039,7 @@ mod unix {
             IMAGE,
             "sh",
             "-c",
-            "while :; do test -t 1 && echo tty; sleep 0.05; done",
+            "while kill -0 $PPID 2>/dev/null; do test -t 1 && echo tty; sleep 0.05; done",
         ]);
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
         let id = text(&o.stdout).trim().to_owned();
@@ -3993,7 +4059,7 @@ mod unix {
             IMAGE,
             "sh",
             "-c",
-            "trap 'echo term; exit 7' TERM; while :; do echo tick; sleep 0.05; done",
+            "trap 'echo term; exit 7' TERM; while kill -0 $PPID 2>/dev/null; do echo tick; sleep 0.05; done",
         ]);
         let id = text(&o.stdout).trim().to_owned();
         let mut client = e.spawn(&["attach", &id]);

@@ -22,6 +22,8 @@ struct Fixture {
     gid: u32,
     /// 연결끼리 함께 쓰는 기본 프로세스 (게스트 안에서와 같다).
     main: Arc<crate::exec::Main>,
+    /// 호스트에서 돈다: 띄운 프로세스 그룹. 끝나면(패닉 때도) 모두 끝낸다.
+    procs: Arc<crate::exec::Procs>,
 }
 
 impl Fixture {
@@ -35,6 +37,7 @@ impl Fixture {
             uid: m.uid(),
             gid: m.gid(),
             main: Default::default(),
+            procs: Default::default(),
         }
     }
 
@@ -43,6 +46,7 @@ impl Fixture {
         let (host, guest) = UnixStream::pair().unwrap();
         let root = self.dir.clone();
         let main = self.main.clone();
+        let procs = self.procs.clone();
         thread::spawn(move || {
             server::serve(
                 guest,
@@ -54,6 +58,7 @@ impl Fixture {
                     main,
                     layers: None,
                     sweep: crate::exec::Sweep::Group,
+                    procs: Some(procs),
                     layer_disks: None,
                     clock: None,
                     volume: None,
@@ -94,6 +99,7 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
+        self.procs.kill_all();
         let _ = fs::remove_dir_all(&self.dir);
     }
 }
@@ -153,6 +159,7 @@ fn version_mismatch_is_reported() {
                 main: Default::default(),
                 layers: None,
                 sweep: crate::exec::Sweep::Group,
+                procs: None,
                 layer_disks: None,
                 clock: None,
                 volume: None,
@@ -177,6 +184,7 @@ fn request_before_hello_is_a_protocol_error() {
                 main: Default::default(),
                 layers: None,
                 sweep: crate::exec::Sweep::Group,
+                procs: None,
                 layer_disks: None,
                 clock: None,
                 volume: None,
@@ -254,7 +262,8 @@ fn signal_main_reaches_the_main_process_from_another_connection() {
         &[
             "sh",
             "-c",
-            "trap 'echo got; exit 7' USR1; echo ready; while :; do sleep 0.05; done",
+            "trap 'echo got; exit 7' USR1; echo ready; \
+             while kill -0 $PPID 2>/dev/null; do sleep 1 >/dev/null 2>&1 & wait $!; done",
         ],
         false,
     );
@@ -325,7 +334,8 @@ fn exec_tty_input_resize_and_eof() {
             "sh",
             "-c",
             "read line; echo got:$line; trap 'stty size; trap - WINCH' WINCH; \
-             while [ \"$(stty size)\" = '24 80' ]; do sleep 0.05; done; stty size; cat; echo done",
+             while [ \"$(stty size)\" = '24 80' ] && kill -0 $PPID 2>/dev/null; do sleep 0.05; done; \
+             stty size; cat; echo done",
         ],
         true,
     );
@@ -543,6 +553,7 @@ fn shutdown_syncs_replies_then_calls_back() {
                 main: Default::default(),
                 layers: None,
                 sweep: crate::exec::Sweep::Group,
+                procs: None,
                 layer_disks: None,
                 clock: None,
                 volume: None,
@@ -836,6 +847,7 @@ fn connect_with(
                 main,
                 layers: layers.then(|| Box::new(OpenLayers) as Box<dyn crate::layer::Layers>),
                 sweep: crate::exec::Sweep::Group,
+                procs: None,
                 layer_disks,
                 clock: None,
                 volume: None,
@@ -982,6 +994,7 @@ fn privileged_pid1_a_build_step_ends_even_detached_daemons() {
                 main,
                 layers: Some(Box::new(OpenLayers)),
                 sweep: crate::exec::Sweep::Everything,
+                procs: None,
                 layer_disks: None,
                 clock: None,
                 volume: None,
