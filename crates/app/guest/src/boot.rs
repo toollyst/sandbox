@@ -8,7 +8,8 @@
 //! 2. 층 디스크마다 erofs로 읽기 전용 마운트한다(`/run/sbx/lower/0`이 맨 아래).
 //! 3. scratch에 파일 시스템이 없으면 포맷한다(`mkfs`). 있으면 그대로 쓴다(정지 뒤 다시 시작).
 //! 4. 층들을 아래(lowerdir, 맨 위 층이 앞), scratch를 위로 overlay를 만들고, 그 안에 `/proc`, `/sys`, `/dev`,
-//!    `/dev/pts`, `/dev/shm`을 마운트한다. 층이 하나면 지금까지와 같은 overlay다.
+//!    `/dev/pts`, `/dev/shm`을 마운트한다. `/dev`에는 OCI 런타임처럼 `/dev/fd`, `/dev/stdin` 등의 링크를 둔다
+//!    (`crate::devfs`). 층이 하나면 지금까지와 같은 overlay다.
 //! 5. overlay를 `/`로 옮기고 chroot한다. 루프백을 올리고 호스트 이름을 정한다.
 //! 6. 자신을 `agent` 인자로 다시 실행해 연결 처리 프로세스를 띄운다.
 //! 7. 이후로는 고아 프로세스를 거두기만 한다. 연결 처리 프로세스가 끝나면 VM을 끝낸다.
@@ -163,6 +164,10 @@ fn switch_root(cfg: &BootConfig) -> io::Result<()> {
         libc::MS_NOSUID,
         "mode=0755",
     )?;
+    // `/dev/fd`, `/dev/stdin` 등(OCI 런타임과 같다). 없어도 부팅은 계속한다.
+    if let Err(e) = crate::devfs::add_links(std::path::Path::new(&format!("{NEWROOT}/dev"))) {
+        log(&format!("/dev links: {e}"));
+    }
     mount_dir(
         "devpts",
         &format!("{NEWROOT}/dev/pts"),

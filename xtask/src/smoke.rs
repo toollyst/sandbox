@@ -7,7 +7,7 @@
 //! - `--sbx`: 기본은 `target/release/sbx`. 설정은 [`bench`](crate::bench)처럼 환경 변수와 설치한 기본 실행기를 따른다.
 //! - `--no-internet`: 인터넷이 필요한 확인(허용한 곳으로 HTTPS)을 건너뛴다. 이미지는 미리 받아 둬야 한다.
 //!
-//! 확인하는 것: 출력과 종료 코드(0, 7, 127), 표준 입력, 네트워크 장치 없음, 이름 풀기가 곧바로 실패함(5초 시간
+//! 확인하는 것: 출력과 종료 코드(0, 7, 127), 표준 입력, `/dev/fd`·`/dev/stdin` 링크, 네트워크 장치 없음, 이름 풀기가 곧바로 실패함(5초 시간
 //! 초과를 기다리지 않음), 쓰기 가능한 루트, detached 실행과
 //! `exec`/`cp`/`logs`/`stop`(SIGTERM으로 143)/`rm`, `--connect`(다른 샌드박스의 포트에 이름으로, 열지 않은 포트는 닫힘),
 //! 허용 목록(허용한 곳은 200, 나머지는 막힘).
@@ -136,6 +136,22 @@ pub fn run(root: &Path, args: &[String]) -> Result<usize, String> {
         Some("piped in\n"),
         0,
         Some("piped in\n"),
+    ))?;
+    check(expect(
+        &s,
+        "/dev/fd and /dev/stdin links",
+        &[
+            "run",
+            "--rm",
+            "-i",
+            IMAGE,
+            "sh",
+            "-c",
+            "test -L /dev/fd && test -L /dev/stderr && cat /dev/stdin && cat /dev/fd/0",
+        ],
+        Some("via /dev/stdin\n"),
+        0,
+        Some("via /dev/stdin\n"),
     ))?;
     check(expect(
         &s,

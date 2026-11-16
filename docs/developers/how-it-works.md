@@ -140,7 +140,8 @@ The kernel unpacks the initramfs and runs `/init` = `sbx-guest` as PID 1
    ([`disks.rs`](../../crates/app/guest/src/disks.rs): volumes come after the layers and are never EROFS). It
    formats `/dev/vdb` on first boot (scratch is zero-filled, so "no filesystem" means "new") and reuses it after a
    restart. The kernel command line doesn't change.
-3. It stacks overlay(layers ↓, scratch ↑), mounts `/proc`, `/sys`, `/dev`, `/dev/pts` and `/dev/shm` inside, moves
+3. It stacks overlay(layers ↓, scratch ↑), mounts `/proc`, `/sys`, `/dev` (with the `/dev/fd`, `/dev/stdin`,
+   `/dev/stdout` and `/dev/stderr` links OCI runtimes add), `/dev/pts` and `/dev/shm` inside, moves
    it to `/`, and chroots. It brings up loopback and sets the hostname.
 4. It re-executes itself as the **agent**, which listens on vsock port 1024 and serves each connection on its own
    thread. It also starts a loopback DNS responder that answers NXDOMAIN at once, so name lookups without network
