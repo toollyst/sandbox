@@ -10,6 +10,9 @@
 //!   `label=K[=V]`로 좁힌다.
 //! - `-a`면 남은 샌드박스 어느 것도 쓰지 않는 이미지(참조와 함께). 없으면 이미지는 지우지 않는다(sbx에는 Docker의
 //!   "dangling" 이미지가 없다: 받은 이미지에는 늘 참조가 있다).
+//! - `--volumes`면 `volume prune`처럼 볼륨도: `-a`와 함께면 남은 샌드박스 어느 것도 가리키지 않는 볼륨(이름 붙은 볼륨도).
+//!   `-a`가 없으면 지울 볼륨이 없다(sbx에는 이름 없는 볼륨이 없다). `--volumes`가 없으면 볼륨은 건드리지 않는다.
+//!   `--filter label=`은 볼륨에도 적용한다(`until=`은 샌드박스에만).
 //! - 어느 이미지도 쓰지 않는 레이어 blob·층 디스크·합친 디스크, 끝내지 못한 받기·만들기가 남긴 임시 파일, 지우다
 //!   멈춘 샌드박스 디렉터리.
 //!   임시 것은 [`LEFTOVER_AGE`]보다 오래된 것만 지운다(다른 프로세스가 지금 쓰는 중일 수 있다).
@@ -17,7 +20,6 @@
 //! 지우기 전에 묻는다. 터미널이 아니면 `-f`가 있어야 한다.
 
 use std::fs;
-use std::io::{BufRead, IsTerminal};
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
@@ -166,6 +168,20 @@ impl Ctx {
         let cache_records = disk_usage(&m.store().layout().build_cache_dir());
         let ex_size = disk_usage(&dirs::executors_dir(&self.data_dir))
             + disk_usage(&dirs::adapters_dir(&self.data_dir));
+        // 볼륨: 디스크가 실제로 차지하는 것. 가리키는 샌드박스가 없는 것을 `system prune -a --volumes`가 지운다.
+        let rt = self.runtime()?;
+        let volumes = rt.volumes()?;
+        let volume_users = rt.volume_users().await?;
+        let vol_size: u64 = volumes.iter().map(|v| disk_usage(&v.dir)).sum();
+        let vol_free: u64 = volumes
+            .iter()
+            .filter(|v| !volume_users.contains_key(&v.name))
+            .map(|v| disk_usage(&v.dir))
+            .sum();
+        let vol_active = volumes
+            .iter()
+            .filter(|v| sbx_runtime::volume::in_use(&self.data_dir, &v.name).unwrap_or(false))
+            .count() as u64;
         let rows = [
             output::DiskUsage {
                 kind: "images".into(),
@@ -193,6 +209,14 @@ impl Ctx {
                 size: sb_size,
                 shared: 0,
                 reclaimable: sb_free,
+            },
+            output::DiskUsage {
+                kind: "volumes".into(),
+                total: volumes.len() as u64,
+                active: vol_active,
+                size: vol_size,
+                shared: 0,
+                reclaimable: vol_free,
             },
             output::DiskUsage {
                 kind: "executors".into(),
@@ -228,6 +252,7 @@ impl Ctx {
     pub(super) async fn system_prune(
         &self,
         all: bool,
+        volumes: bool,
         force: bool,
         filters: &[String],
     ) -> AppResult<u8> {
@@ -237,20 +262,16 @@ impl Ctx {
             .map(|v| parse::time_ns(v, now_ns()).map_err(|e| msg(format!("until: {e}"))))
             .collect::<AppResult<Vec<u64>>>()?;
         if !force {
-            let what = if all {
-                "all stopped sandboxes, images no sandbox uses, the build cache, unused layers and leftovers"
-            } else {
-                "all stopped sandboxes, the build cache, unused layers and leftovers"
+            let what = match (all, volumes) {
+                (true, true) => {
+                    "all stopped sandboxes, images and volumes no sandbox uses, the build cache, unused layers and leftovers"
+                }
+                (true, false) => {
+                    "all stopped sandboxes, images no sandbox uses, the build cache, unused layers and leftovers"
+                }
+                (false, _) => "all stopped sandboxes, the build cache, unused layers and leftovers",
             };
-            if !std::io::stdin().is_terminal() {
-                return Err(msg(format!(
-                    "this removes {what}; use -f to do it without asking"
-                )));
-            }
-            eprint!("WARNING! This will remove {what}.\nAre you sure you want to continue? [y/N] ");
-            let mut line = String::new();
-            std::io::stdin().lock().read_line(&mut line)?;
-            if !matches!(line.trim(), "y" | "Y" | "yes") {
+            if !super::volume::confirm(what)? {
                 return Ok(1);
             }
         }
@@ -281,6 +302,20 @@ impl Ctx {
                 },
                 _ => {}
             }
+        }
+        if volumes && all {
+            let only_labels = Filters::parse(
+                &filters
+                    .iter()
+                    .filter(|v| v.starts_with("label="))
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                filter::VOLUME_PRUNE,
+            )
+            .map_err(msg)?;
+            let (gone, freed) = self.prune_volumes(&rt, &only_labels).await?;
+            report.volumes = gone;
+            report.reclaimed += freed;
         }
         let m = self.manager()?;
         let layout = m.store().layout().clone();
@@ -344,6 +379,7 @@ impl Ctx {
         for (title, list) in [
             ("Deleted Sandboxes", &report.sandboxes),
             ("Deleted Images", &report.images),
+            ("Deleted Volumes", &report.volumes),
             ("Deleted Layers", &report.layers),
             ("Deleted Leftovers", &report.leftovers),
         ] {

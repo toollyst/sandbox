@@ -132,6 +132,11 @@ pub enum Area {
     Save,
     Load,
     Login,
+    VolumeCreate,
+    VolumeLs,
+    VolumeInspect,
+    VolumeRm,
+    VolumePrune,
     SystemDf,
     SystemPrune,
     Behavior,
@@ -143,7 +148,7 @@ pub enum Area {
 
 impl Area {
     /// 문서의 순서.
-    pub const ALL: [Area; 29] = [
+    pub const ALL: [Area; 34] = [
         Area::Commands,
         Area::Global,
         Area::Run,
@@ -166,6 +171,11 @@ impl Area {
         Area::Save,
         Area::Load,
         Area::Login,
+        Area::VolumeCreate,
+        Area::VolumeLs,
+        Area::VolumeInspect,
+        Area::VolumeRm,
+        Area::VolumePrune,
         Area::SystemDf,
         Area::SystemPrune,
         Area::Behavior,
@@ -200,6 +210,11 @@ impl Area {
             Area::Save => "docker save",
             Area::Load => "docker load",
             Area::Login => "docker login",
+            Area::VolumeCreate => "docker volume create",
+            Area::VolumeLs => "docker volume ls",
+            Area::VolumeInspect => "docker volume inspect",
+            Area::VolumeRm => "docker volume rm",
+            Area::VolumePrune => "docker volume prune",
             Area::SystemDf => "docker system df",
             Area::SystemPrune => "docker system prune",
             Area::Behavior => "Behavior",
@@ -238,6 +253,11 @@ impl Area {
             Area::Save => flags(&[&["save"]]),
             Area::Load => flags(&[&["load"]]),
             Area::Login => flags(&[&["login"]]),
+            Area::VolumeCreate => flags(&[&["volume", "create"]]),
+            Area::VolumeLs => flags(&[&["volume", "ls"]]),
+            Area::VolumeInspect => flags(&[&["volume", "inspect"]]),
+            Area::VolumeRm => flags(&[&["volume", "rm"]]),
+            Area::VolumePrune => flags(&[&["volume", "prune"]]),
             Area::SystemDf => flags(&[&["system", "df"]]),
             Area::SystemPrune => flags(&[&["system", "prune"]]),
             Area::Build => flags(&[&["build"]]),
@@ -280,6 +300,10 @@ impl Area {
                  `sbx` commands."
             }
             Area::ComposeFile => "Keys `sbx compose` will read. An unknown key is an error.",
+            Area::VolumeCreate => {
+                "A volume is a sparse disk of its own, formatted (ext4 with a journal) by the guest the first time a \
+                 sandbox attaches it. Only the `local` kind exists."
+            }
             _ => "",
         }
     }
@@ -467,20 +491,21 @@ pub const ROWS: &[Row] = &[
     same(Commands, "login", &["login_and_logout_use_dockers_config"])
         .note("Writes Docker's `config.json` or its credential helper, so `docker login` works too."),
     same(Commands, "logout", &["login_and_logout_use_dockers_config"]),
-    differs(Commands, "events", "Kinds `sandbox`, `image` and `network`; actions create, start, stop, remove, `exec_start`, `exec_die`, pull, prepare, tag, untag, push, delete, and for `network` connect, close, refuse, lookup, `proxy_only`, notice. RFC 3339 times with nanoseconds. Keeps the last 1-2 MiB (Docker: the last 256 events).", &[
+    differs(Commands, "events", "Kinds `sandbox`, `image`, `volume` and `network`; actions create, start, stop, remove, `exec_start`, `exec_die`, pull, prepare, tag, untag, push, delete, and for `network` connect, close, refuse, lookup, `proxy_only`, notice. RFC 3339 times with nanoseconds. Keeps the last 1-2 MiB (Docker: the last 256 events).", &[
         "events_replay_and_follow",
         "tag_and_push_to_a_registry",
+        "volume_data_outlives_the_sandbox",
     ])
     .why("No daemon: the process that changes a state records it, so a sandbox whose owner dies suddenly has no stop event."),
     differs(Commands, "info", "Shows the host, the executor and the storage sbx uses.", &["commands_that_do_not_launch_need_no_executor"]),
     differs(Commands, "version", "There is no `version` command.", &["docker_options_reach_the_sandbox"])
         .sbx("--version"),
     differs(Commands, "system", "`df` and `prune`.", &["system_df_and_prune_free_what_nothing_uses"]),
-    differs(Commands, "system df", "Images, sandboxes and executors, by what is actually on disk. A layer several images use is counted once; `SHARED` is that part.", &[
+    differs(Commands, "system df", "Images, sandboxes, volumes and executors, by what is actually on disk. A layer several images use is counted once; `SHARED` is that part.", &[
         "system_df_and_prune_free_what_nothing_uses",
         "images_on_one_base_store_it_once",
     ]),
-    differs(Commands, "system prune", "Stopped sandboxes, unused layers (blobs and layer disks) and leftovers of interrupted pulls older than an hour.", &[
+    differs(Commands, "system prune", "Stopped sandboxes, unused layers (blobs and layer disks) and leftovers of interrupted pulls older than an hour; volumes only with `--volumes`.", &[
         "system_df_and_prune_free_what_nothing_uses",
     ]),
     not_yet(Commands, "system events", UNPLANNED).note("`sbx events` does this."),
@@ -494,12 +519,28 @@ pub const ROWS: &[Row] = &[
     ]),
     same(Commands, "tag", &["tag_and_push_to_a_registry"])
         .note("Moves a reference that pointed at another image, as Docker does, and records an image `tag` event."),
-    not_yet(Commands, "volume", "V1").note("Named volumes: a sparse disk per volume."),
-    not_yet(Commands, "volume create", "V1"),
-    not_yet(Commands, "volume ls", "V1"),
-    not_yet(Commands, "volume inspect", "V1"),
-    not_yet(Commands, "volume rm", "V1"),
-    not_yet(Commands, "volume prune", "V1"),
+    differs(Commands, "volume", "`create`, `ls`, `inspect`, `rm`, `prune`. A volume is a sparse disk that outlives sandboxes. One running sandbox at a time attaches a volume read-write; read-only attaches share it while nobody writes. A second writer is refused and told which sandbox holds it.", &[
+        "volume_data_outlives_the_sandbox",
+        "a_volume_has_one_writer_at_a_time",
+    ])
+    .why("A volume is a block device with one file system on it. Two kernels writing it at once would corrupt it, so the host locks it for the VM's lifetime."),
+    differs(Commands, "volume create", "16 GiB by default (sparse: the host spends only what is written). Creating an existing name again returns it, as Docker does; with another size or labels it is an error.", &[
+        "volume_data_outlives_the_sandbox",
+        "app::volume::tests::only_the_size_option_is_known",
+    ]),
+    differs(Commands, "volume ls", "Also shows the size, what the disk uses on the host and the sandboxes that point at each volume.", &[
+        "volume_data_outlives_the_sandbox",
+    ]),
+    differs(Commands, "volume inspect", "Size, labels, the disk file, the sandboxes that point at it and whether one has it attached now. No `Mountpoint`: the data lives inside the disk.", &[
+        "volume_data_outlives_the_sandbox",
+        "mcp_uses_only_its_own_volumes",
+    ]),
+    same(Commands, "volume rm", &["volume_data_outlives_the_sandbox", "a_volume_has_one_writer_at_a_time"])
+        .note("Refused while a sandbox points at the volume, even a stopped one."),
+    differs(Commands, "volume prune", "Removes nothing without `-a`, because sbx has no anonymous volumes; `-a` removes every volume no sandbox points at (Docker 23 and later: the same).", &[
+        "volume_data_outlives_the_sandbox",
+    ]),
+    not_yet(Commands, "volume update", UNPLANNED).note("Docker's only takes cluster volumes."),
     not_yet(Commands, "compose", "C1"),
     not_yet(Commands, "commit", LATER),
     not_yet(Commands, "diff", LATER),
@@ -571,7 +612,7 @@ pub const ROWS: &[Row] = &[
         "parse::tests::cpus_must_be_whole",
     ])
     .why("A VM is started with a fixed number of vCPUs."),
-    differs(Run, "--mount", "`type=bind` (needs an executor with live sharing; an error otherwise) and `type=copy` (below). No `volume` or `tmpfs` yet.", &[
+    differs(Run, "--mount", "`type=bind` (needs an executor with live sharing; an error otherwise), `type=volume` and `type=copy` (below). No `tmpfs` yet.", &[
         "docker_options_reach_the_sandbox",
         "parse::tests::mounts",
     ]),
@@ -610,13 +651,23 @@ pub const ROWS: &[Row] = &[
     ]),
     same(Run, "-t, --tty", &["run_t_gives_the_main_process_a_terminal"]),
     same(Run, "-u, --user", &["docker_options_reach_the_sandbox"]),
-    differs(Run, "-v, --volume", "Live-shares a host directory (`SRC:DST[:ro]`), which needs an executor with virtio-fs; without one it is an error, never a silent copy.", &[
+    differs(Run, "-v, --volume", "With a host path, live-shares a host directory (`SRC:DST[:ro]`), which needs an executor with virtio-fs; without one it is an error, never a silent copy. With a name, attaches a volume (below).", &[
         "volume_is_shared_live",
         "parse::tests::volumes",
     ])
     .why("Executors differ in what they can do. sbx doesn't switch to another way of sharing behind your back."),
-    not_yet(Run, "-v, --volume NAME:/path", "V1").note("Today a name is an error."),
-    not_yet(Run, "--mount type=volume", "V1"),
+    differs(Run, "-v, --volume NAME:/path", "Attaches a named volume; a name used for the first time creates it. The first attach fills an empty volume with what the image has at that path (owner, mode, times), unless `nocopy`. `ro` is read-only on the host too. A volume attached read-write by a running sandbox is refused, naming that sandbox.", &[
+        "volume_data_outlives_the_sandbox",
+        "a_volume_has_one_writer_at_a_time",
+        "volume_disks_limits_and_old_executors",
+        "parse::tests::volume_names_are_told_from_paths_like_docker",
+    ])
+    .why("Each volume is a disk of the VM, attached after the root file system and the writable disk, so an executor's disk count limits how many a sandbox takes."),
+    wont(Run, "-v, --volume /path", "An anonymous volume is a disk nobody named that lingers after the sandbox. Name it (`-v NAME:/path`); `--storage-opt size=` sizes the writable disk."),
+    differs(Run, "--mount type=volume", "`source`, `target`, `readonly`, `volume-nocopy`. No `volume-driver`, `volume-opt` or `volume-subpath`.", &[
+        "volume_data_outlives_the_sandbox",
+        "parse::tests::volume_names_are_told_from_paths_like_docker",
+    ]),
     not_yet(Run, "--mount type=tmpfs", UNPLANNED),
     same(Run, "-w, --workdir", &["docker_options_reach_the_sandbox"]),
     not_yet(Run, "--add-host", LATER),
@@ -706,7 +757,7 @@ pub const ROWS: &[Row] = &[
         "docker_options_reach_the_sandbox",
     ]),
     wont(Rm, "-l, --link", "Legacy in Docker, and sbx has no links."),
-    na(Rm, "-v, --volumes", "sbx makes no anonymous volumes: a sandbox's writable disk goes with it."),
+    na(Rm, "-v, --volumes", "sbx makes no anonymous volumes: a sandbox's writable disk goes with it, and named volumes stay (as in Docker)."),
     // ── ps ───────────────────────────────────────────────────────────────
     same(Ps, "-a, --all", &["names_work_in_place_of_ids"]),
     differs(Ps, "-f, --filter", "Keys `id`, `name`, `label`, `status`, `exited`, `ancestor`. `name` is a substring, not a regular expression. No `before`, `since`, `health` and the others. An unknown key or value is an error (Docker ignores some).", &[
@@ -804,14 +855,42 @@ pub const ROWS: &[Row] = &[
     same(Login, "-u, --username", &["login_and_logout_use_dockers_config"]),
     same(Login, "--password-stdin", &["login_and_logout_use_dockers_config"]),
     wont(Login, "-p, --password", "A password on the command line ends up in shell history and `ps`. Use `--password-stdin`, or let sbx ask."),
+    // ── volume create ────────────────────────────────────────────────────
+    same(VolumeCreate, "--label", &["volume_data_outlives_the_sandbox"]),
+    differs(VolumeCreate, "-o, --opt", "Only `size=` (e.g. `size=50g`, at least 64m). An unknown option is an error.", &[
+        "volume_data_outlives_the_sandbox",
+        "app::volume::tests::only_the_size_option_is_known",
+    ]),
+    wont(VolumeCreate, "-d, --driver", "Extensions are out of scope: a volume is a disk of the VM."),
+    na(VolumeCreate, "--availability, --group, --limit-bytes, --required-bytes, --scope, --secret, --sharing, --topology-preferred, --topology-required, --type", SWARM),
+    // ── volume ls ────────────────────────────────────────────────────────
+    differs(VolumeLs, "-f, --filter", "Keys `name` (a substring), `label`, `dangling`. No `driver`.", &[
+        "volume_data_outlives_the_sandbox",
+    ]),
+    differs(VolumeLs, "--format", GO_TEMPLATES, &["volume_data_outlives_the_sandbox"]).sbx("--format"),
+    same(VolumeLs, "-q, --quiet", &["volume_data_outlives_the_sandbox"]),
+    na(VolumeLs, "--cluster", SWARM),
+    // ── volume inspect ───────────────────────────────────────────────────
+    differs(VolumeInspect, "-f, --format", GO_TEMPLATES, &["volume_data_outlives_the_sandbox"]).sbx("--format"),
+    // ── volume rm ────────────────────────────────────────────────────────
+    differs(VolumeRm, "-f, --force", "Only makes a missing volume no error; a volume in use is never removed.", &[
+        "volume_data_outlives_the_sandbox",
+    ])
+    .why("Docker's `-f` doesn't remove a volume in use either."),
+    // ── volume prune ─────────────────────────────────────────────────────
+    same(VolumePrune, "-a, --all", &["volume_data_outlives_the_sandbox"]),
+    same(VolumePrune, "-f, --force", &["volume_data_outlives_the_sandbox"]),
+    differs(VolumePrune, "--filter", "Key `label` only.", &["volume_data_outlives_the_sandbox"]),
     // ── system df ────────────────────────────────────────────────────────
     differs(SystemDf, "--format", GO_TEMPLATES, &["system_df_and_prune_free_what_nothing_uses"]).sbx("--format"),
     not_yet(SystemDf, "-v, --verbose", UNPLANNED),
     // ── system prune ─────────────────────────────────────────────────────
     same(SystemPrune, "-a, --all", &["system_df_and_prune_free_what_nothing_uses"]),
     same(SystemPrune, "-f, --force", &["system_df_and_prune_free_what_nothing_uses"]),
-    differs(SystemPrune, "--filter", "Keys `until` and `label`, for sandboxes.", &["system_df_and_prune_free_what_nothing_uses"]),
-    not_yet(SystemPrune, "--volumes", "V1"),
+    differs(SystemPrune, "--filter", "Keys `until` and `label`, for sandboxes; `label` also for volumes.", &["system_df_and_prune_free_what_nothing_uses"]),
+    differs(SystemPrune, "--volumes", "Only with `-a` does it remove anything: every volume no sandbox points at (sbx has no anonymous volumes).", &[
+        "system_df_and_prune_free_what_nothing_uses",
+    ]),
     // ── 동작 ─────────────────────────────────────────────────────────────
     same(Behavior, "Exit codes 125, 126 and 127", &[
         "run_failures_before_the_command_are_125",

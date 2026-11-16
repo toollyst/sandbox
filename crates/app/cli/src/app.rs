@@ -43,6 +43,7 @@ use crate::cli::{
 };
 use crate::filter::{self, Filters};
 use crate::output;
+use crate::parse::Attach;
 use crate::parse::{self, CpEndpoint};
 use crate::progress::Status;
 use crate::{choose, dirs, executors, guest, host};
@@ -54,6 +55,9 @@ mod push;
 mod stats;
 mod system;
 mod upgrade;
+mod volume;
+
+pub(crate) use volume::VolumeScope;
 
 /// `logs -f`, `events`가 새 기록을 보러 가는 간격.
 const FOLLOW_POLL: Duration = Duration::from_millis(100);
@@ -153,9 +157,12 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
         Command::Stats { no_stream, ids } => ctx.stats(*no_stream, ids).await,
         Command::System { command } => match command {
             SystemCommand::Df => ctx.system_df().await,
-            SystemCommand::Prune { all, force, filter } => {
-                ctx.system_prune(*all, *force, filter).await
-            }
+            SystemCommand::Prune {
+                all,
+                volumes,
+                force,
+                filter,
+            } => ctx.system_prune(*all, *volumes, *force, filter).await,
         },
         Command::Prepare {
             rootfs_format,
@@ -225,6 +232,7 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
             id,
         } => ctx.attach_cmd(*no_stdin, *sig_proxy, detach_keys, id).await,
         Command::Ps { all, quiet, filter } => ctx.ps(*all, *quiet, filter).await,
+        Command::Volume { command } => ctx.volume_cmd(command).await,
         Command::Inspect { id } => ctx.inspect(id).await,
         Command::Events {
             since,
@@ -327,6 +335,8 @@ pub(crate) struct Ctx {
     launchers: std::sync::Mutex<Vec<(choose::Chosen, Runtime)>>,
     /// 받을 이미지의 크기 상한(`sbx mcp --max-image-size`).
     pub(crate) max_image_bytes: Option<u64>,
+    /// 쓰고 만들 수 있는 볼륨(`sbx mcp`는 MCP로 만든 것만).
+    pub(crate) volume_scope: VolumeScope,
 }
 
 impl Ctx {
@@ -358,6 +368,7 @@ impl Ctx {
             format: cli.format,
             launchers: std::sync::Mutex::new(Vec::new()),
             max_image_bytes: None,
+            volume_scope: VolumeScope::All,
         })
     }
 
@@ -438,7 +449,7 @@ impl Ctx {
     async fn ensure_prepared(&self, rt: &Runtime, sandbox: &sbx_runtime::Sandbox) -> AppResult<()> {
         let spec = &sandbox.info().spec;
         let m = self.manager()?;
-        let disks = rt.layer_disks();
+        let disks = rt.layer_disks_for(spec.volumes.len());
         if m.store().has_image(&spec.image)
             && !m.is_prepared(&spec.image, spec.rootfs_format, disks)
         {
@@ -1039,13 +1050,18 @@ impl Ctx {
                 .unwrap_or(behavior::DEFAULT_MEMORY_MIB),
             scratch_disk_mib: a.storage_opt.unwrap_or(behavior::DEFAULT_SCRATCH_MIB),
         };
-        let mut mounts = a
+        let mut mounts = Vec::new();
+        let mut volumes = Vec::new();
+        for attached in a
             .volumes
             .iter()
             .map(|v| parse::volume(v))
-            .collect::<Result<Vec<_>, _>>()?;
-        for m in &a.mounts {
-            mounts.push(parse::mount(m)?);
+            .chain(a.mounts.iter().map(|m| parse::mount(m)))
+        {
+            match attached? {
+                Attach::Folder(m) => mounts.push(m),
+                Attach::Volume(v) => volumes.push(v),
+            }
         }
         let labels: BTreeMap<String, String> = a.labels.iter().map(|l| parse::label(l)).collect();
 
@@ -1058,7 +1074,8 @@ impl Ctx {
             )));
         }
         let found = self.lookup(&m, image_name)?;
-        let disks = self.launcher_with(&chosen)?.layer_disks();
+        // 볼륨이 디스크를 쓰는 만큼 층 디스크가 준다(층이 더 많으면 아래 층을 합친다).
+        let disks = self.launcher_with(&chosen)?.layer_disks_for(volumes.len());
         let rootfs_present = found
             .as_ref()
             .is_some_and(|f| m.is_prepared(f.id(), format, disks));
@@ -1112,6 +1129,7 @@ impl Ctx {
                         process,
                         resources,
                         mounts: mounts.clone(),
+                        volumes: volumes.clone(),
                         network: network.clone(),
                         hostname: a.hostname.clone(),
                         labels,
@@ -1124,7 +1142,13 @@ impl Ctx {
                         egress_limit_bytes: a.egress_limit,
                         hold: false,
                     };
-                    let sandbox = self.launcher_with(&chosen)?.create(spec).await?;
+                    let rt = self.launcher_with(&chosen)?;
+                    // 없는 볼륨은 지금 만든다(Docker와 같다). 실행기가 받을 수 있는지 먼저 본다.
+                    if !spec.volumes.is_empty() {
+                        sbx_runtime::validate::check(&spec, &rt.capabilities())?;
+                        self.ensure_volumes(&rt, &spec.volumes)?;
+                    }
+                    let sandbox = rt.create(spec).await?;
                     return Ok(sandbox.id().clone());
                 }
             }
@@ -1503,6 +1527,7 @@ impl Ctx {
         let mut readers = [
             sbx_runtime::events_log(&self.data_dir).reader(start)?,
             sbx_runtime::network_log(&self.data_dir).reader(start)?,
+            sbx_runtime::volume::volume_events_log(&self.data_dir).reader(start)?,
             sbx_manage::events_log(&self.cache_dir).reader(start)?,
         ];
         // 표준 출력은 줄마다 비운다. 묶음마다 한 번 비우게 감싼다.

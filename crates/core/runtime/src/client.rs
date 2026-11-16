@@ -394,6 +394,38 @@ impl Guest {
         }
     }
 
+    /// 이름 붙은 볼륨 디스크(`disk`번째)를 `target`에 붙이게 한다(`HostMsg::Volume`). 게스트가 처음이면 포맷하고,
+    /// `copy`이고 비었으면 이미지 내용으로 채운다. 실패는 볼륨 이름을 붙여 알린다.
+    pub fn volume(
+        &self,
+        name: &str,
+        disk: usize,
+        target: &str,
+        readonly: bool,
+        copy: bool,
+    ) -> Result<(), RuntimeError> {
+        let mut c = self.open()?;
+        let disk =
+            u32::try_from(disk).map_err(|_| RuntimeError::Invalid(format!("disk {disk}")))?;
+        send(
+            &mut *c,
+            &HostMsg::Volume {
+                disk,
+                target: target.to_owned(),
+                readonly,
+                copy,
+            },
+        )?;
+        match recv(&mut *c)? {
+            GuestMsg::Done => Ok(()),
+            GuestMsg::Error(e) => Err(RuntimeError::Invalid(format!(
+                "cannot attach volume {name} at {target}: {}",
+                e.message
+            ))),
+            other => Err(proto_err(format!("expected Done, got {other:?}"))),
+        }
+    }
+
     /// 게스트 안의 나가는 연결 프록시를 띄우고 그 포트를 받는다.
     pub fn egress_listen(&self) -> Result<u16, RuntimeError> {
         let mut c = self.open()?;

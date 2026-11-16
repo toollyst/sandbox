@@ -150,6 +150,11 @@ pub enum Command {
         #[arg(add = complete::sandbox())]
         ids: Vec<String>,
     },
+    #[command(about = about("volume"))]
+    Volume {
+        #[command(subcommand)]
+        command: VolumeCommand,
+    },
     #[command(about = about("exec"), override_usage = "sbx exec [OPTIONS] SANDBOX COMMAND [ARG...]")]
     Exec(ExecArgs),
     #[command(about = about("attach"))]
@@ -286,7 +291,7 @@ pub enum Command {
         /// Stop at this time (same forms as --since). Without it, keep streaming.
         #[arg(long)]
         until: Option<String>,
-        /// Filter: type=sandbox|image|network, event=ACTION, sandbox=ID-PREFIX|NAME, image=IMAGE.
+        /// Filter: type=sandbox|image|network|volume, event=ACTION, sandbox=ID-PREFIX|NAME, image=IMAGE.
         /// Different keys must all match, a repeated key any of its values.
         #[arg(short = 'f', long = "filter", value_name = "KEY=VALUE")]
         filter: Vec<String>,
@@ -305,9 +310,12 @@ pub enum Command {
         /// The most memory one tool call may ask for (e.g. 2g).
         #[arg(long, default_value = "4g", value_parser = crate::parse::memory_mib)]
         max_memory: u32,
-        /// The largest writable disk one tool call may ask for (e.g. 20g).
+        /// The largest writable disk one tool call may ask for (e.g. 20g). Volumes agents create get this size too.
         #[arg(long, default_value = "16g", value_parser = crate::parse::disk_mib)]
         max_disk: u32,
+        /// At most this many volumes created through MCP may exist at once (they stay until you remove them).
+        #[arg(long, default_value_t = 8)]
+        max_volumes: u32,
         /// Stop every sandbox created through MCP at most this long after it starts (e.g. 1h); agents may ask for
         /// less with `lifetime`. By default they run until stopped or removed.
         #[arg(long, value_name = "DURATION", value_parser = crate::parse::lifetime_secs)]
@@ -369,13 +377,71 @@ pub enum SystemCommand {
     Df,
     /// Remove stopped sandboxes, unused layers and leftovers (-a: also images no sandbox uses).
     Prune {
-        /// Also remove every image no remaining sandbox uses.
+        /// Also remove every image no remaining sandbox uses (with --volumes, also every unused volume).
+        #[arg(short = 'a', long)]
+        all: bool,
+        /// Also prune volumes, as `volume prune` does (with -a, every volume no remaining sandbox uses).
+        #[arg(long)]
+        volumes: bool,
+        /// Don't ask for confirmation.
+        #[arg(short = 'f', long)]
+        force: bool,
+        /// Only sandboxes matching: until=TIME (created before), label=KEY[=VALUE].
+        #[arg(long = "filter", value_name = "KEY=VALUE")]
+        filter: Vec<String>,
+    },
+}
+
+/// `volume` 아래 명령.
+#[derive(Debug, Subcommand)]
+pub enum VolumeCommand {
+    /// Create a volume (a disk that outlives sandboxes; `run -v NAME:/path` also creates it on first use)
+    Create {
+        /// Volume option: size=SIZE (e.g. size=50g; default 16g, at least 64m). Sparse, so the host only spends what
+        /// is written.
+        #[arg(short = 'o', long = "opt", value_name = "KEY=VALUE")]
+        opt: Vec<String>,
+        /// Label k=v.
+        #[arg(long = "label")]
+        labels: Vec<String>,
+        /// Name (letters, digits, _ . -). Without it, a random one.
+        name: Option<String>,
+    },
+    /// List volumes
+    #[command(visible_alias = "list")]
+    Ls {
+        /// Only show volume names.
+        #[arg(short, long)]
+        quiet: bool,
+        /// Filter: name=TEXT, label=KEY[=VALUE], dangling=true|false (true: no sandbox uses it).
+        #[arg(short = 'f', long = "filter", value_name = "KEY=VALUE")]
+        filter: Vec<String>,
+    },
+    /// Show volumes' size, labels, disk and the sandboxes that use them
+    Inspect {
+        /// Volume names.
+        #[arg(required = true, add = complete::volume())]
+        names: Vec<String>,
+    },
+    /// Remove volumes (refused while a sandbox uses one, even a stopped one)
+    #[command(visible_alias = "remove")]
+    Rm {
+        /// Don't fail when a volume doesn't exist.
+        #[arg(short, long)]
+        force: bool,
+        /// Volume names.
+        #[arg(required = true, add = complete::volume())]
+        names: Vec<String>,
+    },
+    /// Remove volumes no sandbox uses (-a; without it there is nothing to remove, as sbx has no anonymous volumes)
+    Prune {
+        /// Remove every volume no sandbox uses (Docker's default since 23.0 removes only anonymous volumes).
         #[arg(short = 'a', long)]
         all: bool,
         /// Don't ask for confirmation.
         #[arg(short = 'f', long)]
         force: bool,
-        /// Only sandboxes matching: until=TIME (created before), label=KEY[=VALUE].
+        /// Only volumes matching: label=KEY[=VALUE].
         #[arg(long = "filter", value_name = "KEY=VALUE")]
         filter: Vec<String>,
     },
@@ -705,10 +771,11 @@ pub struct RunArgs {
     /// Label k=v.
     #[arg(short = 'l', long = "label")]
     pub labels: Vec<String>,
-    /// Live-share a host directory: `SRC:DST[:ro]` (short for --mount type=bind; needs executor support).
-    #[arg(short = 'v', long = "volume", help_heading = "Files")]
+    /// Attach a named volume `NAME:DST[:ro]` (created on first use; one writer at a time), or live-share a host
+    /// directory `/SRC:DST[:ro]` (needs executor support).
+    #[arg(short = 'v', long = "volume", help_heading = "Files", add = complete::volume_source())]
     pub volumes: Vec<String>,
-    /// `type=bind|copy,source=...,target=...[,readonly]` (copy: copied in at start).
+    /// `type=bind|copy|volume,source=...,target=...[,readonly]` (copy: copied in at start; volume: source is a name).
     #[arg(long = "mount", help_heading = "Files")]
     pub mounts: Vec<String>,
     /// Network: none (no access) or allow (only --allow destinations, through a proxy).

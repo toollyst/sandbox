@@ -95,6 +95,38 @@ pub enum RuntimeError {
     SocketPathTooLong(PathBuf),
     /// 다른 프로세스가 이 샌드박스의 VM을 소유하고 있어 할 수 없음.
     OwnedElsewhere(SandboxId),
+    /// 그 이름의 볼륨이 없음.
+    VolumeNotFound(String),
+    /// 그 이름의 볼륨이 이미 있음.
+    VolumeExists(String),
+    /// 볼륨을 다른 샌드박스가 붙이고 있음(쓰기는 하나만, 읽기 전용은 쓰는 쪽이 없을 때만).
+    VolumeBusy {
+        /// 볼륨 이름.
+        name: String,
+        /// 붙이고 있는 샌드박스(이름이나 짧은 ID, 알면).
+        holder: Option<String>,
+    },
+    /// 샌드박스 기록이 가리키는 볼륨은 지울 수 없음.
+    VolumeReferenced {
+        /// 볼륨 이름.
+        name: String,
+        /// 그 볼륨을 쓰는 샌드박스(이름이나 짧은 ID).
+        sandboxes: Vec<String>,
+    },
+    /// 실행기가 볼륨 디스크를 붙이지 못함(규약 3보다 옛 실행기).
+    VolumesUnsupported {
+        /// 실행기 이름.
+        executor: &'static str,
+    },
+    /// 볼륨이 실행기의 디스크 수를 넘음.
+    TooManyVolumes {
+        /// 요청한 볼륨 수.
+        volumes: usize,
+        /// 실행기 이름.
+        executor: &'static str,
+        /// 실행기가 붙일 수 있는 디스크 수.
+        max_disks: usize,
+    },
     /// 입출력 오류.
     Io(io::Error),
 }
@@ -158,6 +190,42 @@ impl fmt::Display for RuntimeError {
                 f,
                 "control socket path is too long for a Unix socket: {} (use a shorter socket_dir)",
                 p.display()
+            ),
+            RuntimeError::VolumeNotFound(n) => write!(f, "no such volume: {n}"),
+            RuntimeError::VolumeExists(n) => write!(f, "volume {n} already exists"),
+            RuntimeError::VolumeBusy { name, holder } => match holder {
+                Some(h) => write!(
+                    f,
+                    "volume {name} is in use by sandbox {h}: a volume attached read-write is used by one \
+                     running sandbox at a time (read-only attaches can share it when nobody writes); stop {h} first"
+                ),
+                None => write!(
+                    f,
+                    "volume {name} is in use by another sandbox that is starting or running; stop it first"
+                ),
+            },
+            RuntimeError::VolumeReferenced { name, sandboxes } => write!(
+                f,
+                "volume {name} is in use by sandbox{} {}; remove {} first",
+                if sandboxes.len() == 1 { "" } else { "es" },
+                sandboxes.join(", "),
+                if sandboxes.len() == 1 { "it" } else { "them" }
+            ),
+            RuntimeError::VolumesUnsupported { executor } => write!(
+                f,
+                "executor {executor} cannot attach volumes: it speaks an executor protocol older than 3; \
+                 install a newer version of it"
+            ),
+            RuntimeError::TooManyVolumes {
+                volumes,
+                executor,
+                max_disks,
+            } => write!(
+                f,
+                "{volumes} volumes need {} disks (one per volume, the writable disk and at least one image \
+                 layer), but executor {executor} attaches at most {max_disks}, so at most {} volumes",
+                volumes + 2,
+                max_disks.saturating_sub(2)
             ),
             RuntimeError::OwnedElsewhere(id) => write!(
                 f,

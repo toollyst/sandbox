@@ -134,6 +134,8 @@ pub const DEFAULT_MEMORY_MIB: u32 = 512;
 
 /// 샌드박스별 쓰기 가능 디스크 크기(MiB).
 pub const DEFAULT_SCRATCH_MIB: u32 = 1024;
+/// 볼륨 디스크의 기본 크기(MiB). sparse라서 호스트에서는 쓴 만큼만 차지한다(`volume create --opt size=`로 바꾼다).
+pub const DEFAULT_VOLUME_MIB: u32 = 16 * 1024;
 
 /// 이미지 ID 앞부분으로 찾을 때 필요한 최소 길이. `images`의 IMAGE ID 열과 같은 12자리다.
 /// 짧은 문자열이 우연히 ID 앞부분과 맞아 엉뚱한 이미지를 지우는 일을 막는다.

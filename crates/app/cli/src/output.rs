@@ -62,6 +62,11 @@ pub const JSON_OUTPUT: &[(&str, Form)] = &[
     ("ps", Form::Value("[Sandbox]")),
     ("inspect", Form::Value("Sandbox")),
     ("stats", Form::Value("[Stats]")),
+    ("volume create", Form::Value("Volume")),
+    ("volume ls", Form::Value("[Volume]")),
+    ("volume inspect", Form::Lines("Volume")),
+    ("volume rm", Form::Lines("VolumeRef")),
+    ("volume prune", Form::Value("VolumePrune")),
     ("exec", Form::Unsupported(PROCESS_BYTES)),
     ("attach", Form::Unsupported(PROCESS_BYTES)),
     ("logs", Form::Lines("LogLine")),
@@ -524,13 +529,14 @@ pub struct Pruned {
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct DiskUsage {
-    /// `images`, `build cache`, `sandboxes` or `executors`.
+    /// `images`, `build cache`, `sandboxes`, `volumes` or `executors`.
     #[serde(rename = "type")]
     pub kind: String,
     /// How many there are (executors count installed executors and adapters; the build cache counts cached
     /// steps).
     pub total: u64,
-    /// Images some sandbox uses; sandboxes that are running. Always 0 for the build cache and executors.
+    /// Images some sandbox uses; sandboxes that are running; volumes a running sandbox has attached. Always 0 for
+    /// the build cache and executors.
     pub active: u64,
     /// Bytes they take on disk (a sandbox's writable disk counts what it wrote, not its size). A layer several images
     /// share is counted once.
@@ -540,7 +546,8 @@ pub struct DiskUsage {
     #[serde(default)]
     pub shared: u64,
     /// Bytes `system prune -a` would free: unused images with the layers only they use, stopped sandboxes, the
-    /// layers only the build cache holds (`system prune` frees those too).
+    /// layers only the build cache holds (`system prune` frees those too); for volumes, the ones no sandbox uses
+    /// (`system prune -a --volumes`).
     pub reclaimable: u64,
 }
 
@@ -593,6 +600,49 @@ pub struct Logout {
     pub removed: bool,
 }
 
+/// A named volume (`volume create`, `volume ls`, `volume inspect`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct Volume {
+    /// Name.
+    pub name: String,
+    /// When it was created (RFC 3339).
+    pub created: String,
+    /// Disk size in bytes: the most it can hold.
+    pub size: u64,
+    /// Bytes the disk takes on the host. The disk is sparse, so this grows with what sandboxes write.
+    pub disk_usage: u64,
+    /// The disk image on the host.
+    pub disk: String,
+    /// Labels (`--label`).
+    pub labels: BTreeMap<String, String>,
+    /// IDs of the sandboxes that attach it, running or not. `volume rm` refuses while there are any.
+    pub sandboxes: Vec<String>,
+    /// Whether a running sandbox has it attached now.
+    pub in_use: bool,
+}
+
+/// One volume `volume rm` removed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct VolumeRef {
+    /// Name.
+    pub name: String,
+}
+
+/// What `volume prune` removed.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct VolumePrune {
+    /// Names of removed volumes.
+    pub volumes: Vec<String>,
+    /// Bytes freed on disk.
+    pub reclaimed: u64,
+}
+
 /// What `system prune` removed.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
@@ -602,6 +652,9 @@ pub struct PruneReport {
     pub sandboxes: Vec<String>,
     /// IDs of removed images (`-a`).
     pub images: Vec<String>,
+    /// Names of removed volumes (`-a --volumes`).
+    #[serde(default)]
+    pub volumes: Vec<String>,
     /// Digests of removed layer blobs.
     pub layers: Vec<String>,
     /// Paths of removed leftovers (unfinished pulls and builds, half-removed sandboxes).
@@ -933,13 +986,13 @@ pub struct Exited {
 pub struct Event {
     /// When it happened (RFC 3339, nanoseconds).
     pub time: String,
-    /// `sandbox` or `image`.
+    /// `sandbox`, `image`, `network` or `volume`.
     #[serde(rename = "type")]
     pub kind: String,
     /// Sandbox: `create`, `start`, `stop`, `remove`. Image: `pull`, `build`, `prepare`, `tag`, `untag`, `push`,
-    /// `delete`.
+    /// `delete`. Volume: `create`, `remove`.
     pub action: String,
-    /// Sandbox ID or image ID.
+    /// Sandbox ID, image ID or volume name.
     pub id: String,
     /// Details. Sandbox: `image`, `name`; on `stop` also `exit_code` and `error`. Image: `reference` (`pull`,
     /// `tag`, `untag`, `push`: the reference pushed to; `build`: the first `-t`), `rootfs_format` (`prepare`).
@@ -1029,6 +1082,9 @@ pub struct Sandbox {
     pub network: Network,
     /// Folders shared with the host.
     pub mounts: Vec<Mount>,
+    /// Named volumes attached (`-v NAME:/path`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volumes: Vec<SandboxVolume>,
     /// Guest hostname, if set.
     pub hostname: Option<String>,
     /// Labels (from the image, then `-l`).
@@ -1142,6 +1198,22 @@ pub struct Mount {
     pub readonly: bool,
 }
 
+/// A named volume a sandbox attaches.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct SandboxVolume {
+    /// Volume name.
+    pub name: String,
+    /// Guest path.
+    pub destination: String,
+    /// Attached read-only.
+    pub readonly: bool,
+    /// An empty volume is not filled from the image (`nocopy`).
+    #[serde(default)]
+    pub no_copy: bool,
+}
+
 /// How a folder is shared.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
@@ -1215,6 +1287,16 @@ impl Sandbox {
                         MountKind::Copy => MountType::Copy,
                     },
                     readonly: m.readonly,
+                })
+                .collect(),
+            volumes: spec
+                .volumes
+                .iter()
+                .map(|v| SandboxVolume {
+                    name: v.name.clone(),
+                    destination: v.destination.clone(),
+                    readonly: v.readonly,
+                    no_copy: v.no_copy,
                 })
                 .collect(),
             hostname: spec.hostname.clone(),
@@ -1352,6 +1434,9 @@ mod tests {
         g.subschema_for::<Info>();
         g.subschema_for::<DiskUsage>();
         g.subschema_for::<PruneReport>();
+        g.subschema_for::<Volume>();
+        g.subschema_for::<VolumeRef>();
+        g.subschema_for::<VolumePrune>();
         g.subschema_for::<Upgrade>();
         g.subschema_for::<Stats>();
         g.subschema_for::<Login>();

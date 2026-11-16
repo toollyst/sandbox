@@ -241,6 +241,22 @@ mod unix {
             "the_guest_clock_follows_the_host",
             the_guest_clock_follows_the_host,
         ),
+        (
+            "volume_data_outlives_the_sandbox",
+            volume_data_outlives_the_sandbox,
+        ),
+        (
+            "a_volume_has_one_writer_at_a_time",
+            a_volume_has_one_writer_at_a_time,
+        ),
+        (
+            "volume_disks_limits_and_old_executors",
+            volume_disks_limits_and_old_executors,
+        ),
+        (
+            "mcp_uses_only_its_own_volumes",
+            mcp_uses_only_its_own_volumes,
+        ),
     ];
 
     /// 인자: 이름 일부(걸러 내기). `--`로 시작하는 인자(cargo test가 넘기는 것)는 무시한다.
@@ -472,9 +488,13 @@ mod unix {
         let o = e.sbx(&["create", "--label", "keep=1", IMAGE, "true"]);
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
         let kept = text(&o.stdout).trim().to_owned();
-        let o = e.sbx(&["run", "-d", IMAGE, "sleep", "30"]);
+        // 볼륨 둘: 실행 중인 샌드박스가 쓰는 것과 아무도 쓰지 않는 것.
+        let busy = format!("busy:{}", e.path("busy").display());
+        let o = e.sbx(&["run", "-d", "-v", &busy, IMAGE, "sleep", "30"]);
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
         let running = text(&o.stdout).trim().to_owned();
+        let o = e.sbx(&["volume", "create", "loose"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
         let o = e.sbx(&["create", IMAGE, "true"]);
         let stopped = text(&o.stdout).trim().to_owned();
 
@@ -485,6 +505,8 @@ mod unix {
         assert_eq!((sb.total, sb.active), (3, 1));
         let im = rows.iter().find(|r| r.kind == "images").unwrap();
         assert_eq!((im.total, im.active), (1, 1));
+        let vol = rows.iter().find(|r| r.kind == "volumes").unwrap();
+        assert_eq!((vol.total, vol.active), (2, 1));
 
         // 터미널이 아니면 -f가 있어야 한다.
         let o = e.sbx(&["system", "prune"]);
@@ -523,6 +545,20 @@ mod unix {
             r.images.is_empty(),
             "the running sandbox uses the image: {r:?}"
         );
+        assert!(r.volumes.is_empty(), "volumes only with --volumes: {r:?}");
+        // --volumes: 어느 샌드박스도 쓰지 않는 볼륨도.
+        let o = e.sbx(&[
+            "--format",
+            "json",
+            "system",
+            "prune",
+            "-a",
+            "-f",
+            "--volumes",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let r: PruneReport = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(r.volumes, ["loose"], "{r:?}");
         let ids: Vec<String> = e
             .ps()
             .iter()
@@ -5222,5 +5258,444 @@ CMD [\"cat\", \"/app/out.txt\"]
         let list: Vec<sbx_cli::output::Image> = serde_json::from_slice(&o.stdout).unwrap();
         let img = list.iter().find(|i| i.id == id).unwrap();
         assert_eq!(img.exposed_ports, ["53/udp", "80/tcp"]);
+    }
+
+    /// 그 이름의 샌드박스가 실행 중일 때까지 기다린다.
+    fn wait_named(e: &Env, name: &str) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !e
+            .ps()
+            .iter()
+            .any(|s| s["name"] == name && s["state"] == "running")
+        {
+            assert!(Instant::now() < deadline, "{name} is not running");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// `--format json volume inspect NAME`의 한 줄.
+    fn volume_info(e: &Env, name: &str) -> sbx_cli::output::Volume {
+        let o = e.sbx(&["--format", "json", "volume", "inspect", name]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        serde_json::from_slice(&o.stdout)
+            .unwrap_or_else(|err| panic!("volume inspect: {err}: {}", text(&o.stdout)))
+    }
+
+    /// 볼륨이 샌드박스를 지워도 남고, 처음 붙을 때 이미지의 내용(가짜 실행기에서는 대상 경로의 지금 내용)으로 채워진다.
+    /// `volume create|ls|inspect|rm|prune`도 본다.
+    fn volume_data_outlives_the_sandbox() {
+        let e = Env::new();
+        let data = e.path("data-dir");
+        // 만들기: 이름, 라벨, 크기. 같은 이름을 같은 옵션으로 다시 만들면 있는 것이다.
+        let o = e.sbx(&[
+            "volume", "create", "--opt", "size=1g", "--label", "app=db", "pgdata",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "pgdata\n");
+        let o = e.sbx(&["volume", "create", "pgdata"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = e.sbx(&["volume", "create", "--opt", "size=2g", "pgdata"]);
+        assert_eq!(
+            o.status.code(),
+            Some(1),
+            "other options for an existing volume"
+        );
+        let o = e.sbx(&["volume", "create", "--opt", "type=tmpfs", "x"]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("unknown volume option"),
+            "{}",
+            text(&o.stderr)
+        );
+        let v = volume_info(&e, "pgdata");
+        assert_eq!((v.size, v.labels["app"].as_str()), (1 << 30, "db"));
+        assert!(v.sandboxes.is_empty() && !v.in_use);
+        // 쓰고, 샌드박스를 지우고, 새 샌드박스에서 읽는다.
+        let o = e.sbx(&[
+            "run",
+            "--name",
+            "db",
+            "-v",
+            &format!("pgdata:{}", data.display()),
+            IMAGE,
+            "sh",
+            "-c",
+            &format!("echo kept > {}/table", data.display()),
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        // 멈춘 샌드박스가 가리키는 볼륨은 지우지 않는다. 샌드박스를 지워도 볼륨은 남는다.
+        let o = e.sbx(&["volume", "rm", "pgdata"]);
+        assert_eq!(o.status.code(), Some(1));
+        assert!(
+            text(&o.stderr).contains("in use by sandbox db"),
+            "{}",
+            text(&o.stderr)
+        );
+        assert_eq!(volume_info(&e, "pgdata").sandboxes.len(), 1);
+        let o = e.sbx(&["rm", "db"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = e.sbx(&[
+            "run",
+            "--rm",
+            "-v",
+            &format!("pgdata:{}:ro", data.display()),
+            IMAGE,
+            "cat",
+            &format!("{}/table", data.display()),
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "kept\n");
+
+        // 처음 쓰는 이름은 만들고, 이미지의 내용을 옮겨 담는다(주인과 권한째). 다음부터는 볼륨의 내용이다.
+        let seeded = e.path("seeded");
+        std::fs::create_dir(&seeded).unwrap();
+        std::fs::write(seeded.join("from-image"), b"seed").unwrap();
+        let o = e.sbx(&[
+            "run",
+            "--rm",
+            "--mount",
+            &format!("type=volume,source=fresh,target={}", seeded.display()),
+            IMAGE,
+            "sh",
+            "-c",
+            &format!(
+                "cat {s}/from-image; echo new > {s}/written",
+                s = seeded.display()
+            ),
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "seed");
+        let v = volume_info(&e, "fresh");
+        assert_eq!(v.size, 16 << 30, "the default size");
+        // nocopy: 이미지의 내용을 옮기지 않는다.
+        let empty = e.path("nocopy");
+        std::fs::create_dir(&empty).unwrap();
+        std::fs::write(empty.join("from-image"), b"seed").unwrap();
+        let o = e.sbx(&[
+            "run",
+            "--rm",
+            "-v",
+            &format!("blank:{}:nocopy", empty.display()),
+            IMAGE,
+            "ls",
+            "-A",
+            &empty.display().to_string(),
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "");
+        // 이름 없는 볼륨(`-v /path`)은 만들지 않는다.
+        let o = e.sbx(&["run", "--rm", "-v", "/data", IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(125));
+        assert!(text(&o.stderr).contains("anonymous"), "{}", text(&o.stderr));
+
+        // ls: 이름, -q, 필터, JSON.
+        let o = e.sbx(&["volume", "ls", "-q"]);
+        assert_eq!(text(&o.stdout), "blank\nfresh\npgdata\n");
+        let o = e.sbx(&["volume", "ls", "-q", "--filter", "label=app=db"]);
+        assert_eq!(text(&o.stdout), "pgdata\n");
+        let o = e.sbx(&["volume", "ls", "--filter", "colour=red"]);
+        assert_eq!(o.status.code(), Some(1));
+        let o = e.sbx(&["--format", "json", "volume", "ls"]);
+        let list: Vec<sbx_cli::output::Volume> = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(list.len(), 3);
+        // prune: -a 없이는 지우는 것이 없다(이름 없는 볼륨이 없다). -a는 어느 샌드박스도 쓰지 않는 것을 지운다.
+        let o = e.sbx(&["volume", "prune", "-f"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "Total reclaimed space: 0B\n");
+        let o = e.sbx(&["volume", "prune", "-a"]);
+        assert_ne!(
+            o.status.code(),
+            Some(0),
+            "asks first, and stdin is not a terminal"
+        );
+        let o = e.sbx(&[
+            "create",
+            "-v",
+            &format!("blank:{}", e.path("b").display()),
+            IMAGE,
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = e.sbx(&["volume", "prune", "-a", "-f", "--filter", "label=app=db"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(
+            text(&o.stdout).starts_with("Deleted Volumes:\npgdata\n"),
+            "{}",
+            text(&o.stdout)
+        );
+        let o = e.sbx(&["volume", "prune", "-a", "-f"]);
+        assert!(
+            text(&o.stdout).starts_with("Deleted Volumes:\nfresh\n"),
+            "{}",
+            text(&o.stdout)
+        );
+        let o = e.sbx(&["volume", "ls", "-q"]);
+        assert_eq!(
+            text(&o.stdout),
+            "blank\n",
+            "a created sandbox still points at blank"
+        );
+        // rm -f: 없는 이름은 오류가 아니다.
+        let o = e.sbx(&["volume", "rm", "-f", "nothing"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = e.sbx(&["volume", "rm", "nothing"]);
+        assert_eq!(o.status.code(), Some(1));
+        // 볼륨 이벤트.
+        let o = e.sbx(&[
+            "events",
+            "--since",
+            "1h",
+            "--until",
+            "0s",
+            "--filter",
+            "type=volume",
+            "--format",
+            "json",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let events = text(&o.stdout);
+        assert!(
+            events.contains("\"create\"") && events.contains("\"remove\""),
+            "{events}"
+        );
+    }
+
+    /// 볼륨을 쓰기로 붙이는 샌드박스는 한 번에 하나다. 둘째는 잡고 있는 샌드박스를 말하며 거부되고, 첫째가 멈추거나
+    /// 죽으면 풀린다. 읽기 전용끼리는 함께 붙는다. 실행 중인 샌드박스의 볼륨은 지우지 않는다.
+    fn a_volume_has_one_writer_at_a_time() {
+        let e = Env::new();
+        let p = e.path("shared");
+        let rw = format!("shared-vol:{}", p.display());
+        let ro = format!("shared-vol:{}:ro", p.display());
+        let o = e.sbx(&[
+            "run", "-d", "--name", "first", "-v", &rw, IMAGE, "sleep", "30",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        wait_named(&e, "first");
+        for spec in [&rw, &ro] {
+            let o = e.sbx(&["run", "--rm", "-v", spec, IMAGE, "true"]);
+            assert_eq!(o.status.code(), Some(125), "{spec}");
+            assert!(
+                text(&o.stderr).contains("volume shared-vol is in use by sandbox first"),
+                "{}",
+                text(&o.stderr)
+            );
+        }
+        let o = e.sbx(&["volume", "rm", "shared-vol"]);
+        assert_eq!(o.status.code(), Some(1));
+        assert!(text(&o.stderr).contains("first"), "{}", text(&o.stderr));
+        assert!(volume_info(&e, "shared-vol").in_use);
+        // 멈추면 풀린다.
+        let o = e.sbx(&["stop", "-t", "0", "first"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = e.sbx(&["run", "--rm", "-v", &rw, IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        // 읽기 전용끼리는 함께. 그동안 쓰기는 거부된다.
+        let o = e.sbx(&[
+            "run", "-d", "--name", "reader", "-v", &ro, IMAGE, "sleep", "30",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        wait_named(&e, "reader");
+        let o = e.sbx(&["run", "--rm", "-v", &ro, IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = e.sbx(&["run", "--rm", "-v", &rw, IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(125));
+        assert!(
+            text(&o.stderr).contains("in use by sandbox reader"),
+            "{}",
+            text(&o.stderr)
+        );
+        let o = e.sbx(&["rm", "-f", "reader"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        // 붙인 프로세스가 갑자기 죽어도 잠금이 함께 사라진다(kill -9).
+        let mut child = e.spawn(&["run", "--name", "holder", "-v", &rw, IMAGE, "sleep", "30"]);
+        wait_named(&e, "holder");
+        let o = e.sbx(&["run", "--rm", "-v", &rw, IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(125), "{}", text(&o.stderr));
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let o = e.sbx(&["run", "--rm", "-v", &rw, IMAGE, "true"]);
+            if o.status.code() == Some(0) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "{}", text(&o.stderr));
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let o = e.sbx(&["rm", "-f", "holder", "first"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = e.sbx(&["volume", "rm", "shared-vol"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    }
+
+    /// 볼륨 디스크는 층 디스크와 scratch 뒤에 역할 `volume`으로 붙는다. 층 디스크가 그만큼 줄어도(아래 층을 합친다)
+    /// 게스트의 층 수 확인(`CheckLayers`)은 통과한다. 디스크가 모자라거나 실행기가 옛 규약(2)만 말하면 거부한다.
+    fn volume_disks_limits_and_old_executors() {
+        let e = Env::new();
+        let (a, _) = oci_archive_layers(
+            "local/deep:1",
+            &[
+                &[("0", b"0")],
+                &[("1", b"1")],
+                &[("2", b"2")],
+                &[("3", b"3")],
+            ],
+        );
+        load(&e, "deep.tar", &a);
+        // 가짜 실행기의 게스트 경로는 호스트 경로다.
+        let (a, b) = (e.path("a"), e.path("b"));
+        let va = &*format!("vol-a:{}", a.display());
+        let vb = &*format!("vol-b:{}", b.display());
+        let vb_ro = &*format!("{vb}:ro");
+        let rec = e.path("launch.json");
+        let run = |volumes: &[&str], max_disks: Option<&str>, protocol: Option<&str>| {
+            let _ = std::fs::remove_file(&rec);
+            let mut args = vec!["run", "--rm"];
+            for v in volumes {
+                args.extend(["-v", v]);
+            }
+            args.extend(["local/deep:1", "true"]);
+            let mut c = e.cmd(&args);
+            c.env("SBX_FAKE_RECORD", &rec);
+            if let Some(n) = max_disks {
+                c.env("SBX_FAKE_MAX_DISKS", n);
+            }
+            if let Some(v) = protocol {
+                c.env("SBX_FAKE_PROTOCOL", v);
+            }
+            c.output().unwrap()
+        };
+        let roles = |vm: &serde_json::Value| -> Vec<String> {
+            vm["disks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|d| d["role"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        // 디스크 다섯: 층 둘(아래 셋을 합친 것과 맨 위), scratch, 볼륨 둘.
+        let o = run(&[va, vb_ro], Some("5"), None);
+        // 처음 쓰는 볼륨은 읽기 전용으로 붙지 않는다(읽을 것이 없다).
+        assert_eq!(o.status.code(), Some(125), "{}", text(&o.stderr));
+        assert!(
+            text(&o.stderr).contains("never been used"),
+            "{}",
+            text(&o.stderr)
+        );
+        let o = run(&[va, vb], Some("5"), None);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let vm: serde_json::Value = serde_json::from_slice(&std::fs::read(&rec).unwrap()).unwrap();
+        assert_eq!(
+            roles(&vm),
+            ["rootfs", "scratch", "rootfs", "volume", "volume"],
+            "{vm}"
+        );
+        let disks = vm["disks"].as_array().unwrap();
+        assert!(
+            disks[0]["path"].as_str().unwrap().contains("/merged/"),
+            "{vm}"
+        );
+        assert!(
+            disks[3]["path"]
+                .as_str()
+                .unwrap()
+                .ends_with("volumes/vol-a/disk.img"),
+            "{vm}"
+        );
+        assert_eq!(disks[3]["readonly"], false);
+        let o = run(&[va, vb_ro], Some("5"), None);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let vm: serde_json::Value = serde_json::from_slice(&std::fs::read(&rec).unwrap()).unwrap();
+        assert_eq!(
+            vm["disks"][4]["readonly"], true,
+            "read-only on the host too"
+        );
+        // 루트 파일 시스템 하나와 scratch를 빼고 남는 만큼만.
+        let o = run(&[va, vb], Some("3"), None);
+        assert_eq!(o.status.code(), Some(125));
+        assert!(text(&o.stderr).contains("2 volumes"), "{}", text(&o.stderr));
+        let o = run(&[va], Some("3"), None);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let vm: serde_json::Value = serde_json::from_slice(&std::fs::read(&rec).unwrap()).unwrap();
+        assert_eq!(roles(&vm), ["rootfs", "scratch", "volume"], "{vm}");
+        // 옛 규약만 말하는 실행기: 볼륨은 거부하고, 볼륨 없는 샌드박스는 그대로 돈다.
+        let o = run(&[va], None, Some("2"));
+        assert_eq!(o.status.code(), Some(125));
+        assert!(
+            text(&o.stderr).contains("older than 3"),
+            "{}",
+            text(&o.stderr)
+        );
+        let o = run(&[], None, Some("2"));
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = e.sbx(&["volume", "ls", "-q"]);
+        assert_eq!(text(&o.stdout), "vol-a\nvol-b\n");
+    }
+
+    /// `sbx mcp`는 MCP로 만든 볼륨만 쓴다. 사용자가 CLI로 만든 볼륨은 붙이지 못하고, 수는 `--max-volumes`까지다.
+    fn mcp_uses_only_its_own_volumes() {
+        let e = Env::new();
+        let o = e.sbx(&["volume", "create", "mine"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let mut child = e
+            .cmd(&["mcp", "--max-volumes", "1", "--max-disk", "2g"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let out = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut m = Mcp {
+            child,
+            out,
+            next: 0,
+        };
+        m.request("initialize", serde_json::json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "e2e", "version": "0"}}));
+        let p = e.path("agent-data");
+        let path = p.display().to_string();
+        let err = m
+            .call(
+                "run",
+                serde_json::json!({"image": IMAGE, "command": ["true"], "volumes": [{"name": "mine", "path": path}]}),
+            )
+            .unwrap_err();
+        assert!(err.contains("not created through MCP"), "{err}");
+        // 호스트 경로는 받지 않는다.
+        let err = m
+            .call(
+                "run",
+                serde_json::json!({"image": IMAGE, "command": ["true"], "volumes": [{"name": "/etc", "path": path}]}),
+            )
+            .unwrap_err();
+        assert!(err.contains("volume name"), "{err}");
+        let r = m
+            .call(
+                "run",
+                serde_json::json!({"image": IMAGE, "command": ["sh", "-c", format!("echo hi > {path}/f")],
+                    "volumes": [{"name": "work", "path": path}]}),
+            )
+            .unwrap();
+        assert_eq!(r["exit_code"], 0, "{r}");
+        let r = m
+            .call(
+                "run",
+                serde_json::json!({"image": IMAGE, "command": ["cat", format!("{path}/f")],
+                    "volumes": [{"name": "work", "path": path, "readonly": true}]}),
+            )
+            .unwrap();
+        assert_eq!(r["stdout"], "hi\n", "{r}");
+        let err = m
+            .call(
+                "run",
+                serde_json::json!({"image": IMAGE, "command": ["true"], "volumes": [{"name": "more", "path": path}]}),
+            )
+            .unwrap_err();
+        assert!(err.contains("--max-volumes"), "{err}");
+        drop(m);
+        let v = volume_info(&e, "work");
+        assert_eq!(v.labels["io.github.toollyst.sandbox.owner"], "mcp");
+        assert_eq!(v.size, 2 << 30, "--max-disk");
+        // 사용자의 볼륨은 그대로다.
+        assert!(volume_info(&e, "mine").labels.is_empty());
     }
 }

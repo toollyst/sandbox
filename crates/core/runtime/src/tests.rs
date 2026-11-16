@@ -15,6 +15,8 @@ use crate::chan::block_on;
 
 #[cfg(unix)]
 mod layers;
+#[cfg(unix)]
+mod volumes;
 
 struct Env {
     root: PathBuf,
@@ -114,6 +116,7 @@ impl Env {
                 scratch_disk_mib: 4,
             },
             mounts: vec![],
+            volumes: vec![],
             network: NetworkPolicy::Disabled,
             hostname: None,
             labels: BTreeMap::new(),

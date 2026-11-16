@@ -13,6 +13,8 @@
 //! | `cp`의 양쪽 | [`cp_endpoints`]: `이름:`·`ID:`와 호스트 경로 |
 //! | `pull`, `push`, `prepare`, `rmi`의 이미지, `tag`의 양쪽, `run`·`create`의 첫 인자 | [`images`] |
 //! | `executor use`, `executor rm` | [`executors`] |
+//! | `volume inspect`, `volume rm` | [`volumes`] |
+//! | `run`·`create`의 `-v` | [`volume_sources`]: `이름:`과 호스트 경로 |
 //!
 //! - 후보는 친 앞부분으로 시작하는 것만이다. 순서는 이름이 먼저, 그다음 ID다.
 //! - 디렉터리: 이미 친 `--data-dir`/`--cache-dir`(`--data-dir X`와 `--data-dir=X`, 여러 번이면 마지막) >
@@ -109,6 +111,36 @@ pub fn sandboxes(data_dir: &Path, current: &str) -> Vec<CompletionCandidate> {
             out.push(CompletionCandidate::new(value).help(name.clone().map(Into::into)));
         }
     }
+    out
+}
+
+/// 볼륨 후보: 이름(설명은 크기). 기록(`volume.json`)만 읽는다(잠금을 건드리지 않는다).
+pub fn volumes(data_dir: &Path, current: &str) -> Vec<CompletionCandidate> {
+    sbx_runtime::volume::list(data_dir)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|v| keep(&v.name, current))
+        .map(|v| {
+            CompletionCandidate::new(&v.name)
+                .help(Some(format!("volume, {}m", v.record.size_mib).into()))
+        })
+        .collect()
+}
+
+/// `-v`의 값 후보. `:` 앞을 치는 중이면 볼륨 이름(`이름:`)과 호스트 경로, 그 뒤(게스트 경로)는 없다.
+pub fn volume_sources(data_dir: &Path, current: &str) -> Vec<CompletionCandidate> {
+    if current.contains(':') {
+        return Vec::new();
+    }
+    let mut out: Vec<CompletionCandidate> = Vec::new();
+    if crate::parse::is_volume_name(current) || current.is_empty() {
+        out.extend(volumes(data_dir, current).into_iter().map(|c| {
+            let mut value = c.get_value().to_owned();
+            value.push(":");
+            CompletionCandidate::new(value).help(c.get_help().cloned())
+        }));
+    }
+    out.extend(PathCompleter::any().complete(OsStr::new(current)));
     out
 }
 
@@ -319,6 +351,16 @@ pub fn cp_endpoint_arg() -> ArgValueCompleter {
     completer(|d, c| in_data(cp_endpoints, d, c), None)
 }
 
+/// 볼륨 이름 인자의 완성기.
+pub fn volume() -> ArgValueCompleter {
+    completer(|d, c| in_data(volumes, d, c), None)
+}
+
+/// `-v` 값의 완성기.
+pub fn volume_source() -> ArgValueCompleter {
+    completer(|d, c| in_data(volume_sources, d, c), None)
+}
+
 /// 설치한 실행기 인자의 완성기.
 pub fn executor() -> ArgValueCompleter {
     completer(|d, c| in_data(executors, d, c), None)
@@ -403,6 +445,7 @@ mod tests {
                 scratch_disk_mib: 4,
             },
             mounts: vec![],
+            volumes: vec![],
             network: NetworkPolicy::Disabled,
             hostname: None,
             labels: Default::default(),
@@ -436,6 +479,29 @@ mod tests {
         assert!(!root.join("none").exists());
         // 소유 잠금을 만들지 않는다.
         assert!(!data.join("sandboxes").join(&a).join("owner.lock").exists());
+    }
+
+    #[test]
+    fn volumes_are_names_and_dash_v_offers_name_colon() {
+        let root = temp("vol");
+        let data = root.join("data");
+        for n in ["pgdata", "cache"] {
+            sbx_runtime::volume::create(&data, n, 64, Default::default()).unwrap();
+        }
+        assert_eq!(values(&volumes(&data, "")), ["cache", "pgdata"]);
+        assert_eq!(values(&volumes(&data, "p")), ["pgdata"]);
+        assert_eq!(values(&volume_sources(&data, "pg")), ["pgdata:"]);
+        // `:` 뒤(게스트 경로)는 완성하지 않는다. 경로처럼 시작하면 이름을 내지 않는다.
+        assert!(volume_sources(&data, "pgdata:/").is_empty());
+        assert!(
+            !values(&volume_sources(&data, "/"))
+                .iter()
+                .any(|v| v.ends_with(':'))
+        );
+        // 잠금을 쥐지 않는다(읽기만).
+        assert!(!sbx_runtime::volume::in_use(&data, "pgdata").unwrap());
+        assert!(volumes(&root.join("none"), "").is_empty());
+        assert!(!root.join("none").exists());
     }
 
     #[test]

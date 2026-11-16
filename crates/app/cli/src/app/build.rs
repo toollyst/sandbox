@@ -212,6 +212,7 @@ impl Machines for BuildMachines {
                     },
                     resources: self.resources,
                     mounts: Vec::new(),
+                    volumes: Vec::new(),
                     network: self.network.clone(),
                     hostname: None,
                     labels: self.labels.clone(),

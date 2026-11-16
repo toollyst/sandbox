@@ -937,6 +937,11 @@ fn a_layer_count_mismatch_powers_the_guest_off() {
         GuestMsg::Error(e) => assert!(e.message.contains("found 3"), "{}", e.message),
         other => panic!("{other:?}"),
     }
+    // 게스트는 오류를 보낸 뒤에 끈다. 그 사이를 기다린다.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !off.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     assert!(off.load(Ordering::SeqCst));
 }
 

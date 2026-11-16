@@ -6,6 +6,10 @@
 //!   - 네트워크는 CLI처럼 기본으로 없고, 도구 인자 `allow`(`host:port` 목록)로 연다.
 //!   - 호스트 폴더 마운트(`-v`, `--mount`)는 내보내지 않는다. 에이전트가 호스트의 어떤 파일을 보게 할지는
 //!     서버를 띄우는 쪽이 정할 일이다. 파일은 `write_file`과 `read_file`로 옮긴다.
+//!   - 이름 붙은 볼륨은 도구 인자 `volumes`(`[{name, path, readonly}]`)로 붙인다. 이름만 받고(`--mount type=volume`
+//!     으로 넘긴다) 호스트 경로는 받지 않는다. 샌드박스처럼 MCP로 만든 볼륨(라벨 [`OWNER_LABEL`])만 쓰고, 없으면
+//!     그 라벨로 만든다(크기는 `--max-disk`, 수는 `--max-volumes`까지). 사용자가 CLI로 만든 볼륨은 쓰지 못한다.
+//!     `--all-sandboxes`면 어느 볼륨이든 쓴다.
 //!   - 인자는 언제나 `--이름=값`으로 넘기고, `-`로 시작하는 이미지 이름은 거부한다. 그래서 도구 인자가
 //!     다른 플래그(예: `-v`)로 읽히지 않는다.
 //! - 도구는 MCP로 만든 샌드박스만 본다(라벨 [`OWNER_LABEL`]). CLI로 만든 샌드박스는 호스트 폴더를 붙였을 수
@@ -239,6 +243,7 @@ pub async fn serve(cli: &Cli) -> AppResult<u8> {
         max_cpus,
         max_memory,
         max_disk,
+        max_volumes,
         max_lifetime,
         max_egress,
         max_image_size,
@@ -251,6 +256,14 @@ pub async fn serve(cli: &Cli) -> AppResult<u8> {
         ctx: {
             let mut c = Ctx::new(cli)?;
             c.max_image_bytes = max_image_size;
+            if !all_sandboxes {
+                c.volume_scope = crate::app::VolumeScope::Labeled {
+                    key: OWNER_LABEL,
+                    value: OWNER_MCP,
+                    max: max_volumes,
+                    size_mib: max_disk,
+                };
+            }
             c
         },
         all_sandboxes,
@@ -542,6 +555,11 @@ pub fn tools() -> Value {
         json!({ "type": "string", "description": "Memory, e.g. 512m or 2g (default 512m)." });
     let disk = json!({ "type": "string", "description": "Writable disk size, e.g. 4g or 20g (default 1g). Sparse: only what is written uses host disk." });
     let lifetime = json!({ "type": "string", "description": "Stop the sandbox this long after it starts, e.g. 30m or 2h (seconds if a plain number). Without it, it runs until stopped or removed, unless the server sets --max-lifetime." });
+    let volumes = json!({ "type": "array", "description": "Named volumes to attach: disks that outlive the sandbox (e.g. a database's data). A name used for the first time creates the volume. Only volumes created through this server can be used; one sandbox at a time may attach a volume writable.",
+        "items": { "type": "object", "required": ["name", "path"], "properties": {
+            "name": { "type": "string", "description": "Volume name (letters, digits, _ . -)." },
+            "path": { "type": "string", "description": "Absolute path inside the sandbox." },
+            "readonly": { "type": "boolean", "description": "Attach read-only (default false)." } } } });
     let id = json!({ "type": "string", "description": "Sandbox ID (or a unique prefix), or the name given to create." });
     let name = json!({ "type": "string", "description": "Optional unique name (letters, digits, _ . -) to use in place of the ID." });
     let path = json!({ "type": "string", "description": "Absolute path inside the sandbox." });
@@ -560,7 +578,8 @@ pub fn tools() -> Value {
             "description": "Start a fresh microVM from an image, run one command, return its exit code and output, then delete the sandbox.",
             "inputSchema": { "type": "object", "required": ["image"], "properties": {
                 "image": image, "command": command, "env": env, "workdir": workdir, "allow": allow,
-                "stdin": stdin, "timeout_secs": timeout, "cpus": cpus, "memory": memory, "disk": disk } },
+                "stdin": stdin, "timeout_secs": timeout, "cpus": cpus, "memory": memory, "disk": disk,
+                "volumes": volumes } },
             "outputSchema": output,
             "annotations": annotations(false, false, false, true),
         },
@@ -570,7 +589,7 @@ pub fn tools() -> Value {
             "description": "Start a microVM that keeps running (by default its main process is `sleep infinity`) for exec, write_file and read_file. It stays until remove, even after this server exits.",
             "inputSchema": { "type": "object", "required": ["image"], "properties": {
                 "image": image, "name": name, "command": command, "env": env, "workdir": workdir, "allow": allow,
-                "cpus": cpus, "memory": memory, "disk": disk, "lifetime": lifetime } },
+                "cpus": cpus, "memory": memory, "disk": disk, "lifetime": lifetime, "volumes": volumes } },
             "outputSchema": id_out,
             "annotations": annotations(false, false, false, true),
         },
@@ -747,6 +766,45 @@ impl Args<'_> {
         }
     }
 
+    /// `volumes`: `[{name, path, readonly}]`를 `--mount type=volume,…` 값으로. 이름은 볼륨 이름 규칙, 경로는 절대
+    /// 경로이고 둘 다 쉼표가 없어야 한다(다른 마운트 옵션으로 읽히지 않게).
+    fn volumes(&self) -> AppResult<Vec<String>> {
+        let Some(v) = self.get("volumes") else {
+            return Ok(Vec::new());
+        };
+        let bad = || "`volumes` must be a list of {name, path, readonly}".to_owned();
+        let list = v.as_array().ok_or_else(bad)?;
+        list.iter()
+            .map(|item| {
+                let o = item.as_object().ok_or_else(bad)?;
+                if let Some(k) = o
+                    .keys()
+                    .find(|k| !matches!(k.as_str(), "name" | "path" | "readonly"))
+                {
+                    return Err(format!("unknown volume field `{k}`").into());
+                }
+                let name = o.get("name").and_then(Value::as_str).ok_or_else(bad)?;
+                let path = o.get("path").and_then(Value::as_str).ok_or_else(bad)?;
+                let readonly = match o.get("readonly") {
+                    None | Some(Value::Null) => false,
+                    Some(Value::Bool(b)) => *b,
+                    Some(_) => return Err("volume `readonly` must be true or false".into()),
+                };
+                sbx_model::check_volume_name(name).map_err(|e| e.to_string())?;
+                if !path.starts_with('/') || path.contains(',') {
+                    return Err(format!(
+                        "volume path must be an absolute path without commas: {path:?}"
+                    )
+                    .into());
+                }
+                let ro = if readonly { ",readonly" } else { "" };
+                Ok(format!(
+                    "--mount=type=volume,source={name},target={path}{ro}"
+                ))
+            })
+            .collect()
+    }
+
     fn timeout(&self) -> AppResult<Duration> {
         let secs = match self.get("timeout_secs") {
             None => DEFAULT_TIMEOUT_SECS,
@@ -802,6 +860,7 @@ fn run_args(a: &Args, stdin: bool, default_command: &[&str]) -> AppResult<RunArg
     if let Some(n) = a.str("name")? {
         argv.push(format!("--name={n}"));
     }
+    argv.extend(a.volumes()?);
     if stdin {
         argv.push("--interactive".into());
     }
@@ -1308,6 +1367,34 @@ mod tests {
             arg_error("error: invalid value 'x' for '--stop-timeout <SECS>': bad\n\nUsage: sbx"),
             "invalid value 'x' for `stop_timeout`: bad"
         );
+    }
+
+    #[test]
+    fn volumes_take_names_never_host_paths() {
+        let v = |v: Value| Args(&v).volumes();
+        assert!(v(json!({})).unwrap().is_empty());
+        assert_eq!(
+            v(
+                json!({ "volumes": [{ "name": "pgdata", "path": "/var/lib/db" },
+                                  { "name": "seed", "path": "/seed", "readonly": true }] })
+            )
+            .unwrap(),
+            [
+                "--mount=type=volume,source=pgdata,target=/var/lib/db",
+                "--mount=type=volume,source=seed,target=/seed,readonly"
+            ]
+        );
+        for bad in [
+            json!({ "volumes": [{ "name": "/etc", "path": "/x" }] }),
+            json!({ "volumes": [{ "name": "../up", "path": "/x" }] }),
+            json!({ "volumes": [{ "name": "data", "path": "relative" }] }),
+            json!({ "volumes": [{ "name": "data", "path": "/x,source=other" }] }),
+            json!({ "volumes": [{ "name": "data", "path": "/x", "readonly": "yes" }] }),
+            json!({ "volumes": [{ "name": "data", "path": "/x", "type": "bind" }] }),
+            json!({ "volumes": "data:/x" }),
+        ] {
+            assert!(v(bad.clone()).is_err(), "{bad}");
+        }
     }
 
     #[test]

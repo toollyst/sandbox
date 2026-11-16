@@ -137,6 +137,7 @@ fn privileged_volumes_format_fill_survive_a_crash_and_mount_read_only() {
     let mut f = File::create(target.join("committed")).unwrap();
     f.write_all(b"fsynced").unwrap();
     f.sync_all().unwrap();
+    drop(f);
     // 강제로 끈 VM: 마운트를 풀지 않은 채 그 순간의 디스크를 떠 둔다(loop 장치의 flush는 뒤 파일까지 간다).
     let crash = d.join("crash.img");
     sh(&format!(

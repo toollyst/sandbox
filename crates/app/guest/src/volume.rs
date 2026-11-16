@@ -18,7 +18,7 @@
 //! 4. 쓰기이고 볼륨이 비어 있으면(뿌리에 `lost+found`만 있거나 아무것도 없으면) `lost+found`를 지운다. Docker 볼륨처럼
 //!    빈 디렉터리로 보여야 한다(postgres의 `initdb`는 `lost+found`가 있으면 거부한다). 커널은 그것이 없어도 된다.
 //!    `copy`이면 이어서 대상 경로의 지금 내용(이미지에 있던 것)을 볼륨으로 복사한다([`copy_up`]). Docker와 같다:
-//!    빈 볼륨이면 처음이 아니어도 채운다.
+//!    빈 볼륨이면 처음이 아니어도 채운다. 채운 뒤 `sync`한다(강제로 꺼져도 채운 내용이 남게).
 //! 5. 대상 경로가 없으면 디렉터리로 만들고(쓰기 층에), 자리를 대상으로 옮긴다(`MS_MOVE`). 대상이 디렉터리가 아니면
 //!    오류다.
 //!
@@ -270,6 +270,8 @@ mod linux {
                     super::copy_up(target_path, stage)
                         .map_err(ctx("fill volume from the image"))?;
                 }
+                // 채운 내용도 VM이 강제로 꺼지면 남아야 한다(기본 프로세스는 그것이 있다고 본다).
+                crate::sys::sync();
             }
             match fs::metadata(target_path) {
                 Ok(m) if m.is_dir() => {}
