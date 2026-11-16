@@ -35,6 +35,9 @@ pub struct Ctx {
     /// `Volume` 요청을 처리한다: (디스크 차례, 대상 경로, 읽기 전용, 채우기). 게스트에서는 [`crate::volume`]의
     /// 붙이기다. 없으면 `Volume`은 `InvalidArgument` 오류다.
     pub volume: Option<VolumeFn>,
+    /// 호스트에서 돌 때(fake 실행기, 테스트) 띄운 프로세스 그룹들. 전원 끄기 흉내가 모두 끝낸다(`exec` 모듈 문서).
+    /// 게스트에서는 `None`이다(전원이 꺼지면 모두 사라진다).
+    pub procs: Option<Arc<exec::Procs>>,
 }
 
 /// 볼륨을 붙이는 방법.
@@ -89,11 +92,19 @@ pub fn serve<C: Conn>(conn: C, ctx: &Ctx) {
         return out.error(e);
     }
     match request {
-        Ok(HostMsg::Exec(x)) => exec::run(x, &ctx.root, input, out, &ctx.main),
+        Ok(HostMsg::Exec(x)) => {
+            exec::run(x, &ctx.root, input, out, &ctx.main, ctx.procs.as_deref())
+        }
         Ok(HostMsg::ExecStep(x)) => match &ctx.layers {
-            Some(l) if l.is_open() => {
-                exec::run_step(x, &ctx.root, input, out, &ctx.main, ctx.sweep)
-            }
+            Some(l) if l.is_open() => exec::run_step(
+                x,
+                &ctx.root,
+                input,
+                out,
+                &ctx.main,
+                ctx.sweep,
+                ctx.procs.as_deref(),
+            ),
             _ => out.error(Error::new(
                 ErrorKind::InvalidArgument,
                 "a build step needs an open build layer",
@@ -115,7 +126,7 @@ pub fn serve<C: Conn>(conn: C, ctx: &Ctx) {
                 let _ = out.send(&GuestMsg::Done);
             }
         },
-        Ok(HostMsg::ExecDetached(x)) => exec::run_detached(x, &ctx.root, out),
+        Ok(HostMsg::ExecDetached(x)) => exec::run_detached(x, &ctx.root, out, ctx.procs.as_deref()),
         Ok(HostMsg::CopyIn { dest }) => copy::receive(&dest, &mut input, &out),
         Ok(HostMsg::CopyOut { path }) => copy::send(&path, &out),
         Ok(HostMsg::Stat { path }) => copy::stat(&path, &out),

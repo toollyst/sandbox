@@ -6,6 +6,30 @@ use std::time::{Duration, Instant};
 use sbx_executor::{ExecutorError, VmHandle};
 use sbx_model::BoxFuture;
 
+/// VM 하나가 호스트에 띄운 프로세스 그룹들. 전원 끄기 흉내가 모두 끝낸다(`sbx_guest::exec::Procs`).
+#[cfg(unix)]
+pub(crate) type Procs = sbx_guest::exec::Procs;
+
+/// Unix가 아니면 VM을 띄우지 않으므로 프로세스도 없다.
+#[cfg(not(unix))]
+#[derive(Debug, Default)]
+pub(crate) struct Procs;
+
+#[cfg(not(unix))]
+impl Procs {
+    pub(crate) fn new(_record: Option<std::path::PathBuf>) -> Self {
+        Self
+    }
+
+    pub(crate) fn alive(&self) -> Vec<u32> {
+        Vec::new()
+    }
+
+    pub(crate) fn kill_all(&self) -> Vec<u32> {
+        Vec::new()
+    }
+}
+
 /// VM 하나의 상태. 끝났는지와 그 이유를 여러 스레드가 본다.
 #[derive(Debug, Default)]
 pub(crate) struct Life {

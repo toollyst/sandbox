@@ -148,6 +148,9 @@ mod unix {
     /// (`CheckLayers`).
     /// `clock`(scratch 디스크 옆의 파일)이 있으면 게스트 시계를 그 파일로 흉내 낸다([`crate::clock`]).
     /// `disks`는 받은 디스크 전부(받은 차례)다. 볼륨(`Volume`)은 [`link_volume`]으로 흉내 낸다.
+    /// `procs`에 이 VM이 띄운 프로세스 그룹을 적는다. VM을 끝내면(전원 끄기 흉내) 끝났다고 알리기 **전에** 그 그룹들을
+    /// 모두 SIGKILL로 끝낸다. 그래서 실행기 프로세스가 곧바로 끝나도 호스트에 고아가 남지 않는다.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn start(
         socket: &Path,
         shares: Vec<(String, PathBuf)>,
@@ -155,6 +158,7 @@ mod unix {
         layer_disks: Vec<PathBuf>,
         clock: Option<PathBuf>,
         disks: Vec<crate::vm::FakeDisk>,
+        procs: Arc<crate::vm::Procs>,
     ) -> Result<FakeVm, ExecutorError> {
         let (build_root, net) = dirs.unzip();
         let path: PathBuf = socket.to_owned();
@@ -166,7 +170,11 @@ mod unix {
 
         let stop: Arc<dyn Fn(&str) + Send + Sync> = {
             let (life, path, open) = (life.clone(), path.clone(), open.clone());
+            let procs = procs.clone();
             Arc::new(move |reason: &str| {
+                // 전원 끄기: 이 VM의 프로세스를 먼저 모두 끝낸다. 끝났다는 알림(`life`)을 본 실행기 프로세스가 곧바로
+                // 끝나도 고아가 남지 않게, 알리기 전에 한다. 여러 번 불려도 된다.
+                procs.kill_all();
                 if life.end(reason) {
                     // 기다리는 accept를 깨운다.
                     let _ = UnixStream::connect(&path);
@@ -224,6 +232,7 @@ mod unix {
             }),
             // 호스트에서 돈다: 단계의 프로세스 그룹만 끝낸다.
             sweep: sbx_guest::exec::Sweep::Group,
+            procs: Some(procs),
             layer_disks: u32::try_from(layer_disks.len()).ok(),
             clock: clock.map(|p| {
                 Box::new(crate::clock::FileClock::new(p)) as Box<dyn sbx_guest::clock::Clock>
@@ -312,6 +321,7 @@ mod other {
         _layer_disks: Vec<std::path::PathBuf>,
         _clock: Option<std::path::PathBuf>,
         _disks: Vec<crate::vm::FakeDisk>,
+        _procs: std::sync::Arc<crate::vm::Procs>,
     ) -> Result<FakeVm, ExecutorError> {
         Err(ExecutorError::Unsupported(
             "the fake guest needs Unix sockets".into(),

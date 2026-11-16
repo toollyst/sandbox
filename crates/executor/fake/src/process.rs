@@ -8,6 +8,10 @@
 //! - `SBX_FAKE_PROTOCOL=<버전>`: 그 규약 버전 하나만 말한다(옛 실행기 흉내). 없으면 2부터 [`proto::VERSION`]까지.
 //! - `SBX_FAKE_LINGER_MS=<밀리초>`: 표준 입력이 닫힌 뒤(소유 프로세스가 죽은 뒤) VM을 끄기까지 그만큼 둔다. 그동안
 //!   제어 소켓도 그대로 듣는다(VM을 천천히 끄는 실행기 흉내). `Kill`에는 곧바로 끈다.
+//! - `SBX_FAKE_PROCS=<파일>`: 그 파일에 이 실행기의 PID(`executor <pid>`), 부모(소유 프로세스, `owner <pid>`), 게스트
+//!   처리가 띄운 프로세스 그룹(`group <pgid>`)을 한 줄씩 덧붙인다. 테스트가 끝날 때 남은 프로세스를 찾는다.
+//! - `SBX_FAKE_WATCH_PID=<pid>`: 그 프로세스가 사라지면 VM을 끈다(테스트 프로세스가 `kill -9`로 죽어도 샌드박스의
+//!   프로세스가 남지 않게). 0.2초마다 본다.
 
 use std::io::{self, BufReader, Write};
 use std::process::ExitCode;
@@ -122,7 +126,29 @@ fn run() -> ExitCode {
             readonly: d.readonly,
         })
         .collect();
-    let handle = match guest::start(&vm.control_socket, shares, build, layer_disks, clock, disks) {
+    let record = std::env::var_os("SBX_FAKE_PROCS").map(std::path::PathBuf::from);
+    if let Some(path) = &record {
+        let line = format!(
+            "executor {}\nowner {}\n",
+            std::process::id(),
+            std::os::unix::process::parent_id()
+        );
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .and_then(|mut f| f.write_all(line.as_bytes()));
+    }
+    let procs = std::sync::Arc::new(crate::vm::Procs::new(record));
+    let handle = match guest::start(
+        &vm.control_socket,
+        shares,
+        build,
+        layer_disks,
+        clock,
+        disks,
+        procs,
+    ) {
         Ok(h) => h,
         Err(e) => return fail(&mut out, format!("cannot open control socket: {e}")),
     };
@@ -140,6 +166,18 @@ fn run() -> ExitCode {
                 if let Some(ms) = linger {
                     thread::sleep(Duration::from_millis(ms));
                 }
+            }
+            handle.stop(REASON_KILLED);
+        });
+    }
+    if let Some(pid) = std::env::var("SBX_FAKE_WATCH_PID")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+    {
+        let handle = handle.clone();
+        thread::spawn(move || {
+            while sbx_guest::exec::process_alive(pid) {
+                thread::sleep(Duration::from_millis(200));
             }
             handle.stop(REASON_KILLED);
         });

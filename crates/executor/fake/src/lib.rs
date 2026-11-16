@@ -13,8 +13,11 @@
 //!   디스크는 [`MAX_DISKS`]개까지 받는다(실행 파일은 `SBX_FAKE_MAX_DISKS`로 바꾼다).
 //!   그래서 실행 사용자는 지금 사용자여야 하고, 경로는 호스트 경로다.
 //! - 사용자 이름은 호스트의 `/etc/passwd`로 해석한다.
-//! - VM을 끝내면 열린 게스트 연결을 모두 닫는다. 그러면 게스트 쪽 처리가 그 연결의 프로세스를 SIGKILL로 끝낸다
-//!   (실제 VM에서 전원이 꺼지는 것과 같은 결과). 그 프로세스가 띄운 다른 호스트 프로세스는 남을 수 있다.
+//! - 게스트 처리가 띄우는 프로세스는 저마다 자기 프로세스 그룹에서 돈다. VM을 끝내면(`Kill`, 표준 입력 닫힘, 게스트의
+//!   종료 요청, 핸들 버리기) 끝났다고 알리기 **전에** 그 그룹들을 모두 SIGKILL로 끝내고 열린 게스트 연결을 닫는다
+//!   (실제 VM에서 전원이 꺼지는 것과 같은 결과). 그래서 실행기 프로세스가 곧바로 끝나도 호스트에 고아가 남지 않는다.
+//!   그룹을 떠난 프로세스(`setsid`로 떼어 낸 데몬)는 남을 수 있다.
+//!   [`FakeExecutor::leaked`]와 실행 파일의 `SBX_FAKE_PROCS`로 테스트가 남은 프로세스를 찾는다.
 //! - 게스트 포트([`sbx_guest_proto::GUEST_PORT`]) 외의 포트로 연결하면 닫는다(듣는 쪽이 없는 것과 같다).
 //! - 공유 폴더(`Share`)는 마운트하지 않고 대상 경로에 호스트 경로를 가리키는 심볼릭 링크를 둔다
 //!   (대상이 빈 디렉터리면 바꾼다). 읽기 전용은 강제하지 않는다.
@@ -31,8 +34,8 @@
 //! - 게스트 시계(`ClockSync`)는 호스트 시계를 건드리지 않고 scratch 디스크 옆 파일 하나([`clock_file`])의 "호스트와의
 //!   차이"를 바꾼다. 테스트는 그 파일로 게스트 시계를 틀고 맞았는지 본다. 규칙은 [`clock`] 모듈에 있다.
 //!
-//! 모듈 층: `lib`, `process` → `guest`, `probe` → `layers`, `vm`, `netdir`, `clock` → `rootdir`. `probe`는 테스트가
-//! 쓰는 도구다.
+//! 모듈 층: `lib`, `process` → `guest`, `probe`, `leftover` → `layers`, `vm`, `netdir`, `clock` → `rootdir`.
+//! `probe`와 `leftover`는 테스트가 쓰는 도구다.
 //!
 //! - 의존: `sbx-model`, `sbx-executor`, `sbx-executor-proto`, `sbx-guest-proto`, `sbx-guest`(Unix),
 //!   `sbx-rootfs`(Unix, 층 디스크 읽기)
@@ -49,6 +52,8 @@ pub mod clock;
 mod guest;
 #[cfg(unix)]
 mod layers;
+#[cfg(unix)]
+pub mod leftover;
 mod netdir;
 pub mod probe;
 #[cfg(unix)]
@@ -72,11 +77,15 @@ pub fn build_root(scratch: &std::path::Path) -> std::path::PathBuf {
     s.into()
 }
 
+/// 띄운 VM 하나의 상태와 그 VM의 프로세스 그룹들([`FakeExecutor::leaked`]).
+type Launched = (Arc<vm::Life>, Arc<vm::Procs>);
+
 /// 가짜 실행기 (같은 프로세스 안).
 #[derive(Debug, Clone)]
 pub struct FakeExecutor {
     caps: Capabilities,
     launches: Arc<Mutex<Vec<VmConfig>>>,
+    vms: Arc<Mutex<Vec<Launched>>>,
 }
 
 impl FakeExecutor {
@@ -85,6 +94,7 @@ impl FakeExecutor {
         Self {
             caps,
             launches: Arc::default(),
+            vms: Arc::default(),
         }
     }
 
@@ -105,6 +115,29 @@ impl FakeExecutor {
     /// 지금까지 받은 VM 설정.
     pub fn launches(&self) -> Vec<VmConfig> {
         self.launches.lock().map(|l| l.clone()).unwrap_or_default()
+    }
+
+    fn launched(&self) -> Vec<Launched> {
+        self.vms.lock().map(|v| v.clone()).unwrap_or_default()
+    }
+
+    /// 이미 끝난 VM의 프로세스 그룹 가운데 아직 프로세스가 있는 것(좀비 포함). VM을 끝내면 그 그룹들을 SIGKILL로
+    /// 끝내므로 비어 있어야 한다. 막 끝낸 VM의 프로세스는 잠깐 남아 있을 수 있으니 부르는 쪽이 조금 기다려 본다.
+    pub fn leaked(&self) -> Vec<u32> {
+        self.launched()
+            .into_iter()
+            .filter(|(life, _)| life.reason().is_some())
+            .flat_map(|(_, procs)| procs.alive())
+            .collect()
+    }
+
+    /// 띄운 모든 VM(끝났든 아니든)의 프로세스 그룹을 SIGKILL로 끝낸다. 프로세스가 있던 그룹들을 돌려준다.
+    /// 테스트가 패닉한 뒤 정리에 쓴다.
+    pub fn kill_everything(&self) -> Vec<u32> {
+        self.launched()
+            .into_iter()
+            .flat_map(|(_, procs)| procs.kill_all())
+            .collect()
     }
 }
 
@@ -145,15 +178,20 @@ impl Executor for FakeExecutor {
                     readonly: d.readonly,
                 })
                 .collect();
-            guest::start(
+            let procs = Arc::new(vm::Procs::new(None));
+            let v = guest::start(
                 &vm.control_channel.host_endpoint,
                 shares,
                 dirs,
                 layer_disks,
                 clock,
                 disks,
-            )
-            .map(|v| Box::new(v) as Box<dyn VmHandle>)
+                procs.clone(),
+            )?;
+            if let Ok(mut l) = self.vms.lock() {
+                l.push((v.life.clone(), procs));
+            }
+            Ok(Box::new(v) as Box<dyn VmHandle>)
         })
     }
 
