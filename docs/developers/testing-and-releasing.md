@@ -20,7 +20,9 @@ fake executor serves it over the same protocol. Real VMs are the last check, not
 | Docker compatibility table | `cargo test -p sbx-cli --lib compat` | nothing | every row of `compat.rs` against clap (a working row's flag exists, a missing one doesn't, every sbx flag has a row) and its evidence test exists; [docker-compatibility.md](../guide/docker-compatibility.md) and the README line are current (`SBX_BLESS=1` rewrites them) |
 | TUI without a terminal | [`tui/model/tests.rs`](../../crates/app/cli/src/tui/model/tests.rs), [`tui/view/tests.rs`](../../crates/app/cli/src/tui/view/tests.rs) | nothing | every key's `sbx` command line, filtering, virtual scrolling, drawing (ratatui `TestBackend`) |
 | CLI end to end | [`crates/app/cli/tests/e2e.rs`](../../crates/app/cli/tests/e2e.rs) | nothing (Windows skips the parts that need Unix sockets) | the real `sbx` binary: flags, output, exit codes, `--rm`, names, `ps`, `logs` (timestamps, `--since`), `cp`, `events`, `--filter`, `--jq`, every JSON output read back strictly as its type, completion candidates, executor versions and pins, MCP |
-| Installer | [`.github/scripts/test-install.sh`](../../.github/scripts/test-install.sh) | Linux or macOS | `install.sh` against a fake release and a fake `cosign`: checksum, every `SBX_VERIFY` value, missing or bad signatures, the identity it asks `cosign` for, archives missing files |
+| Installer | [`.github/scripts/test-install.sh`](../../.github/scripts/test-install.sh) | Linux or macOS | `install.sh` against a fake release, a fake `cosign` and a fake `sbx`: `--version` and the first line, checksum, every `SBX_VERIFY` value, missing or bad signatures, the identity it asks `cosign` for (the pinned tag), archives missing files, and the executor step (pinned or not, `SBX_EXECUTOR`, keeping an executor you chose, a failed install) |
+| Installer pins | `cargo test -p xtask installer` | nothing | `install.sh` and `install.ps1` carry exactly what `installer.env` says; a published installer version is never changed; `install.sh` is the newest version |
+| Default executor on first use | `the_default_executor_is_installed_on_first_use` in [`e2e.rs`](../../crates/app/cli/tests/e2e.rs) | Unix | with a local signed repository as `official`: the repository's `default`, one notice on stderr and none on stdout, both ways to turn it off, an unsigned or unreachable repository, two first runs at once |
 | Dependency rules | `cargo xtask check-deps` | nothing | layers, per-crate allow lists, forbidden features, module cycles, the map in `crates.md` |
 | Fuzzing | [`fuzz/`](../../fuzz), `cargo xtask fuzz` ([below](#fuzzing)) | nightly, `cargo-fuzz` | inputs no hand-written test thought of, in every parser that reads bytes from a guest, a registry, an image or an executor repository |
 | Real VMs | `cargo xtask smoke` | an installed executor | 17 checks: output and exit codes, stdin, no network device, fast DNS failure, writable root, detached `exec`/`cp`/`logs`/`stop`/`rm`, allow list |
@@ -100,9 +102,9 @@ GitHub's runners are Linux, so CI fuzzes on Linux only. On macOS, `cargo fuzz` w
 
 | Job | Runs on | Does |
 | --- | --- | --- |
-| `test` | Linux x86_64 and arm64, macOS, Windows | `fmt --check`, `clippy -D warnings`, `test --no-fail-fast`, `doc -D warnings`, `check-deps`. On Windows also the `install.ps1` checks (`.github/scripts/test-install.ps1`: a fake release and a fake `cosign`, with the real `sbx.exe`). On Linux also `shellcheck` on `install.sh` and `.github/scripts/*.sh`, both guest initramfs builds, the e2e tests again with the init embedded, and `cargo xtask dist` |
+| `test` | Linux x86_64 and arm64, macOS, Windows | `fmt --check`, `clippy -D warnings`, `test --no-fail-fast`, `doc -D warnings`, `check-deps`. On Windows also the `install.ps1` checks (`.github/scripts/test-install.ps1`: a fake release and a fake `cosign`, with the real `sbx.exe`). On Linux also `shellcheck` on `install.sh` and `.github/scripts/*.sh`, that the installer version in `installer.env` is either unpublished or published with the same content (`cargo xtask installer --check-published` against this repository's `gh-pages`), both guest initramfs builds, the e2e tests again with the init embedded, and `cargo xtask dist` |
 | `privileged` | Linux, in a `--privileged` container | the guest tests that need root and loop devices |
-| `vm` | Linux x86_64 with KVM (arm64 runs when the runner has KVM) | builds `sbx`, the adapter and the kernel (cached by its config), and makes a VMM package from upstream Firecracker (checked by its sha256). It installs `sbx` with `install.sh`, puts the adapter and the VMM package (as `firecracker@1.17.0`) in a local schema 2 `file://` repository, and installs from there the way a user does (`.github/scripts/smoke-local.sh`). It uses neither wick nor the official repository. Then it runs `smoke` and `bench` (the numbers go to the job summary) |
+| `vm` | Linux x86_64 with KVM (arm64 runs when the runner has KVM) | builds `sbx`, the adapter and the kernel (cached by its config), and makes a VMM package from upstream Firecracker (checked by its sha256). It installs `sbx` with `install.sh` (`SBX_EXECUTOR=none`), puts the adapter and the VMM package (as `firecracker@1.17.0`) in a local schema 2 `file://` repository, and installs from there the way a user does (`.github/scripts/smoke-local.sh`). It uses neither wick nor the official repository. Then it runs `smoke` and `bench` (the numbers go to the job summary) |
 
 [`fuzz.yml`](../../.github/workflows/fuzz.yml) runs on every push to `main` and `feat/**`, and by hand
 (`gh workflow run fuzz.yml -f seconds=1800 [-f targets="guest_msg copy_from_guest"]`).
@@ -145,9 +147,9 @@ Pushing `v<version>` runs [`release.yml`](../../.github/workflows/release.yml):
    wick release nor what the official repository holds, so `sbx` and the executors can be released in any order. If
    the protocol version changes, publish a matching adapter to the official repository afterwards
    ([Executors](#executors)).
-4. **`publish`** signs every tar.gz with the archive key (`.minisig`, secret `SBX_RELEASE_SIGNING_KEY`), creates the
-   GitHub release with the `sbx` archives, and copies `install.sh` and `install.ps1` to the top of the `gh-pages`
-   branch. It also adds the release to `gh-pages/releases.json` (`cargo xtask release-index`) and signs that with the
+4. **`publish`** signs every tar.gz with the archive key (`.minisig`, secret `SBX_RELEASE_SIGNING_KEY`) and creates
+   the GitHub release with the `sbx` archives. It does not publish the install scripts; that is a separate step
+   ([Install scripts](#install-scripts)). It adds the release to `gh-pages/releases.json` (`cargo xtask release-index`) and signs that with the
    index key (`release-sign`, secret `SBX_RELEASE_INDEX_KEY`), marking it `security` when the CHANGELOG section names a
    GHSA or CVE. Without the secrets those steps are skipped with a warning, and `sbx upgrade` and the new-version
    notice don't see the release. GitHub Pages serves that branch at <https://toollyst.github.io/sandbox/>.
@@ -155,7 +157,9 @@ Pushing `v<version>` runs [`release.yml`](../../.github/workflows/release.yml):
 To cut a release:
 
 1. Bump `version` under `[workspace.package]` in `Cargo.toml` (this updates `Cargo.lock` on the next build, and
-   `cargo check` in `fuzz/` updates `fuzz/Cargo.lock`), rename
+   `cargo check` in `fuzz/` updates `fuzz/Cargo.lock`). If the install scripts should install the new release, also
+   set `SBX` and bump `INSTALLER_VERSION` in `installer.env` and run `cargo xtask installer`
+   ([Install scripts](#install-scripts); the `version` job warns when `SBX` isn't the tag). Rename
    `## Unreleased` in [`CHANGELOG.md`](../../CHANGELOG.md) to `## v0.3.0` (and start a new empty `## Unreleased`),
    and merge it to `main` with CI green. The release notes are that section
    ([`release-notes.sh`](../../.github/scripts/release-notes.sh)), followed by GitHub's generated list; a tag without
@@ -163,9 +167,9 @@ To cut a release:
 2. Optionally, on a Mac with a macOS VMM installed (for example `wick`), run `cargo xtask dist && cargo xtask smoke`.
    CI has no macOS VM run, so this is the only check there; it does not gate the release.
 3. Tag and push: `git tag -a v0.3.0 -m "sbx 0.3.0" && git push origin v0.3.0`.
-4. Check the result the way a user would: `curl -fsSL https://toollyst.github.io/sandbox/install.sh | sh` into a
-   scratch `SBX_INSTALL_DIR`, then `sbx info`, and with an executor installed (`sbx executor install wick` once the official repository has
-   it), `cargo xtask smoke --sbx <that sbx>`.
+4. Publish the install scripts for it with `installer.yml` ([Install scripts](#install-scripts)), then check the
+   result the way a user would: `curl -fsSL https://toollyst.github.io/sandbox/install.sh | sh` with scratch
+   `SBX_INSTALL_DIR`, `SBX_DATA_DIR` and `SBX_CACHE_DIR`, then `sbx info` and `cargo xtask smoke --sbx <that sbx>`.
 
 `build` and the attestations run in the reusable [`sbx-build.yml`](../../.github/workflows/sbx-build.yml) (SLSA Build
 L3: the provenance is signed as that workflow, not as `release.yml`), and the binaries are built with
@@ -176,7 +180,7 @@ only be created by admins, and `main` and `gh-pages` can't be force-pushed or de
 
 A tag whose workflow fails publishes nothing, because `publish` only runs when every build succeeded. Fix the cause,
 bump the version and tag again rather than moving a pushed tag. If only the `gh-pages` push fails, the GitHub release
-is already up: copy `install.sh` and `install.ps1` to `gh-pages` by hand and fix the step on `main`.
+is already up: run `cargo xtask release-index` for it by hand (as the step does) and fix the step on `main`.
 
 **Release index and keys.** [`releases-resign.yml`](../../.github/workflows/releases-resign.yml) re-signs
 `releases.json` every Monday (it expires after 30 days) in the `release-index` environment (no approval, `main`
@@ -215,8 +219,38 @@ gh workflow run fuzz.yml --ref <branch> -f seconds=60
 
 The steps of `publish` that run only on a tag (attestations, the GitHub release, the `gh-pages` push) are first
 exercised by the next real release. After a major update of `actions/checkout` or of an action those steps use, check
-them in that release's log. The `gh-pages` step skips the push when neither installer changed; if its log says
-`install.sh and install.ps1 are unchanged`, the push is still unchecked.
+them in that release's log. The `gh-pages` step skips the push when `releases.json` didn't change; if its log says
+`gh-pages is unchanged`, the push is still unchecked. The same goes for `installer.yml`'s `publish`.
+
+### Install scripts
+
+The install scripts have their own version, separate from `sbx`'s and the executor's. Each version installs one
+`sbx` release and one executor (with its adapter) that were tested together, and is published once, as
+`install-<version>.sh` and `install-<version>.ps1` on `gh-pages`, and never changed; `install.sh` and `install.ps1`
+there are copies of the newest (Pages can't redirect, and `curl | sh` must get the file itself). The pinning is a
+recommendation: `sbx` itself knows no executor version, and nothing checks the pair after installing.
+
+[`installer.env`](../../installer.env) is the one place for the values: `INSTALLER_VERSION`, `SBX` (a release,
+without the `v`), and `EXECUTOR` and `ADAPTER` (`NAME@VERSION` in the official repository; empty means the script
+installs no executor and `sbx` fetches the newest default one on first use). `cargo xtask installer` writes them into
+the pin blocks of both scripts; `cargo test` fails while a script differs from `installer.env`.
+
+Publish a new installer version when a new `sbx` or a new default executor should be what people get, or when the
+scripts themselves change (a fix, a new OS) with the same versions:
+
+1. Edit `installer.env`: bump `INSTALLER_VERSION` and set what changed. Run `cargo xtask installer`, commit, and merge
+   to `main` with CI green. CI fails a change to the scripts that keeps an `INSTALLER_VERSION` already on `gh-pages`.
+2. On a Mac, check the pair on macOS (GitHub's runners can't start VMs there): run the new `install.sh` from the
+   branch with scratch `SBX_INSTALL_DIR`, `SBX_DATA_DIR` and `SBX_CACHE_DIR`, then `cargo xtask smoke --sbx <it>`.
+3. `gh workflow run installer.yml`. It checks the pins and that the `sbx` release exists, runs the script the way a
+   user does on Linux x86_64 with KVM (the real release, the executor from the official repository) and, with an
+   executor pinned, `cargo xtask smoke`. Then it waits for approval in the `installer` environment (Settings →
+   Environments: required reviewers, `main` only) and pushes `install-<version>.*` and the new `install.sh` and
+   `install.ps1` to `gh-pages` (`cargo xtask installer --publish`). Re-running it is harmless; it refuses to replace
+   a published version with other content.
+
+This is the only workflow that reads the official executor repository. `sbx` releases and CI never wait for it, so
+`sbx`, the executors and the installer can each be released in any order.
 
 ### Executors
 
@@ -230,7 +264,8 @@ hand) takes a [toollyst/wick](https://github.com/toollyst/wick/releases) release
 (`-f sandbox=v0.2.0`, default `main`), builds the `firecracker` adapter and the kernel from that commit, and uses that
 commit's tools:
 
-- `cargo xtask repo-add --schema 2` adds the packages to the index.
+- `cargo xtask repo-add --schema 2` adds the packages to the index; `--default` on the default executor's packages
+  (today `wick`) names it in the index's `default`, which is what `sbx` installs when it has no executor.
 - `cargo xtask repo-sign` signs the index with a fresh `serial` and a 90-day `expires`.
 - [`.github/scripts/upstream-vmm.sh`](../../.github/scripts/upstream-vmm.sh) packages upstream Firecracker on a
   platform the wick release has no build for.
@@ -245,7 +280,8 @@ rebuilt or overwritten.
 **Signing.** That repository's secret `EXECUTORS_SIGNING_KEY` (a minisign secret key from `cargo xtask repo-keygen`)
 signs its index; the matching public key goes in `OFFICIAL_KEYS` in
 [`executors.rs`](../../crates/app/cli/src/executors.rs). Until both exist, `official` is an unsigned repository, and
-once `OFFICIAL_KEYS` has a key the workflow refuses to publish unsigned. Its `executors-resign.yml` re-signs before
+once `OFFICIAL_KEYS` has a key the workflow refuses to publish unsigned. `sbx` installs the default executor on its
+own only from a signed `official`, so a release without a key in `OFFICIAL_KEYS` never does. Its `executors-resign.yml` re-signs before
 the index expires. To rotate the key, add the new public key next to the old one in `OFFICIAL_KEYS`, release, then
 switch the secret.
 

@@ -11,6 +11,10 @@ to release a tag without one. Changes land under `## Unreleased` first, and the 
 
 ### Changed
 
+- The installers install the `sbx` release their version pins, not the latest release; `SBX_VERSION` still picks
+  another. The Sigstore signature must now always come from exactly the tag installed. Releasing `sbx` no longer
+  publishes the installers; a new installer version is published by hand once the pair is tested
+  (`installer.yml`).
 - Images are stored per layer: each layer becomes one read-only EROFS disk, shared by every image that has it, and
   the VM stacks them as overlay lower layers. A second image on the same base only adds its own layers, on disk and
   in `prepare` time. When an image has more layers than the executor can attach disks, its lowest layers are merged
@@ -23,6 +27,22 @@ to release a tag without one. Changes land under `## Unreleased` first, and the 
 
 ### Added
 
+- Install and run, nothing in between. With no executor installed, `sbx run`, `create`, `start` and `build` install
+  the default executor from the official repository first and carry on, saying on stderr what they install and from
+  where (never on stdout, so `--format json` and `sbx mcp` stay clean). Which executor is the default is said by the
+  repository's index (a new optional `default` field in schema 2, written by `cargo xtask repo-add --default`), not by
+  `sbx`. It only uses a signed `official` repository, checked exactly like `sbx executor install`, so it asks nothing,
+  also without a terminal. Two first runs at once install it once; an unreachable repository fails with the reason and
+  the manual ways. It never happens when any executor is installed or `--executor` is given, and
+  `SBX_NO_AUTO_EXECUTOR=1` or `--executor none` (`SBX_EXECUTOR=none`) turns it off. `sbx executor current`, `sbx info`
+  and `sbx tui` say whether it will happen, and say to `sbx executor use` one when executors are installed but none is
+  the default.
+- The installers have their own version, separate from `sbx`'s and the executor's. Each version pins the `sbx`
+  release and the executor (with its adapter) it installs, prints them as its first line, and shows them without
+  installing with `--version` (`curl … | sh -s -- --version`). Every version stays published unchanged as
+  `install-<version>.sh` and `.ps1`; `install.sh` and `install.ps1` are copies of the newest. `install.sh` now also
+  installs the pinned executor from the official repository, unless you already use another one or set
+  `SBX_EXECUTOR=none`; if that fails, `sbx` is still installed and fetches the default executor on first use.
 - `sbx build` makes an image from a Dockerfile, with buildx's flag names (`-t`, `-f`, `--build-arg`, `--target`,
   `--no-cache`, `--progress auto|plain`, `-q`). Each stage's `RUN` steps run in one microVM with the network closed
   unless `--network allow --allow HOST:PORT` opens it; a failed step lists the names it was refused, with the

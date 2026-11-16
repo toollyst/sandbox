@@ -41,9 +41,10 @@ From v0.2.0, every release archive comes with a Sigstore signature (`.sigstore.j
 attestation (SLSA) and an SBOM (SPDX, `sbx-<version>.spdx.json`). `install.sh` checks the signature when `cosign` is
 on `PATH` (`SBX_VERIFY=require` makes that mandatory), and so does `install.ps1` on Windows
 (`sbx-windows-x86_64.zip`). Then a missing signature is an error too, since whoever
-controls the download can delete it. With
-`SBX_VERSION`, the signature must come from that exact tag, so an older signed release can't be served in its
-place. To check by hand:
+controls the download can delete it. The signature must come from exactly the tag being installed (the one the
+installer version pins, or `SBX_VERSION`), so an older signed release can't be served in its place. Each installer
+version is published once as `install-<version>.sh` (and `.ps1`) and never changed, so you can read the one you run
+and pin it. To check by hand:
 
 ```sh
 gh attestation verify sbx-linux-x86_64.tar.gz -R toollyst/sandbox
@@ -128,7 +129,9 @@ These are known gaps, in rough order of importance. Some are on the [roadmap](do
 - **The official repository is not signed yet.** Signed repositories work (see above), but the official
   repository's key hasn't been created, so `official` is still an unsigned repository: TLS is all that protects its
   index, and whoever controls [toollyst/sandbox-executors](https://github.com/toollyst/sandbox-executors) (its
-  Pages and Releases) controls what `sbx executor install` gets from it.
+  Pages and Releases) controls what `sbx executor install` gets from it. Until it is signed, `sbx` never installs
+  the default executor on its own (that needs a signed `official`); the installer's executor step does go through
+  `sbx executor install`, with the same TLS-only trust.
 - **A repository you add is trusted for the names it publishes first.** If you add a repository ahead of
   `official` in the list file, or install a name from it with `--repo` before anything else has it, that repository
   owns the name on your machine.

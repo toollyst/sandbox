@@ -376,6 +376,15 @@ the nearest `.sbx-executor` from the current directory up, then the default in `
 `io.github.toollyst.sandbox.executor`. A detached sandbox's shim is handed the chosen program (and VMM directory).
 `sbx executor current` prints the choice and where it came from.
 
+**The default executor.** When nothing is chosen and no executor is installed, `run`, `create`, `start` and `build`
+install one first ([`executors.rs`](../../crates/app/cli/src/executors.rs), "기본 실행기 자동 설치"): the executor
+the `official` repository's index names in `default` (or its only executor), newest version for this host, installed
+exactly like `sbx executor install --repo official NAME`. Only a signed `official` is used, so no question is asked
+even without a terminal. `sbx` holds no executor name, so the official repository decides what the default is and can
+change it. A lock in the cache directory (`executor-downloads/.auto-install.lock`) makes two first runs install it
+once. `SBX_NO_AUTO_EXECUTOR` and `--executor none` turn it off. The installer installs the executor its version pins
+before any of this happens ([testing and releasing](testing-and-releasing.md#install-scripts)).
+
 **Two shapes.** An installed executor ([`sbx-executor-install`](../../crates/spec/executor-install/src/lib.rs)) is
 either self-contained, with `sbx-executor` at the top, or a **VMM package**: the VMM's files plus `.sbx-adapter`,
 which names the adapter that runs it. Adapters live in `data_dir/adapters` with the same layout. For a VMM package,
