@@ -324,8 +324,8 @@ change to them is in [COMPATIBILITY.md](../../COMPATIBILITY.md).
 
 ## Full-screen view
 
-`sbx tui` shows sandboxes, images, events and executors on one screen. It is built on the same commands: every key
-runs an `sbx` command and shows its command line, so anything you do there you can script.
+`sbx tui` shows sandboxes, images, volumes, events and executors on one screen. It is built on the same commands:
+every key runs an `sbx` command and shows its command line, so anything you do there you can script.
 
 The bottom line shows the keys you can use right now; `?` lists them all, by tab (so does `sbx tui --help`). Enter
 opens the selected row's details, with the `sbx … --format json` command that prints the same fields. An empty tab

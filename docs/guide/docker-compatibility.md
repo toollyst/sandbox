@@ -151,7 +151,7 @@ Every `docker` command and management command. The flags of the commands sbx has
 | `secret` | ⚫ | *Why:* Swarm is out of scope. |  |
 | `config` | ⚫ | *Why:* Swarm is out of scope. |  |
 | `prepare` | ➕ | Builds an image's layer disks ahead of time, one per layer and shared between images, for the executor `run` would use (`run` does it on first use). |  |
-| `tui` | ➕ | Sandboxes, images, events and executors on one screen, like Docker Desktop or lazydocker. Every key runs an `sbx` command and shows its command line. |  |
+| `tui` | ➕ | Sandboxes, images, volumes, events and executors on one screen, like Docker Desktop or lazydocker. Every key runs an `sbx` command and shows its command line. |  |
 | `mcp` | ➕ | Serves sandboxes to AI agents over the Model Context Protocol ([guide](mcp.md)). |  |
 | `executor` | ➕ | Installs and picks executors, the programs that run the VMs ([guide](executors.md)). |  |
 | `upgrade` | ➕ | Replaces sbx with the newest signed release. |  |

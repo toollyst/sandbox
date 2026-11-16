@@ -569,7 +569,7 @@ pub const ROWS: &[Row] = &[
     wont(Commands, "secret", SWARM),
     wont(Commands, "config", SWARM),
     only(Commands, "prepare", "Builds an image's layer disks ahead of time, one per layer and shared between images, for the executor `run` would use (`run` does it on first use)."),
-    only(Commands, "tui", "Sandboxes, images, events and executors on one screen, like Docker Desktop or lazydocker. Every key runs an `sbx` command and shows its command line."),
+    only(Commands, "tui", "Sandboxes, images, volumes, events and executors on one screen, like Docker Desktop or lazydocker. Every key runs an `sbx` command and shows its command line."),
     only(Commands, "mcp", "Serves sandboxes to AI agents over the Model Context Protocol ([guide](mcp.md))."),
     only(Commands, "executor", "Installs and picks executors, the programs that run the VMs ([guide](executors.md))."),
     only(Commands, "upgrade", "Replaces sbx with the newest signed release."),

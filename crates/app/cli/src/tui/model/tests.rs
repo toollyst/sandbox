@@ -41,6 +41,20 @@ pub(crate) fn image(reference: Option<&str>) -> Image {
     .unwrap()
 }
 
+pub(crate) fn volume(name: &str, users: &[char]) -> Volume {
+    serde_json::from_value(serde_json::json!({
+        "name": name,
+        "created": "2026-11-10T12:00:00Z",
+        "size": 16u64 << 30,
+        "disk_usage": 40u64 << 20,
+        "disk": format!("/data/volumes/{name}/disk.img"),
+        "labels": {"app": "db"},
+        "sandboxes": users.iter().map(|c| c.to_string().repeat(64)).collect::<Vec<_>>(),
+        "in_use": !users.is_empty(),
+    }))
+    .unwrap()
+}
+
 pub(crate) fn event(kind: &str, action: &str, id: &str) -> Event {
     Event {
         time: "2026-11-10T13:20:14.000000001Z".to_owned(),
@@ -242,6 +256,15 @@ fn every_listed_letter_key_does_something() {
             press(&mut m, KeyCode::Char(c)).is_some() || m.popup.is_some() || m.prompt.is_some();
         assert!(acted, "{:?}", h.keys);
     }
+    for h in KEYS.iter().filter(|h| h.tabs == "volumes") {
+        let mut m = loaded();
+        m.apply(Msg::Volumes(Ok(vec![volume("pgdata", &[])])));
+        m.tab = Tab::Volumes;
+        let c = h.keys.chars().next().unwrap();
+        let acted =
+            press(&mut m, KeyCode::Char(c)).is_some() || m.popup.is_some() || m.prompt.is_some();
+        assert!(acted, "{:?}", h.keys);
+    }
     // 고를 것이 없으면 아무것도 하지 않는다.
     let mut empty = Model::default();
     assert_eq!(press(&mut empty, KeyCode::Char('x')), None);
@@ -375,18 +398,26 @@ fn events_follow_the_newest_unless_you_scroll_up_and_old_ones_drop() {
     for i in 0..5 {
         m.apply(Msg::Event(event("sandbox", "start", &i.to_string())));
     }
-    assert_eq!(m.cursors[2].selected, 4, "follows the newest");
+    assert_eq!(
+        m.cursors[Tab::Events.index()].selected,
+        4,
+        "follows the newest"
+    );
     m.tab = Tab::Events;
     press(&mut m, KeyCode::Up);
     m.apply(Msg::Event(event("sandbox", "stop", "5")));
-    assert_eq!(m.cursors[2].selected, 3, "stays where you scrolled");
+    assert_eq!(
+        m.cursors[Tab::Events.index()].selected,
+        3,
+        "stays where you scrolled"
+    );
     press(&mut m, KeyCode::Char('G'));
     for i in 0..EVENTS_KEPT {
         m.apply(Msg::Event(event("image", "pull", &format!("x{i}"))));
     }
     assert_eq!(m.events.len(), EVENTS_KEPT);
     assert_eq!(m.events.front().unwrap().id, "x0");
-    assert_eq!(m.cursors[2].selected, EVENTS_KEPT - 1);
+    assert_eq!(m.cursors[Tab::Events.index()].selected, EVENTS_KEPT - 1);
 }
 
 #[test]
@@ -441,7 +472,7 @@ fn help_text_lists_every_key() {
 #[test]
 fn executors_tab_lists_executors_then_adapters_and_runs_executor_commands() {
     let mut m = loaded();
-    assert_eq!(chars(&mut m, "4"), None);
+    assert_eq!(chars(&mut m, "5"), None);
     assert_eq!(m.tab(), Tab::Executors);
     // 아직 못 받았으면 고를 것이 없지만, 설치와 검색은 된다.
     assert_eq!(press(&mut m, KeyCode::Char('u')), None);
@@ -538,4 +569,50 @@ fn v_upgrades_from_any_tab() {
         press(&mut m, KeyCode::Char('V')),
         Some(Action::Handover(vec!["upgrade".into()]))
     );
+}
+
+#[test]
+fn volumes_tab_lists_users_by_name_and_runs_volume_commands() {
+    let mut m = loaded();
+    assert_eq!(chars(&mut m, "3"), None);
+    assert_eq!(m.tab(), Tab::Volumes);
+    // 아직 못 받았어도 만들기와 지우기(prune)는 된다.
+    assert_eq!(press(&mut m, KeyCode::Char('D')), None);
+    assert_eq!(m.popup, None);
+    assert_eq!(press(&mut m, KeyCode::Char('c')), None);
+    assert_eq!(m.prompt.as_ref().unwrap().text, "volume create ");
+    chars(&mut m, "cache --opt size=2g");
+    assert_eq!(
+        press(&mut m, KeyCode::Enter),
+        Some(Action::Handover(strings(&[
+            "volume", "create", "cache", "--opt", "size=2g"
+        ])))
+    );
+    press(&mut m, KeyCode::Char('P'));
+    assert_eq!(
+        m.popup,
+        Some(Popup::Confirm {
+            args: strings(&["volume", "prune", "-a", "-f"])
+        })
+    );
+    m.popup = None;
+    m.apply(Msg::Volumes(Ok(vec![
+        volume("pgdata", &['1']),
+        volume("scratch", &['2']),
+    ])));
+    // 쓰는 샌드박스는 이름으로(없으면 짧은 ID).
+    let users: Vec<Vec<String>> = m.visible_volumes().iter().map(|v| m.users(v)).collect();
+    assert_eq!(users, [vec!["web".to_owned()], vec!["2".repeat(12)]]);
+    // 거르기는 쓰는 샌드박스의 이름도 본다.
+    chars(&mut m, "/web");
+    press(&mut m, KeyCode::Enter);
+    assert_eq!(m.visible_volumes().len(), 1);
+    press(&mut m, KeyCode::Char('D'));
+    assert_eq!(
+        press(&mut m, KeyCode::Char('y')),
+        Some(Action::Run(strings(&["volume", "rm", "pgdata"])))
+    );
+    press(&mut m, KeyCode::Enter);
+    assert!(matches!(&m.popup, Some(Popup::Detail { title, source, .. })
+            if title == "Volume pgdata" && source == "sbx volume inspect pgdata --format json"));
 }

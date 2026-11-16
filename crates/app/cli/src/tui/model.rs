@@ -12,6 +12,7 @@ use super::detail::{DetailLine, readable};
 use crate::behavior::familiar;
 use crate::output::{
     ChosenExecutor, Event, Image, InstalledAdapter, InstalledExecutor, Sandbox, SandboxState,
+    Volume,
 };
 
 /// 이벤트를 얼마나 거슬러 받는지(`events --since`). 화면을 열 때 최근 일을 보여 준다.
@@ -31,6 +32,8 @@ pub enum Tab {
     Sandboxes,
     /// 이미지(`images`).
     Images,
+    /// 볼륨(`volume ls`).
+    Volumes,
     /// 이벤트(`events --since`).
     Events,
     /// 실행기와 어댑터(`executor ls`, `executor adapter ls`, `executor current`).
@@ -38,7 +41,13 @@ pub enum Tab {
 }
 
 /// 탭 순서.
-pub const TABS: [Tab; 4] = [Tab::Sandboxes, Tab::Images, Tab::Events, Tab::Executors];
+pub const TABS: [Tab; 5] = [
+    Tab::Sandboxes,
+    Tab::Images,
+    Tab::Volumes,
+    Tab::Events,
+    Tab::Executors,
+];
 
 impl Tab {
     /// 제목.
@@ -46,17 +55,20 @@ impl Tab {
         match self {
             Tab::Sandboxes => "Sandboxes",
             Tab::Images => "Images",
+            Tab::Volumes => "Volumes",
             Tab::Events => "Events",
             Tab::Executors => "Executors",
         }
     }
 
-    const fn index(self) -> usize {
+    /// [`TABS`]에서의 자리.
+    pub const fn index(self) -> usize {
         match self {
             Tab::Sandboxes => 0,
             Tab::Images => 1,
-            Tab::Events => 2,
-            Tab::Executors => 3,
+            Tab::Volumes => 2,
+            Tab::Events => 3,
+            Tab::Executors => 4,
         }
     }
 }
@@ -79,6 +91,8 @@ pub enum Msg {
     Sandboxes(Result<Vec<Sandbox>, String>),
     /// `images`의 결과.
     Images(Result<Vec<Image>, String>),
+    /// `volume ls`의 결과.
+    Volumes(Result<Vec<Volume>, String>),
     /// `events`가 낸 줄 하나.
     Event(Event),
     /// `events`가 끝났다(끝나면 안 된다).
@@ -237,6 +251,8 @@ pub struct Model {
     pub sandboxes: Option<Vec<Sandbox>>,
     /// `images`. 아직 못 받았으면 `None`.
     pub images: Option<Vec<Image>>,
+    /// `volume ls`. 아직 못 받았으면 `None`.
+    pub volumes: Option<Vec<Volume>>,
     /// 받은 이벤트, 오래된 것부터.
     pub events: VecDeque<Event>,
     /// 이벤트 탭에서 맨 아래가 아닌 줄을 골랐다. 아니면 새 것을 따라간다(거르는 글이 바뀌어도).
@@ -244,7 +260,7 @@ pub struct Model {
     /// 실행기 탭. 아직 못 받았으면 `None`.
     pub executors: Option<Executors>,
     /// 탭마다의 표 위치.
-    pub cursors: [Cursor; 4],
+    pub cursors: [Cursor; TABS.len()],
     /// 거르는 글(`/`). 비면 거르지 않는다.
     pub filter: String,
     /// 입력 중인 줄.
@@ -305,6 +321,38 @@ impl Model {
             .collect()
     }
 
+    /// 거른 볼륨.
+    pub fn visible_volumes(&self) -> Vec<&Volume> {
+        let f = self.filter.to_lowercase();
+        self.volumes
+            .iter()
+            .flatten()
+            .filter(|v| {
+                f.is_empty()
+                    || v.name.to_lowercase().contains(&f)
+                    || v.labels
+                        .iter()
+                        .any(|(k, x)| format!("{k}={x}").to_lowercase().contains(&f))
+                    || self.users(v).iter().any(|u| u.to_lowercase().contains(&f))
+            })
+            .collect()
+    }
+
+    /// 볼륨을 가리키는 샌드박스: 이름이 있으면 이름, 없으면 짧은 ID.
+    pub fn users(&self, v: &Volume) -> Vec<String> {
+        v.sandboxes
+            .iter()
+            .map(|id| {
+                self.sandboxes
+                    .iter()
+                    .flatten()
+                    .find(|s| &s.id == id)
+                    .and_then(|s| s.name.clone())
+                    .unwrap_or_else(|| id.chars().take(12).collect())
+            })
+            .collect()
+    }
+
     /// 거른 이벤트, 오래된 것부터.
     pub fn visible_events(&self) -> Vec<&Event> {
         let f = self.filter.to_lowercase();
@@ -338,6 +386,7 @@ impl Model {
         match tab {
             Tab::Sandboxes => self.visible_sandboxes().len(),
             Tab::Images => self.visible_images().len(),
+            Tab::Volumes => self.visible_volumes().len(),
             Tab::Events => self.visible_events().len(),
             Tab::Executors => self.visible_executor_rows().len(),
         }
@@ -358,6 +407,11 @@ impl Model {
         self.visible_images().get(i).copied()
     }
 
+    fn selected_volume(&self) -> Option<&Volume> {
+        let i = self.cursors[Tab::Volumes.index()].selected;
+        self.visible_volumes().get(i).copied()
+    }
+
     /// 소식을 반영한다.
     pub fn apply(&mut self, msg: Msg) {
         match msg {
@@ -369,12 +423,17 @@ impl Model {
                 self.images = Some(v);
                 self.error = None;
             }
+            Msg::Volumes(Ok(v)) => {
+                self.volumes = Some(v);
+                self.error = None;
+            }
             Msg::Executors(Ok(v)) => {
                 self.executors = Some(v);
                 self.error = None;
             }
             Msg::Sandboxes(Err(e))
             | Msg::Images(Err(e))
+            | Msg::Volumes(Err(e))
             | Msg::Executors(Err(e))
             | Msg::EventsEnded(e) => {
                 self.error = Some(e);
@@ -426,7 +485,7 @@ impl Model {
             KeyCode::Char('q') => return Some(Action::Quit),
             KeyCode::Tab => self.tab = TABS[(tab.index() + 1) % TABS.len()],
             KeyCode::BackTab => self.tab = TABS[(tab.index() + TABS.len() - 1) % TABS.len()],
-            KeyCode::Char(c @ '1'..='4') => self.tab = TABS[c as usize - '1' as usize],
+            KeyCode::Char(c @ '1'..='5') => self.tab = TABS[c as usize - '1' as usize],
             KeyCode::Down | KeyCode::Char('j') => self.cursor(tab).move_by(1, len),
             KeyCode::Up | KeyCode::Char('k') => self.cursor(tab).move_by(-1, len),
             KeyCode::PageDown => self.cursor(tab).move_by(page, len),
@@ -565,8 +624,30 @@ impl Model {
                     _ => None,
                 }
             }
+            Tab::Volumes => self.volume_key(c),
             Tab::Events => None,
             Tab::Executors => self.executor_key(c),
+        }
+    }
+
+    /// 볼륨 탭의 명령 키. `c`, `P`는 고른 줄이 없어도 된다.
+    fn volume_key(&mut self, c: char) -> Option<Action> {
+        let words = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        match c {
+            // 이름과 크기는 사용자가 친다.
+            'c' => {
+                self.prompt = Some(Prompt {
+                    kind: PromptKind::Command,
+                    text: "volume create ".into(),
+                });
+                None
+            }
+            'P' => self.confirm(words(&["volume", "prune", "-a", "-f"])),
+            'D' => {
+                let name = self.selected_volume()?.name.clone();
+                self.confirm(words(&["volume", "rm", &name]))
+            }
+            _ => None,
         }
     }
 
@@ -637,6 +718,14 @@ impl Model {
                     format!("Image {r}"),
                     readable(i),
                     words(&["images", "--format", "json"]),
+                )
+            }
+            Tab::Volumes => {
+                let v = self.selected_volume()?;
+                (
+                    format!("Volume {}", v.name),
+                    readable(v),
+                    words(&["volume", "inspect", &v.name, "--format", "json"]),
                 )
             }
             Tab::Executors => {

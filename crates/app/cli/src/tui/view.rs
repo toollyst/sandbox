@@ -57,6 +57,7 @@ pub fn draw(frame: &mut Frame, model: &mut Model, now_ns: u64) {
         }
         Tab::Sandboxes => sandboxes(frame, model, body, now_ns),
         Tab::Images => images(frame, model, body),
+        Tab::Volumes => volumes(frame, model, body),
         Tab::Events => events(frame, model, body),
         Tab::Executors => executors(frame, model, body),
     }
@@ -70,6 +71,7 @@ fn header(frame: &mut Frame, model: &Model, area: Rect) {
     let counts = [
         model.visible_sandboxes().len(),
         model.visible_images().len(),
+        model.visible_volumes().len(),
         model.visible_events().len(),
         model.visible_executor_rows().len(),
     ];
@@ -362,6 +364,50 @@ fn images(frame: &mut Frame, model: &mut Model, area: Rect) {
     *model.cursor(Tab::Images) = cursor;
 }
 
+/// 볼륨 탭. SIZE는 볼륨의 크기, ON DISK는 호스트에서 실제로 차지하는 것(sparse), USED BY는 가리키는 샌드박스다.
+/// 지금 붙어 있으면 `●`.
+fn volumes(frame: &mut Frame, model: &mut Model, area: Rect) {
+    let mut cursor = *model.cursor(Tab::Volumes);
+    let rows = model.visible_volumes();
+    let spec = Spec {
+        title: "Volumes",
+        len: rows.len(),
+        loaded: model.volumes.is_some(),
+        header: &["NAME", "SIZE", "ON DISK", "IN USE", "USED BY"],
+        widths: &[
+            Constraint::Fill(1),
+            Constraint::Length(9),
+            Constraint::Length(9),
+            Constraint::Length(6),
+            Constraint::Fill(1),
+        ],
+        filter: &model.filter,
+        empty: Empty::new(
+            "No volumes yet",
+            hint(&[
+                "run -v NAME:/path makes one on first use, or press ",
+                "c",
+                " to create one",
+            ]),
+        ),
+    };
+    table(frame, area, &mut cursor, spec, |range| {
+        rows[range]
+            .iter()
+            .map(|v| {
+                Row::new(vec![
+                    Cell::from(v.name.clone()),
+                    Cell::from(human_size(v.size)),
+                    Cell::from(human_size(v.disk_usage)),
+                    Cell::from(if v.in_use { "●" } else { "" }),
+                    Cell::from(model.users(v).join(", ")),
+                ])
+            })
+            .collect()
+    });
+    *model.cursor(Tab::Volumes) = cursor;
+}
+
 /// 실행기 탭. 위 한 줄은 새 샌드박스가 쓸 실행기와 그 까닭(`executor current`), 아래는 실행기와 어댑터 표.
 /// `*`는 기본, `>`는 지금 쓸 것이다.
 fn executors(frame: &mut Frame, model: &mut Model, area: Rect) {
@@ -616,10 +662,18 @@ fn hints(model: &Model) -> Vec<(&'static str, &'static str)> {
             }
             h.extend([("I", "load"), ("L", "login"), ("U", "usage")]);
         }
+        Tab::Volumes => {
+            if !model.visible_volumes().is_empty() {
+                h.extend([("D", "rm"), ("enter", "details")]);
+            }
+            h.extend([("c", "create"), ("P", "prune")]);
+        }
         Tab::Events if !model.visible_events().is_empty() => h.push(("enter", "details")),
         Tab::Executors => {
             let rows = model.visible_executor_rows();
-            let i = model.cursors[3].selected.min(rows.len().saturating_sub(1));
+            let i = model.cursors[Tab::Executors.index()]
+                .selected
+                .min(rows.len().saturating_sub(1));
             let executor = matches!(rows.get(i), Some(ExecutorRow::Executor(_)));
             if executor {
                 h.push(("u", "use"));

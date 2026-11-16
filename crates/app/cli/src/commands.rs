@@ -195,7 +195,7 @@ pub const COMMANDS: &[Command] = &[
     cmd(
         "tui",
         Section::Watch,
-        "Watch and manage sandboxes, images, events and executors on one screen",
+        "Watch and manage sandboxes, images, volumes, events and executors on one screen",
     ),
     cmd(
         "events",

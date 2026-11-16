@@ -26,7 +26,10 @@ fn sandboxes_tab_shows_rows_hints_and_recent_events() {
     m.apply(Msg::Event(event("sandbox", "start", &"1".repeat(64))));
     let s = render(&mut m, 120, 30);
     assert!(s.contains("1 Sandboxes 2"), "{s}");
-    assert!(s.contains("2 Images 1") && s.contains("3 Events 1"), "{s}");
+    assert!(
+        s.contains("2 Images 1") && s.contains("3 Volumes 0") && s.contains("4 Events 1"),
+        "{s}"
+    );
     for want in [
         "NAME",
         "web",
@@ -61,7 +64,7 @@ fn only_visible_rows_are_drawn_and_the_selection_stays_on_screen() {
     let s = render(&mut m, 100, 20);
     assert!(s.contains("id0004") && !s.contains("id0499"), "{s}");
     // 표 칸(테두리, 머리줄 뺀 15줄)만큼만 그렸다.
-    let c = m.cursors[2];
+    let c = m.cursors[Tab::Events.index()];
     assert_eq!((c.selected, c.offset), (4, 4));
 }
 
@@ -143,7 +146,7 @@ fn executors_tab_shows_current_marks_and_adapters() {
     assert!(render(&mut m, 120, 20).contains("Loading…"));
     m.apply(Msg::Executors(Ok(executors())));
     let s = render(&mut m, 140, 20);
-    assert!(s.contains("4 Executors 3"), "{s}");
+    assert!(s.contains("5 Executors 3"), "{s}");
     assert!(
         s.contains("current: wick@1.18.0") && s.contains("adapter firecracker@0.2.0"),
         "{s}"
@@ -288,4 +291,30 @@ fn header_shows_the_version_and_a_newer_one() {
         "{s}"
     );
     assert!(s.contains("1 Sandboxes 2"), "tabs still fit: {s}");
+}
+
+#[test]
+fn volumes_tab_shows_size_disk_use_and_users() {
+    use crate::tui::model::tests::volume;
+    let mut m = loaded();
+    m.tab = Tab::Volumes;
+    assert!(render(&mut m, 120, 20).contains("Loading…"));
+    m.apply(Msg::Volumes(Ok(vec![])));
+    let s = render(&mut m, 120, 20);
+    assert!(
+        s.contains("No volumes yet") && s.contains("c to create one"),
+        "{s}"
+    );
+    m.apply(Msg::Volumes(Ok(vec![
+        volume("pgdata", &['1']),
+        volume("cache", &[]),
+    ])));
+    let s = render(&mut m, 120, 20);
+    assert!(s.contains("3 Volumes 2"), "{s}");
+    for want in [
+        "NAME", "ON DISK", "USED BY", "pgdata", "17.2GB", "41.9MB", "●", "web", "cache",
+    ] {
+        assert!(s.contains(want), "{want}: {s}");
+    }
+    assert!(s.contains("D rm") && s.contains("P prune"), "{s}");
 }

@@ -142,7 +142,7 @@ sbx rm -f dev
 sbx run --rm --network allow --allow pypi.org:443 --allow files.pythonhosted.org:443 \
     python:3.12-alpine pip install requests          # only these two hosts are reachable
 
-sbx tui                                              # sandboxes, images, events and executors on one screen
+sbx tui                                              # sandboxes, images, volumes, events and executors on one screen
 ```
 
 Give an AI agent its own machine through MCP:
