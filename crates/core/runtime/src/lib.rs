@@ -56,7 +56,12 @@
 //! **시계**: VM을 소유한 프로세스는 게스트 시계를 호스트에 맞춘다(시작 직후, 1분마다, 호스트 시계가 뛰면 곧바로).
 //! 시작을 기다리게 하지 않고, 실패는 `logs/executor.log`에 종류마다 한 번 쓴다. 규칙은 [`clock`]에 있다.
 //!
-//! **층**: `lib` → `egress`, `clock` → `client` → `hostfs`, `layer`, `volume` → `records` → `process`, `validate`, `cpplan`, `chan` → `error`.
+//! **잇기** (`spec.connect`, `--connect`): VM을 소유한 프로세스가 같은 data_dir의 다른 샌드박스에 연결마다 잇는다.
+//! 네트워크가 `Disabled`여도 투명 TCP를 켜지만 프록시는 띄우지 않고 잇기 이름 말고는 열지 않는다.
+//! [`Runtime::create`]는 대상이 모두 있고 `connect_scope` 안인지 본다(규칙 검사는 [`validate`]). 연결마다의 규칙은
+//! `connect` 모듈과 [`egress`]에 있다.
+//!
+//! **층**: `lib` → `egress`, `clock` → `connect` → `client` → `hostfs`, `layer`, `volume` → `records` → `process`, `validate`, `cpplan`, `chan` → `error`.
 //!
 //! - 의존: `sbx-model`, `sbx-guest-proto`, `sbx-executor`, `sbx-store`(읽기), `sbx-events`
 
@@ -77,6 +82,7 @@ use sbx_store::{LeaseError, RootfsLease, Store};
 mod chan;
 mod client;
 pub mod clock;
+mod connect;
 pub mod cpplan;
 pub mod egress;
 mod error;
@@ -404,7 +410,8 @@ impl Runtime {
 
     /// 샌드박스를 만든다. 아직 시작하지 않는다.
     ///
-    /// 검사 순서: 실행기 기능([`validate::check`]) → 이미지 존재 → rootfs 존재.
+    /// 검사 순서: 실행기 기능과 설정([`validate::check`]) → 이름 → `--connect` 대상(있고 `connect_scope` 안) → 이미지
+    /// 존재 → rootfs 존재.
     /// 어느 것이든 없으면 받거나 만들지 않고 오류를 낸다.
     pub async fn create(&self, spec: SandboxSpec) -> Result<Sandbox, RuntimeError> {
         validate::check(&spec, &self.inner.executor.capabilities())?;
@@ -418,6 +425,7 @@ impl Runtime {
                 });
             }
         }
+        connect::check_targets(data_dir, &spec)?;
         let store = &self.inner.store;
         if !store.has_image(&spec.image) {
             return Err(RuntimeError::ImageNotPulled(spec.image));
@@ -945,6 +953,13 @@ impl Sandbox {
         let egress_limit = spec.egress_limit_bytes;
         let data_dir = rt.inner.config.data_dir.clone();
         let id_for_egress = id.as_str().to_owned();
+        let peers = (!spec.connect.is_empty()).then(|| connect::Peers {
+            rules: spec.connect.clone(),
+            data_dir: data_dir.clone(),
+            executor: rt.inner.executor.clone(),
+            me: id.clone(),
+            scope: spec.connect_scope.clone(),
+        });
         let clock_log = paths.executor_log();
         let (vm, started) = blocking(move || {
             let mut vm = vm;
@@ -990,21 +1005,23 @@ impl Sandbox {
                     }
                 }
                 // 나가는 연결: 프록시를 띄우고, 맡길 연결을 돌리고, 기본 프로세스에 프록시 환경 변수를 준다.
-                let egress_port = match network {
-                    NetworkPolicy::Disabled => None,
-                    NetworkPolicy::Allow(rules) => {
+                // 잇기만 있으면(`--connect`) 프록시 없이 맡길 연결과 투명 TCP만 켠다.
+                let limits = egress::Limits {
+                    bytes: egress_limit,
+                };
+                let record = egress::Record {
+                    log: network_log(&data_dir),
+                    sandbox: id_for_egress.clone(),
+                };
+                let egress_port = match (network, peers) {
+                    (NetworkPolicy::Disabled, None) => None,
+                    (NetworkPolicy::Disabled, Some(peers)) => {
+                        egress::start(guest.clone(), Vec::new(), Some(peers), limits, record);
+                        None
+                    }
+                    (NetworkPolicy::Allow(rules), peers) => {
                         let port = guest.egress_listen()?;
-                        egress::start(
-                            guest.clone(),
-                            rules,
-                            egress::Limits {
-                                bytes: egress_limit,
-                            },
-                            egress::Record {
-                                log: network_log(&data_dir),
-                                sandbox: id_for_egress.clone(),
-                            },
-                        );
+                        egress::start(guest.clone(), rules, peers, limits, record);
                         process::add_proxy_env(&mut main.env, port);
                         Some(port)
                     }

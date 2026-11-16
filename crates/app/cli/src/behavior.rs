@@ -245,6 +245,48 @@ pub fn proxy_only_warnings(policy: &NetworkPolicy) -> Vec<String> {
         .collect()
 }
 
+/// `--connect` 항목 하나를 기록할 규칙으로 바꾼다. `id`와 `name`은 다른 명령과 같은 규칙(이름, ID, ID 앞부분,
+/// `Runtime::resolve`)으로 찾은 대상의 ID와 이름이다.
+///
+/// | 받은 대상 | 기록하는 대상 | 안의 이름(`NAME=`이 없을 때) |
+/// |---|---|---|
+/// | 그 샌드박스의 이름 | 그 이름(지우고 같은 이름으로 다시 만들어도 따라간다) | 그 이름 |
+/// | ID나 ID 앞부분 | 전체 ID(그 샌드박스만) | 그 샌드박스의 이름. 이름이 없으면 오류(`NAME=`을 주라) |
+///
+/// 안의 이름이 DNS 이름이 될 수 없으면(샌드박스 이름 `a..b`처럼) 오류다([`sbx_model::check_connect_name`]).
+pub fn connect_rule(
+    arg: &crate::parse::ConnectArg,
+    id: &SandboxId,
+    name: Option<&str>,
+) -> Result<sbx_model::ConnectRule, String> {
+    let by_name = name == Some(arg.target.as_str());
+    let target = if by_name {
+        arg.target.clone()
+    } else {
+        id.to_string()
+    };
+    let inside = match (&arg.name, name) {
+        (Some(n), _) => n.clone(),
+        (None, Some(n)) => sbx_model::check_connect_name(n).map_err(|_| {
+            format!(
+                "--connect {}: the sandbox name {n:?} cannot be used as a name inside; give one with NAME={}:{}",
+                arg.target, arg.target, arg.port
+            )
+        })?,
+        (None, None) => {
+            return Err(format!(
+                "--connect {}: that sandbox has no name; give one to use inside with NAME={}:{}",
+                arg.target, arg.target, arg.port
+            ));
+        }
+    };
+    Ok(sbx_model::ConnectRule {
+        name: inside,
+        target,
+        port: arg.port,
+    })
+}
+
 /// 이미지 이름이 무엇으로 맞았는지.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImageMatch {
@@ -671,6 +713,46 @@ mod tests {
         assert!(w[1].starts_with("--allow [::1]:80: "), "{w:?}");
         assert!(w[2].starts_with("--allow localhost:8080: "), "{w:?}");
         assert!(proxy_only_warnings(&NetworkPolicy::Disabled).is_empty());
+    }
+
+    #[test]
+    fn connect_targets_are_recorded_by_name_or_full_id() {
+        use crate::parse::ConnectArg;
+        let id = SandboxId::new(&"3f".repeat(32)).unwrap();
+        let arg = |name: Option<&str>, target: &str| ConnectArg {
+            name: name.map(Into::into),
+            target: target.into(),
+            port: 5432,
+        };
+        let r = |a: ConnectArg, n: Option<&str>| connect_rule(&a, &id, n);
+        // 이름으로 주면 이름으로 기록한다(다시 만든 같은 이름을 따라간다).
+        let by_name = r(arg(None, "db"), Some("db")).unwrap();
+        assert_eq!(
+            (by_name.name.as_str(), by_name.target.as_str()),
+            ("db", "db")
+        );
+        // ID 앞부분으로 주면 전체 ID로, 안의 이름은 대상의 이름.
+        let by_id = r(arg(None, "3f3f"), Some("db")).unwrap();
+        assert_eq!(
+            (by_id.name.as_str(), by_id.target.as_str()),
+            ("db", id.as_str())
+        );
+        let alias = r(arg(Some("pg"), "db"), Some("db")).unwrap();
+        assert_eq!((alias.name.as_str(), alias.target.as_str()), ("pg", "db"));
+        // 이름이 없거나 DNS 이름이 될 수 없으면 NAME=을 달라고 한다.
+        assert!(
+            r(arg(None, "3f3f"), None)
+                .unwrap_err()
+                .contains("NAME=3f3f:5432")
+        );
+        assert!(
+            r(arg(None, "a..b"), Some("a..b"))
+                .unwrap_err()
+                .contains("NAME=")
+        );
+        assert_eq!(r(arg(Some("x"), "3f3f"), None).unwrap().name, "x");
+        // 대상 이름이 대문자여도 안의 이름은 소문자다.
+        assert_eq!(r(arg(None, "DB"), Some("DB")).unwrap().name, "db");
     }
 
     #[test]

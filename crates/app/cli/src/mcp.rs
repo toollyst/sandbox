@@ -14,6 +14,11 @@
 //!     다른 플래그(예: `-v`)로 읽히지 않는다.
 //! - 도구는 MCP로 만든 샌드박스만 본다(라벨 [`OWNER_LABEL`]). CLI로 만든 샌드박스는 호스트 폴더를 붙였을 수
 //!   있으므로 `exec`, 파일 도구, `list`, `remove`에 없는 것과 같다. `sbx mcp --all-sandboxes`로 넓힌다.
+//! - **잇기**(`connect`, CLI `--connect`)도 같은 선이다. MCP로 만든 샌드박스는 MCP로 만든 샌드박스에만 잇는다.
+//!   만들 때 대상을 이 서버의 찾기로 찾고(없는 것과 같으면 오류), 샌드박스에 `connect_scope`(라벨 [`OWNER_LABEL`])를
+//!   기록해 실행 코어가 연결마다 다시 본다. 그래서 그 이름이 나중에 CLI로 만든 샌드박스를 가리켜도 닿지 않는다.
+//!   그러지 않으면 에이전트가 사용자의 DB에 닿는다. `--all-sandboxes`면 넓힌 범위 그대로(범위를 기록하지 않는다).
+//!   반대쪽(CLI로 만든 샌드박스가 MCP로 만든 샌드박스에 잇기)은 막지 않는다: 둘 다 사용자의 것이고, 여는 쪽이 사용자다.
 //! - 도구([`tools`]): `run`(새 샌드박스에서 명령 하나, 끝나면 지운다), `create`(오래 사는 샌드박스, 이 서버가
 //!   끝나도 남는다), `exec`, `write_file`, `read_file`, `list`, `remove`.
 //! - 시간 제한: `run`은 넘으면 VM을 끄고 지운다. `exec`은 넘으면 그 프로세스에 SIGKILL을 보낸다.
@@ -146,7 +151,7 @@ impl Server {
                 None => spec.timeout = Some(max),
             }
         }
-        if !spec.allow.is_empty() && spec.egress_limit.is_none() {
+        if (!spec.allow.is_empty() || !spec.connect.is_empty()) && spec.egress_limit.is_none() {
             spec.egress_limit = l.egress_bytes;
         }
         if !l.private_network
@@ -191,6 +196,7 @@ impl Server {
             )
             .into());
         }
+        self.scope_connect(spec).await?;
         // 기다리기(목록 읽기) 전에 자리를 잡는다. 호출은 동시에 돌므로, 읽은 뒤에 잡으면 동시에 온 호출들이 모두
         // 같은 빈자리를 보고 통과한다. 실패하면 자리는 놓인다(Drop).
         self.reserved.set(self.reserved.get() + 1);
@@ -212,6 +218,27 @@ impl Server {
             .into());
         }
         Ok(seat)
+    }
+
+    /// `connect`의 대상을 이 서버의 찾기([`Server::find`])로 확인하고, 실행 코어가 연결마다 볼 범위를 기록한다.
+    /// 규칙은 모듈 문서에 있다.
+    async fn scope_connect(&self, spec: &mut RunArgs) -> AppResult<()> {
+        if spec.connect.is_empty() {
+            return Ok(());
+        }
+        let rt = self.runtime()?;
+        for v in &spec.connect {
+            for c in crate::parse::connect(v)? {
+                self.find(&rt, &c.target)
+                    .await
+                    .map_err(|e| format!("`connect` {v:?}: {e}"))?;
+            }
+        }
+        if !self.all_sandboxes {
+            spec.connect_scope =
+                std::collections::BTreeMap::from([(OWNER_LABEL.to_owned(), OWNER_MCP.to_owned())]);
+        }
+        Ok(())
     }
 
     /// `query`(이름, ID, ID 앞부분)로 찾는다. 이 서버가 다룰 수 없는 샌드박스는 없는 것과 같다.
@@ -547,6 +574,7 @@ pub fn tools() -> Value {
     let workdir =
         json!({ "type": "string", "description": "Working directory inside the sandbox." });
     let allow = json!({ "type": "array", "items": { "type": "string" }, "description": "Outbound network allow list, host:port each (e.g. pypi.org:443, *.github.com:443). Without it the sandbox has no network." });
+    let connect = json!({ "type": "array", "items": { "type": "string" }, "description": "Other sandboxes created through this server (with create) that this one may reach, SANDBOX:PORT each (e.g. db:5432; pg=db:5432 to use the name pg inside). Programs inside connect to SANDBOX:PORT by name, with any TCP protocol; nothing else opens. Sandboxes made outside this server cannot be reached." });
     let stdin =
         json!({ "type": "string", "description": "Text written to the command's standard input." });
     let timeout = json!({ "type": "integer", "minimum": 1, "maximum": MAX_TIMEOUT_SECS, "description": format!("Seconds before the command is killed (default {DEFAULT_TIMEOUT_SECS}).") });
@@ -578,8 +606,8 @@ pub fn tools() -> Value {
             "description": "Start a fresh microVM from an image, run one command, return its exit code and output, then delete the sandbox.",
             "inputSchema": { "type": "object", "required": ["image"], "properties": {
                 "image": image, "command": command, "env": env, "workdir": workdir, "allow": allow,
-                "stdin": stdin, "timeout_secs": timeout, "cpus": cpus, "memory": memory, "disk": disk,
-                "volumes": volumes } },
+                "connect": connect, "stdin": stdin, "timeout_secs": timeout, "cpus": cpus, "memory": memory,
+                "disk": disk, "volumes": volumes } },
             "outputSchema": output,
             "annotations": annotations(false, false, false, true),
         },
@@ -589,7 +617,8 @@ pub fn tools() -> Value {
             "description": "Start a microVM that keeps running (by default its main process is `sleep infinity`) for exec, write_file and read_file. It stays until remove, even after this server exits.",
             "inputSchema": { "type": "object", "required": ["image"], "properties": {
                 "image": image, "name": name, "command": command, "env": env, "workdir": workdir, "allow": allow,
-                "cpus": cpus, "memory": memory, "disk": disk, "lifetime": lifetime, "volumes": volumes } },
+                "connect": connect, "cpus": cpus, "memory": memory, "disk": disk, "lifetime": lifetime,
+                "volumes": volumes } },
             "outputSchema": id_out,
             "annotations": annotations(false, false, false, true),
         },
@@ -833,6 +862,11 @@ fn run_args(a: &Args, stdin: bool, default_command: &[&str]) -> AppResult<RunArg
         argv.push("--network=allow".into());
         argv.extend(allow.iter().map(|r| format!("--allow={r}")));
     }
+    argv.extend(
+        a.strings("connect")?
+            .iter()
+            .map(|c| format!("--connect={c}")),
+    );
     argv.extend(a.env()?.iter().map(|(k, v)| format!("--env={k}={v}")));
     if let Some(w) = a.str("workdir")? {
         argv.push(format!("--workdir={w}"));
@@ -1308,6 +1342,29 @@ mod tests {
             parse(json!({ "image": "alpine" }), false).unwrap().network,
             "none"
         );
+        // connect는 --connect가 된다. 범위는 서버가 정하므로 인자로 받지 않는다(도구 인자에 없다).
+        let r = parse(
+            json!({ "image": "alpine", "connect": ["db:5432", "pg=db2:5433,5434"] }),
+            false,
+        )
+        .unwrap();
+        assert_eq!(r.connect, ["db:5432", "pg=db2:5433,5434"]);
+        assert_eq!(r.network, "none");
+        assert!(r.connect_scope.is_empty());
+        assert!(parse(json!({ "image": "alpine", "connect": ["db"] }), false).is_err());
+        let schema = tools();
+        for tool in ["run", "create"] {
+            let t = schema
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["name"] == tool)
+                .unwrap();
+            let d = t["inputSchema"]["properties"]["connect"]["description"]
+                .as_str()
+                .unwrap();
+            assert!(d.contains("created through this server"), "{d}");
+        }
     }
 
     #[test]

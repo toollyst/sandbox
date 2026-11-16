@@ -744,6 +744,133 @@ impl FromStr for AllowRule {
     }
 }
 
+/// 다른 샌드박스의 TCP 포트 하나에 닿는 길(`--connect`). 허용 목록과 같은 생각이다: 하나씩 연다.
+///
+/// - `name`: 샌드박스 안에서 쓰는 이름. 게스트 DNS가 이 이름에 가짜 주소를 주고 그 주소의 `port`에서 듣는다
+///   (투명 TCP, [`Reach::Name`]과 같은 길). 규칙은 [`check_connect_name`].
+/// - `target`: 대상 샌드박스의 이름이나 전체 ID. 연결마다 이것으로 대상을 새로 찾는다(정확한 ID, 그다음 이름.
+///   ID 앞부분으로는 찾지 않는다). 그래서 대상이 다시 시작하거나 같은 이름으로 다시 만들어져도 다음 연결은 된다.
+/// - `port`: 대상 게스트 안 `127.0.0.1`의 포트. 소유 프로세스가 대상의 게스트에 `-p`와 같은 길(`Forward`)로 잇는다.
+///
+/// 규칙 사이의 검사는 [`check_connect`]가 한다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectRule {
+    /// 안에서 쓰는 이름. 소문자이고 끝의 `.`이 없다.
+    pub name: String,
+    /// 대상 샌드박스: 이름이나 전체 ID.
+    pub target: String,
+    /// 대상 안의 포트(1 이상).
+    pub port: u16,
+}
+
+impl ConnectRule {
+    /// 게스트가 물은 이름(대소문자 무시, 끝의 `.` 무시)이 이 규칙의 이름인지.
+    pub fn matches_name(&self, name: &str) -> bool {
+        name.strip_suffix('.')
+            .unwrap_or(name)
+            .eq_ignore_ascii_case(&self.name)
+    }
+}
+
+impl fmt::Display for ConnectRule {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.name == self.target {
+            write!(f, "{}:{}", self.target, self.port)
+        } else {
+            write!(f, "{}={}:{}", self.name, self.target, self.port)
+        }
+    }
+}
+
+/// `--connect`의 이름 규칙. 받으면 소문자로 바꾸고 끝의 `.`을 뗀 이름을 돌려준다.
+///
+/// - DNS 이름이어야 한다: 조각마다 1..=63자, 영문자·숫자·`-`·`_`, 모두 253자 안. IP 주소 꼴은 안 된다.
+/// - `localhost`와 `*.localhost`는 안 된다: 게스트 DNS가 호스트에 묻지 않고 게스트 자신으로 답한다.
+/// - `arpa`와 `.arpa`로 끝나는 이름은 안 된다: 게스트 DNS가 역방향 이름으로만 답한다.
+pub fn check_connect_name(name: &str) -> Result<String, ParseError> {
+    let n = name.strip_suffix('.').unwrap_or(name).to_ascii_lowercase();
+    let ok = !n.is_empty()
+        && n.len() <= 253
+        && n.parse::<std::net::IpAddr>().is_err()
+        && n.split('.').all(|l| {
+            !l.is_empty()
+                && l.len() <= 63
+                && l.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        })
+        && !is_localhost_name(&n)
+        && n != "arpa"
+        && !n.ends_with(".arpa");
+    if ok {
+        Ok(n)
+    } else {
+        Err(ParseError::new(
+            "--connect name (a DNS name such as db, not localhost or an IP address)",
+            name,
+        ))
+    }
+}
+
+/// `--connect` 목록을 검사한다. `allow`는 같은 샌드박스의 허용 목록, `own_name`은 그 샌드박스의 이름이다.
+///
+/// | 경우 | 결과 |
+/// |---|---|
+/// | 이름이 [`check_connect_name`]에 맞지 않거나 저장된 꼴(소문자, 끝의 `.` 없음)이 아님 | 오류 |
+/// | 대상이 샌드박스 이름([`check_sandbox_name`])도 ID([`SandboxId::new`])도 아님 | 오류 |
+/// | 포트 0 | 오류 |
+/// | 같은 이름이 다른 대상을 가리킴 | 오류 (이름 하나는 샌드박스 하나다) |
+/// | 같은 규칙이 두 번 | 오류 |
+/// | 이름이 IP가 아닌 허용 규칙에 맞음(`*.접미사` 포함) | 오류 (그 이름의 연결이 갈 곳이 둘이 된다) |
+/// | 대상이 자기 이름 | 오류 (자신에게 잇지 않는다. 연결할 때는 ID로도 막는다) |
+pub fn check_connect(
+    rules: &[ConnectRule],
+    allow: &[AllowRule],
+    own_name: Option<&str>,
+) -> Result<(), String> {
+    for (i, r) in rules.iter().enumerate() {
+        let what = format!("--connect {r}");
+        if check_connect_name(&r.name).ok().as_deref() != Some(r.name.as_str()) {
+            return Err(format!(
+                "{what}: {:?} is not a name a sandbox can use (a DNS name such as db; not localhost or an IP address)",
+                r.name
+            ));
+        }
+        if check_sandbox_name(&r.target).is_err() && SandboxId::new(&r.target).is_err() {
+            return Err(format!(
+                "{what}: {:?} is not a sandbox name or ID",
+                r.target
+            ));
+        }
+        if r.port == 0 {
+            return Err(format!("{what}: the port must be 1 to 65535"));
+        }
+        let before = &rules[..i];
+        if before.contains(r) {
+            return Err(format!("{what} is given twice"));
+        }
+        if let Some(o) = before
+            .iter()
+            .find(|o| o.name == r.name && o.target != r.target)
+        {
+            return Err(format!(
+                "{what}: the name {} already reaches sandbox {} (--connect {o})",
+                r.name, o.target
+            ));
+        }
+        if let Some(a) = allow.iter().find(|a| !a.is_ip() && a.matches_host(&r.name)) {
+            return Err(format!(
+                "{what}: the name {} is also allowed by --allow {a}; give the connection another name \
+                 (--connect NAME=SANDBOX:PORT)",
+                r.name
+            ));
+        }
+        if own_name == Some(r.target.as_str()) {
+            return Err(format!("{what}: a sandbox cannot connect to itself"));
+        }
+    }
+    Ok(())
+}
+
 /// 시그널. 게스트가 Linux이므로 Linux 번호로 담는다(호스트 OS의 번호와 다를 수 있다).
 ///
 /// 받는 형식(Docker `--signal`, image config `StopSignal`과 같다): 이름(`TERM`, `SIGTERM`, 대소문자 무관),
@@ -939,7 +1066,7 @@ pub struct SandboxSpec {
     /// 호스트 TCP 포트를 게스트의 포트로 잇는다(`-p`). VM을 소유한 프로세스가 듣는다.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ports: Vec<PortMapping>,
-    /// 시작할 때마다 나가는 연결(`NetworkPolicy::Allow`)로 주고받을 수 있는 바이트 합계(`--egress-limit`). 닿으면
+    /// 시작할 때마다 나가는 연결(`NetworkPolicy::Allow`와 `connect`)로 주고받을 수 있는 바이트 합계(`--egress-limit`). 닿으면
     /// 열린 연결을 끊고 새 연결을 거절한다. 없으면 끝없이.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub egress_limit_bytes: Option<u64>,
@@ -947,6 +1074,14 @@ pub struct SandboxSpec {
     /// `process.args`는 쓰지 않는다. 멈추기(`stop`, 멈춤 시그널)는 보통의 샌드박스와 같다.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hold: bool,
+    /// 다른 샌드박스의 포트에 닿는 길(`--connect`). 있으면 네트워크가 `Disabled`여도 투명 TCP가 켜지지만 이 이름들
+    /// 말고는 아무것도 열지 않는다. 규칙은 [`ConnectRule`], [`check_connect`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connect: Vec<ConnectRule>,
+    /// `connect`의 대상이 모두 가져야 하는 라벨(키와 값). 만들 때와 연결마다 확인한다. 비면 같은 data_dir의 어느
+    /// 샌드박스든 된다. 정책은 부르는 쪽이 정한다(예: MCP 서버는 MCP로 만든 샌드박스로 좁힌다).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub connect_scope: BTreeMap<String, String>,
 }
 
 /// `-p [IP:][HOST_PORT:]PORT[/tcp]`: 호스트의 `IP:HOST_PORT`에 온 TCP 연결을 게스트 `127.0.0.1:PORT`로 잇는다.
@@ -1504,5 +1639,87 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod connect_tests {
+    use super::*;
+
+    fn rule(name: &str, target: &str, port: u16) -> ConnectRule {
+        ConnectRule {
+            name: name.into(),
+            target: target.into(),
+            port,
+        }
+    }
+
+    #[test]
+    fn connect_names_are_dns_names_the_guest_asks_the_host_about() {
+        assert_eq!(check_connect_name("DB.").unwrap(), "db");
+        assert_eq!(check_connect_name("pg_1.local").unwrap(), "pg_1.local");
+        let long = "a".repeat(64);
+        for bad in [
+            "",
+            ".",
+            "a..b",
+            "10.0.0.1",
+            "::1",
+            "localhost",
+            "x.localhost",
+            "arpa",
+            "7.0.18.198.in-addr.arpa",
+            "my db",
+            long.as_str(),
+        ] {
+            assert!(check_connect_name(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn connect_lists_are_checked_against_each_other_the_allow_list_and_the_sandbox() {
+        let allow: Vec<AllowRule> = ["pypi.org:443", "*.corp.example:5432", "10.0.0.5:5432"]
+            .iter()
+            .map(|r| r.parse().unwrap())
+            .collect();
+        let ok = [
+            rule("db", "db", 5432),
+            rule("db", "db", 8080),
+            rule("cache", "redis-1", 6379),
+        ];
+        assert_eq!(check_connect(&ok, &allow, Some("app")), Ok(()));
+        let id = "ab".repeat(32);
+        assert_eq!(check_connect(&[rule("db", &id, 1)], &[], None), Ok(()));
+        let err = |rules: &[ConnectRule], own: Option<&str>| {
+            check_connect(rules, &allow, own).unwrap_err()
+        };
+        assert!(err(&[rule("DB", "db", 1)], None).contains("not a name"));
+        assert!(err(&[rule("localhost", "db", 1)], None).contains("not a name"));
+        assert!(err(&[rule("db", "my db", 1)], None).contains("not a sandbox name or ID"));
+        assert!(err(&[rule("db", "db", 0)], None).contains("1 to 65535"));
+        assert!(err(&[rule("db", "db", 1), rule("db", "db", 1)], None).contains("twice"));
+        assert!(
+            err(&[rule("db", "db", 1), rule("db", "other", 2)], None).contains("already reaches")
+        );
+        // 허용 목록의 이름과 겹치면 오류다(와일드카드 포함). IP 규칙은 이름에 맞지 않는다.
+        assert!(err(&[rule("pypi.org", "db", 1)], None).contains("--allow pypi.org:443"));
+        assert!(err(&[rule("pg.corp.example", "db", 1)], None).contains("*.corp.example"));
+        assert!(err(&[rule("db", "app", 1)], Some("app")).contains("itself"));
+        assert_eq!(rule("db", "db", 1).to_string(), "db:1");
+        assert_eq!(rule("pg", "db", 1).to_string(), "pg=db:1");
+        assert!(rule("db", "x", 1).matches_name("DB."));
+        assert!(!rule("db", "x", 1).matches_name("db.x"));
+    }
+
+    #[test]
+    fn old_specs_without_connect_still_read() {
+        let spec = r#"{"image":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","rootfs_format":"erofs",
+            "process":{"args":["sh"],"env":[],"cwd":"/","user":"0"},"resources":{"vcpus":1,"memory_mib":128,"scratch_disk_mib":4},
+            "mounts":[],"network":"disabled","hostname":null,"labels":{}}"#;
+        let s: SandboxSpec = serde_json::from_str(spec).unwrap();
+        assert!(s.connect.is_empty() && s.connect_scope.is_empty());
+        // 비었으면 쓰지 않는다(옛 sbx도 읽는다).
+        let back = serde_json::to_string(&s).unwrap();
+        assert!(!back.contains("connect"), "{back}");
     }
 }

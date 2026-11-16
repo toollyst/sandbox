@@ -372,8 +372,11 @@ The sandbox lifecycle: `Runtime::create`, `resolve` (ID, name or ID prefix) and 
   volume a sandbox record names. Volume `create` and `remove` events go to `<data_dir>/events/volumes`.
 - **Egress** (`egress`): runs in the VM's owner. It checks each connection the guest proxy asks for against the
   allow list, refuses names that resolve to private addresses, and relays bytes.
-- Modules: `lib` → `egress` → `client`, `volume` → `hostfs`, `records` → `process`, `validate`, `cpplan`, `chan` →
-  `error`.
+- **Connecting sandboxes** (`connect`): also in the VM's owner. For a `--connect` name it looks the target up at
+  each connection (same data directory, exact ID or name), checks it, and joins the connection to the target's
+  guest through `Forward`, the `-p` path.
+- Modules: `lib` → `egress`, `clock` → `connect` → `client` → `hostfs`, `layer`, `volume` → `records` →
+  `process`, `validate`, `cpplan`, `chan` → `error`.
 
 ### `sbx-manage` · [`crates/core/manage`](../../crates/core/manage)
 

@@ -26,7 +26,7 @@
 //!    수 없는 표시(옮긴 디렉터리, 내용 없는 메타데이터 복사)를 남기므로 커널 설정의 기본값에 맡기지 않고 끈다.
 //!    그래서 아래층 디렉터리의 이름 바꾸기는 `EXDEV`이고, `mv`는 복사와 지우기로 바꿔 한다. `index=off`이면 아래층의
 //!    하드 링크는 위층으로 복사될 때 끊어진다(바꾼 이름만 위층에 생긴다).
-//! 4. 그 안에 `/proc`, `/sys`(읽기 전용), `/dev`, `/dev/pts`, `/dev/shm`을 마운트한다(부팅과 같은 옵션). 그 층에
+//! 4. 그 안에 `/proc`, `/sys`(읽기 전용), `/dev`(`crate::devfs`의 링크와 함께), `/dev/pts`, `/dev/shm`을 마운트한다(부팅과 같은 옵션). 그 층에
 //!    자리가 없으면 만들고, 내보낼 때 비어 있으면 빼고 보낸다(BuildKit과 같다). 자리가 디렉터리가 아니면(심볼릭
 //!    링크 포함) 오류다. 링크를 따라 층 밖에 마운트하지 않는다.
 //! 5. 투명 TCP가 켜져 있으면([`Overlay::with_resolver`]) 그 층의 `/etc/resolv.conf`를 보통의 샌드박스와 같은
@@ -292,6 +292,10 @@ impl Overlay {
             sys::mount(source, target, fstype, flags, data)
                 .map_err(|e| failed(&format!("mount {fstype} on /{}", &target[5..]), &e))?;
             st.mounted.push(target.into());
+            if target == "root/dev" {
+                // 보통의 샌드박스와 같은 `/dev/fd`, `/dev/stdin` 등. devtmpfs 안이라 층에 쓰지 않는다.
+                crate::devfs::add_links(Path::new(target)).map_err(|e| failed("/dev links", &e))?;
+            }
         }
         Ok(())
     }

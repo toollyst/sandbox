@@ -1170,6 +1170,23 @@ pub struct Network {
     pub mode: NetworkMode,
     /// `HOST:PORT` rules (`--allow`). Empty for `none`.
     pub allow: Vec<String>,
+    /// Ports of other sandboxes it reaches by name (`--connect`), with either mode. Absent when there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connect: Vec<Connect>,
+}
+
+/// One `--connect`: a port of another sandbox, reached by a name inside.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct Connect {
+    /// The name programs inside use (`db` in `db:5432`).
+    pub name: String,
+    /// The sandbox it reaches: a name (a sandbox recreated under that name is reached too) or a full ID. Looked up
+    /// again at each connection.
+    pub sandbox: String,
+    /// The TCP port inside that sandbox.
+    pub port: u16,
 }
 
 /// Network mode (`--network`).
@@ -1275,7 +1292,19 @@ impl Sandbox {
                 memory_mib: spec.resources.memory_mib,
                 scratch_disk_mib: spec.resources.scratch_disk_mib,
             },
-            network: Network { mode, allow },
+            network: Network {
+                mode,
+                allow,
+                connect: spec
+                    .connect
+                    .iter()
+                    .map(|c| Connect {
+                        name: c.name.clone(),
+                        sandbox: c.target.clone(),
+                        port: c.port,
+                    })
+                    .collect(),
+            },
             mounts: spec
                 .mounts
                 .iter()

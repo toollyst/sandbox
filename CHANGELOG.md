@@ -59,6 +59,19 @@ to release a tag without one. Changes land under `## Unreleased` first, and the 
   still speaks version 2, so installed executors keep working; one that speaks only 2 can't attach volumes, and a
   sandbox that asks for one is refused with that reason. The `firecracker` adapter speaks 3 and attaches volume
   disks with `cache_type: Writeback`.
+- `sbx run|create --connect [NAME=]SANDBOX:PORT` (repeatable, `db:5432,6379` for more ports): programs inside reach
+  TCP `PORT` of another running sandbox in the same data directory by its name, with any protocol and without proxy
+  settings (`sbx run --connect db:5432 postgres:17 psql -h db`). Nothing else opens: with `--connect` alone no other
+  name resolves and there is no proxy; it combines with `--network allow`, and a `--connect` name may not also be an
+  `--allow` name. The target needs no option and nothing listens on the host. The target is looked up at each
+  connection, so a restarted (or recreated, by name) target works on the next one and a stopped one fails that
+  connection at once; `connect`, `refuse` and `close` network events carry `target` and `target_id`, and
+  `events --filter sandbox=` matches either side (and now matches network events by sandbox name too). The bytes
+  count against the connecting sandbox's `--egress-limit`, which `--connect` alone now accepts. `inspect` and
+  `ps --format json` show `network.connect`, and so does the `sbx tui` detail view; shell completion offers sandbox
+  names. The MCP tools `run` and `create` take `connect`, limited to sandboxes created through MCP (checked at
+  creation and at every connection). `sbx build` has no `--connect`. Needs a sandbox started by this `sbx`; the
+  guest protocol is unchanged.
 
 ## v0.2.2
 

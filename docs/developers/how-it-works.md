@@ -145,7 +145,8 @@ The kernel unpacks the initramfs and runs `/init` = `sbx-guest` as PID 1
    ([`disks.rs`](../../crates/app/guest/src/disks.rs): volumes come after the layers and are never EROFS). It
    formats `/dev/vdb` on first boot (scratch is zero-filled, so "no filesystem" means "new") and reuses it after a
    restart. The kernel command line doesn't change.
-3. It stacks overlay(layers ↓, scratch ↑), mounts `/proc`, `/sys`, `/dev`, `/dev/pts` and `/dev/shm` inside, moves
+3. It stacks overlay(layers ↓, scratch ↑), mounts `/proc`, `/sys`, `/dev` (with the `/dev/fd`, `/dev/stdin`,
+   `/dev/stdout` and `/dev/stderr` links OCI runtimes add), `/dev/pts` and `/dev/shm` inside, moves
    it to `/`, and chroots. It brings up loopback and sets the hostname.
 4. It re-executes itself as the **agent**, which listens on vsock port 1024 and serves each connection on its own
    thread. It also starts a loopback DNS responder that answers NXDOMAIN at once, so name lookups without network
@@ -309,6 +310,31 @@ beyond IPv4 loopback ([`transparent.rs`](../../crates/app/guest/src/transparent.
 
 UDP beyond DNS, rules with a `*` port for programs that ignore the proxy, and programs with their own DNS have no way
 out.
+
+**Connecting sandboxes** (`--connect db:5432`) rides on transparent TCP. Nothing listens on the host and the target
+needs no option. Rules: [`connect.rs`](../../crates/core/runtime/src/connect.rs) and
+[`egress.rs`](../../crates/core/runtime/src/egress.rs) in the runtime, `ConnectRule` and `check_connect` in
+[`sbx-model`](../../crates/model/src/lib.rs).
+
+1. At create time the CLI resolves each target the way other commands do (name, ID, unique ID prefix) and records it
+   by name if it was given by name, by full ID otherwise. The runtime checks the list (the name is a DNS name, it is
+   not also an `--allow` name, it does not point at the sandbox itself), that every target exists, and that it
+   carries the labels in `connect_scope` (`sbx mcp` sets the MCP owner label there).
+2. At start the owner lends connections and sends `Transparent` even with `--network none`, but without
+   `EgressListen`: there is no proxy and the allow list is empty, so only the `--connect` names resolve.
+3. `Lookup{db}` is answered from the allow list and the connect list together; the guest gives `db` a stand-in
+   address and listens on the connected ports only.
+4. A connection arrives as `Connect{db, 5432}`. If it matches a connect rule, the owner looks the target up again,
+   by exact ID or by name (never by prefix, so a vanished name can't land on another sandbox), and refuses it if it
+   is missing, is the sandbox itself, lacks a `connect_scope` label, is not running (its owner lock tells), or if
+   the port is the target's egress proxy. Otherwise it opens the target's control socket from `state.json`, as
+   `exec` does, sends `Forward{port}` (the `-p` path: the target's guest dials its `127.0.0.1:port`) and, once that
+   answers `Done`, answers `Connected` and relays `Data`/`End` frames between the two guests.
+5. Bytes count against the connecting sandbox's `--egress-limit` in both directions, and the connection holds one
+   of its open-connection places. `connect`, `refuse` and `close` events carry `target` and `target_id`.
+
+Because the lookup happens per connection, a restarted target (new control socket) is reached on the next
+connection, and a stopped one fails that connection only, within the time it takes to read its records.
 
 ## `sbx build`
 

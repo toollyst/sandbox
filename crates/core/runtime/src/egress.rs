@@ -23,7 +23,7 @@
 //!    남는 주소가 없으면 거부.
 //!
 //! **투명 TCP** (프록시를 모르는 프로그램의 길, 게스트 쪽 규칙은 `sbx-guest`의 `transparent` 모듈)
-//! - [`start`]는 맡길 연결을 돌린 뒤 게스트에 `HostMsg::Transparent`를 보낸다. IP 규칙 가운데 게스트가 들을 수 있는
+//! - `start`는 맡길 연결을 돌린 뒤 게스트에 `HostMsg::Transparent`를 보낸다. IP 규칙 가운데 게스트가 들을 수 있는
 //!   것([`AllowRule::reach`]가 [`Reach::Literal`])을 함께 보낸다. 프록시로만 닿는 규칙은 하나마다 `proxy_only`(호스트,
 //!   포트, `reason`)로 기록한다(CLI도 만들 때 경고한다). 게스트가 하지 못한 것이 있으면 `notice`(`reason`)로 기록하고
 //!   시작은 계속한다(프록시는 그대로다).
@@ -36,6 +36,17 @@
 //! - 이름 묻기는 전송량(`--egress-limit`)에 세지 않고 열린 연결 수도 차지하지 않는다. 호스트가 하는 일은 규칙
 //!   맞추기뿐이고 입출력은 기록 한 줄이다.
 //! - 가짜 주소로 온 연결은 게스트가 이름으로 되돌린 `Connect { host, port }`로 온다. 그 뒤는 위와 한 줄도 다르지 않다.
+//!
+//! **샌드박스 잇기** (`--connect`, 규칙은 `connect` 모듈)
+//! - `start`에 잇기 목록이 있으면 네트워크 정책이 `Disabled`여도 맡길 연결과 투명 TCP를 켠다. 그때 허용 규칙은
+//!   비었으므로 잇기 이름 말고는 어느 이름도 허용되지 않는다(프록시는 띄우지 않는다. 띄우는 것은 실행 코어다).
+//! - 이름 묻기([`lookup`])는 허용 목록과 잇기 목록을 함께 본다(둘의 이름은 겹치지 않는다, `sbx_model::check_connect`).
+//!   잇기 이름의 `lookup` 기록에는 `target`(대상)이 붙는다.
+//! - `Connect { host, port }`가 잇기 규칙에 맞으면 목적지에 TCP로 연결하는 대신 대상 샌드박스의 게스트에 잇는다
+//!   (`connect::Peers::open`). 전송량과 열린 연결 수는 같은 것을 쓴다: 바이트는 이 샌드박스의
+//!   `--egress-limit`에 양쪽 방향 모두 센다(내용 바이트만, 틀의 머리는 세지 않는다). 기록(`connect`, `refuse`,
+//!   `close`)의 `host`는 안에서 쓴 이름이고 `target`(기록된 대상)과, 찾았으면 `target_id`(대상 ID)가 붙는다.
+//!   `connect`에는 `addr`가 없다.
 
 use std::collections::HashSet;
 use std::io;
@@ -47,9 +58,10 @@ use std::time::Duration;
 
 use sbx_executor::GuestConn;
 use sbx_guest_proto::{GuestMsg, HostMsg};
-use sbx_model::{AllowRule, Reach};
+use sbx_model::{AllowRule, ConnectRule, Reach};
 
 use crate::client::Guest;
+use crate::connect::Peers;
 
 /// 게스트에 맡겨 두는 연결 수. 동시에 새로 시작하는 연결이 이보다 많으면 잠깐 기다린다.
 pub const POOL: usize = 4;
@@ -134,6 +146,8 @@ impl Meter {
 
 struct Shared {
     rules: Vec<AllowRule>,
+    /// `--connect`. 없으면 잇지 않는다.
+    peers: Option<Peers>,
     open: AtomicUsize,
     meter: Meter,
     record: Record,
@@ -173,9 +187,17 @@ impl Shared {
         }
         if answer.allowed() {
             let ports: Vec<String> = answer.ports.iter().map(u16::to_string).collect();
+            let target = self
+                .peers
+                .as_ref()
+                .and_then(|p| p.target_of(&name))
+                .map(str::to_owned);
             let mut attrs = vec![("host", name), ("ports", ports.join(","))];
             if answer.any_port {
                 attrs.push(("any_port", "true".into()));
+            }
+            if let Some(t) = target {
+                attrs.push(("target", t));
             }
             self.record.event("lookup", &attrs);
         } else {
@@ -194,10 +216,17 @@ impl Shared {
     }
 }
 
-/// 맡기는 일을 시작하고 투명 TCP를 켠다. 돌아온 뒤 스레드가 돈다.
-pub fn start(guest: Guest, rules: Vec<AllowRule>, limits: Limits, record: Record) {
+/// 맡기는 일을 시작하고 투명 TCP를 켠다. 돌아온 뒤 스레드가 돈다. `peers`는 `--connect`다.
+pub(crate) fn start(
+    guest: Guest,
+    rules: Vec<AllowRule>,
+    peers: Option<Peers>,
+    limits: Limits,
+    record: Record,
+) {
     let shared = Arc::new(Shared {
         rules,
+        peers,
         open: AtomicUsize::new(0),
         meter: Meter {
             used: AtomicU64::new(0),
@@ -285,9 +314,9 @@ fn plain_name(name: &str) -> Option<String> {
     ok.then(|| n.to_ascii_lowercase())
 }
 
-/// 게스트가 물은 이름이 허용 목록에 있는지(투명 TCP의 DNS). **이름을 풀지 않는다.** IP 규칙은 이름에 맞지 않는다.
-/// 이름으로 쓸 수 없는 것은 허용되지 않은 것이다.
-pub fn lookup(rules: &[AllowRule], name: &str) -> Lookup {
+/// 게스트가 물은 이름이 허용 목록이나 잇기 목록(`connect`)에 있는지(투명 TCP의 DNS). **이름을 풀지 않는다.**
+/// IP 규칙은 이름에 맞지 않는다. 이름으로 쓸 수 없는 것은 허용되지 않은 것이다.
+pub fn lookup(rules: &[AllowRule], connect: &[ConnectRule], name: &str) -> Lookup {
     let Some(name) = plain_name(name) else {
         return Lookup::default();
     };
@@ -298,6 +327,12 @@ pub fn lookup(rules: &[AllowRule], name: &str) -> Lookup {
             None => out.any_port = true,
         }
     }
+    out.ports.extend(
+        connect
+            .iter()
+            .filter(|r| r.matches_name(&name))
+            .map(|r| r.port),
+    );
     out.ports.sort_unstable();
     out.ports.dedup();
     out
@@ -336,7 +371,8 @@ fn keep_slot(guest: &Guest, shared: &Arc<Shared>) {
         loop {
             match GuestMsg::read_from(&mut *conn) {
                 Ok(GuestMsg::Lookup { name }) => {
-                    let answer = lookup(&shared.rules, &name);
+                    let connect = shared.peers.as_ref().map_or(&[][..], |p| &p.rules[..]);
+                    let answer = lookup(&shared.rules, connect, &name);
                     shared.note_lookup(&name, &answer);
                     let reply = HostMsg::Resolved {
                         ports: answer.ports,
@@ -347,10 +383,17 @@ fn keep_slot(guest: &Guest, shared: &Arc<Shared>) {
                     }
                 }
                 Ok(GuestMsg::Connect { host, port }) => {
+                    let peer = shared
+                        .peers
+                        .as_ref()
+                        .and_then(|p| p.rule(&host, port))
+                        .cloned();
                     let refuse = |conn: &mut Box<dyn GuestConn>, reason: String| {
-                        shared
-                            .record
-                            .append("refuse", &host, port, &[("reason", reason.clone())]);
+                        let mut extra = vec![("reason", reason.clone())];
+                        if let Some(r) = &peer {
+                            extra.push(("target", r.target.clone()));
+                        }
+                        shared.record.append("refuse", &host, port, &extra);
                         let _ = HostMsg::Refused { reason }.write_to(&mut **conn);
                     };
                     if let Some(limit) = shared.meter.exhausted() {
@@ -367,7 +410,10 @@ fn keep_slot(guest: &Guest, shared: &Arc<Shared>) {
                         );
                         break;
                     };
-                    thread::spawn(move || serve(conn, opened, &host, port));
+                    thread::spawn(move || match peer {
+                        Some(rule) => serve_peer(conn, opened, &rule),
+                        None => serve(conn, opened, &host, port),
+                    });
                     break;
                 }
                 // 게스트가 다른 것을 보냈다(예: 지원하지 않음). 더 맡기지 않는다.
@@ -402,11 +448,46 @@ fn serve(mut conn: Box<dyn GuestConn>, opened: Opened, host: &str, port: u16) {
     if HostMsg::Connected.write_to(&mut *conn).is_err() {
         return;
     }
-    let (sent, received) = splice(conn, tcp, Some(&shared.meter));
+    let (sent, received) = splice(conn, Far::Tcp(tcp), Some(&shared.meter));
     let mut extra = vec![
         ("sent", sent.to_string()),
         ("received", received.to_string()),
     ];
+    if let Some(limit) = shared.meter.exhausted() {
+        extra.push(("limit", limit.to_string()));
+    }
+    shared.record.append("close", host, port, &extra);
+}
+
+/// 잇기 규칙에 맞은 연결: 대상 샌드박스의 게스트에 잇는다. 규칙은 모듈 문서와 `connect` 모듈에 있다.
+fn serve_peer(mut conn: Box<dyn GuestConn>, opened: Opened, rule: &ConnectRule) {
+    let shared = &opened.0;
+    let Some(peers) = &shared.peers else {
+        return;
+    };
+    let (host, port) = (rule.name.as_str(), rule.port);
+    let mut extra = vec![("target", rule.target.clone())];
+    let peer = match peers.open(rule) {
+        Ok(p) => p,
+        Err((reason, id)) => {
+            if let Some(id) = id {
+                extra.push(("target_id", id.to_string()));
+            }
+            extra.push(("reason", reason.clone()));
+            shared.record.append("refuse", host, port, &extra);
+            let _ = HostMsg::Refused { reason }.write_to(&mut *conn);
+            return;
+        }
+    };
+    extra.push(("target_id", peer.id.to_string()));
+    shared.record.append("connect", host, port, &extra);
+    if HostMsg::Connected.write_to(&mut *conn).is_err() {
+        let _ = peer.conn.shutdown();
+        return;
+    }
+    let (sent, received) = splice(conn, Far::Guest(peer.conn), Some(&shared.meter));
+    extra.push(("sent", sent.to_string()));
+    extra.push(("received", received.to_string()));
     if let Some(limit) = shared.meter.exhausted() {
         extra.push(("limit", limit.to_string()));
     }
@@ -477,57 +558,127 @@ fn dial(addrs: &[SocketAddr]) -> Result<TcpStream, String> {
     ))
 }
 
-/// 양쪽을 잇는다. `meter`가 있으면 그 상한 안에서만 보낸다. 보낸(게스트 → 목적지)·받은 바이트를 돌려준다.
-pub(crate) fn splice(
-    conn: Box<dyn GuestConn>,
-    tcp: TcpStream,
-    meter: Option<&Meter>,
-) -> (u64, u64) {
-    let (Ok(mut conn_out), Ok(mut tcp_in)) = (conn.try_clone_conn(), tcp.try_clone()) else {
+/// [`splice`]의 반대쪽: 목적지에 연 TCP 연결이거나, 다른 샌드박스의 게스트에 `Forward`로 연 연결(`--connect`).
+/// 게스트 연결은 이 샌드박스의 게스트 연결과 같은 틀이다(받기는 `GuestMsg::Data`·`End`, 보내기는
+/// `HostMsg::Data`·`End`).
+pub(crate) enum Far {
+    /// TCP.
+    Tcp(TcpStream),
+    /// 다른 게스트.
+    Guest(Box<dyn GuestConn>),
+}
+
+impl Far {
+    fn try_clone(&self) -> io::Result<Far> {
+        Ok(match self {
+            Far::Tcp(t) => Far::Tcp(t.try_clone()?),
+            Far::Guest(c) => Far::Guest(c.try_clone_conn()?),
+        })
+    }
+
+    /// 조각 하나. 상대가 보내기를 끝냈으면 `None`.
+    fn read_chunk(&mut self, buf: &mut [u8]) -> io::Result<Option<Vec<u8>>> {
+        match self {
+            Far::Tcp(t) => loop {
+                match io::Read::read(t, buf) {
+                    Ok(0) => return Ok(None),
+                    Ok(n) => return Ok(Some(buf[..n].to_vec())),
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                    Err(e) => return Err(e),
+                }
+            },
+            Far::Guest(c) => match GuestMsg::read_from(&mut **c)? {
+                GuestMsg::Data(b) => Ok(Some(b)),
+                GuestMsg::End => Ok(None),
+                _ => Err(io::Error::from(io::ErrorKind::InvalidData)),
+            },
+        }
+    }
+
+    fn write_all(&mut self, b: &[u8]) -> io::Result<()> {
+        match self {
+            Far::Tcp(t) => io::Write::write_all(t, b),
+            Far::Guest(c) => HostMsg::Data(b.to_vec()).write_to(&mut **c),
+        }
+    }
+
+    /// 보내기를 끝낸다(반쯤 닫기).
+    fn end(&mut self) {
+        match self {
+            Far::Tcp(t) => {
+                let _ = t.shutdown(Shutdown::Write);
+            }
+            Far::Guest(c) => {
+                let _ = HostMsg::End.write_to(&mut **c);
+            }
+        }
+    }
+
+    fn close(&self) {
+        match self {
+            Far::Tcp(t) => {
+                let _ = t.shutdown(Shutdown::Both);
+            }
+            Far::Guest(c) => {
+                let _ = c.shutdown();
+            }
+        }
+    }
+}
+
+/// 양쪽을 잇는다. `meter`가 있으면 그 상한 안에서만 보낸다. 보낸(게스트 → 반대쪽)·받은 바이트를 돌려준다.
+/// 반대쪽에서 읽다 오류가 나면 둘 다 닫는다.
+pub(crate) fn splice(conn: Box<dyn GuestConn>, far: Far, meter: Option<&Meter>) -> (u64, u64) {
+    let (Ok(mut conn_out), Ok(mut far_in)) = (conn.try_clone_conn(), far.try_clone()) else {
         return (0, 0);
     };
     // 보낼 수 있는 길이. 줄었으면 그만큼 보내고 끊는다.
     let take = |n: usize| meter.map_or(n, |m| m.take(n));
     let mut conn_in = conn;
-    let mut tcp_out = tcp;
+    let mut far_out = far;
     let mut sent = 0u64;
     let received = thread::scope(|s| {
-        // 목적지 → 게스트.
+        // 반대쪽 → 게스트.
         let down = s.spawn(|| {
             let mut buf = vec![0u8; sbx_guest_proto::CHUNK_LEN];
             let mut received = 0u64;
             loop {
-                match io::Read::read(&mut tcp_in, &mut buf) {
-                    Ok(0) => {
+                match far_in.read_chunk(&mut buf) {
+                    Ok(None) => {
                         let _ = HostMsg::End.write_to(&mut *conn_out);
                         break;
                     }
-                    Ok(n) => {
+                    Ok(Some(b)) => {
+                        let n = b.len();
                         let ok = take(n);
                         let sent_ok = ok == 0
-                            || HostMsg::Data(buf[..ok].to_vec())
+                            || HostMsg::Data(b[..ok].to_vec())
                                 .write_to(&mut *conn_out)
                                 .is_ok();
                         received += if sent_ok { ok as u64 } else { 0 };
                         if ok < n || !sent_ok {
-                            // 상한이거나 게스트가 끊겼다: 목적지에서 더 읽지 않게 닫는다.
-                            let _ = tcp_in.shutdown(Shutdown::Both);
+                            // 상한이거나 게스트가 끊겼다: 반대쪽에서 더 읽지 않게 닫는다.
+                            far_in.close();
                             let _ = conn_out.shutdown();
                             break;
                         }
                     }
-                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                    Err(_) => break,
+                    Err(_) => {
+                        // 반대쪽이 끊겼다. 게스트 쪽도 닫아 올라가는 쪽이 끝나게 한다.
+                        far_in.close();
+                        let _ = conn_out.shutdown();
+                        break;
+                    }
                 }
             }
             received
         });
-        // 게스트 → 목적지.
+        // 게스트 → 반대쪽.
         let up_ok = loop {
             match GuestMsg::read_from(&mut *conn_in) {
                 Ok(GuestMsg::Data(b)) => {
                     let ok = take(b.len());
-                    if io::Write::write_all(&mut tcp_out, &b[..ok]).is_err() {
+                    if far_out.write_all(&b[..ok]).is_err() {
                         break false;
                     }
                     sent += ok as u64;
@@ -536,20 +687,20 @@ pub(crate) fn splice(
                     }
                 }
                 Ok(GuestMsg::End) => {
-                    let _ = tcp_out.shutdown(Shutdown::Write);
+                    far_out.end();
                     break true;
                 }
                 _ => break false,
             }
         };
         if !up_ok {
-            // 게스트 쪽이 끊겼거나 상한이다. 목적지를 닫아 내려가는 쪽도 끝나게 한다.
-            let _ = tcp_out.shutdown(Shutdown::Both);
+            // 게스트 쪽이 끊겼거나 상한이다. 반대쪽을 닫아 내려가는 쪽도 끝나게 한다.
+            far_out.close();
             let _ = conn_in.shutdown();
         }
         down.join().unwrap_or(0)
     });
-    let _ = tcp_out.shutdown(Shutdown::Both);
+    far_out.close();
     let _ = conn_in.shutdown();
     (sent, received)
 }
@@ -565,6 +716,7 @@ mod tests {
     fn shared(limit: Option<u64>) -> Arc<Shared> {
         Arc::new(Shared {
             rules: Vec::new(),
+            peers: None,
             open: AtomicUsize::new(0),
             meter: Meter {
                 used: AtomicU64::new(0),
@@ -590,16 +742,19 @@ mod tests {
             "[2001:db8::1]:443",
         ]);
         assert_eq!(
-            lookup(&r, "GitHub.com."),
+            lookup(&r, &[], "GitHub.com."),
             Lookup {
                 ports: vec![22, 443],
                 any_port: false
             }
         );
-        assert_eq!(lookup(&r, "raw.githubusercontent.com").ports, vec![443]);
-        assert!(!lookup(&r, "githubusercontent.com").allowed());
         assert_eq!(
-            lookup(&r, "cdn.example"),
+            lookup(&r, &[], "raw.githubusercontent.com").ports,
+            vec![443]
+        );
+        assert!(!lookup(&r, &[], "githubusercontent.com").allowed());
+        assert_eq!(
+            lookup(&r, &[], "cdn.example"),
             Lookup {
                 ports: vec![],
                 any_port: true
@@ -617,11 +772,11 @@ mod tests {
             "git hub.com",
             too_long_label.as_str(),
         ] {
-            assert!(!lookup(&r, not).allowed(), "{not:?}");
+            assert!(!lookup(&r, &[], not).allowed(), "{not:?}");
         }
         let label = "a".repeat(63);
         let long = format!("{label}.{label}.{label}.{label}.githubusercontent.com");
-        assert!(!lookup(&r, &long).allowed());
+        assert!(!lookup(&r, &[], &long).allowed());
         // 묻기만으로는 아무 이름도 풀지 않는다.
         for n in [
             "github.com",
@@ -641,7 +796,7 @@ mod tests {
         let mut s = Arc::into_inner(shared(None)).unwrap();
         s.record.log = log.clone();
         s.rules = rules(&["github.com:22"]);
-        let allowed = lookup(&s.rules, "github.com");
+        let allowed = lookup(&s.rules, &[], "github.com");
         s.note_lookup("github.com", &allowed);
         s.note_lookup("GITHUB.com.", &allowed);
         s.note_lookup("evil.example", &Lookup::default());

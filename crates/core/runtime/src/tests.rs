@@ -128,6 +128,8 @@ impl Env {
             ports: Vec::new(),
             egress_limit_bytes: None,
             hold: false,
+            connect: Vec::new(),
+            connect_scope: Default::default(),
         }
     }
 
@@ -1340,6 +1342,215 @@ fn transparent_tcp_resolves_from_the_list_and_passes_names_to_the_host_check() {
     assert!(egress::was_resolved(&ok));
     assert!(!egress::was_resolved(&blocked));
     block_on(s.stop(None, Duration::from_secs(5))).unwrap();
+    let _ = std::fs::remove_dir_all(&e.root);
+}
+
+/// 네트워크 기록을 `until`이 참일 때까지(최대 10초) 읽는다.
+fn network_events(e: &Env, until: impl Fn(&[sbx_events::Event]) -> bool) -> Vec<sbx_events::Event> {
+    let log = network_log(&e.root.join("d"));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let mut r = log.reader(sbx_events::Start::Beginning).unwrap();
+        let mut all = Vec::new();
+        while let Some(ev) = r.next_event().unwrap() {
+            all.push(ev);
+        }
+        if until(&all) || Instant::now() > deadline {
+            return all;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// `--connect`(fake 실행기의 흉내로): 잇는 샌드박스 안에서 프록시를 모르는 클라이언트가 이름으로 대상의 포트에 닿아
+/// 바이트를 주고받는다. 열지 않은 포트, 다른 샌드박스, 바깥 이름은 닿지 않는다. 대상이 멈추면 그 연결만 곧바로
+/// 거부되어 기록되고, 다시 시작하면 다음 연결은 된다. 범위(`connect_scope`)와 전송량 상한도 본다.
+#[cfg(unix)]
+#[test]
+fn connect_reaches_one_port_of_another_sandbox_at_each_connection() {
+    use std::io::{Read, Write};
+    use std::net::SocketAddrV4;
+
+    use sbx_executor_fake::probe;
+    use sbx_model::ConnectRule;
+
+    let e = Env::new("connect");
+    e.prepare_image();
+    // fake 게스트는 호스트에서 돈다: 대상 안의 서비스 흉내(받은 것을 그대로 돌려준다)를 호스트 포트에 띄운다.
+    let service = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = service.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for s in service.incoming() {
+            let Ok(mut s) = s else { return };
+            std::thread::spawn(move || {
+                let mut b = [0u8; 4096];
+                while let Ok(n) = s.read(&mut b) {
+                    if n == 0 || s.write_all(&b[..n]).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    let start = |name: &str, f: &dyn Fn(&mut SandboxSpec)| {
+        let mut spec = e.spec(&["sleep", "30"]);
+        spec.name = Some(name.into());
+        f(&mut spec);
+        let s = block_on(e.rt.create(spec)).unwrap();
+        let main = block_on(s.start(IoMode::default())).unwrap();
+        (s, main)
+    };
+    let (db, _db_main) = start("db", &|_| {});
+    let (_other, _other_main) = start("other", &|_| {});
+    let rule = |target: &str, port: u16| ConnectRule {
+        name: target.into(),
+        target: target.into(),
+        port,
+    };
+    let (app, _app_main) = start("app", &|s| s.connect = vec![rule("db", port)]);
+    let dir = sbx_executor_fake::net_dir(&e.rt.paths(app.id()).scratch());
+    // 잇기만으로 투명 TCP가 켜진다. 프록시는 없다.
+    assert!(
+        std::fs::read_to_string(dir.join("etc/resolv.conf"))
+            .unwrap()
+            .ends_with("nameserver 127.0.0.1\n")
+    );
+    assert_eq!(e.state(&app).egress_port, None);
+
+    let ip = probe::lookup(&dir, "db", 1).unwrap().addrs[0];
+    assert!(probe::route(&dir, SocketAddrV4::new(ip, port)).is_some());
+    assert!(
+        probe::route(&dir, SocketAddrV4::new(ip, port.wrapping_add(1))).is_none(),
+        "a port that was not connected is not listened for"
+    );
+    for name in ["other", "app", "example.com"] {
+        assert_eq!(probe::lookup(&dir, name, 1).unwrap().rcode, 3, "{name}");
+    }
+    let echo = |payload: &[u8]| -> Vec<u8> {
+        let mut c = probe::connect(&dir, "db", port).unwrap();
+        c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        c.write_all(payload).unwrap();
+        c.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut got = Vec::new();
+        let _ = c.read_to_end(&mut got);
+        got
+    };
+    assert_eq!(echo(b"hello"), b"hello");
+    let events = network_events(&e, |all| all.iter().any(|ev| ev.action == "close"));
+    let by = |action: &str| {
+        events
+            .iter()
+            .find(|ev| {
+                ev.action == action && ev.attributes.get("host").map(String::as_str) == Some("db")
+            })
+            .unwrap_or_else(|| panic!("no {action} in {events:?}"))
+            .clone()
+    };
+    let connect = by("connect");
+    assert_eq!(connect.id, app.id().as_str());
+    assert_eq!(connect.attributes["target"], "db");
+    assert_eq!(connect.attributes["target_id"], db.id().as_str());
+    assert_eq!(connect.attributes["port"], port.to_string());
+    let close = by("close");
+    assert_eq!(
+        (
+            close.attributes["sent"].as_str(),
+            close.attributes["received"].as_str()
+        ),
+        ("5", "5")
+    );
+    assert_eq!(by("lookup").attributes["target"], "db");
+
+    // 대상이 멈추면 그 연결만 곧바로 끊기고 이유가 남는다.
+    block_on(db.stop(None, Duration::from_secs(5))).unwrap();
+    e.wait_state(&db, State::Stopped);
+    let t = Instant::now();
+    assert!(echo(b"x").is_empty());
+    assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+    let refused_conn =
+        |ev: &sbx_events::Event| ev.action == "refuse" && ev.attributes.contains_key("port");
+    let events = network_events(&e, |all| all.iter().any(refused_conn));
+    let refused = events
+        .iter()
+        .find(|ev| refused_conn(ev))
+        .unwrap_or_else(|| panic!("{events:?}"));
+    assert_eq!(
+        refused.attributes.get("target_id").map(String::as_str),
+        Some(db.id().as_str()),
+        "{refused:?}"
+    );
+    assert!(
+        refused.attributes["reason"].contains("not running"),
+        "{refused:?}"
+    );
+
+    // 다시 시작하면 다음 연결은 새 제어 소켓으로 간다.
+    let _db_again = block_on(db.start(IoMode::default())).unwrap();
+    assert_eq!(echo(b"again"), b"again");
+
+    // 범위: 대상이 라벨을 갖지 않으면 만들 수 없다.
+    let mut scoped = e.spec(&["sleep", "30"]);
+    scoped.connect = vec![rule("db", port)];
+    scoped.connect_scope.insert("owner".into(), "mcp".into());
+    let err = block_on(e.rt.create(scoped.clone()))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("lacks the label owner=mcp"), "{err}");
+    // 없는 대상도 만들 수 없다.
+    scoped.connect = vec![rule("nothing", port)];
+    scoped.connect_scope.clear();
+    let err = block_on(e.rt.create(scoped)).unwrap_err().to_string();
+    assert!(err.contains("no sandbox nothing"), "{err}");
+
+    // 전송량 상한은 잇는 쪽의 것이다: 넘으면 그 연결을 끊는다.
+    let (limited, _limited_main) = start("limited", &|s| {
+        s.connect = vec![rule("db", port)];
+        s.egress_limit_bytes = Some(3);
+    });
+    let dir = sbx_executor_fake::net_dir(&e.rt.paths(limited.id()).scratch());
+    let mut c = probe::connect(&dir, "db", port).unwrap();
+    c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let _ = c.write_all(b"hello");
+    let mut got = Vec::new();
+    let _ = c.read_to_end(&mut got);
+    assert!(got.len() < 5, "{got:?}");
+    let events = network_events(&e, |all| {
+        all.iter()
+            .any(|ev| ev.action == "close" && ev.id == limited.id().as_str())
+    });
+    let close = events
+        .iter()
+        .find(|ev| ev.action == "close" && ev.id == limited.id().as_str())
+        .unwrap();
+    assert_eq!(close.attributes["limit"], "3");
+    let moved: u64 = close.attributes["sent"].parse::<u64>().unwrap()
+        + close.attributes["received"].parse::<u64>().unwrap();
+    assert!(moved <= 3, "{close:?}");
+
+    // 대상 안의 나가는 연결 프록시에는 잇지 않는다(대상의 허용 목록을 빌려 쓰지 못한다).
+    let (proxied, _proxied_main) = start("proxied", &|s| {
+        s.network = NetworkPolicy::Allow(vec!["example.invalid:443".parse().unwrap()]);
+    });
+    let proxy = e.state(&proxied).egress_port.unwrap();
+    let (borrower, _borrower_main) =
+        start("borrower", &|s| s.connect = vec![rule("proxied", proxy)]);
+    let dir = sbx_executor_fake::net_dir(&e.rt.paths(borrower.id()).scratch());
+    let mut c = probe::connect(&dir, "proxied", proxy).unwrap();
+    let mut got = Vec::new();
+    let _ = c.read_to_end(&mut got);
+    assert!(got.is_empty());
+    let events = network_events(&e, |all| {
+        all.iter()
+            .any(|ev| ev.id == borrower.id().as_str() && refused_conn(ev))
+    });
+    let r = events
+        .iter()
+        .find(|ev| ev.id == borrower.id().as_str() && refused_conn(ev))
+        .unwrap();
+    assert!(
+        r.attributes["reason"].contains("outgoing-connection proxy"),
+        "{r:?}"
+    );
     let _ = std::fs::remove_dir_all(&e.root);
 }
 

@@ -494,9 +494,105 @@ pub fn port_mapping(v: &str) -> Result<sbx_model::PortMapping, String> {
     v.parse()
 }
 
+/// `--connect`의 항목 하나. 대상은 아직 찾지 않았다(ID 앞부분일 수 있다). 찾아서 기록할 꼴로 바꾸는 규칙은
+/// [`crate::behavior::connect_rule`]에 있다.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectArg {
+    /// `NAME=`으로 준 안의 이름(소문자, [`sbx_model::check_connect_name`]). 없으면 대상의 이름을 쓴다.
+    pub name: Option<String>,
+    /// 대상: 이름, ID, ID 앞부분(다른 명령과 같다).
+    pub target: String,
+    /// 대상 안의 포트.
+    pub port: u16,
+}
+
+/// `--connect [NAME=]SANDBOX:PORT`. 쉼표로 여럿을 준다. 숫자만 있는 조각은 앞 항목의 대상에 포트를 더한다
+/// (`db:5432,8080`은 `db:5432,db:8080`). 대상은 샌드박스 이름이나 ID(앞부분)의 꼴이어야 한다.
+pub fn connect(value: &str) -> ParseResult<Vec<ConnectArg>> {
+    let bad = |why: &str| format!("invalid --connect {value:?}: {why} (want [NAME=]SANDBOX:PORT)");
+    let port = |p: &str| match p.parse::<u16>() {
+        Ok(n) if n > 0 => Ok(n),
+        _ => Err(bad(&format!("{p:?} is not a port (1 to 65535)"))),
+    };
+    let mut out: Vec<ConnectArg> = Vec::new();
+    for piece in value.split(',') {
+        if !piece.is_empty() && piece.bytes().all(|b| b.is_ascii_digit()) {
+            let Some(last) = out.last() else {
+                return Err(bad("a port comes after SANDBOX:"));
+            };
+            let more = ConnectArg {
+                port: port(piece)?,
+                ..last.clone()
+            };
+            out.push(more);
+            continue;
+        }
+        let (name, rest) = match piece.split_once('=') {
+            Some((n, rest)) => (
+                Some(sbx_model::check_connect_name(n).map_err(|e| bad(&e.to_string()))?),
+                rest,
+            ),
+            None => (None, piece),
+        };
+        let Some((target, p)) = rest.rsplit_once(':') else {
+            return Err(bad("missing :PORT"));
+        };
+        if sbx_model::check_sandbox_name(target).is_err() && SandboxId::new(target).is_err() {
+            return Err(bad(&format!("{target:?} is not a sandbox name or ID")));
+        }
+        out.push(ConnectArg {
+            name,
+            target: target.to_owned(),
+            port: port(p)?,
+        });
+    }
+    Ok(out)
+}
+
+/// clap의 `--connect` 값 검사: [`connect`]로 읽어 보고 받은 글을 그대로 둔다(대상은 만들 때 찾는다).
+pub fn connect_value(value: &str) -> ParseResult<String> {
+    connect(value).map(|_| value.to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connect_takes_names_targets_and_ports() {
+        let c = |name: Option<&str>, target: &str, port: u16| ConnectArg {
+            name: name.map(Into::into),
+            target: target.into(),
+            port,
+        };
+        assert_eq!(connect("db:5432"), Ok(vec![c(None, "db", 5432)]));
+        assert_eq!(
+            connect("PG=db:5432,8080,cache:6379"),
+            Ok(vec![
+                c(Some("pg"), "db", 5432),
+                c(Some("pg"), "db", 8080),
+                c(None, "cache", 6379)
+            ])
+        );
+        assert_eq!(connect("3f2a:80"), Ok(vec![c(None, "3f2a", 80)]));
+        for bad in [
+            "",
+            "db",
+            "db:",
+            "db:0",
+            "db:65536",
+            ":80",
+            "5432",
+            "db:5432,",
+            "localhost=db:1",
+            "a b:1",
+            "x=:1",
+            "10.0.0.1=db:1",
+        ] {
+            assert!(connect(bad).is_err(), "{bad:?}");
+        }
+        assert!(connect("db").unwrap_err().contains("[NAME=]SANDBOX:PORT"));
+    }
 
     #[test]
     fn times_take_rfc3339_unix_seconds_and_durations_ago() {

@@ -205,6 +205,14 @@ mod unix {
             transparent_tcp_reaches_allowed_names,
         ),
         (
+            "connect_reaches_another_sandbox_by_name",
+            connect_reaches_another_sandbox_by_name,
+        ),
+        (
+            "mcp_connect_stays_among_mcp_sandboxes",
+            mcp_connect_stays_among_mcp_sandboxes,
+        ),
+        (
             "egress_limit_and_network_events",
             egress_limit_and_network_events,
         ),
@@ -874,7 +882,7 @@ mod unix {
         assert_eq!(
             lines,
             [
-                "# Written by sbx (--network allow): names are answered by the sandbox's loopback DNS.",
+                "# Written by sbx (--network allow or --connect): names are answered by the sandbox's loopback DNS.",
                 "nameserver 127.0.0.1",
                 "blocked.invalid: rcode 3 []",
                 "ok.invalid: rcode 0 [198.18.0.1] port 5432: closed",
@@ -986,6 +994,287 @@ mod unix {
         let o = e.sbx(&["run", "--rm", IMAGE, "sh", "-c", &script]);
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
         assert_eq!(text(&o.stdout), "no resolv.conf\nok.invalid: rcode 3 []\n");
+    }
+
+    /// 받은 것을 그대로 돌려주는 TCP 서비스를 호스트의 빈 포트에 띄운다(fake 게스트는 호스트에서 돌므로 대상 샌드박스
+    /// 안의 서비스 노릇이다). 그 포트.
+    fn echo_service() -> u16 {
+        use std::io::Read;
+        let service = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = service.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for c in service.incoming() {
+                let Ok(mut c) = c else { return };
+                std::thread::spawn(move || {
+                    let mut b = [0u8; 4096];
+                    while let Ok(n) = c.read(&mut b) {
+                        if n == 0 || c.write_all(&b[..n]).is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        port
+    }
+
+    /// `ROOT/names/NAME`이 가리키는 샌드박스 디렉터리에서 `net-probe`를 부르는 셸 줄들(샌드박스 안에서 돈다).
+    fn probe_script(data: &Path, me: &str, probes: &[(&str, u16)]) -> String {
+        let exe = std::env::current_exe().unwrap();
+        let mut lines = vec![format!(
+            "r={}/sandboxes/$(cat {}/names/{me})",
+            data.display(),
+            data.display()
+        )];
+        for (name, port) in probes {
+            lines.push(format!("{} net-probe \"$r\" {name} {port}", exe.display()));
+        }
+        lines.join("; ")
+    }
+
+    /// 네트워크 기록(JSON). `filters`는 `--filter`의 값들이다.
+    fn network_events(e: &Env, filters: &[&str]) -> Vec<serde_json::Value> {
+        let mut args = vec![
+            "--format",
+            "json",
+            "events",
+            "--since",
+            "1h",
+            "--until",
+            "0s",
+            "--filter",
+            "type=network",
+        ];
+        for f in filters {
+            args.extend(["--filter", f]);
+        }
+        let o = e.sbx(&args);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        text(&o.stdout)
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
+    /// `--connect`: 앱 샌드박스 안에서 프록시를 모르는 클라이언트(`net-probe`)가 `db`라는 이름으로 다른 샌드박스의
+    /// TCP 포트에 닿아 보낸 바이트를 돌려받는다. 열지 않은 포트, 다른 샌드박스, 바깥 이름은 닿지 않고, 프록시도 없다.
+    /// 대상이 멈추면 그 연결만 곧바로 끊겨 기록되고, 다시 시작하면 다음 연결은 된다. inspect, events --filter, 오류도 본다.
+    fn connect_reaches_another_sandbox_by_name() {
+        let e = Env::new();
+        let data = e.path("data");
+        let port = echo_service();
+        for name in ["db", "other"] {
+            let o = e.sbx(&["run", "-d", "--name", name, IMAGE, "sleep", "60"]);
+            assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        }
+        let script = format!(
+            "{}; printf 'proxy=[%s]\\n' \"$HTTP_PROXY\"",
+            probe_script(
+                &data,
+                "app",
+                &[
+                    ("db", port),
+                    ("db", port.wrapping_add(1)),
+                    ("other", port),
+                    ("app", port),
+                    ("example.invalid", 443),
+                ]
+            )
+        );
+        let connect = format!("db:{port}");
+        let o = e.sbx(&[
+            "create",
+            "--name",
+            "app",
+            "--connect",
+            &connect,
+            IMAGE,
+            "sh",
+            "-c",
+            &script,
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = e.sbx(&["start", "-a", "app"]);
+        let out = text(&o.stdout);
+        assert_eq!(o.status.code(), Some(0), "{out}\n{}", text(&o.stderr));
+        assert_eq!(
+            out.lines().collect::<Vec<_>>(),
+            [
+                format!("db: rcode 0 [198.18.0.1] port {port}: got \"hello\\n\""),
+                format!(
+                    "db: rcode 0 [198.18.0.1] port {}: nothing listens",
+                    port.wrapping_add(1)
+                ),
+                "other: rcode 3 []".into(),
+                "app: rcode 3 []".into(),
+                "example.invalid: rcode 3 []".into(),
+                "proxy=[]".into(),
+            ],
+            "{out}"
+        );
+
+        // inspect와 ps는 잇기 목록을 공개 자료형으로 보인다. 네트워크는 여전히 none이다.
+        let o = e.sbx(&["--format", "json", "inspect", "app"]);
+        let s: sbx_cli::output::Sandbox = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(s.network.mode, sbx_cli::output::NetworkMode::None);
+        assert_eq!(
+            s.network.connect,
+            [sbx_cli::output::Connect {
+                name: "db".into(),
+                sandbox: "db".into(),
+                port
+            }]
+        );
+        let ps = e.ps();
+        let app = ps.iter().find(|s| s["name"] == "app").unwrap();
+        assert_eq!(app["network"]["connect"][0]["port"], port);
+        assert!(
+            ps.iter().find(|s| s["name"] == "db").unwrap()["network"]
+                .get("connect")
+                .is_none()
+        );
+
+        // 대상이 멈추면 그 연결만 곧바로 끊기고 이유가 남는다.
+        assert_eq!(e.sbx(&["stop", "db"]).status.code(), Some(0));
+        let started = Instant::now();
+        let o = e.sbx(&["start", "-a", "app"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(
+            text(&o.stdout).lines().next(),
+            Some(format!("db: rcode 0 [198.18.0.1] port {port}: closed").as_str())
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(8),
+            "{:?}",
+            started.elapsed()
+        );
+        // 다시 시작하면 다음 연결은 된다.
+        assert_eq!(e.sbx(&["start", "db"]).status.code(), Some(0));
+        let o = e.sbx(&["start", "-a", "app"]);
+        assert_eq!(
+            text(&o.stdout).lines().next(),
+            Some(format!("db: rcode 0 [198.18.0.1] port {port}: got \"hello\\n\"").as_str()),
+            "{}",
+            text(&o.stderr)
+        );
+
+        // 기록: 잇는 쪽의 ID로 남고, 대상(이름이나 ID)으로도 고를 수 있다.
+        let db_id = e.ps().iter().find(|s| s["name"] == "db").unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let app_id = app["id"].as_str().unwrap().to_owned();
+        let events = network_events(&e, &["sandbox=db"]);
+        let actions: Vec<&str> = events
+            .iter()
+            .map(|ev| ev["action"].as_str().unwrap())
+            .collect();
+        for want in ["lookup", "connect", "close", "refuse"] {
+            assert!(actions.contains(&want), "{want}: {events:?}");
+        }
+        assert!(
+            events.iter().all(|ev| ev["id"] == app_id.as_str()),
+            "{events:?}"
+        );
+        let refused = events.iter().find(|ev| ev["action"] == "refuse").unwrap();
+        assert_eq!(refused["attributes"]["target"], "db");
+        assert_eq!(refused["attributes"]["target_id"], db_id.as_str());
+        assert_eq!(refused["attributes"]["port"], port.to_string());
+        assert!(
+            refused["attributes"]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("not running"),
+            "{refused}"
+        );
+        let closed = events.iter().find(|ev| ev["action"] == "close").unwrap();
+        assert_eq!(
+            (
+                closed["attributes"]["sent"].as_str(),
+                closed["attributes"]["received"].as_str()
+            ),
+            (Some("6"), Some("6"))
+        );
+        assert_eq!(
+            network_events(&e, &[&format!("sandbox={}", &db_id[..12]), "event=refuse"]).len(),
+            1
+        );
+        // 이름으로 고르면 잇는 쪽의 기록도 나온다(네트워크 기록에는 이름이 없다).
+        let mine = network_events(&e, &["sandbox=app"]);
+        assert!(
+            mine.len() > events.len() && mine.iter().all(|ev| ev["id"] == app_id.as_str()),
+            "{mine:?}"
+        );
+        assert!(network_events(&e, &["sandbox=other"]).is_empty());
+
+        // ID 앞부분으로 주면 전체 ID로 기록하고, 안의 이름은 대상의 이름이다.
+        let by_id = format!("{}:{port}", &db_id[..8]);
+        let o = e.sbx(&[
+            "create",
+            "--name",
+            "app2",
+            "--connect",
+            &by_id,
+            IMAGE,
+            "true",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = e.sbx(&["--format", "json", "inspect", "app2"]);
+        let s: sbx_cli::output::Sandbox = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(
+            (
+                s.network.connect[0].name.as_str(),
+                s.network.connect[0].sandbox.as_str()
+            ),
+            ("db", db_id.as_str())
+        );
+        // 잇기만으로도 전송량 상한을 받는다.
+        let o = e.sbx(&[
+            "create",
+            "--connect",
+            &connect,
+            "--egress-limit",
+            "1m",
+            IMAGE,
+            "true",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+
+        // 오류: 없는 대상, 허용 목록과 같은 이름, 꼴이 틀린 값, build에는 없다.
+        let o = e.sbx(&["create", "--connect", "nothing:80", IMAGE, "true"]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("--connect nothing:80"),
+            "{}",
+            text(&o.stderr)
+        );
+        let o = e.sbx(&[
+            "create",
+            "--network",
+            "allow",
+            "--allow",
+            "db:443",
+            "--connect",
+            &connect,
+            IMAGE,
+            "true",
+        ]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("also allowed by --allow db:443"),
+            "{}",
+            text(&o.stderr)
+        );
+        for bad in ["db", "db:0", "localhost=db:80"] {
+            let o = e.sbx(&["create", "--connect", bad, IMAGE, "true"]);
+            assert_eq!(o.status.code(), Some(2), "{bad}: {}", text(&o.stderr));
+        }
+        let o = e.sbx(&["build", "--connect", &connect, "."]);
+        assert_eq!(o.status.code(), Some(2), "{}", text(&o.stderr));
+        assert!(text(&o.stderr).contains("--connect"), "{}", text(&o.stderr));
+        for name in ["db", "other"] {
+            let _ = e.sbx(&["rm", "-f", name]);
+        }
     }
 
     /// 가짜 릴리스(시험용 키로 서명한 file:// 색인과 묶음)로 새 버전 알림과 `sbx upgrade`를 본다.
@@ -4606,6 +4895,106 @@ mod unix {
             m.call("create", serde_json::json!({"image": IMAGE}))
                 .is_err()
         );
+    }
+
+    /// MCP의 잇기: MCP로 만든 샌드박스는 MCP로 만든 샌드박스에만 잇는다. 만들 때도, 연결마다도(이름이 나중에 CLI로
+    /// 만든 샌드박스를 가리켜도 닿지 않는다). CLI로 만든 샌드박스는 MCP로 만든 샌드박스에 이을 수 있다.
+    fn mcp_connect_stays_among_mcp_sandboxes() {
+        use sbx_executor_fake::probe;
+        use std::io::Read;
+        let e = Env::new();
+        let data = e.path("data");
+        let port = echo_service();
+        // 프록시를 모르는 클라이언트 노릇: 샌드박스 `me` 안에서 `name:port`에 붙어 "hi"를 보내고 받은 것.
+        let echo = |me: &str, name: &str| -> String {
+            let id = std::fs::read_to_string(data.join("names").join(me)).unwrap();
+            let dir = probe::find(&data.join("sandboxes").join(id.trim())).unwrap();
+            let mut c = match probe::connect(&dir, name, port) {
+                Ok(c) => c,
+                Err(e) => return format!("unreachable: {e}"),
+            };
+            c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let _ = c.write_all(b"hi");
+            let _ = c.shutdown(std::net::Shutdown::Write);
+            let mut got = String::new();
+            let _ = c.read_to_string(&mut got);
+            got
+        };
+        let o = e.sbx(&["run", "-d", "--name", "userdb", IMAGE, "sleep", "60"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let mut child = e
+            .cmd(&["mcp"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let out = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut m = Mcp {
+            child,
+            out,
+            next: 0,
+        };
+        m.request("initialize", serde_json::json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "e2e", "version": "0"}}));
+        m.call(
+            "create",
+            serde_json::json!({"image": IMAGE, "name": "mdb", "command": ["sleep", "60"]}),
+        )
+        .unwrap();
+        // 사용자의 샌드박스에는 잇지 못한다(MCP에는 없는 것과 같다).
+        let err = m
+            .call(
+                "create",
+                serde_json::json!({"image": IMAGE, "name": "agent0", "connect": [format!("userdb:{port}")]}),
+            )
+            .unwrap_err();
+        assert!(err.contains("created through MCP"), "{err}");
+        // MCP로 만든 것에는 잇는다.
+        m.call(
+            "create",
+            serde_json::json!({"image": IMAGE, "name": "agent", "command": ["sleep", "60"], "connect": [format!("mdb:{port}")]}),
+        )
+        .unwrap();
+        assert_eq!(
+            echo("agent", "mdb"),
+            "hi",
+            "{:?}",
+            network_events(&e, &["sandbox=agent"])
+        );
+        assert!(echo("agent", "userdb").starts_with("unreachable: userdb: rcode 3"));
+        // 그 이름이 나중에 사용자의 샌드박스를 가리켜도 연결마다 다시 보므로 닿지 않는다.
+        m.call("remove", serde_json::json!({"id": "mdb"})).unwrap();
+        let o = e.sbx(&["run", "-d", "--name", "mdb", IMAGE, "sleep", "60"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(echo("agent", "mdb"), "");
+        let refused = network_events(&e, &["sandbox=agent", "event=refuse"]);
+        assert!(
+            refused.iter().any(|ev| ev["attributes"]["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("lacks the label io.github.toollyst.sandbox.owner=mcp")),
+            "{refused:?}"
+        );
+        // 사용자(CLI)의 샌드박스는 MCP로 만든 샌드박스에 잇는다.
+        let to_agent = format!("agent:{port}");
+        let o = e.sbx(&[
+            "run",
+            "-d",
+            "--name",
+            "user",
+            "--connect",
+            &to_agent,
+            IMAGE,
+            "sleep",
+            "60",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(echo("user", "agent"), "hi");
+        m.call("remove", serde_json::json!({"id": "agent"}))
+            .unwrap();
+        for name in ["userdb", "mdb", "user"] {
+            let _ = e.sbx(&["rm", "-f", name]);
+        }
     }
 
     fn mcp_serves_sandboxes_to_agents() {

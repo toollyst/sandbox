@@ -105,7 +105,8 @@ pub const EVENTS: &[Key] = &[
     key(
         "sandbox",
         Value::Any,
-        "sandbox event whose sandbox ID starts with VALUE or whose name is VALUE",
+        "sandbox or network event whose sandbox ID starts with VALUE or whose name is VALUE; network events of a \
+         --connect also match the sandbox it reaches",
     ),
     key(
         "image",
