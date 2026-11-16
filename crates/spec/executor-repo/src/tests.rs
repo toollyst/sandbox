@@ -391,6 +391,49 @@ fn schema_1_ignores_schema_2_fields() {
     assert_eq!(i.executor("fc").unwrap().versions[0].adapter, None);
 }
 
+/// 기본 실행기는 저장소가 정한다(`default`). 없으면 실행기가 하나뿐일 때만 그것이고, 짐작하지 않는다.
+#[test]
+fn the_default_executor_is_named_by_the_index() {
+    let entry = || json!({"versions": {"1.0": {"protocol": 2, "artifacts": [artifact("darwin", "arm64", "x.tar.gz")]}}});
+    let index = |names: &[&str], default: Option<&str>| {
+        let mut v = json!({"schema": 2, "executors": {}});
+        for n in names {
+            v["executors"][*n] = entry();
+        }
+        if let Some(d) = default {
+            v["default"] = json!(d);
+        }
+        parse(v)
+    };
+    let d = |names: &[&str], default: Option<&str>| {
+        index(names, default)
+            .unwrap()
+            .default_executor()
+            .map(str::to_owned)
+    };
+    assert_eq!(d(&["a", "b"], Some("b")).unwrap(), "b");
+    assert_eq!(d(&["only"], None).unwrap(), "only");
+    assert!(
+        d(&["a", "b"], None)
+            .unwrap_err()
+            .contains("names no default")
+    );
+    assert!(d(&[], None).unwrap_err().contains("no executors"));
+    assert!(
+        d(&["a"], Some("gone"))
+            .unwrap_err()
+            .contains("does not list gone")
+    );
+    // 이름이어야 한다(버전이나 경로가 아니다).
+    for bad in ["a@1.0", "../a", "A", ""] {
+        assert!(index(&["a"], Some(bad)).is_err(), "{bad}");
+    }
+    // schema 1에는 없다(모르는 필드로 본다).
+    let mut v = sample();
+    v["default"] = json!("fc@1");
+    assert_eq!(parse(v).unwrap().default, None);
+}
+
 #[test]
 fn picking_follows_platform_protocol_version_and_repository_order() {
     let a = parse(sample()).unwrap();
