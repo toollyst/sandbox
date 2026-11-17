@@ -32,6 +32,8 @@ pub enum RuntimeError {
     BindUnsupported {
         /// 실행기 이름.
         executor: &'static str,
+        /// 호스트 경로.
+        source: std::path::PathBuf,
         /// 게스트 경로.
         destination: String,
     },
@@ -154,12 +156,19 @@ impl fmt::Display for RuntimeError {
             RuntimeError::FormatUnsupported { executor, format } => {
                 write!(f, "executor {executor} does not support {format} rootfs")
             }
+            // 다른 길 둘을 알린다: 시작할 때 복사해 넣기(그대로 붙여 쓸 수 있게), 실시간 공유가 있는 실행기.
             RuntimeError::BindUnsupported {
                 executor,
+                source,
                 destination,
             } => write!(
                 f,
-                "executor {executor} does not support live sharing (bind mount to {destination})"
+                "executor {executor} cannot share host folders live (-v {src}:{destination} needs \
+                 virtio-fs); copy the folder in at start instead with \
+                 --mount type=copy,source={src},target={destination} (take results out with \
+                 `sbx cp`), or use an executor that announces live sharing (`sbx info` shows \
+                 \"live share\")",
+                src = source.display()
             ),
             RuntimeError::NoCommand => f.write_str("no command specified"),
             RuntimeError::InvalidUser(e) => e.fmt(f),

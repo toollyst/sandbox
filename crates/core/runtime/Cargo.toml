@@ -23,6 +23,8 @@ sbx-executor.workspace = true
 # write feature를 켜지 않는다. 실행 쪽은 캐시를 읽기만 한다.
 sbx-store.workspace = true
 sbx-events.workspace = true
+# 실시간 공유 폴더의 호스트 쪽 변경을 보고 게스트에 알린다(watch 모듈).
+notify.workspace = true
 
 [dev-dependencies]
 sbx-executor-fake.workspace = true

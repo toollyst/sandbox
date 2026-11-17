@@ -615,6 +615,57 @@ fn bind_mount_is_shared_live() {
     );
 }
 
+/// 호스트에서 고친 공유 폴더의 파일을 게스트가 알림 연산(수정 시각을 그대로 다시 쓴다)으로 알리고, 그 연산이 남긴 호스트
+/// 사건은 되돌려 보내지 않는다. fake 게스트의 경로는 호스트 경로이므로 그 연산은 호스트 파일의 ctime만 바꾼다. 읽기 전용
+/// 공유는 보지 않는다.
+#[cfg(unix)]
+#[test]
+fn host_edits_in_a_live_share_are_passed_to_the_guest_once() {
+    use std::os::unix::fs::MetadataExt;
+    let e = Env::new("watch");
+    let (rw, ro) = (e.root.join("rw"), e.root.join("ro"));
+    std::fs::create_dir(&rw).unwrap();
+    std::fs::create_dir(&ro).unwrap();
+    e.prepare_image();
+    let mut spec = e.spec(&["sleep", "30"]);
+    spec.mounts = [(&rw, "g-rw", false), (&ro, "g-ro", true)]
+        .into_iter()
+        .map(|(h, g, readonly)| Mount {
+            source: h.clone(),
+            destination: e.root.join(g).display().to_string(),
+            kind: MountKind::Bind,
+            readonly,
+        })
+        .collect();
+    let s = block_on(e.rt.create(spec)).unwrap();
+    let _main = block_on(s.start(IoMode::default())).unwrap();
+    // 감시는 공유를 마운트한 뒤 열린다. FSEvents는 연 직후의 사건을 놓칠 수 있다.
+    std::thread::sleep(Duration::from_millis(500));
+    let ctime = |p: &Path| {
+        let m = std::fs::metadata(p).unwrap();
+        (m.ctime(), m.ctime_nsec())
+    };
+    let (f, g) = (rw.join("app.js"), ro.join("app.js"));
+    std::fs::write(&f, b"1").unwrap();
+    std::fs::write(&g, b"1").unwrap();
+    let (written, written_ro) = (ctime(&f), ctime(&g));
+    let modified = std::fs::metadata(&f).unwrap().modified().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while ctime(&f) == written {
+        assert!(Instant::now() < deadline, "the guest was not told");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // 내용과 수정 시각은 그대로이고, 되돌아오는 고리가 없다(ctime이 더 바뀌지 않는다).
+    assert_eq!(std::fs::read(&f).unwrap(), b"1");
+    assert_eq!(std::fs::metadata(&f).unwrap().modified().unwrap(), modified);
+    std::thread::sleep(crate::watch::MAX_WAIT * 3);
+    let told = ctime(&f);
+    std::thread::sleep(crate::watch::MAX_WAIT * 3);
+    assert_eq!(ctime(&f), told, "the change bounced back and forth");
+    assert_eq!(ctime(&g), written_ro, "a read-only share was watched");
+    block_on(s.stop(None, Duration::from_secs(5))).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn network_allow_list_is_enforced_through_the_guest_proxy() {
