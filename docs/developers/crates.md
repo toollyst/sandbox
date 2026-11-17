@@ -180,9 +180,12 @@ has never seen the rest of the code.
 The messages between the host and the guest init, over vsock port `GUEST_PORT` (1024).
 
 - **One connection per operation.** One `exec`, one file copy or one shutdown request opens its own connection,
-  so there is no multiplexing. Each connection starts with `Hello`/`HelloAck` (versions must match before 1.0),
-  then one request: `Exec`, `CopyIn`, `CopyOut`, `Stat`, `Share`, `Volume`, `EgressListen`, `EgressSlot` or
-  `Shutdown`.
+  so there is no multiplexing. Each connection starts with `Hello`/`HelloAck` (the versions must match), then one
+  request: running commands (`Exec`, `ExecDetached`), files (`CopyIn`, `CopyOut`, `Stat`), mounts (`Share`,
+  `Volume`), the network (`EgressListen`, `EgressSlot`, `Transparent`, and `Forward` for `-p` and `--connect`),
+  build layers (`OpenLayer`, `ExecStep`, `ExportLayer`, `CheckLayers`), the clock (`ClockSync`), host edits in a
+  live share (`ShareChanged`), `Usage` for `stats`, or `Shutdown`. Adding a message doesn't change the version (2), so
+  a guest started by an older `sbx` answers the requests it knows and refuses the others.
 - **Binary encoding** (`codec`, `frame`): one message per length-prefixed frame. Big-endian integers,
   length-prefixed strings and lists.
 - **The guest is untrusted.** The host rejects oversized frames before reading them, never preallocates from a length
@@ -292,15 +295,21 @@ The cache directory: layout, locks and reads. Writes are behind the `write` feat
 
 ```text
 <cache_dir>/
-  blobs/sha256/<hex>              layers, stored only after their digest is checked
-  images/<hex>/image.json         image record (for a built image, also where it was built; never exported)
-  images/<hex>/rootfs.erofs       prepared root filesystem
+  layout-version                  the on-disk layout (2 from 0.3)
+  blobs/sha256/<hex>              pulled layers, stored only after their digest is checked
+  layers/<diff_id>/layer.erofs    one layer as a disk, shared by every image that has it
+  layers/<diff_id>/export.json    a built layer's compressed digest and size, recorded on its first export
+  merged/<chain_id>/rootfs.erofs  the lower layers merged into one disk when an executor has too few disks
+  images/<hex>/image.json         image record: its layers (for a built image, also where it was built; never exported)
   images/<hex>/kernel             the image's own kernel, if it has one
   images/<hex>/.lock              in-use lock (a running sandbox holds it shared)
+  build/<key>.json                build cache record: a step's key → its layer
   guest/<version>/<arch>/initramfs
   refs.json                       reference → image ID
   events/images/                  image events (sbx-events), appended by sbx-manage
 ```
+
+The full list, with the lock files, is in the crate's doc comment.
 
 - Every write goes to a temporary file and is renamed into place, and each image has its own lock file. Several
   processes can therefore share one cache.

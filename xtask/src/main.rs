@@ -5,6 +5,7 @@
 //!   - 계층 폴더(`crates/<계층>/<이름>`)와 계층 사이 방향, `docs/developers/crates.md`의 의존 표: [`layout`].
 //!   - 크레이트 안 모듈 사이: 순환 금지. 규칙은 [`modules`]에 있다.
 //! - `deps-doc`: `docs/developers/crates.md`의 의존 표와 그림을 지금 크레이트로 다시 쓴다. [`layout`]에 있다.
+//! - `check-links`: Markdown 문서의 상대 링크와 앵커가 가리키는 곳이 있는지 본다. [`links`]에 있다.
 //! - `guest-initramfs --arch <x86_64|aarch64> [--binary <파일>] [--out <파일>]`: 게스트 init initramfs를 만든다.
 //!   내용과 규칙은 [`initramfs`]에 있다.
 //! - `dist`: 게스트 init을 내장한 배포용 `sbx`, `sbx-shim`을 만든다. 규칙은 [`dist`]에 있다.
@@ -39,6 +40,7 @@ mod initramfs;
 mod installer;
 mod kernel;
 mod layout;
+mod links;
 mod modules;
 mod paths;
 mod release;
@@ -180,6 +182,23 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Some("check-links") => {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("xtask lives inside the workspace");
+            match links::check(root) {
+                Ok(n) => {
+                    println!("check-links: {n} links ok");
+                    ExitCode::SUCCESS
+                }
+                Err(problems) => {
+                    for p in problems {
+                        eprintln!("check-links: {p}");
+                    }
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Some("deps-doc") => {
             let root = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .parent()
@@ -426,7 +445,7 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "usage: cargo xtask check-deps\n       cargo xtask guest-initramfs --arch <x86_64|aarch64> [--binary <file>] [--out <file>]\n       cargo xtask dist [--target <triple>] [--auditable]\n       cargo xtask install [--dir <dir>]\n       cargo xtask kernel --arch <x86_64|aarch64> [--out <file>]\n       cargo xtask smoke [--sbx <file>] [--no-internet]\n       cargo xtask repo-add --repo <dir> --bundle <dir> --name <name> --version <version> [--os <os>] [--capabilities <file>] [--url <prefix>] [--description <text>] [--schema 1|2] [--adapter-package | --vmm-for <adapter> --arch <amd64|arm64>] [--default]\n       cargo xtask repo-yank --repo <dir> --name <name> --version <version> [--schema 1|2] [--adapter] [--advisory <text>] [--undo]\n       cargo xtask repo-keygen --out <prefix>\n       cargo xtask repo-sign --repo <dir> (--key <file> | --key-env <var>) [--serial <n>] [--expires-days <d>]\n       cargo xtask installer [--check | --check-published <dir> | --publish <dir>]\n       cargo xtask release-index --index <file> --version <version> --assets <dir> --base-url <url> [--security]\n       cargo xtask release-yank --index <file> --version <version> [--advisory <text>] [--undo]\n       cargo xtask release-sign --index <file> (--key <file> | --key-env <var>) [--expires-days <d>]\n       cargo xtask sign-files (--key <file> | --key-env <var>) <file>...\n       cargo xtask demo [--sbx <file>] [--out <svg>]\n       cargo xtask bench [--sbx <file>] [--image <ref>] [--runs <n>] [--parallel <k>] [--docker]\n       cargo xtask bench build [--sbx <file>] [--image <ref>] [--runs <n>] [--no-docker] [--network] [--cpus <n>] [--memory <size>] [--format markdown|json] [--dry-run]\n       cargo xtask fuzz [--time <secs>] [<target>...] [-- <libFuzzer args>] | --seeds"
+                "usage: cargo xtask check-deps\n       cargo xtask check-links\n       cargo xtask guest-initramfs --arch <x86_64|aarch64> [--binary <file>] [--out <file>]\n       cargo xtask dist [--target <triple>] [--auditable]\n       cargo xtask install [--dir <dir>]\n       cargo xtask kernel --arch <x86_64|aarch64> [--out <file>]\n       cargo xtask smoke [--sbx <file>] [--no-internet]\n       cargo xtask repo-add --repo <dir> --bundle <dir> --name <name> --version <version> [--os <os>] [--capabilities <file>] [--url <prefix>] [--description <text>] [--schema 1|2] [--adapter-package | --vmm-for <adapter> --arch <amd64|arm64>] [--default]\n       cargo xtask repo-yank --repo <dir> --name <name> --version <version> [--schema 1|2] [--adapter] [--advisory <text>] [--undo]\n       cargo xtask repo-keygen --out <prefix>\n       cargo xtask repo-sign --repo <dir> (--key <file> | --key-env <var>) [--serial <n>] [--expires-days <d>]\n       cargo xtask installer [--check | --check-published <dir> | --publish <dir>]\n       cargo xtask release-index --index <file> --version <version> --assets <dir> --base-url <url> [--security]\n       cargo xtask release-yank --index <file> --version <version> [--advisory <text>] [--undo]\n       cargo xtask release-sign --index <file> (--key <file> | --key-env <var>) [--expires-days <d>]\n       cargo xtask sign-files (--key <file> | --key-env <var>) <file>...\n       cargo xtask demo [--sbx <file>] [--out <svg>]\n       cargo xtask bench [--sbx <file>] [--image <ref>] [--runs <n>] [--parallel <k>] [--docker]\n       cargo xtask bench build [--sbx <file>] [--image <ref>] [--runs <n>] [--no-docker] [--network] [--cpus <n>] [--memory <size>] [--format markdown|json] [--dry-run]\n       cargo xtask fuzz [--time <secs>] [<target>...] [-- <libFuzzer args>] | --seeds"
             );
             ExitCode::from(2)
         }

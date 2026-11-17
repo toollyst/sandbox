@@ -4,14 +4,42 @@
 [compatibility table](tool-compatibility.md) lists every command and flag of Docker (and of Podman and nerdctl), what
 sbx does with it, and why.
 
+- [Build, run and connect: the short version](#build-run-and-connect-the-short-version)
 - [Run and manage sandboxes](#run-and-manage-sandboxes)
-- [Files](#files)
-- [Network](#network)
-- [Images](#images)
-- [Build](#build)
+- [Files](#files): copying in and out, [live sharing](#live-sharing) of a host folder
+- [Volumes](#volumes): data that outlives a sandbox
+- [Network](#network): the allow list, [transparent TCP](#transparent-tcp), [published ports](#published-ports),
+  [connecting sandboxes](#connecting-sandboxes)
+- [Images](#images): pull, `load`/`save`, [tag and push](#tag-and-push), private registries, signatures
+- [Build](#build): `sbx build`, [outputs](#outputs), [the build cache](#the-build-cache)
 - [Resources](#resources)
+- [Disk usage and cleanup](#disk-usage-and-cleanup)
 - [Scripting](#scripting)
 - [Full-screen view](#full-screen-view)
+
+## Build, run and connect: the short version
+
+Build an image from a Dockerfile, start a database that keeps its data in a volume, and let the app reach the
+database's port and nothing else. With this `Dockerfile` in the current directory:
+
+```dockerfile
+FROM alpine:3.20
+RUN apk add --no-cache postgresql16-client
+ENV PGHOST=db PGUSER=postgres
+CMD until psql -c 'select 1' >/dev/null 2>&1; do sleep 1; done; psql -tAc 'show server_version'
+```
+
+```sh
+sbx build -t app --network allow --allow dl-cdn.alpinelinux.org:443 .   # RUN steps may reach only that host
+sbx run -d --name db -v pgdata:/var/lib/postgresql/data -e POSTGRES_PASSWORD=dev postgres:17
+sbx run --rm --connect db:5432 -e PGPASSWORD=dev app                    # inside, db:5432 is the database
+sbx rm -f db                                                            # pgdata stays for the next db
+```
+
+The build stage, the database and the app each run in a microVM of their own, and none of them has a network device.
+The build reaches `dl-cdn.alpinelinux.org:443` because you allowed it, and the app reaches port 5432 of `db` because
+you connected it; nothing else is open. The sections below cover each part: [Build](#build),
+[Volumes](#volumes), [Connecting sandboxes](#connecting-sandboxes) and [the allow list](#network).
 
 ## Run and manage sandboxes
 
@@ -66,9 +94,9 @@ are paths or devices on the host are refused.
 ### Live sharing
 
 `-v ./dir:/work[:ro]` shares a host folder live: both sides see each other's writes at once. It needs an executor
-that announces live sharing (virtio-fs), which `sbx info` shows as `live share yes`. The bundled Firecracker executor
-doesn't yet: upstream Firecracker has no virtio-fs, and wick's is designed but not built
-([executors](executors.md#live-sharing)). With an executor like that, only `-v` with a host folder fails, and the
+that announces live sharing (virtio-fs), which `sbx info` shows as `live share yes`. The `firecracker` adapter, which
+the default executor `wick` runs under, doesn't yet: upstream Firecracker has no virtio-fs, and wick's is designed but
+not built ([executors](executors.md#live-sharing)). With an executor like that, only `-v` with a host folder fails, and the
 error names the alternatives: copy the folder in with the `--mount type=copy,...` line it prints, or use an executor
 that shares live. `sbx` never switches to copying behind your back.
 
@@ -116,7 +144,7 @@ sbx volume rm pgdata                           # refused while a sandbox (even a
   volume while nobody writes it. A sandbox whose owner was killed releases its volumes once its VM has powered off;
   until then (usually a moment) a new attach waits up to 3 seconds.
 - Writes reach the disk when the program inside asks for it (`fsync`), so a database that committed a transaction
-  keeps it even if the VM is killed. Each volume uses one of the executor's disks: with the Firecracker executor's 8,
+  keeps it even if the VM is killed. Each volume uses one of the executor's disks: with the `firecracker` adapter's 8,
   a sandbox takes up to 6 volumes (fewer leaves more disks for the image's layers). An executor that speaks an
   executor protocol older than 3 can't attach volumes, and `sbx` says so.
 - `sbx volume prune -a` removes every volume no sandbox points at (without `-a` there is nothing to remove, since
@@ -143,12 +171,14 @@ There are two ways out, and both go through the same list:
 
 - **The proxy.** Programs that follow `HTTP_PROXY`/`HTTPS_PROXY` (curl, pip, npm, apt, cargo) use an HTTP proxy
   inside the guest, which sbx sets for every process.
-- **Transparent TCP.** Programs that ignore the proxy (`git` over ssh, `psql`, a Go binary that opens its own
+- **Transparent TCP** (below). Programs that ignore the proxy (`git` over ssh, `psql`, a Go binary that opens its own
   sockets) still reach a `HOST:PORT` rule. The guest's DNS asks the host whether the name is on the list; the host
   answers from the list alone and never resolves a name you didn't allow. An allowed name gets a stand-in address
   from `198.18.0.0/15`, which the guest listens on for the rule's ports; the program connects to it and the host
   dials the real name. A name that isn't allowed gets "no such name" at once, and the host records it, so you can see
-  what to add:
+  what to add.
+
+### Transparent TCP
 
 ```sh
 sbx run --rm --network allow --allow db.example.com:5432 postgres:17 psql -h db.example.com -U app -c 'select 1'
@@ -160,6 +190,8 @@ is untouched), like Docker does. Some rules can only be reached through the prox
 a `*` port (the guest can't listen on every port: write the port, e.g. `github.com:22`), an IPv6 address (the
 sandbox has no IPv6), and `localhost` or a loopback address (inside the sandbox that is the sandbox itself). UDP
 beyond DNS has no way out, and neither do programs that bring their own DNS (DNS over HTTPS, a hard-coded resolver).
+
+### Limits and records
 
 `--egress-limit SIZE` (e.g. `500m`) caps how many bytes all outgoing connections send and receive together in each
 start; at the limit the open ones are cut and new ones refused. Every decision is recorded as a `network` event:
@@ -173,6 +205,8 @@ sbx events --since 1h --until 0s --filter type=network --filter sandbox=web
 
 These records live apart from the sandbox lifecycle events, so a busy sandbox can't push those out; like them, the
 most recent 1-2 MiB are kept.
+
+### Published ports
 
 `-p` publishes a TCP port of the sandbox on the host, with Docker's syntax:
 
@@ -254,6 +288,8 @@ gives the same image ID. An image made by `sbx build` is exported from its layer
 it again writes the same bytes. An image pulled by `sbx` older than 0.2.1 has to be pulled again before it can be saved. In
 `sbx tui`, `I` and `O` on the Images tab fill in `load -i` and `save -o`.
 
+### Tag and push
+
 `tag` adds a name to an image, and `push` uploads it to the registry that name points at, as with Docker:
 
 ```sh
@@ -271,6 +307,8 @@ manifest, the tag on the registry is left as it was. Credentials are the same as
 account that may push. `-q` prints only the pushed reference; `--format json` prints one `Pushed` line per tag, with
 what happened to each layer (`exists`, `mounted`, `uploaded`). An image without a name can't be pushed: `tag` it
 first. In `sbx tui`, `t` and `p` on the Images tab fill in `tag` and `push`.
+
+### Private registries, mirrors and signatures
 
 Private images use the credentials you already have: `sbx` reads Docker's `config.json` (`$DOCKER_CONFIG` or
 `~/.docker`), including its `credHelpers` and `credsStore` (`docker-credential-*`), then `REGISTRY_AUTH_FILE` and
@@ -373,7 +411,9 @@ wins, as in BuildKit) excludes don't exist for `COPY`. Paths can't leave the con
 resolved with the context as `/`, as Docker does. Sockets, FIFOs and devices in the context are skipped. A URL and
 a tar on stdin as the context are refused; `-f -` reads only the Dockerfile from stdin.
 
-**Outputs.** `--output` (`-o`) says where the image goes, and can be repeated. Given outputs replace the default, so
+### Outputs
+
+`--output` (`-o`) says where the image goes, and can be repeated. Given outputs replace the default, so
 `sbx build` only does what you ask:
 
 ```sh
@@ -405,6 +445,8 @@ file times in the layers the build makes, so the exported layer tars carry no bu
 keep their times. It is part of the cache key. What `sbx` promises is that the same input and the same cache give
 the same digest.
 
+### The build cache
+
 The **cache** keeps every step that makes a layer, keyed by the step, the layer below it, its build arguments and,
 for `COPY`, the content it copies (names, modes, sizes, link targets and file contents; not modification times). A
 rebuild with nothing changed gives the same image ID. `--no-cache` doesn't read the cache but still records what it
@@ -424,7 +466,9 @@ sbx builder prune -a -f        # every cached step; layers images use stay with 
 `sbx system prune` empties the cache too (the layers it alone kept go in the same run). In `sbx tui`, `B` on the
 Images tab runs `builder prune`.
 
-**Where an image was built** is kept with it: when a build stores the image in sbx, the image's record in the
+### Where an image was built
+
+When a build stores the image in sbx, the image's record in the
 cache directory notes the context directory and the Dockerfile as absolute paths (as you gave them, made absolute
 from the current directory) and the `--target`. `images --format json` shows it as `build`
 (`{"context": …, "file": …, "target": …}`; `file` is null for `-f -`). It is only what you need to build again
@@ -476,8 +520,8 @@ them). Without a terminal it needs `-f`. In `sbx tui`, `U` and `P` on the Images
 - `--jq EXPR` picks fields with a built-in jq, so you don't need jq installed: `sbx --format json ps --jq '.[].name'`.
 - `ps`, `images` and `events` take `--filter KEY=VALUE` with Docker's rules. `-q` prints IDs only.
 - `sbx events` streams what changes (sandboxes created, started, stopped and removed; commands run with `exec`, as
-  `exec_start` with their argv and `exec_die` with their exit code; images pulled, built, prepared, untagged and deleted)
-  with no daemon, and `--since 10m` replays the recent past first. The log lives in the data directory, readable
+  `exec_start` with their argv and `exec_die` with their exit code; images pulled, built, prepared, tagged, untagged,
+  pushed and deleted; volumes created and removed; with `--filter type=network`, outgoing connections) with no daemon, and `--since 10m` replays the recent past first. The log lives in the data directory, readable
   only by you.
 - `sbx logs` takes `-t`, `--since`, `--until` and `--format json`.
 

@@ -97,6 +97,7 @@ cargo xtask bench build                    # sbx build next to docker build on t
 | --- | --- | --- |
 | `check-deps` | Every rule about who may depend on whom, and that `crates.md` is current | [`main.rs`](../../xtask/src/main.rs), [`layout.rs`](../../xtask/src/layout.rs), [`modules.rs`](../../xtask/src/modules.rs) |
 | `deps-doc` | Regenerates the dependency map in `crates.md` | [`layout.rs`](../../xtask/src/layout.rs) |
+| `check-links` | Every relative link and anchor in the Markdown files resolves (also run by `cargo test`) | [`links.rs`](../../xtask/src/links.rs) |
 | `dist [--target T]` | Builds the guest initramfs and a release `sbx` that embeds it, plus `sbx-shim` | [`dist.rs`](../../xtask/src/dist.rs) |
 | `guest-initramfs --arch A` | Only the initramfs (for a development build that doesn't embed it) | [`initramfs.rs`](../../xtask/src/initramfs.rs) |
 | `kernel --arch A` | The default guest kernel, built in Docker | [`kernel.rs`](../../xtask/src/kernel.rs) |
