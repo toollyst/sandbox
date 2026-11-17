@@ -29,9 +29,10 @@ to release a tag without one. Changes land under `## Unreleased` first, and the 
   Podman Desktop, OrbStack, Colima and Rancher Desktop (each product cell links the product's own documentation).
   Each row says which of Docker, Podman and nerdctl have it, the commands and flags only Podman or nerdctl have get
   rows of their own, and progress is counted per target, in the table and in the README. Rows corrected on the way:
-  `sbx completion` is Docker's `completion` (🟡, it was listed as sbx-only), `run --timeout` is Podman's (🟡), and
-  Docker 29 rows that were missing were added (`bake`, `run --umask`, `run --use-api-socket`, `rmi --platform`,
-  `images --tree`, `build --debug`, `--policy`, `--resource`, `builder prune --debug`, `--timeout`).
+  `sbx completion` is Docker's `completion` (🟡, it was listed as sbx-only), `run --timeout` and `build -m` are
+  Podman's too (🟡), and Docker 29 rows that were missing were added (`bake`, `run --umask`, `run --use-api-socket`,
+  `rmi --platform`, `images --tree`, `build --debug`, `--policy`, `--resource`, `builder prune --debug`,
+  `--timeout`).
 
 ### Added
 
