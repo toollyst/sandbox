@@ -168,7 +168,9 @@ The checked-in seeds in `fuzz/seeds/` are made by [`fuzz/examples/seeds.rs`](../
 real encoders (`encode`, `tar::Builder`, gzip, zstd, the shapes the unit tests use), which also checks that each seed
 gets past the first parser. Regenerate them with `cargo xtask fuzz --seeds` after changing a format; CI fails when they
 differ from the generator. Targets that take structured input (`copy_from_guest`, `copy_into_guest`, `layer_from_guest`, `rootfs_merge`, `shim_log`) and
-`mcp_args` (JSON, guided by its dictionary) have no seeds; libFuzzer grows them from nothing within seconds. When you add a parser that reads untrusted bytes, add a
+`mcp_args` (JSON, guided by its dictionary) have no seeds; libFuzzer grows them from nothing within seconds. An input
+that CI fuzzing found goes to `fuzz/regressions/<target>/` and the generator copies it into the seeds as
+`regress-<name>`, structured targets included. When you add a parser that reads untrusted bytes, add a
 target (a file in `fuzz/fuzz_targets/` and a `[[bin]]` in `fuzz/Cargo.toml`); CI picks it up by file name.
 
 GitHub's runners are Linux, so CI fuzzes on Linux only. On macOS, `cargo fuzz` works the same on Apple Silicon.

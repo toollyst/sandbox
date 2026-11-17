@@ -397,6 +397,17 @@ mod tests {
         assert_eq!(got[0].meta.xattrs["user.text"], b"two\n\nlines\n");
     }
 
+    /// 경로 자체에 줄바꿈이 있어도(Linux 파일 이름에 올 수 있다) PAX `path` 기록대로 읽는다. 크레이트는 그 기록을
+    /// 놓치고 머리의 이름을 쓴다.
+    #[test]
+    fn a_pax_path_with_a_newline_reads_back() {
+        let long = format!("{}\n{}/.wh..wh..opq", "d".repeat(60), "e".repeat(50));
+        let raw = one_file(&[("path", long.as_bytes())], "short-name", 0, b"");
+        let got = read_one(&raw).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].path, long);
+    }
+
     /// 값 안의 줄이 기록처럼 읽히면(`tar` 크레이트는 그것을 경로로 쓴다) 받지 않는다.
     #[test]
     fn a_record_hidden_in_a_value_is_refused() {

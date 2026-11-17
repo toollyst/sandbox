@@ -2,7 +2,8 @@
 //! 실제 인코더(`encode`, `tar::Builder`, gzip, zstd)로 만든다. `cargo xtask fuzz --seeds`가 부른다.
 //!
 //! 구조화된 입력(`arbitrary`)을 받는 대상(`copy_from_guest`, `rootfs_merge`, `shim_log`)은 사람이 만든 바이트가
-//! 뜻이 없으므로 시작 입력이 없다. 퍼저가 빈 입력에서 금방 키운다.
+//! 뜻이 없으므로 시작 입력이 없다. 퍼저가 빈 입력에서 금방 키운다. CI 퍼징이 찾은 입력(`fuzz/regressions/<대상>/`)은
+//! 그런 대상이라도 시작 입력으로 둔다(`regress-<이름>`).
 //!
 //! 사용: `cargo run --manifest-path fuzz/Cargo.toml --example seeds -- <seeds 디렉터리>`
 
@@ -453,6 +454,7 @@ fn main() {
         "executor_unpack",
         "dockerfile",
         "dockerignore",
+        "layer_from_guest",
     ] {
         let _ = fs::remove_dir_all(out.join(t));
     }
@@ -462,8 +464,21 @@ fn main() {
     image_layer(&out);
     executor_repo(&out);
     dockerfile(&out);
+    regressions(&out);
     check(&out);
     println!("{}", out.display());
+}
+
+/// 구조화된 입력을 받는 대상의 회귀 입력: CI 퍼징이 찾은 입력 그대로. 원본은 `fuzz/regressions/`에 둔다.
+fn regressions(out: &Path) {
+    // 100바이트를 넘고 줄바꿈이 든 opaque 디렉터리 이름(2026-11-18): 긴 이름을 PAX `path`로 쓰면 `tar` 크레이트가
+    // 그 기록을 놓쳐 디렉터리와 그 표시가 같은 이름(머리의 앞 100바이트)으로 읽혔다.
+    put(
+        out,
+        "layer_from_guest",
+        "regress-long-opaque-dir-name-with-newline",
+        include_bytes!("../regressions/layer_from_guest/long-opaque-dir-name-with-newline"),
+    );
 }
 
 /// Dockerfile: `sbx-dockerfile` 테스트의 Dockerfile 묶음 그대로, 그리고 `--target`·`--build-arg`를 붙인 것
