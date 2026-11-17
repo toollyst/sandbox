@@ -743,7 +743,7 @@ pub struct BuildArgs {
     /// Shorthand for --output type=registry: push each -t name.
     #[arg(long, help_heading = "Output")]
     pub push: bool,
-    /// Network for RUN steps: none (no access) or allow (only --allow destinations, through a proxy).
+    /// Network for RUN steps: none (no access) or allow (only --allow destinations, checked on the host).
     #[arg(long, default_value = "none", help_heading = "Network")]
     pub network: String,
     /// Destination RUN steps may reach with --network allow: `HOST:PORT` (`*.npmjs.org:443`). Repeatable.
@@ -819,7 +819,7 @@ pub struct RunArgs {
     /// `type=bind|copy|volume,source=...,target=...[,readonly]` (copy: copied in at start; volume: source is a name).
     #[arg(long = "mount", help_heading = "Files")]
     pub mounts: Vec<String>,
-    /// Network: none (no access) or allow (only --allow destinations, through a proxy).
+    /// Network: none (no access) or allow (only --allow destinations, checked on the host).
     #[arg(long, default_value = "none", help_heading = "Network")]
     pub network: String,
     /// Signal sent to the main process on stop. Defaults to the image's StopSignal, then SIGTERM.

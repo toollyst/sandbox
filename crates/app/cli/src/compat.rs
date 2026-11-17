@@ -993,7 +993,7 @@ pub const ROWS: &[Row] = &[
     ]).only_in(D),
     same(Run, "-t, --tty", &["run_t_gives_the_main_process_a_terminal"]),
     same(Run, "-u, --user", &["docker_options_reach_the_sandbox"]),
-    differs(Run, "-v, --volume", "With a host path, live-shares a host directory (`SRC:DST[:ro]`), which needs an executor that announces live sharing (virtio-fs; the bundled Firecracker adapter doesn't yet); without one it is an error that names the alternatives (`--mount type=copy`, an executor with live sharing), never a silent copy. Host edits reach file watchers in the sandbox (hot reload) as a modify event on the changed file or, for a removed one, its folder; there are no create or delete events, and none on a `:ro` share. With a name, attaches a volume (below).", &[
+    differs(Run, "-v, --volume", "With a host path, live-shares a host directory (`SRC:DST[:ro]`), which needs an executor that announces live sharing (virtio-fs; the `firecracker` adapter, which wick runs under, doesn't yet); without one it is an error that names the alternatives (`--mount type=copy`, an executor with live sharing), never a silent copy. Host edits reach file watchers in the sandbox (hot reload) as a modify event on the changed file or, for a removed one, its folder; there are no create or delete events, and none on a `:ro` share. With a name, attaches a volume (below).", &[
         "volume_is_shared_live",
         "live_share_tells_the_guest_or_points_elsewhere",
         "parse::tests::volumes",
@@ -1566,7 +1566,7 @@ pub const ROWS: &[Row] = &[
     na(ComposeFile, "`services.*.ipc`, `pid`, `userns_mode`", OWN_KERNEL),
     na(ComposeFile, "`services.*.init`", "Always on: sbx's guest init is PID 1."),
     // ── 제품 기능 ────────────────────────────────────────────────────────
-    differs(Features, "Sharing host folders with containers", "`-v HOST:CONTAINER` shares a folder live through virtio-fs when the executor announces live sharing (the bundled Firecracker adapter doesn't yet), and host edits reach file watchers in the sandbox; without it, an error that names the alternatives, never a silent copy. `--mount type=copy` copies one in on every executor.", &[
+    differs(Features, "Sharing host folders with containers", "`-v HOST:CONTAINER` shares a folder live through virtio-fs when the executor announces live sharing (the `firecracker` adapter, which wick runs under, doesn't yet), and host edits reach file watchers in the sandbox; without it, an error that names the alternatives, never a silent copy. `--mount type=copy` copies one in on every executor.", &[
         "volume_is_shared_live",
         "live_share_tells_the_guest_or_points_elsewhere",
         "parse::tests::volumes",

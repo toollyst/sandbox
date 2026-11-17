@@ -2,8 +2,9 @@
 
 `sbx` is two files, `sbx` and `sbx-shim`. They run nothing by themselves: sandboxes boot through an **executor**, a
 separate program that speaks the open [executor protocol](executors.md). The installer installs both: `sbx`, then the
-default executor from the signed official repository. Installed `sbx` some other way? The first command that needs a
-VM fetches the default executor itself. Nothing runs as root and nothing runs in the background.
+executor its version pins. Installed `sbx` some other way? The first command that needs a VM fetches the default
+executor from the signed official repository itself ([not yet in this release](#the-executor)). Nothing runs as root
+and nothing runs in the background.
 
 - [macOS](#macos)
 - [Linux](#linux)
@@ -83,6 +84,12 @@ before you run it.
 - It never happens when any executor is installed, when you give `--executor`, or with `SBX_NO_AUTO_EXECUTOR=1` or
   `SBX_EXECUTOR=none`. `sbx executor current` says whether it would.
 
+**In this release** neither happens yet: `sbx` doesn't carry the official repository's public key, so it treats
+`official` as unsigned and never installs from it on its own (`sbx executor current` and `sbx info` say so), and the
+installer version pins no executor. Install one yourself: `sbx executor search` lists what the configured
+repositories offer, `sbx executor install NAME` installs one (from an unsigned repository, with a warning that only
+TLS protects it), and `--from DIR` installs one you built ([Build from source](#build-from-source)).
+
 After that, executors are yours to manage: `sbx upgrade` upgrades only `sbx`, and `sbx executor install` the executor
 ([executors](executors.md)).
 
@@ -136,7 +143,7 @@ built for it and embedded in `sbx`.
 git clone https://github.com/toollyst/sandbox && cd sandbox
 rustup target add "$(uname -m | sed s/arm64/aarch64/)-unknown-linux-musl"   # Windows: x86_64-unknown-linux-musl
 cargo xtask install               # builds sbx and sbx-shim and installs them where the installers do
-sbx run --rm alpine echo hello    # the first run installs the default executor
+sbx run --rm alpine echo hello    # needs an executor (see "The executor" above)
 ```
 
 `cargo xtask install` puts them in the same place as the installers (`~/.local/bin`, or `%LOCALAPPDATA%\Programs\sbx`

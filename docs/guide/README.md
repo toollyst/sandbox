@@ -5,7 +5,7 @@ For people who use `sbx`. How the code works and how to change it is in the [dev
 | Page | What's in it |
 | --- | --- |
 | [Install](install.md) | macOS, Linux and Windows, installer options and signature checks, building from source, upgrading and uninstalling |
-| [Use it like Docker](usage.md) | Running and managing sandboxes, files, the network allow list, images, scripting with JSON, `sbx tui` |
+| [Use it like Docker](usage.md) | Running and managing sandboxes, files and live sharing, volumes, the network allow list and connecting sandboxes, images, tag and push, `sbx build` and its cache, scripting with JSON, `sbx tui` |
 | [Compatibility with Docker, Podman and nerdctl](tool-compatibility.md) | Every command and flag of Docker, Podman and nerdctl, every Dockerfile instruction and Compose key, and the features of Docker Desktop and its alternatives: same, different, not yet, or not doing, with the test that shows it |
 | [AI agents (MCP)](mcp.md) | `sbx mcp`, its tools, and what an agent can and can't do |
 | [Executors](executors.md) | Executors, adapters and VMM packages, versions, bringing your own VMM, repositories and publishing your own |

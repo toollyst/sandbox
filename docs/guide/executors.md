@@ -5,11 +5,12 @@
 [repositories](#repositories) or from a directory of your own, and install and switch the way Node or Go versions do
 with nvm or gvm. The first one installed becomes the default.
 
-`sbx` comes without one, but you rarely install the first by hand: the installer installs the **default executor**
-from the official repository, and so does the first `run`, `create`, `start` or `build` when there is none
-([install guide](install.md#the-executor)). Which executor that is, the official repository's index says (its
-`default`); `sbx` itself names none. Today it is `wick`. It is a default, not a requirement: install any other
-executor, make it the default with `sbx executor use`, and `sbx` never fetches one again.
+`sbx` comes without one. The installer installs the executor its version pins, and the first `run`, `create`,
+`start` or `build` installs the **default executor** from the signed official repository when there is none
+([install guide](install.md#the-executor), which says what this release does not do yet). Which executor that is,
+the official repository's index says (its `default`); `sbx` itself names none. The official repository's default is
+`wick`. It is a default, not a requirement: install any other executor, make it the default with
+`sbx executor use`, and `sbx` never fetches one again.
 
 - [Kinds of executor](#kinds-of-executor)
 - [Install and switch versions](#install-and-switch-versions)
@@ -100,7 +101,7 @@ attaches one virtio-fs device per share, with the tag `sbx` gives, and the guest
 edits on to file watchers in the guest, so the executor only has to share the folder. `sbx info` shows whether the
 executor you use announces it (`live share yes`).
 
-The bundled `firecracker` adapter doesn't announce it yet: upstream Firecracker has no virtio-fs, and wick's is
+The `firecracker` adapter (in this repository; `wick` runs under it) doesn't announce it yet: upstream Firecracker has no virtio-fs, and wick's is
 designed but not built, so there is no interface for the adapter to drive. With it, `-v` with a host folder is an
 error that names the alternatives, and everything else works. The adapter writes only the config keys upstream
 Firecracker reads and passes it only the arguments upstream knows.

@@ -10,7 +10,7 @@ that does it. The doc comment there is the precise rule.
  your terminal
      │
  sbx (sbx-cli) ──────────── cache_dir: blobs, images/<id>/, layers/<diff_id>/layer.erofs,       (sbx-manage writes)
-     │                                 merged/<chain_id>/rootfs.erofs, build/<key>, guest/…/initramfs, events/images/
+     │                                 merged/<chain_id>/rootfs.erofs, build/<key>.json, guest/…/initramfs, events/images/
      │  sbx-runtime ─────── data_dir:  sandboxes/<id>/{spec.json,state.json,scratch.img,owner.lock,logs/},
      │                                 volumes/<name>/{volume.json,disk.img,use.lock},
      │                                 events/{sandboxes,volumes,network}/, executors/, adapters/ (the last two: sbx executor)
@@ -125,8 +125,8 @@ layout 1, or a `prepare` for an executor with fewer disks).
    merged disk), scratch, the upper layers bottom to top, then the sandbox's volumes. Each is attached as the next
    virtio-blk device, so the order alone tells the guest what it is. An executor only has to attach up to its
    `max_disks` disks in order. Volume disks have the role `volume` (executor protocol 3): the executor must pass the
-   guest's flushes through to the host file, so what a program `fsync`ed survives the VM being killed (the Firecracker
-   executor attaches them with `cache_type: Writeback`). With an executor that speaks only version 2 nothing changes
+   guest's flushes through to the host file, so what a program `fsync`ed survives the VM being killed (the `firecracker`
+   adapter attaches them with `cache_type: Writeback`). With an executor that speaks only version 2 nothing changes
    until a sandbox asks for a volume, which is then refused.
 4. **The executor starts the VMM.** [`sbx-executor-firecracker`](../../crates/executor/firecracker) writes a
    Firecracker config with vsock at `control_socket`, guest CID 3 and the kernel command line
@@ -267,7 +267,7 @@ setattr changes only the host file's ctime, which looks the same to the owner, s
 isn't watched (the guest can't setattr there). Rules: [`watch.rs`](../../crates/core/runtime/src/watch.rs) (host) and
 [`changes.rs`](../../crates/app/guest/src/changes.rs) (guest).
 
-All of this needs an executor that announces `live_share`. The bundled `firecracker` adapter doesn't yet: upstream
+All of this needs an executor that announces `live_share`. The `firecracker` adapter doesn't yet: upstream
 Firecracker has no virtio-fs, and wick's (a separate `wick-fsd` server per share behind a socket) is designed but its
 interface isn't fixed, so the adapter writes the upstream config and refuses shares. The fake executor announces it,
 which is how the tests cover the path end to end.
@@ -421,7 +421,7 @@ resolved and nothing leaves the VM; it only replaces an instant NXDOMAIN in the 
 `created` and the history times, and `add_layer` clamps every file time in the layers the build makes to it
 (BuildKit's rule: later times become the epoch, earlier ones stay). Base image layers keep their times.
 
-**Cache records** live in `cache_dir/build/<key>`, one small JSON file each (`layer` and `created`). They hold
+**Cache records** live in `cache_dir/build/<key>.json`, one small JSON file each (`layer` and `created`). They hold
 layers alive: the collector in `sbx-store` keeps every layer and blob a record names, so `sbx rmi` of the last
 image on a layer leaves the disk while the cache can reuse it. A cache hit sets the record's modification time to
 now, which is what "least recently used" means below. After every build (even a failed one) the CLI trims the cache
@@ -493,8 +493,8 @@ checked before any of this, so a refusal doesn't leave an adapter behind. Every 
 name or `local`), and a name already installed from one origin is never installed from another
 ([`sbx-executor-install`](../../crates/spec/executor-install/src/lib.rs)).
 Each download is checked against the sha256 and size in the index and unpacked into a staging directory. Before the
-rename into place, `sbx-executor capabilities` (for a VMM package, the adapter given that directory) must report this
-`sbx`'s protocol version and the host's architecture ([`executors.rs`](../../crates/app/cli/src/executors.rs)).
+rename into place, `sbx-executor capabilities` (for a VMM package, the adapter given that directory) must report a
+protocol version this `sbx` speaks (2 or 3) and the host's architecture ([`executors.rs`](../../crates/app/cli/src/executors.rs)).
 The official repository is <https://toollyst.github.io/sandbox-executors/>, published from its own repository,
 [toollyst/sandbox-executors](https://github.com/toollyst/sandbox-executors) ([Releasing](testing-and-releasing.md#executors)).
 
