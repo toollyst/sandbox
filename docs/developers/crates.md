@@ -497,9 +497,8 @@ The `firecracker` adapter. It is shipped as an adapter package: `sbx-executor` n
 - `settings` finds `firecracker` (`SBX_FIRECRACKER`, then the VMM package directory, then next to itself, then
   `PATH`) and the kernel (`SBX_FIRECRACKER_KERNEL`, then next to itself). `config` writes the VM config (initrd,
   disks, vsock, kernel command line). `session` runs the protocol session and writes the config file next to the
-  control socket as a new `0600` file. `features` asks the VMM `firecracker --features`: only a JSON answer naming
-  the `fs` extension turns on `live_share` and the config file's `extensions.fs`; anything else (upstream) means no
-  extensions and the upstream config.
+  control socket as a new `0600` file. It writes only keys upstream reads and passes only arguments upstream knows,
+  and announces no `live_share` (upstream has no virtio-fs; wick's is designed but its interface isn't fixed).
 - It knows nothing about `sbx` except the executor protocol (`sbx-executor-proto` is its only workspace dependency).
 
 ### `sbx-executor-fake` · [`crates/executor/fake`](../../crates/executor/fake) · bin `sbx-executor-fake`

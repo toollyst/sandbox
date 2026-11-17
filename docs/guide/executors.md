@@ -93,22 +93,17 @@ What the protocol asks of an executor (`capabilities` prints one JSON line withi
 request on stdin and reports `Started` and `Exited`), and how to test one, is in the
 [developer docs](../developers/how-it-works.md).
 
-### Live sharing with the `firecracker` adapter
+### Live sharing
 
-Live sharing (`-v ./dir:/path`) needs a virtio-fs device, which upstream Firecracker doesn't have. The adapter asks
-the VMM with `firecracker --features`: when that exits 0 within 5 seconds and prints a JSON object whose `extensions`
-(a list of names, or an object keyed by name) includes `fs`, the adapter announces `live_share` and passes each
-share in the config file's `extensions` section:
+Live sharing (`-v ./dir:/path`) works with any executor that announces `live_share` in its `capabilities`: it
+attaches one virtio-fs device per share, with the tag `sbx` gives, and the guest mounts it. `sbx` itself passes host
+edits on to file watchers in the guest, so the executor only has to share the folder. `sbx info` shows whether the
+executor you use announces it (`live share yes`).
 
-```json
-"extensions": {"fs": {"shares": [{"id": "fs0", "tag": "sbx0", "path": "/host/dir", "read_only": false}]}}
-```
-
-Anything else (upstream Firecracker doesn't know the option and exits with an error) means no extensions: the adapter
-announces no live sharing, writes the config exactly as before, and everything except `-v` with a host folder works.
-The option and the section were proposed by [wick](https://github.com/toollyst/wick); the adapter doesn't check which
-VMM answers, so any Firecracker build that answers the same way gets the same treatment. Other executors announce
-`live_share` in their own `capabilities` and attach one virtio-fs device per share with the tag `sbx` gives.
+The bundled `firecracker` adapter doesn't announce it yet: upstream Firecracker has no virtio-fs, and wick's is
+designed but not built, so there is no interface for the adapter to drive. With it, `-v` with a host folder is an
+error that names the alternatives, and everything else works. The adapter writes only the config keys upstream
+Firecracker reads and passes it only the arguments upstream knows.
 
 ## Repositories
 

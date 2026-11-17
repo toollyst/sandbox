@@ -267,10 +267,10 @@ setattr changes only the host file's ctime, which looks the same to the owner, s
 isn't watched (the guest can't setattr there). Rules: [`watch.rs`](../../crates/core/runtime/src/watch.rs) (host) and
 [`changes.rs`](../../crates/app/guest/src/changes.rs) (guest).
 
-The `firecracker` adapter finds out whether the VMM has virtio-fs with `firecracker --features` (a JSON answer that
-names the `fs` extension) and only then announces `live_share` and writes the shares into the config file's
-`extensions.fs` section; upstream Firecracker exits with an error on that option and gets the config it always got.
-Rules: [`features.rs`](../../crates/executor/firecracker/src/features.rs).
+All of this needs an executor that announces `live_share`. The bundled `firecracker` adapter doesn't yet: upstream
+Firecracker has no virtio-fs, and wick's (a separate `wick-fsd` server per share behind a socket) is designed but its
+interface isn't fixed, so the adapter writes the upstream config and refuses shares. The fake executor announces it,
+which is how the tests cover the path end to end.
 
 ## Events, JSON output and the TUI
 

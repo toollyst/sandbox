@@ -66,10 +66,13 @@ are paths or devices on the host are refused.
 ### Live sharing
 
 `-v ./dir:/work[:ro]` shares a host folder live: both sides see each other's writes at once. It needs an executor
-with virtio-fs, which `sbx info` shows as `live share yes`. Upstream Firecracker has no virtio-fs; with an executor
-like that, only `-v` with a host folder fails, and the error names the alternatives: copy the folder in with the
-`--mount type=copy,...` line it prints, or use an executor that shares live. `sbx` never switches to copying behind
-your back.
+that announces live sharing (virtio-fs), which `sbx info` shows as `live share yes`. The bundled Firecracker executor
+doesn't yet: upstream Firecracker has no virtio-fs, and wick's is designed but not built
+([executors](executors.md#live-sharing)). With an executor like that, only `-v` with a host folder fails, and the
+error names the alternatives: copy the folder in with the `--mount type=copy,...` line it prints, or use an executor
+that shares live. `sbx` never switches to copying behind your back.
+
+With an executor that shares live:
 
 ```sh
 sbx run -d --name web -p 5173:5173 -v ./app:/app -w /app node:22 npx vite --host

@@ -113,10 +113,8 @@ to release a tag without one. Changes land under `## Unreleased` first, and the 
   nodemon) works: the process that owns the VM watches each writable share on the host and the guest raises an inotify
   "modified" event on each changed file, or on the nearest existing folder of a removed one (there are no create or
   delete events, and none on a `:ro` share). Failures go to the sandbox's `logs/executor.log`. The guest protocol
-  gains `ShareChanged`; its version stays 2.
-- The `firecracker` adapter asks the VMM `firecracker --features`; when the JSON answer names the `fs` extension, it
-  announces live sharing and passes shares in the config file's `extensions.fs` section. Upstream Firecracker doesn't
-  know the option, and gets the same config as before.
+  gains `ShareChanged`; its version stays 2. This works with any executor that announces `live_share`; the bundled
+  `firecracker` adapter doesn't yet (upstream Firecracker has no virtio-fs, and wick's is designed but not built).
 
 ### Fixed
 
