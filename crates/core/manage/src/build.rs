@@ -17,7 +17,8 @@
 //!   ([`crate::export`]).
 //! - **만든 이미지**([`BUILT_SOURCE`]): 이미지 ID는 config 문서의 sha256이다. config 문서(`config.json`)는 두고 manifest는
 //!   두지 않는다. `save`·`push`는 내보낼 때 manifest를 만든다([`crate::export`]). 이벤트 `build`(속성 `reference`,
-//!   첫 태그)를 남긴다. 저장하지 않은 빌드(`--output`이 `type=sbx`가 아닌 것뿐)는 저장소가 바뀌지 않았으므로 이벤트가 없다.
+//!   첫 태그)를 남긴다. 이미지 기록에는 어디서 만들었는지([`BuildRecord`]: 컨텍스트, Dockerfile, `--target`)를 함께
+//!   두어 다시 빌드할 수 있게 한다. 이것은 호스트 경로라 이 기록에만 있고 config·history·내보내는 것에는 없다. 저장하지 않은 빌드(`--output`이 `type=sbx`가 아닌 것뿐)는 저장소가 바뀌지 않았으므로 이벤트가 없다.
 //! - **정리**: 캐시 기록이 이긴다. 만든 이미지를 지워도 캐시가 가리키는 층은 남는다. [`Manager::prune_build_cache`]가
 //!   기록을 지우고 나면 다음 정리가 층을 지운다.
 
@@ -29,7 +30,7 @@ use sbx_model::{Arch, Compression, Digest, ImageConfig, ImageId, Layer, RootfsFo
 use sbx_rootfs::LayerEntry;
 use sbx_store::digest::{HashingWriter, sha256};
 use sbx_store::write::{self, BlobClaim, BlobWriter, WorkDir};
-use sbx_store::{BuildCacheRecord, ImageRecord, LayerState};
+use sbx_store::{BuildCacheRecord, BuildRecord, ImageRecord, LayerState};
 
 use crate::built::{BUILD_ROOT_SOURCE, BUILT_SOURCE, BuildCacheUsage, LayerContents, Trimmed};
 use crate::export::canon_digest;
@@ -221,6 +222,7 @@ impl Manager {
                     config: ImageConfig::default(),
                     layers: layers.to_vec(),
                     ignored_fields: Vec::new(),
+                    build: None,
                 },
             )?;
         }
@@ -243,7 +245,9 @@ impl Manager {
         }
     }
 
-    /// 만든 이미지를 둔다(규칙은 모듈 문서). `tags`는 정규화한 참조들이다.
+    /// 만든 이미지를 둔다(규칙은 모듈 문서). `tags`는 정규화한 참조들이다. `build`는 어디서 만들었는지이고 이미지
+    /// 기록에만 남는다([`BuildRecord`]: config에도 내보내는 것에도 들어가지 않는다). 같은 ID의 기록이 있으면 새로 쓴다
+    /// (마지막 빌드가 이긴다).
     pub fn commit_built(
         &self,
         config_json: &[u8],
@@ -251,6 +255,7 @@ impl Manager {
         layers: Vec<Layer>,
         arch: Arch,
         tags: &[String],
+        build: Option<BuildRecord>,
     ) -> Result<ImageId, ManageError> {
         let id = ImageId::new(sha256(config_json));
         let layout = self.store.layout();
@@ -266,6 +271,7 @@ impl Manager {
                 config,
                 layers,
                 ignored_fields: Vec::new(),
+                build,
             },
         )?;
         for t in tags {

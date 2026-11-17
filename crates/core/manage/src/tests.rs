@@ -1209,6 +1209,7 @@ fn built_layers_live_on_disks_and_images_made_of_them_prepare() {
             layers.clone(),
             Arch::X86_64,
             &["docker.io/library/built:latest".into()],
+            None,
         )
         .unwrap();
     assert_eq!(id.digest(), &sha256(doc));
@@ -1337,6 +1338,14 @@ fn a_built_image_exports_after_its_base_is_removed_and_names_the_remedy() {
     let mut layers = base_layers.clone();
     layers.push(made.clone());
     let doc = br#"{"config":{}}"#;
+    // 어디서 만들었는지는 이미지 기록에만 남는다(호스트 경로는 내보내지 않는다. 아래에서 save와 push를 본다).
+    let private = "/Users/someone/private-ctx-7f3a";
+    let build = sbx_store::BuildRecord {
+        context: private.into(),
+        file: Some(format!("{private}/Dockerfile.dev")),
+        target: Some("private-target-7f3a".into()),
+    };
+    let secret = ["private-ctx-7f3a", "private-target-7f3a"];
     let id = m
         .commit_built(
             doc,
@@ -1344,12 +1353,15 @@ fn a_built_image_exports_after_its_base_is_removed_and_names_the_remedy() {
             layers.clone(),
             Arch::X86_64,
             &["docker.io/library/built:latest".into()],
+            Some(build.clone()),
         )
         .unwrap();
     drop(claim);
+    assert_eq!(m.store().image(&id).unwrap().build, Some(build));
     let manifest = m.export_image(&id).unwrap().id;
     let mut before = Vec::new();
     m.save(&id, None, &mut before).unwrap();
+    assert_absent(&before, &secret);
 
     // (a) 바탕 이미지를 지우고 정리해도 blob은 남고, save와 push가 같은 manifest다.
     m.remove(&base_id).unwrap();
@@ -1364,6 +1376,10 @@ fn a_built_image_exports_after_its_base_is_removed_and_names_the_remedy() {
     assert_eq!(pushed.id, manifest);
     let sent = dest.manifest.lock().unwrap().clone().unwrap().2;
     assert_eq!(sha256(&sent), *manifest.digest());
+    assert_absent(&sent, &secret);
+    for blob in dest.blobs.lock().unwrap().values() {
+        assert_absent(blob, &secret);
+    }
 
     // (b) 받은 층의 blob이 sbx 밖에서 지워졌다: 빌드가 만든 층이라고 하지 않고 다시 받으라고 한다. 저장하지 않은
     // 내보내기도 같다. 다시 받으면(없는 blob만 받는다) 같은 manifest다.
@@ -1409,6 +1425,35 @@ fn a_built_image_exports_after_its_base_is_removed_and_names_the_remedy() {
     assert_eq!(fixed, before);
     drop(other_claim);
     std::fs::remove_dir_all(root).unwrap();
+}
+
+/// 내보낸 바이트(tar, JSON, gzip 층)에 `words`가 없다: 그대로도, gzip을 풀어도, tar 안의 파일(그 안의 gzip도)에도.
+fn assert_absent(bytes: &[u8], words: &[&str]) {
+    fn check(bytes: &[u8], words: &[&str], depth: u8) {
+        for w in words {
+            assert!(
+                !bytes.windows(w.len()).any(|x| x == w.as_bytes()),
+                "{w} leaked into exported bytes"
+            );
+        }
+        if depth == 0 {
+            return;
+        }
+        if bytes.starts_with(&[0x1f, 0x8b]) {
+            let mut out = Vec::new();
+            if std::io::Read::read_to_end(&mut flate2::read::GzDecoder::new(bytes), &mut out)
+                .is_ok()
+            {
+                check(&out, words, depth - 1);
+            }
+        }
+        if bytes.len() > 512 && &bytes[257..262] == b"ustar" {
+            for f in archive_files(bytes).values() {
+                check(f, words, depth - 1);
+            }
+        }
+    }
+    check(bytes, words, 3);
 }
 
 /// tar 아카이브의 일반 파일들(경로 → 내용).
@@ -1534,6 +1579,7 @@ fn the_build_cache_is_trimmed_oldest_first_below_the_cap() {
         vec![layers[3].1.clone()],
         Arch::X86_64,
         &[],
+        None,
     )
     .unwrap();
     // a를 쓴다(캐시 맞음): 가장 새것이 된다.

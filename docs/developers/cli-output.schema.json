@@ -624,6 +624,17 @@
           "description": "Architecture in OCI terms.",
           "type": "string"
         },
+        "build": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ImageBuild"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "For an image `sbx build` stored: where it was built, to build it again. Absent for pulled and loaded images,\nand for images built before sbx recorded it. Kept only in the local image store: it never goes into the\nimage's config, history or labels, nor into anything `save`, `push` or `build --output` writes."
+        },
         "compressed_size": {
           "description": "Sum of the compressed layer sizes, in bytes.",
           "format": "uint64",
@@ -700,6 +711,34 @@
         "prepared",
         "compressed_size",
         "ignored_fields"
+      ],
+      "type": "object"
+    },
+    "ImageBuild": {
+      "additionalProperties": false,
+      "description": "Where a stored image was built (`images`): the last `sbx build` that stored this image ID. Build arguments,\n`--allow` rules and other flags are not recorded.",
+      "properties": {
+        "context": {
+          "description": "Absolute path of the build context directory.",
+          "type": "string"
+        },
+        "file": {
+          "description": "Absolute path of the Dockerfile; null when it was read from stdin (`-f -`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target": {
+          "description": "The `--target` stage; null when none was given.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "context"
       ],
       "type": "object"
     },

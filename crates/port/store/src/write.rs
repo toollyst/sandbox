@@ -733,6 +733,7 @@ mod tests {
                 })
                 .collect(),
             ignored_fields: Vec::new(),
+            build: None,
         }
     }
 

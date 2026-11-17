@@ -81,6 +81,30 @@ pub struct ImageRecord {
     pub layers: Vec<Layer>,
     /// 이미지에 있었지만 적용하지 않은 필드.
     pub ignored_fields: Vec<String>,
+    /// `sbx build`가 저장한 이미지면 어디서 만들었는지(다시 빌드하려고). 받거나 불러온 이미지, 이 필드가 없던 때의
+    /// 기록은 `None`이다. 더하기만 한 선택 필드라 배치 버전을 올리지 않는다: 옛 `sbx`(같은 배치 2)는 모르는 필드를
+    /// 읽지 않고 넘기고, 새 `sbx`는 없으면 `None`으로 읽는다.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<BuildRecord>,
+}
+
+/// 만든 이미지를 어디서 만들었는지([`ImageRecord::build`]). 같은 자리에서 다시 빌드하는 데 필요한 것만 둔다:
+/// 빌드 인자(이름도 값도), `--allow` 목록, 태그는 두지 않는다.
+///
+/// 호스트 경로는 그 사람의 것이다. 이 기록은 캐시 디렉터리의 `image.json`에만 있고, 이미지 config, 라벨, history,
+/// 그리고 내보내는 것(`save`, `push`, `build -o type=oci|docker`)에는 들어가지 않는다.
+///
+/// 이미지 ID 하나에 기록 하나다. 그 ID를 저장한 마지막 빌드가 이긴다: 같은 이미지를 다른 디렉터리에서 다시 만들면
+/// 그 디렉터리가 남는다. 태그가 여럿이어도 기록은 이미지의 것이라 하나다. 빌드가 아닌 것(`pull`, `load`)이 같은 ID의
+/// 기록을 다시 쓰면 빌드 기록은 없어진다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuildRecord {
+    /// 빌드 컨텍스트 디렉터리의 절대 경로(`sbx build`는 로컬 디렉터리만 받는다).
+    pub context: String,
+    /// Dockerfile의 절대 경로. 표준 입력에서 읽었으면(`-f -`) `None`.
+    pub file: Option<String>,
+    /// `--target`. 주지 않았으면 `None`.
+    pub target: Option<String>,
 }
 
 impl ImageRecord {

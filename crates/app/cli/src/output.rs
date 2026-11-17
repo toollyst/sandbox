@@ -429,6 +429,25 @@ pub struct Image {
     /// sandbox's writable disk.
     #[serde(default)]
     pub volumes: Vec<String>,
+    /// For an image `sbx build` stored: where it was built, to build it again. Absent for pulled and loaded images,
+    /// and for images built before sbx recorded it. Kept only in the local image store: it never goes into the
+    /// image's config, history or labels, nor into anything `save`, `push` or `build --output` writes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<ImageBuild>,
+}
+
+/// Where a stored image was built (`images`): the last `sbx build` that stored this image ID. Build arguments,
+/// `--allow` rules and other flags are not recorded.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ImageBuild {
+    /// Absolute path of the build context directory.
+    pub context: String,
+    /// Absolute path of the Dockerfile; null when it was read from stdin (`-f -`).
+    pub file: Option<String>,
+    /// The `--target` stage; null when none was given.
+    pub target: Option<String>,
 }
 
 /// The result for one image given to `rmi`.

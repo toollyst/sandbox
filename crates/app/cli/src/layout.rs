@@ -15,6 +15,8 @@
 //!
 //! 배치를 바꾸는 변경(파일 이름, 디렉터리 구조, 형식에 버전이 없는 파일의 모양)은 [`CURRENT`]를 올리고 `migrate`에
 //! 옮기는 단계를 더한다. 형식 안에 버전이 있는 파일(`main.log`의 머리, 저장소 색인의 `schema`)은 그 버전으로 다룬다.
+//! 기록 파일(JSON)에 선택 필드를 더하는 것은 모양을 바꾸는 것이 아니다: 옛 `sbx`는 모르는 필드를 읽고 넘기고(그
+//! 자료형은 `deny_unknown_fields`가 아니다), 새 `sbx`는 없으면 기본값으로 읽는다. 예: `image.json`의 `build`(0.3).
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
