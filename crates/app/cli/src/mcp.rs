@@ -1006,7 +1006,8 @@ async fn run(ctx: &Server, a: &Args<'_>, progress: &Progress, cancel: &Cancel) -
         let done = wait_for(&mut p, &mut c, timeout, cancel).await == Ended::Done;
         if !done {
             let sandbox = rt.get(&id).await?;
-            sandbox.stop(None, Duration::ZERO).await?;
+            // 시간이 넘은 바로 그때 끝났을 수 있다.
+            crate::behavior::stopped_anyway(sandbox.stop(None, Duration::ZERO).await)?;
         }
         Ok(output(p.exit_code().filter(|_| done), c, !done))
     }
@@ -1212,7 +1213,8 @@ async fn remove(ctx: &Server, a: &Args<'_>) -> AppResult<Value> {
     let sandbox = ctx.find(&rt, &wanted).await?;
     let id = sandbox.id().clone();
     if sandbox.state() == sbx_model::State::Running {
-        sandbox.stop(None, Duration::ZERO).await?;
+        // 그 사이 스스로 끝났으면(명령이 끝났다) 그대로 지운다.
+        crate::behavior::stopped_anyway(sandbox.stop(None, Duration::ZERO).await)?;
         let stopped = rt.get(&id).await?;
         stopped.delete().await?;
     } else {

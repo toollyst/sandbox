@@ -162,6 +162,9 @@ read it afterwards: read **Upgrading from 0.2** first.
 
 ### Fixed
 
+- `sbx stop` on a sandbox that isn't running now succeeds and does nothing, as `docker stop` does (it failed with
+  `cannot stop a sandbox in state …`). `rm -f`, `restart`, and the MCP `remove` and `run` tools no longer fail when
+  the sandbox ends on its own between reading its state and stopping it.
 - The official `postgres` image didn't start: the guest's `/dev` now has the `/dev/fd`, `/dev/stdin`, `/dev/stdout`
   and `/dev/stderr` links that OCI runtimes add, which its entrypoint and other images use.
 - The `firecracker` adapter no longer leaves Firecracker running when its watcher process alone is killed
