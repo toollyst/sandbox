@@ -24,6 +24,15 @@ to release a tag without one. Changes land under `## Unreleased` first, and the 
   `run`, `start` or `prepare` builds the layer disks from the layers already pulled. `sbx` 0.2.x refuses a migrated
   cache directory; point it at another `SBX_CACHE_DIR` if you need to go back.
 - `sbx system prune` also removes layer disks no image uses.
+- The Docker compatibility table is now [tool-compatibility.md](docs/guide/tool-compatibility.md) and compares
+  `sbx` with what people install: the Docker CLI and Compose, Podman, nerdctl, and the features of Docker Desktop,
+  Podman Desktop, OrbStack, Colima and Rancher Desktop (each product cell links the product's own documentation).
+  Each row says which of Docker, Podman and nerdctl have it, the commands and flags only Podman or nerdctl have get
+  rows of their own, and progress is counted per target, in the table and in the README. Rows corrected on the way:
+  `sbx completion` is Docker's `completion` (🟡, it was listed as sbx-only), `run --timeout` and `build -m` are
+  Podman's too (🟡), and Docker 29 rows that were missing were added (`bake`, `run --umask`, `run --use-api-socket`,
+  `rmi --platform`, `images --tree`, `build --debug`, `--policy`, `--resource`, `builder prune --debug`,
+  `--timeout`).
 
 ### Added
 
@@ -51,7 +60,7 @@ to release a tag without one. Changes land under `## Unreleased` first, and the 
   share layer disks with the images they are built on. `--format json` prints `BuildEvent` JSON Lines, and an
   image event `build` is recorded (only when the image is kept in sbx: events record changes to the store). `ADD`
   of an archive, `ONBUILD`, `RUN --mount`, heredocs and other platforms are errors for now. See the Build section of
-  the usage guide and the build rows of the Docker compatibility table.
+  the usage guide and the build rows of the [compatibility table](docs/guide/tool-compatibility.md#build).
 - `sbx build --output` (`-o`, repeatable) says where the image goes: `type=sbx` (the store, the default),
   `type=docker` (into `docker load`, or `dest=FILE`; `--load`), `type=oci,dest=FILE|DIR/|-` (an OCI archive or
   layout), `type=registry` (`--push`). Given outputs replace the default: `--load` alone keeps nothing in sbx, but the
