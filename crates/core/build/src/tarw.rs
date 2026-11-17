@@ -37,6 +37,7 @@ pub fn write(items: &Placement, out: impl Write) -> io::Result<()> {
     let mut b = tar::Builder::new(out);
     b.mode(tar::HeaderMode::Complete);
     for (path, item) in items {
+        crate::copy::check_path(path).map_err(|m| io::Error::new(io::ErrorKind::InvalidData, m))?;
         let mut h = tar::Header::new_gnu();
         h.set_mode(item.mode);
         h.set_uid(u64::from(item.uid));

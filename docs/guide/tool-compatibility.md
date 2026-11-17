@@ -810,7 +810,7 @@ What `sbx build` reads. An instruction or flag it doesn't support is an error wi
 | `RUN --mount=type=bind`, `type=tmpfs` | 🔴 |  | not planned yet |
 | `RUN --network` | 🔴 |  | not planned yet |
 | `RUN --security=insecure` | ⚪ | *Why:* A build step already runs as root in its own VM; there is no container sandbox to loosen. |  |
-| `COPY` | 🟢 |  | `build_runs_stages_and_caches_steps` |
+| `COPY` | 🟢 | Destinations as in Docker 29: relative to `WORKDIR`, `.` and `..` cleaned (never above `/`), `.`, a trailing `/` or `/.`, or an existing directory take several sources. Several sources into a new path without a trailing `/` are refused; Docker writes them one over another into a single file. | `build_runs_stages_and_caches_steps`, `build_copy_destinations_follow_docker` |
 | `COPY --from` | 🟢 |  | `build_runs_stages_and_caches_steps` |
 | `COPY --chown`, `--chmod` | 🟢 |  | `build_writes_the_image_config` |
 | `COPY --link` | 🔴 |  | after 0.3 |
@@ -819,7 +819,7 @@ What `sbx build` reads. An instruction or flag it doesn't support is an error wi
 | `ADD <git repository>` | 🔴 |  | after 0.3 |
 | `ENV` | 🟢 |  | `build_runs_stages_and_caches_steps` |
 | `ARG` | 🟡 | As in BuildKit, except that a `--build-arg` nothing declares is reported, and `--build-arg` cannot set the platform arguments (`TARGETARCH`). | `build_failures_targets_and_build_args` |
-| `WORKDIR` | 🟢 |  | `build_runs_stages_and_caches_steps` |
+| `WORKDIR` | 🟢 |  | `build_runs_stages_and_caches_steps`, `build_copy_destinations_follow_docker` |
 | `USER` | 🟢 |  | `build_writes_the_image_config` |
 | `LABEL` | 🟢 |  | `build_writes_the_image_config` |
 | `EXPOSE` | 🟢 |  | `build_writes_the_image_config` |

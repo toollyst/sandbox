@@ -895,14 +895,8 @@ impl Planner<'_> {
                             format!("{name} destination can not be empty"),
                         ));
                     }
-                    if values.len() > 1 && !dest.ends_with('/') {
-                        return Err(PlanError::at(
-                            line,
-                            format!(
-                                "when using {name} with more than one source file, the destination must be a directory and end with a /"
-                            ),
-                        ));
-                    }
+                    // 원본이 여럿일 때 대상이 디렉터리인지는 여기서 보지 않는다. Docker 29는 `.`, `x/.`, 이미 있는
+                    // 디렉터리(`/etc`)도 받고, 그것은 바탕 이미지를 봐야 안다. 빌드가 놓을 때 본다(sbx-build `copy::place`).
                     steps.push(step(
                         text,
                         StepKind::Copy(CopyStep {

@@ -238,6 +238,10 @@ mod unix {
             build_runs_stages_and_caches_steps,
         ),
         (
+            "build_copy_destinations_follow_docker",
+            build_copy_destinations_follow_docker,
+        ),
+        (
             "build_failures_targets_and_build_args",
             build_failures_targets_and_build_args,
         ),
@@ -5741,6 +5745,122 @@ CMD [\"cat\", \"/app/out.txt\"]
         );
         let o = other.sbx(&["run", "--rm", "local/app:1", "true"]);
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    }
+
+    /// 만든 이미지(`save`)의 층을 차례로 합친 일반 파일 경로들(whiteout은 이 테스트에 없다).
+    fn image_files(e: &Env, image: &str) -> std::collections::BTreeSet<String> {
+        use std::io::Read;
+        let out = e.path("image-files.tar");
+        let o = e.sbx(&["save", "-o", out.to_str().unwrap(), image]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let files = tar_files(&std::fs::read(&out).unwrap());
+        let blob = |d: &str| files[&format!("blobs/sha256/{}", &d[7..])].clone();
+        let index: serde_json::Value = serde_json::from_slice(&files["index.json"]).unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&blob(index["manifests"][0]["digest"].as_str().unwrap()))
+                .unwrap();
+        let mut paths = std::collections::BTreeSet::new();
+        for l in manifest["layers"].as_array().unwrap() {
+            let mut tar = Vec::new();
+            flate2::read::GzDecoder::new(&blob(l["digest"].as_str().unwrap())[..])
+                .read_to_end(&mut tar)
+                .unwrap();
+            for entry in tar::Archive::new(&tar[..]).entries().unwrap() {
+                let entry = entry.unwrap();
+                if entry.header().entry_type().is_file() {
+                    paths.insert(entry.path().unwrap().to_string_lossy().into_owned());
+                }
+            }
+        }
+        paths
+    }
+
+    /// 사람들이 쓰는 `COPY` 대상의 꼴(`./`, `.`, `./sub/`, 여러 원본, `dir/`, `. .`, 가운데의 `.`·`..`, `/` 위로
+    /// 오르기, 끝의 `/.`)과 이어지는 상대 `WORKDIR`. `RUN`이 먼저 VM을 띄우므로 뒤의 `COPY`는 모두 실행 중인 VM에도
+    /// 놓인다(sbx-runtime과 가짜 실행기의 게스트가 경로를 확인한다). 놓인 자리는 Docker 29.9.3으로 같은 Dockerfile을
+    /// 빌드해 본 것과 같다.
+    fn build_copy_destinations_follow_docker() {
+        let (e, ctx) = build_env();
+        let mut ctx_files = vec!["Dockerfile".to_owned(), "d/inner".to_owned()];
+        for i in [1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14] {
+            write(&ctx, &format!("a{i}"), "x\n");
+            ctx_files.push(format!("a{i}"));
+        }
+        write(&ctx, "d/inner", "in\n");
+        // build_env가 만든 빈 src/는 파일이 없어 놓이지 않는다.
+        write(
+            &ctx,
+            "Dockerfile",
+            "FROM local/base:1
+WORKDIR /w
+RUN true
+COPY a1 ./
+COPY a2 .
+COPY a3 ./s3/
+COPY a4 s4/name
+COPY a5 a6 ./m5/
+COPY a7 a8 .
+COPY a5 a6 m6/.
+WORKDIR /w6
+COPY d/ ./
+WORKDIR /w7
+COPY d .
+WORKDIR /w8
+COPY . .
+COPY . /abs9/
+WORKDIR /w10/sub
+COPY a10 ./x/./y/../z
+COPY a11 ../up11
+COPY a12 ../../../../../top12
+COPY a13 t13/.
+COPY a14 ..
+RUN test -f x/z && test -f t13/a13 && test -f ../up11 && test -f ../a14
+WORKDIR /r
+WORKDIR a
+WORKDIR ./b/../c/.
+COPY a1 ./
+",
+        );
+        let o = build(&e, &ctx, &["-q", "-t", "local/dest:1"], None);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let id = text(&o.stdout).trim().to_owned();
+        let mut want: std::collections::BTreeSet<String> = [
+            "w/a1",
+            "w/a2",
+            "w/a7",
+            "w/a8",
+            "w/m5/a5",
+            "w/m5/a6",
+            "w/m6/a5",
+            "w/m6/a6",
+            "w/s3/a3",
+            "w/s4/name",
+            "w6/inner",
+            "w7/inner",
+            "w10/a14",
+            "w10/sub/t13/a13",
+            "w10/sub/x/z",
+            "w10/up11",
+            "top12",
+            "r/a/c/a1",
+        ]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+        for root in ["w8", "abs9"] {
+            want.extend(ctx_files.iter().map(|f| format!("{root}/{f}")));
+        }
+        let got: std::collections::BTreeSet<String> = image_files(&e, "local/dest:1")
+            .into_iter()
+            .filter(|p| p != "base.bin" && !p.starts_with("src/"))
+            .collect();
+        assert_eq!(got, want);
+        let hex = id.strip_prefix("sha256:").unwrap();
+        let doc: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(e.path(&format!("cache/images/{hex}/config.json"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(doc["config"]["WorkingDir"], "/r/a/c");
     }
 
     /// 실패한 RUN은 그 출력과 코드를 보인다. 백그라운드로 남긴 프로세스는 단계를 붙잡지 않는다. `--target`은 그

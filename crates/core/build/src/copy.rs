@@ -2,6 +2,8 @@
 //!
 //! 규칙(Docker 29로 확인):
 //!
+//! - 상대 대상은 작업 디렉터리에 잇고, `.`·`..`·빈 조각은 글자 그대로 정리한다(`..`는 `/`에서 멈춘다). `.`과 끝의
+//!   `/`, `/.`은 디렉터리라는 뜻이다([`dest`]). 놓을 항목의 경로는 모두 정리된 상대 경로다([`check_path`]).
 //! - 대상이 `/`로 끝나거나 이미 있는 디렉터리면 파일은 그 안에 원래 이름으로 놓인다. 아니면 대상이 곧 그 파일이다.
 //! - 디렉터리 원본은 그 **안의 것**을 대상 디렉터리에 놓는다(디렉터리 자신은 놓이지 않는다). 와일드카드로 맞은
 //!   디렉터리도 그렇다(펼쳐진다).
@@ -84,6 +86,43 @@ fn join(a: &str, b: &str) -> String {
     }
 }
 
+/// `COPY`·`ADD`의 대상을 Docker(BuildKit)처럼 절대 경로로 만든다: 상대 경로는 작업 디렉터리에 잇고, 빈 조각과
+/// `.`, `..`을 글자 그대로 정리한다(`..`는 `/`에서 멈춘다, 링크는 보지 않는다). 대상이 `.`이거나 `/`나 `/.`로
+/// 끝나면 디렉터리라는 뜻이므로 끝에 `/`를 남긴다. 그 밖의 대상(`..`, `a/..`)은 이미 있는 디렉터리일 때만
+/// 디렉터리다. Docker 29.9.3으로 확인했다(`tests.rs`의 `copy_destinations_are_cleaned_like_docker`).
+pub fn dest(workdir: &str, raw: &str) -> String {
+    let joined = if raw.starts_with('/') {
+        raw.to_owned()
+    } else {
+        format!("{workdir}/{raw}")
+    };
+    let parts = crate::source::clean(&joined);
+    let dir = raw == "." || raw.ends_with('/') || raw.ends_with("/.");
+    let mut out = format!("/{}", parts.join("/"));
+    if dir && !parts.is_empty() {
+        out.push('/');
+    }
+    out
+}
+
+/// 놓을 항목의 경로가 정리된 상대 경로인지 본다(게스트 규약의 `check_relative_path`와 같은 규칙): 비어 있지 않고,
+/// `/`로 시작하지 않고, 조각이 비거나 `.`, `..`이 아니고, NUL이 없다. 층 tar에 쓰기 전과 VM에 놓기 전에 본다.
+/// 그래서 VM을 띄우지 않는 빌드(층 tar만)도 VM이 거부할 경로를 똑같이 거부한다.
+pub fn check_path(path: &str) -> Result<(), String> {
+    let bad = path.is_empty()
+        || path.starts_with('/')
+        || path.contains('\0')
+        || path
+            .split('/')
+            .any(|c| c.is_empty() || c == "." || c == "..");
+    if bad {
+        return Err(format!(
+            "sbx build made an invalid path {path:?} (a bug in sbx: please report it)"
+        ));
+    }
+    Ok(())
+}
+
 /// 이미 있는 부분은 링크를 따라가고, 없는 부분은 그대로 붙인 경로.
 pub fn resolve_dest(tree: &MergedTree, path: &str) -> Result<String, String> {
     let mut cur = String::new();
@@ -110,7 +149,8 @@ pub fn resolve_dest(tree: &MergedTree, path: &str) -> Result<String, String> {
     Ok(cur)
 }
 
-/// 원본들을 놓을 자리를 정한다. `dest`는 절대 경로이고, `/`로 끝나면 디렉터리다.
+/// 원본들을 놓을 자리를 정한다. `dest`는 절대 경로([`dest`])이고, `/`로 끝나면 디렉터리다. 정리되지 않은
+/// 경로를 받아도 [`dest`]와 같이 정리한다.
 pub fn place(
     tree: &MergedTree,
     srcs: &[Src],
@@ -118,7 +158,7 @@ pub fn place(
     opts: Options,
 ) -> Result<Placement, String> {
     let dir_syntax = dest.ends_with('/') || dest.ends_with("/.") || dest == ".";
-    let target = resolve_dest(tree, dest)?;
+    let target = resolve_dest(tree, &crate::source::clean(dest).join("/"))?;
     let target_is_dir = matches!(tree.get(&target).map(|n| &n.kind), Some(NodeKind::Dir));
     let into_dir = dir_syntax || target_is_dir;
     if srcs.len() > 1 && !into_dir {
@@ -158,7 +198,7 @@ pub fn place(
 
 /// `WORKDIR`: 디렉터리가 없으면 만든다(소유자는 `USER`). 놓을 것이 없으면 빈 목록이다(빈 층).
 pub fn workdir(tree: &MergedTree, dir: &str, opts: Options) -> Result<Placement, String> {
-    let target = resolve_dest(tree, dir)?;
+    let target = resolve_dest(tree, &crate::source::clean(dir).join("/"))?;
     let mut out = Placement::new();
     ensure_dir(tree, &mut out, &target, opts, None)?;
     if out.values().all(|i| i.existing) {

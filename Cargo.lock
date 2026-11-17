@@ -2508,6 +2508,7 @@ dependencies = [
 name = "sbx-build"
 version = "0.2.2"
 dependencies = [
+ "sbx-guest-proto",
  "sbx-model",
  "sbx-rootfs",
  "serde",
