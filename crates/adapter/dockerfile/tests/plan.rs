@@ -526,11 +526,11 @@ fn copy_values() {
 
 #[test]
 fn copy_checks() {
+    // 원본이 여럿이어도 대상이 디렉터리인지는 빌드가 본다(Docker 29는 `.`, `x/.`, 이미 있는 `/etc`도 받는다).
+    for text in ["COPY a b ./", "COPY a b .", "COPY a b x/.", "COPY a b /etc"] {
+        p(&format!("FROM alpine\n{text}"));
+    }
     for (text, want) in [
-        (
-            "COPY a b /c",
-            "the destination must be a directory and end with a /",
-        ),
         (
             "ADD https://example.com/x.tgz /x",
             "ADD <URL> is not supported yet",
