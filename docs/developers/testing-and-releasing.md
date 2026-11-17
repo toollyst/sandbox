@@ -96,6 +96,30 @@ cache entries stay on both sides (`sbx builder prune`, `docker builder prune` re
 names are what is left: find them with `sbx images` and `docker images --filter reference='sbx-bench-build/*'`,
 `docker buildx history ls`, and remove them with `rmi`; check `sbx ps -a` for a build VM of a killed `sbx build`.
 
+#### Measured on 2026-11-17
+
+`cargo xtask bench build --sbx target/release/sbx --runs 10 --network` at `b304475`, on an Apple M1 Pro (10 CPUs,
+32 GiB, macOS, Darwin 27.2.0 arm64). sbx 0.2.2 with a development build of the wick executor (main `8862bcbb`,
+Firecracker adapter), build VM 1 vCPU and 512 MiB (sbx's default). Docker Desktop 4.99.0 with Docker 29.9.3,
+linux/arm64, builder driver `docker`, 6 CPUs and 15.7 GiB for its containers. Base `alpine:3.20`, pulled and prepared
+on both sides before timing.
+
+| case | tool | cold | warm runs | min | p50 | p90 | max | p50 sbx/docker | same files |
+|---|---|---|---|---|---|---|---|---|---|
+| no-cache | sbx | 615 ms | 10 | 347 ms | 366 ms | 402 ms | 402 ms | 0.87× | yes |
+| no-cache | docker | 507 ms | 10 | 394 ms | 423 ms | 436 ms | 441 ms |  |  |
+| cached | sbx | 35 ms | 10 | 32 ms | 33 ms | 35 ms | 36 ms | 0.19× | yes |
+| cached | docker | 190 ms | 10 | 176 ms | 179 ms | 188 ms | 190 ms |  |  |
+| one-file-changed | sbx | 281 ms | 10 | 270 ms | 280 ms | 288 ms | 290 ms | 0.97× | yes |
+| one-file-changed | docker | 302 ms | 10 | 276 ms | 289 ms | 305 ms | 317 ms |  |  |
+| multi-stage | sbx | 791 ms | 10 | 738 ms | 757 ms | 787 ms | 794 ms | 2.09× | yes |
+| multi-stage | docker | 424 ms | 10 | 344 ms | 363 ms | 388 ms | 455 ms |  |  |
+| network | sbx | 684 ms | 10 | 553 ms | 658 ms | 808 ms | 863 ms | 1.02× | yes |
+| network | docker | 640 ms | 10 | 596 ms | 645 ms | 682 ms | 1259 ms |  |  |
+
+`multi-stage` is where sbx is slower: it builds the two independent stages one after the other, each in its own VM,
+while Docker's builder runs them at the same time. `network` includes the Alpine mirror on both sides.
+
 ## Fuzzing
 
 [`fuzz/`](../../fuzz) is a [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) (libFuzzer) crate. It is its own

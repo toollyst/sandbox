@@ -90,8 +90,14 @@ architectures. (Docker's own Docker Sandboxes also has a CLI named `sbx`; this i
 `sbx run --rm alpine:3.20 true` (boot, run, shut down, delete) took **121 ms** at p50, `sbx exec` into a running
 sandbox **8 ms**, and ten runs at once finished in **0.50 s**. Try it on your machine ([source](xtask/src/bench.rs)).
 
-<!-- build-timings: the build comparison with docker build (cargo xtask bench build, roadmap D6) goes here, measured on a
-real VM, with the machine and the date. No numbers until then. -->
+`cargo xtask bench build` builds the same small Dockerfiles with `sbx build` and `docker build` (Docker Desktop
+29.9.3), measured on 2026-11-17 on an Apple M1 Pro with a development build of the wick executor. At p50, sbx took
+**366 ms** to Docker's 423 ms for an uncached build, **33 ms** to 179 ms for a fully cached rebuild (no VM starts),
+280 ms to 289 ms after one context file changed and 658 ms to 645 ms for an `apk add` from the Alpine mirror. A
+three-stage build was slower, **757 ms** to 363 ms: sbx builds the stages one after another, a VM each, while Docker
+runs independent stages at once. Each sbx build VM had 1 vCPU and 512 MiB, Docker's builder 6 CPUs and 15.7 GiB; both
+images held the same files every time. [Full table](docs/developers/testing-and-releasing.md#measured-on-2026-11-17);
+try `cargo xtask bench build --network` on your machine ([source](xtask/src/build_bench.rs)).
 
 ## Install
 
