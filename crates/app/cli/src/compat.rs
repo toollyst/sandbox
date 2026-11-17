@@ -651,8 +651,9 @@ pub const ROWS: &[Row] = &[
     ]),
     same(Run, "-t, --tty", &["run_t_gives_the_main_process_a_terminal"]),
     same(Run, "-u, --user", &["docker_options_reach_the_sandbox"]),
-    differs(Run, "-v, --volume", "With a host path, live-shares a host directory (`SRC:DST[:ro]`), which needs an executor with virtio-fs; without one it is an error, never a silent copy. With a name, attaches a volume (below).", &[
+    differs(Run, "-v, --volume", "With a host path, live-shares a host directory (`SRC:DST[:ro]`), which needs an executor with virtio-fs; without one it is an error that names the alternatives (`--mount type=copy`, an executor with live sharing), never a silent copy. Host edits reach file watchers in the sandbox (hot reload) as a modify event on the changed file or, for a removed one, its folder; there are no create or delete events, and none on a `:ro` share. With a name, attaches a volume (below).", &[
         "volume_is_shared_live",
+        "live_share_tells_the_guest_or_points_elsewhere",
         "parse::tests::volumes",
     ])
     .why("Executors differ in what they can do. sbx doesn't switch to another way of sharing behind your back."),
