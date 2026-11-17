@@ -424,9 +424,19 @@ sbx builder prune -a -f        # every cached step; layers images use stay with 
 `sbx system prune` empties the cache too (the layers it alone kept go in the same run). In `sbx tui`, `B` on the
 Images tab runs `builder prune`.
 
+**Where an image was built** is kept with it: when a build stores the image in sbx, the image's record in the
+cache directory notes the context directory and the Dockerfile as absolute paths (as you gave them, made absolute
+from the current directory) and the `--target`. `images --format json` shows it as `build`
+(`{"context": …, "file": …, "target": …}`; `file` is null for `-f -`). It is only what you need to build again
+from the same place: build arguments, `--allow` rules and other flags are not kept. An image ID has one record, so
+building the same image again from another directory replaces it, and a build that stores nothing (only
+`--output type=oci` and the like) leaves it as it was. The paths stay on your machine: they are never written into
+the image's config, history or labels, nor into anything `save`, `push` or `--output` writes.
+
 In `sbx tui`, `b` on the Images tab fills in `build -t ` for you to finish (a name, the context and any other
-flags), and `R` fills in `build -t NAME ` with the selected image's name, to build it again; the build takes the
-terminal so you see its progress. An image doesn't record its context or Dockerfile, so you type those.
+flags). Images built here are marked `*`; `R` on one fills in the whole command,
+`build -t NAME -f FILE [--target T] CONTEXT`, for you to change or run with Enter. The build takes the terminal so
+you see its progress. If the directory or the Dockerfile is gone, `sbx build` says so.
 
 What Docker does differently, and what isn't there yet, is in the build rows of
 [the compatibility table](tool-compatibility.md#build). In short: `ADD` copies a local file but refuses an archive Docker
@@ -483,8 +493,8 @@ The bottom line shows the keys you can use right now; `?` lists them all, by tab
 opens the selected row's details, with the `sbx … --format json` command that prints the same fields; a sandbox's
 details include its network mode, `--allow` rules and `--connect` targets. An empty tab says what to do next, for
 example to install an executor before the first sandbox. Commands that need more than the selected row, such as
-`build` (`b`, and `R` to rebuild under the selected name), `tag` or `volume create`, are filled in on the bottom
-line for you to finish; Enter runs them. Commands that need the terminal or print progress (`exec -it`, `logs -f`,
+`build` (`b`; `R` rebuilds an image marked `*` from where it was built), `tag` or `volume create`, are filled in
+on the bottom line for you to finish; Enter runs them. Commands that need the terminal or print progress (`exec -it`, `logs -f`,
 `build`, `push`) take it over and give it back when you press Enter after they exit.
 The header shows the `sbx` version, and a newer release in parentheses (red when it fixes a vulnerability or yours
 was yanked); `V` runs `sbx upgrade`.

@@ -293,7 +293,7 @@ The cache directory: layout, locks and reads. Writes are behind the `write` feat
 ```text
 <cache_dir>/
   blobs/sha256/<hex>              layers, stored only after their digest is checked
-  images/<hex>/image.json         image record
+  images/<hex>/image.json         image record (for a built image, also where it was built; never exported)
   images/<hex>/rootfs.erofs       prepared root filesystem
   images/<hex>/kernel             the image's own kernel, if it has one
   images/<hex>/.lock              in-use lock (a running sandbox holds it shared)
