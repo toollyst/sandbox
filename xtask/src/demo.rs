@@ -4,12 +4,19 @@
 //! cargo xtask demo [--sbx <파일>] [--out <SVG>]
 //! ```
 //!
+//! - 이야기는 README의 Quick start와 같다: Dockerfile을 보이고, 닫힌 네트워크에서 빌드가 실패해 열 이름을 알리고,
+//!   `--allow`로 빌드하고, 볼륨을 붙인 postgres를 띄우고, 만든 앱이 `--connect db:5432`로 닿고, postgres 샌드박스를
+//!   지워도 볼륨은 남는다.
 //! - [`SCENES`]의 명령을 bash 하나에서 차례로 실제로 돌린다(앞 명령의 변수가 남는다). 출력과 그 시각은 실제 그대로다.
 //!   만든 것은 타자 치는 모습(글자마다 [`TYPE`])과 명령 사이의 쉼([`PAUSE`])뿐이다. 이미지는 먼저 받고 준비해 두고,
 //!   화면에 담지 않고 한 번씩 돌려 둔다(처음 몇 번은 디스크 캐시가 차지 않아 느리다).
+//! - bash는 `target/demo/app`(빌드 컨텍스트, [`DOCKERFILE`]만 있다)에서 돈다. 캐시 디렉터리는 데모만의
+//!   `target/demo/cache`다(`SBX_CACHE_DIR`): 담기 전에 거기서 `app` 이미지와 빌드 캐시를 지워 첫 빌드가 언제나 RUN을
+//!   돌게 한다. 사용자의 캐시는 건드리지 않는다. 데이터 디렉터리와 실행기는 `sbx`의 것을 그대로 쓴다. 이름 `db`인
+//!   샌드박스나 볼륨 `pgdata`가 이미 있으면 담지 않고, 담은 뒤에는(실패해도) 데모가 만든 둘을 지운다.
 //! - 결과: 움직이는 SVG(기본 `assets/demo.svg`, 바깥 도구 없이 CSS 애니메이션만 쓴다. GitHub README에서 돈다)와
 //!   asciinema cast v2(`target/demo/demo.cast`, `asciinema play`나 다른 변환기로 쓸 수 있다).
-//! - `--sbx`: 기본은 `target/release/sbx`. 설정은 [`bench`](crate::bench)처럼 환경 변수와 설치한 기본 실행기를 따른다.
+//! - `--sbx`: 기본은 `target/release/sbx`. 실제 VM과 인터넷(이미지, `dl-cdn.alpinelinux.org`)이 필요하다.
 
 use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Write};
@@ -18,21 +25,27 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-/// 보여 줄 명령. 화면에 친 그대로 돈다.
+/// 보여 줄 명령. 화면에 친 그대로 돈다. 한 줄이 [`COLS`]를 넘지 않게 쓴다.
 const SCENES: &[&str] = &[
-    "sbx run --rm alpine uname -sr",
-    "time sbx run --rm alpine true",
-    "sbx run --rm alpine ls /sys/class/net     # no network device at all",
-    "sbx run --rm --network allow --allow example.com:443 curlimages/curl -s https://example.com | grep -o '<title>.*</title>'",
-    "sbx run --rm --network allow --allow example.com:443 curlimages/curl -sS https://github.com",
-    "id=$(sbx run -d alpine sleep 600)",
-    "sbx exec $id cat /etc/alpine-release",
-    "sbx ps",
-    "sbx rm -f $id",
-    "sbx run --rm python:3.12-alpine python -c 'print(2**100)'",
+    "sbx run --rm alpine:3.20 uname -sr          # every sandbox boots its own kernel",
+    "cat Dockerfile",
+    "sbx build -t app .                          # RUN has no network unless you allow it",
+    "sbx build -t app --network allow --allow dl-cdn.alpinelinux.org:443 .",
+    "sbx run -d --name db -v pgdata:/var/lib/postgresql/data -e POSTGRES_PASSWORD=dev postgres:17",
+    "sbx run --rm --connect db:5432 -e PGPASSWORD=dev app",
+    "sbx rm -f db                                # the volume pgdata stays",
 ];
+/// 데모의 빌드 컨텍스트에 쓰는 Dockerfile. README의 Quick start와 같다.
+const DOCKERFILE: &str = "FROM alpine:3.20
+RUN apk add --no-cache postgresql16-client
+ENV PGHOST=db PGUSER=postgres
+CMD until psql -c 'select 1' >/dev/null 2>&1; do sleep 1; done; psql -tAc 'show server_version'
+";
 /// 먼저 받고 준비해 두는 이미지.
-const IMAGES: &[&str] = &["alpine", "curlimages/curl", "python:3.12-alpine"];
+const IMAGES: &[&str] = &["alpine:3.20", "postgres:17"];
+/// 데모가 만드는 샌드박스와 볼륨의 이름. 있으면 담지 않고, 담은 뒤에 지운다.
+const DB: &str = "db";
+const VOLUME: &str = "pgdata";
 /// 글자 하나 치는 시간.
 const TYPE: Duration = Duration::from_millis(30);
 /// 다 치고 Enter까지.
@@ -202,7 +215,7 @@ fn svg(rows: &[Row], total: f64) -> String {
         }
     }
     format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w:.0}" height="{h:.0}" viewBox="0 0 {w:.0} {h:.0}" role="img" aria-label="sbx demo: run, network allow list, exec, ps, rm">
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w:.0}" height="{h:.0}" viewBox="0 0 {w:.0} {h:.0}" role="img" aria-label="sbx demo: a build with the network closed, then allowed; postgres with a volume; the app connected to it">
 <style>
 text{{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;font-size:{FONT}px;fill:#d7dae0;white-space:pre}}
 .p{{fill:#7ee787;font-weight:bold}}.c{{fill:#7d8590}}
@@ -238,11 +251,38 @@ pub fn run(root: &Path, args: &[String]) -> Result<Vec<PathBuf>, String> {
     let sbx = sbx
         .canonicalize()
         .map_err(|e| format!("{}: {e} (build it with `cargo xtask dist`)", sbx.display()))?;
+    let demo = crate::paths::target_dir(root).join("demo");
+    let (app, cache) = (demo.join("app"), demo.join("cache"));
+    for d in [&app, &cache] {
+        std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
+    }
+    std::fs::write(app.join("Dockerfile"), DOCKERFILE).map_err(|e| e.to_string())?;
+    // 화면 밖의 sbx: 데모의 캐시 디렉터리로, 출력은 버린다.
+    let quiet = |args: &[&str]| {
+        Command::new(&sbx)
+            .args(args)
+            .env("SBX_CACHE_DIR", &cache)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    if quiet(&["inspect", DB]) {
+        return Err(format!(
+            "a sandbox named {DB} exists; remove it, or record with another SBX_DATA_DIR"
+        ));
+    }
+    if quiet(&["volume", "inspect", VOLUME]) {
+        return Err(format!(
+            "a volume named {VOLUME} exists; remove it, or record with another SBX_DATA_DIR"
+        ));
+    }
     for image in IMAGES {
         eprintln!("demo: preparing {image}");
         for cmd in ["pull", "prepare"] {
             let ok = Command::new(&sbx)
                 .args([cmd, image])
+                .env("SBX_CACHE_DIR", &cache)
                 .stdout(Stdio::null())
                 .status()
                 .map_err(|e| e.to_string())?
@@ -252,17 +292,33 @@ pub fn run(root: &Path, args: &[String]) -> Result<Vec<PathBuf>, String> {
             }
         }
     }
+    // 첫 빌드가 언제나 RUN을 돌아 막힌 이름을 보이게: 데모 캐시의 앱 이미지와 빌드 캐시를 지운다.
+    quiet(&["rmi", "-f", "app"]);
+    quiet(&["builder", "prune", "-a", "-f"]);
 
     // 처음 몇 번은 디스크 캐시가 차지 않아 느리다. 화면에 담지 않고 먼저 돌린다.
     eprintln!("demo: warming up");
     for image in IMAGES.iter().chain(IMAGES) {
-        let _ = Command::new(&sbx)
-            .args(["run", "--rm", image, "true"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+        quiet(&["run", "--rm", image, "true"]);
     }
 
+    let recorded = record(&sbx, &app, &cache);
+    // 데모가 만든 것만 지운다(있었으면 위에서 멈췄다).
+    quiet(&["rm", "-f", DB]);
+    quiet(&["volume", "rm", "-f", VOLUME]);
+    let (cast, rows, total) = recorded?;
+
+    let cast_path = demo.join("demo.cast");
+    if let Some(d) = out.parent() {
+        std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
+    }
+    std::fs::write(&cast_path, &cast).map_err(|e| e.to_string())?;
+    std::fs::write(&out, svg(&rows, total)).map_err(|e| format!("{}: {e}", out.display()))?;
+    Ok(vec![out, cast_path])
+}
+
+/// [`SCENES`]를 `app`에서 bash 하나로 돌려 담는다. (cast, 화면의 줄, 전체 시간(초)).
+fn record(sbx: &Path, app: &Path, cache: &Path) -> Result<(String, Vec<Row>, f64), String> {
     // 화면의 `sbx`가 이 sbx가 되게 PATH 맨 앞에 둔다.
     let dir = sbx.parent().expect("a file").to_owned();
     let path = format!(
@@ -272,8 +328,9 @@ pub fn run(root: &Path, args: &[String]) -> Result<Vec<PathBuf>, String> {
     );
     let mut shell = Command::new("bash")
         .args(["--noprofile", "--norc"])
+        .current_dir(app)
         .env("PATH", path)
-        .env("TIMEFORMAT", "real %3Rs")
+        .env("SBX_CACHE_DIR", cache)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -340,7 +397,7 @@ pub fn run(root: &Path, args: &[String]) -> Result<Vec<PathBuf>, String> {
         stdin.flush().map_err(|e| e.to_string())?;
         loop {
             let (at, line) = rx
-                .recv_timeout(Duration::from_secs(120))
+                .recv_timeout(Duration::from_secs(300))
                 .map_err(|_| format!("no output from: {scene}"))?;
             clock = start + at.duration_since(sent);
             if line == MARKER {
@@ -372,17 +429,7 @@ pub fn run(root: &Path, args: &[String]) -> Result<Vec<PathBuf>, String> {
     });
     clock += END_HOLD;
     emit(clock, "");
-
-    let cast_path = crate::paths::target_dir(root).join("demo/demo.cast");
-    for p in [&cast_path, &out] {
-        if let Some(d) = p.parent() {
-            std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
-        }
-    }
-    std::fs::write(&cast_path, &cast).map_err(|e| e.to_string())?;
-    std::fs::write(&out, svg(&rows, clock.as_secs_f64()))
-        .map_err(|e| format!("{}: {e}", out.display()))?;
-    Ok(vec![out, cast_path])
+    Ok((cast, rows, clock.as_secs_f64()))
 }
 
 #[cfg(test)]
@@ -400,5 +447,25 @@ mod tests {
         assert_eq!(s[2], ("c", "  # hi".to_owned()));
         assert_eq!(strip_ansi("\x1b[1;32mok\x1b[0m"), "ok");
         assert_eq!(xml("<a&b>"), "&lt;a&amp;b&gt;");
+    }
+
+    /// 명령은 한 줄에 들어가고, 앱과 데이터베이스 장면은 README의 Quick start와 같은 명령, 같은 Dockerfile이다.
+    #[test]
+    fn scenes_fit_and_match_the_readme() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask lives inside the workspace");
+        let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
+        assert!(
+            readme.contains(DOCKERFILE),
+            "README.md's quick start has another Dockerfile than the demo"
+        );
+        for scene in SCENES {
+            assert!(len(&command_spans(scene)) <= COLS, "too long: {scene}");
+            let command = scene.split("  #").next().unwrap().trim_end();
+            if command.contains(" app") || command.contains(" db") {
+                assert!(readme.contains(command), "not in README.md: {command}");
+            }
+        }
     }
 }
