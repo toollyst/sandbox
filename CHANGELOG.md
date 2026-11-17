@@ -9,94 +9,66 @@ to release a tag without one. Changes land under `## Unreleased` first, and the 
 
 ## Unreleased
 
-### Changed
+0.3 is about the development loop: `sbx build` makes images from a Dockerfile in microVMs, `sbx push` uploads them, named
+volumes keep a database's data, `--connect` lets one sandbox reach one port of another, and programs that ignore
+proxy settings get through the allow list too. Every sandbox and every build stage is still its own VM with no
+network device. Nothing that worked in 0.2 needs a different command, but the on-disk layout changes and 0.2.x can't
+read it afterwards: read **Upgrading from 0.2** first.
 
-- The installers install the `sbx` release their version pins, not the latest release; `SBX_VERSION` still picks
-  another. The Sigstore signature must now always come from exactly the tag installed. Releasing `sbx` no longer
-  publishes the installers; a new installer version is published by hand once the pair is tested
-  (`installer.yml`).
-- Images are stored per layer: each layer becomes one read-only EROFS disk, shared by every image that has it, and
-  the VM stacks them as overlay lower layers. A second image on the same base only adds its own layers, on disk and
-  in `prepare` time. When an image has more layers than the executor can attach disks, its lowest layers are merged
-  into one disk (an executor with 2 disks gets one merged disk, as before). The executor protocol stays at version 2;
-  executors attach the disks in order as before, and the kernel command line is unchanged.
-- The cache directory moves to layout 2 on first use: each image's merged `rootfs.erofs` is deleted, and the next
-  `run`, `start` or `prepare` builds the layer disks from the layers already pulled. `sbx` 0.2.x refuses a migrated
-  cache directory; point it at another `SBX_CACHE_DIR` if you need to go back.
-- `sbx system prune` also removes layer disks no image uses.
-- With an executor that can't share live, the error for `-v ./dir:/path` now names the alternatives: the
-  `--mount type=copy,source=…,target=…` line to paste, or an executor that announces live sharing (`sbx info`).
-- The Docker compatibility table is now [tool-compatibility.md](docs/guide/tool-compatibility.md) and compares
-  `sbx` with what people install: the Docker CLI and Compose, Podman, nerdctl, and the features of Docker Desktop,
-  Podman Desktop, OrbStack, Colima and Rancher Desktop (each product cell links the product's own documentation).
-  Each row says which of Docker, Podman and nerdctl have it, the commands and flags only Podman or nerdctl have get
-  rows of their own, and progress is counted per target, in the table and in the README. Rows corrected on the way:
-  `sbx completion` is Docker's `completion` (🟡, it was listed as sbx-only), `run --timeout` and `build -m` are
-  Podman's too (🟡), and Docker 29 rows that were missing were added (`bake`, `run --umask`, `run --use-api-socket`,
-  `rmi --platform`, `images --tree`, `build --debug`, `--policy`, `--resource`, `builder prune --debug`,
-  `--timeout`).
+### Upgrading from 0.2
+
+- The cache and data directories move to layout 2 the first time this `sbx` uses them. Each image's merged
+  `rootfs.erofs` is deleted, and the next `run`, `start` or `prepare` builds the per-layer disks from the layers
+  already pulled. After that, `sbx` 0.2.x refuses both directories. To go back to 0.2.x, point it at other
+  directories (`SBX_DATA_DIR`, `SBX_CACHE_DIR`).
+- Volumes need an executor that speaks executor protocol 3. `sbx` speaks 2 and 3, so an installed executor keeps
+  working for everything else; with one that speaks only 2, a sandbox that asks for a volume is refused with that
+  reason. The `firecracker` adapter of this release speaks 3.
+- Sandboxes started by 0.2 keep running and still work with `exec`, `cp`, `logs`, `stop` and `rm`. Restart them to
+  get what this release adds inside the guest (clock correction, transparent TCP, `--connect`).
+- With `--network allow` or `--connect`, `sbx` now writes the sandbox's `/etc/resolv.conf` (in its writable layer;
+  the image is unchanged) to point at the guest's own DNS, as Docker does with its embedded DNS.
 
 ### Added
 
-- Install and run, nothing in between. With no executor installed, `sbx run`, `create`, `start` and `build` install
-  the default executor from the official repository first and carry on, saying on stderr what they install and from
-  where (never on stdout, so `--format json` and `sbx mcp` stay clean). Which executor is the default is said by the
-  repository's index (a new optional `default` field in schema 2, written by `cargo xtask repo-add --default`), not by
-  `sbx`. It only uses a signed `official` repository, checked exactly like `sbx executor install`, so it asks nothing,
-  also without a terminal. Two first runs at once install it once; an unreachable repository fails with the reason and
-  the manual ways. It never happens when any executor is installed or `--executor` is given, and
-  `SBX_NO_AUTO_EXECUTOR=1` or `--executor none` (`SBX_EXECUTOR=none`) turns it off. `sbx executor current`, `sbx info`
-  and `sbx tui` say whether it will happen, and say to `sbx executor use` one when executors are installed but none is
-  the default.
-- The installers have their own version, separate from `sbx`'s and the executor's. Each version pins the `sbx`
-  release and the executor (with its adapter) it installs, prints them as its first line, and shows them without
-  installing with `--version` (`curl … | sh -s -- --version`). Every version stays published unchanged as
-  `install-<version>.sh` and `.ps1`; `install.sh` and `install.ps1` are copies of the newest. `install.sh` now also
-  installs the pinned executor from the official repository, unless you already use another one or set
-  `SBX_EXECUTOR=none`; if that fails, `sbx` is still installed and fetches the default executor on first use.
 - `sbx build` makes an image from a Dockerfile, with buildx's flag names (`-t`, `-f`, `--build-arg`, `--target`,
-  `--no-cache`, `--progress auto|plain`, `-q`). Each stage's `RUN` steps run in one microVM with the network closed
-  unless `--network allow --allow HOST:PORT` opens it; a failed step lists the names it was refused, with the
-  `--allow` to add. `COPY`, `ADD` and `WORKDIR` layers are made on the host, honoring `.dockerignore`, so a cached
-  rebuild or a `FROM scratch` stage of copies starts no VM. Every step that makes a layer is cached; built images
-  share layer disks with the images they are built on. `--format json` prints `BuildEvent` JSON Lines, and an
-  image event `build` is recorded (only when the image is kept in sbx: events record changes to the store). `ADD`
-  of an archive, `ONBUILD`, `RUN --mount`, heredocs and other platforms are errors for now. See the Build section of
-  the usage guide and the build rows of the [compatibility table](docs/guide/tool-compatibility.md#build).
+  `--no-cache`, `--progress auto|plain`, `-q`, and `--cpus`, `-m` for the build VM). Each stage's `RUN` steps run in
+  one microVM with the network closed unless `--network allow --allow HOST:PORT` opens it. When a step fails, `sbx`
+  lists the names it was refused, with the `--allow` to add (`blocked: NAME — add --allow NAME:PORT`), and with the
+  default closed network a line saying the network is closed. `COPY`, `ADD` and `WORKDIR` layers are made on the
+  host, honoring `.dockerignore`, so a cached rebuild or a `FROM scratch` stage of copies starts no VM. Every step
+  that makes a layer is cached; built images share layer disks with the images they are built on. `--format json`
+  prints `BuildEvent` JSON Lines, and an image event `build` is recorded when the image is kept in sbx. `ADD` of an
+  archive, `ONBUILD`, `RUN --mount`, heredocs and other platforms are errors with the line number. See
+  [Build](docs/guide/usage.md#build) in the usage guide and the build rows of the
+  [compatibility table](docs/guide/tool-compatibility.md#build).
 - `sbx build --output` (`-o`, repeatable) says where the image goes: `type=sbx` (the store, the default),
   `type=docker` (into `docker load`, or `dest=FILE`; `--load`), `type=oci,dest=FILE|DIR/|-` (an OCI archive or
   layout), `type=registry` (`--push`). Given outputs replace the default: `--load` alone keeps nothing in sbx, but the
   layer cache stays. `-f -` reads the Dockerfile from stdin. `--format json` adds `stored` to the `built` line and an
   `exported` line per output.
 - Built images can be saved and pushed. Layers are written as tars again when exported and gzipped with fixed
-  settings; a layer's compressed digest is recorded on its first export (a few bytes next to the layer, the compressed
-  layer is never stored), so every `save`, `--load`, `-o type=oci` and push of an image has the same manifest digest.
+  settings; a layer's compressed digest is recorded on its first export (a few bytes next to the layer; the
+  compressed layer is never stored), so every `save`, `--load`, `-o type=oci` and push of an image has the same
+  manifest digest.
 - `SOURCE_DATE_EPOCH` (environment or `--build-arg`) sets a built image's `created` and history times and caps file
   times in the layers the build makes, as in BuildKit.
-- With the default closed build network, a failed step lists the names it looked up and says the network is closed,
-  with the `--network allow --allow NAME:PORT` to add.
 - The build cache keeps itself under `SBX_BUILD_CACHE_MAX` (default `10g`, `none` for no cap) after every build,
   dropping the least recently used steps whose layers no image uses. `sbx builder prune [-a] [-f] [--keep-storage
-  SIZE]` empties it (JSON `BuildCachePruned`); `B` in `sbx tui` on the Images tab.
+  SIZE]` empties it (JSON `BuildCachePruned`). `sbx system df` shows it as `build cache`, and `sbx system prune`
+  removes it (JSON `build_cache` in the prune report).
 - A stored built image remembers where it was built: the context directory and Dockerfile as absolute paths, and the
   `--target` (no build arguments, no `--allow` rules). `images --format json` shows it as `build` (JSON `ImageBuild`;
-  `file` is null for `-f -`); pulled and loaded images, and images built before this release, have none. The last
-  build that stored an image ID wins; a build that stores nothing changes nothing. The paths stay in the local image
-  record and are never written into the image or anything `save`, `push` or `--output` writes.
-- `sbx tui` builds from the Images tab: `b` fills in `build -t `, and `R` on an image built here (marked `*`) fills in
-  `build -t NAME -f FILE [--target T] CONTEXT` from that record; Enter hands the terminal to the build so its progress
-  shows. The image details show the record. An empty Images tab suggests `b`, and image `build` events show in green.
-- `sbx system df` shows the build cache, and `sbx system prune` removes it (JSON `build_cache` in the prune
-  report).
-- `sbx images` shows `SIZE`, `SHARED` and `UNIQUE` (on disk), and `--format json` adds `disk_size`, `shared_size`
-  and `unique_size`. `sbx system df` counts a shared layer once and shows the shared part (`SHARED`, JSON `shared`).
-  The Images tab in `sbx tui` shows `SIZE` and `SHARED`.
-- The clock inside a sandbox follows the host's. The process that owns the VM (`sbx`, or `sbx-shim` for `-d`) sets
-  the guest clock right after it boots, corrects it every minute (slowly, so it never runs backwards), and steps it as soon as the host's clock jumps, such
-  as after the host wakes from sleep (until now the guest fell behind by the time the host slept). It needs nothing
-  from the image or the executor and never delays the start. A clock set inside with `date -s` is put back at the
-  next correction. Sandboxes started before upgrading keep their old behaviour until restarted. The guest protocol
-  gains `ClockSync`, `ClockAsk` and `ClockNow`; its version stays 2.
+  `file` is null for `-f -`); pulled and loaded images have none. The last build that stored an image ID wins; a
+  build that stores nothing changes nothing. The paths stay in the local image record and are never written into the
+  image or anything `save`, `push` or `--output` writes.
+- `sbx tag SOURCE TARGET` and `sbx push [-a] [-q] NAME[:TAG]`. `push` sends the layers, the config and last the
+  manifest, exactly as pulled or loaded, so the registry reports the image's own digest. A layer the registry has is
+  not sent, one from another repository of the same registry is mounted, and a registry that refuses a whole upload
+  (413) gets it in chunks. `push` never goes through a `registries.conf` mirror or rewritten location and refuses a
+  `blocked` registry. `--format json` prints one `Pushed` line per tag, with what happened to each layer (`exists`,
+  `mounted`, `uploaded`). Image events `tag` and `push` are recorded (`events --filter event=tag|push`). In
+  `sbx tui`, `t` and `p` on the Images tab fill them in.
 - Named volumes: `sbx volume create [--opt size=50g] [--label k=v] NAME`, `volume ls [-q] [--filter]`,
   `volume inspect`, `volume rm [-f]` and `volume prune -a`, and `run`/`create` take `-v NAME:/path[:ro|:nocopy]` and
   `--mount type=volume,source=NAME,target=/path[,readonly][,volume-nocopy]`. A name used for the first time creates
@@ -109,10 +81,8 @@ to release a tag without one. Changes land under `## Unreleased` first, and the 
   `sbx tui` has a Volumes tab. `--format json` adds `Volume`, `VolumeRef` and `VolumePrune`, `volumes` in `Sandbox`
   and in the prune report. MCP tools `run` and `create` take `volumes`; they only attach volumes created through MCP
   (`sbx mcp --max-volumes`, 8 by default).
-- Executor protocol 3: the disk role `volume`, whose writes the executor must flush through to the host file. `sbx`
-  still speaks version 2, so installed executors keep working; one that speaks only 2 can't attach volumes, and a
-  sandbox that asks for one is refused with that reason. The `firecracker` adapter speaks 3 and attaches volume
-  disks with `cache_type: Writeback`.
+- Executor protocol 3: the disk role `volume`, whose writes the executor must flush through to the host file. The
+  `firecracker` adapter speaks 3 and attaches volume disks with `cache_type: Writeback`.
 - `sbx run|create --connect [NAME=]SANDBOX:PORT` (repeatable, `db:5432,6379` for more ports): programs inside reach
   TCP `PORT` of another running sandbox in the same data directory by its name, with any protocol and without proxy
   settings (`sbx run --connect db:5432 postgres:17 psql -h db`). Nothing else opens: with `--connect` alone no other
@@ -124,17 +94,76 @@ to release a tag without one. Changes land under `## Unreleased` first, and the 
   count against the connecting sandbox's `--egress-limit`, which `--connect` alone now accepts. `inspect` and
   `ps --format json` show `network.connect`, and so does the `sbx tui` detail view; shell completion offers sandbox
   names. The MCP tools `run` and `create` take `connect`, limited to sandboxes created through MCP (checked at
-  creation and at every connection). `sbx build` has no `--connect`. Needs a sandbox started by this `sbx`; the
-  guest protocol is unchanged.
+  creation and at every connection). `sbx build` has no `--connect`.
+- Transparent TCP: with `--network allow`, programs that ignore `HTTP_PROXY` (`git` over ssh, `psql`, a Go binary)
+  reach `HOST:PORT` rules too. The guest's DNS asks the host whether a name is on the list, and the host answers from
+  the list alone, without resolving it, so a name you didn't allow never leaves the machine, not even as a DNS query.
+  An allowed name gets a stand-in address from `198.18.0.0/15` that the guest listens on for the rule's ports; the
+  host dials the real name after the same checks as the proxy. A name that isn't allowed fails at once and is
+  recorded. Rules with a `*` port, IPv6 addresses and `localhost` stay proxy-only, and `sbx run` warns about each.
+  New `network` events: `lookup` (an allowed name and its open ports), `refuse` with `via=dns`, `proxy_only` and
+  `notice`. It needs nothing from the executor or the image.
 - Live shares (`-v ./dir:/path`) pass host edits to file watchers in the sandbox, so hot reload (vite, webpack,
   nodemon) works: the process that owns the VM watches each writable share on the host and the guest raises an inotify
   "modified" event on each changed file, or on the nearest existing folder of a removed one (there are no create or
-  delete events, and none on a `:ro` share). Failures go to the sandbox's `logs/executor.log`. The guest protocol
-  gains `ShareChanged`; its version stays 2. This works with any executor that announces `live_share`; the bundled
-  `firecracker` adapter doesn't yet (upstream Firecracker has no virtio-fs, and wick's is designed but not built).
+  delete events, and none on a `:ro` share). Failures go to the sandbox's `logs/executor.log`. This works with any
+  executor that announces `live_share`; the `firecracker` adapter doesn't yet (upstream Firecracker has no virtio-fs,
+  and wick's is designed but not built).
+- The clock inside a sandbox follows the host's. The process that owns the VM (`sbx`, or `sbx-shim` for `-d`) sets
+  the guest clock right after it boots, corrects it every minute (slowly, so it never runs backwards), and steps it
+  as soon as the host's clock jumps, such as after the host wakes from sleep (until now the guest fell behind by the
+  time the host slept). It needs nothing from the image or the executor and never delays the start. A clock set
+  inside with `date -s` is put back at the next correction.
+- Install and run, nothing in between, once the official repository is signed (see **Notes**). With no executor
+  installed, `sbx run`, `create`, `start` and `build` install the default executor from the official repository first
+  and carry on, saying on stderr what they install and from where (never on stdout, so `--format json` and `sbx mcp`
+  stay clean). Which executor is the default is said by the repository's index (a new optional `default` field in
+  schema 2, written by `cargo xtask repo-add --default`), not by `sbx`. It only uses a signed `official`
+  repository, checked exactly like `sbx executor install`, so it asks nothing, also without a terminal. Two first
+  runs at once install it once; an unreachable repository fails with the reason and the manual ways. It never
+  happens when any executor is installed or `--executor` is given, and `SBX_NO_AUTO_EXECUTOR=1` or
+  `--executor none` (`SBX_EXECUTOR=none`) turns it off. `sbx executor current`, `sbx info` and `sbx tui` say whether
+  it will happen and why not, and say to `sbx executor use` one when executors are installed but none is the
+  default.
+- The installers have their own version, separate from `sbx`'s and the executor's. Each version pins the `sbx`
+  release and the executor (with its adapter) it installs, prints them as its first line, and shows them without
+  installing with `--version` (`curl … | sh -s -- --version`). Every version stays published unchanged as
+  `install-<version>.sh` and `.ps1`; `install.sh` and `install.ps1` are copies of the newest. `install.sh` also
+  installs the pinned executor from the official repository, unless you already use another one or set
+  `SBX_EXECUTOR=none`; if that fails, `sbx` is still installed.
+- `sbx images` shows `SIZE`, `SHARED` and `UNIQUE` (on disk), and `--format json` adds `disk_size`, `shared_size`
+  and `unique_size`. `sbx system df` counts a shared layer once and shows the shared part (`SHARED`, JSON `shared`).
+  The Images tab in `sbx tui` shows `SIZE` and `SHARED`.
+- `sbx tui` builds from the Images tab: `b` fills in `build -t `, and `R` on an image built here (marked `*`) fills in
+  `build -t NAME -f FILE [--target T] CONTEXT` from that record; Enter hands the terminal to the build so its progress
+  shows. The image details show the record. An empty Images tab suggests `b`, image `build` events show in green, and
+  `B` runs `builder prune`.
+- A compatibility table, [tool-compatibility.md](docs/guide/tool-compatibility.md): every command and flag of the
+  Docker CLI, Podman and nerdctl, every Dockerfile instruction, the common Compose keys, and the features of Docker
+  Desktop, Podman Desktop, OrbStack, Colima and Rancher Desktop (each product cell links the product's own
+  documentation), with what `sbx` does for each, why, and the test that shows it. It is generated from
+  `crates/app/cli/src/compat.rs`, tests check every row against the command-line definition, and the README shows
+  the progress for each target.
+
+### Changed
+
+- Images are stored per layer: each layer becomes one read-only EROFS disk, shared by every image that has it, and
+  the VM stacks them as overlay lower layers. A second image on the same base only adds its own layers, on disk and
+  in `prepare` time. When an image has more layers than the executor can attach disks, its lowest layers are merged
+  into one disk (an executor with 2 disks gets one merged disk, as before). Executors attach the disks in order as
+  before, and the kernel command line is unchanged.
+- `sbx system prune` also removes layer disks no image uses.
+- With an executor that can't share live, the error for `-v ./dir:/path` now names the alternatives: the
+  `--mount type=copy,source=…,target=…` line to paste, or an executor that announces live sharing (`sbx info`).
+- The installers install the `sbx` release their version pins, not the latest release; `SBX_VERSION` still picks
+  another. The Sigstore signature must now always come from exactly the tag installed. Releasing `sbx` no longer
+  publishes the installers; a new installer version is published by hand once the pair is tested
+  (`installer.yml`).
 
 ### Fixed
 
+- The official `postgres` image didn't start: the guest's `/dev` now has the `/dev/fd`, `/dev/stdin`, `/dev/stdout`
+  and `/dev/stderr` links that OCI runtimes add, which its entrypoint and other images use.
 - The `firecracker` adapter no longer leaves Firecracker running when its watcher process alone is killed
   (`kill -9`, the OOM killer): the watcher runs in its own process group, which the adapter kills before it reports
   the VM gone.
@@ -145,6 +174,15 @@ to release a tag without one. Changes land under `## Unreleased` first, and the 
   VM used.
 - `sbx system df` counts the executors and adapters that running sandboxes were started with as active (it always
   showed 0).
+
+### Notes
+
+- The guest protocol gains messages for builds, transparent TCP, the clock and live-share changes; its version stays
+  2, so a sandbox started by 0.2 keeps answering the requests it knows.
+- This `sbx` doesn't carry the official executor repository's public key yet, so it treats `official` as unsigned
+  and doesn't install the default executor on its own; `sbx info` and `sbx executor current` say so. Install an
+  executor with `sbx executor install` or from a directory (`--from`); see the
+  [install guide](docs/guide/install.md#the-executor).
 
 ## v0.2.2
 
