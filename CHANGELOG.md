@@ -7,7 +7,7 @@ are in [COMPATIBILITY.md](COMPATIBILITY.md); fixes for vulnerabilities are liste
 Each release has a section `## vX.Y.Z`; the release workflow publishes that section as the release notes and refuses
 to release a tag without one. Changes land under `## Unreleased` first, and the section is renamed when tagging.
 
-## Unreleased
+## v0.3.0
 
 0.3 is about the development loop: `sbx build` makes images from a Dockerfile in microVMs, `sbx push` uploads them, named
 volumes keep a database's data, `--connect` lets one sandbox reach one port of another, and programs that ignore
