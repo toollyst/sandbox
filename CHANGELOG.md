@@ -76,6 +76,9 @@ to release a tag without one. Changes land under `## Unreleased` first, and the 
 - The build cache keeps itself under `SBX_BUILD_CACHE_MAX` (default `10g`, `none` for no cap) after every build,
   dropping the least recently used steps whose layers no image uses. `sbx builder prune [-a] [-f] [--keep-storage
   SIZE]` empties it (JSON `BuildCachePruned`); `B` in `sbx tui` on the Images tab.
+- `sbx tui` builds from the Images tab: `b` fills in `build -t ` and `R` fills in `build -t NAME ` with the selected
+  image's name, for you to finish with the context; Enter hands the terminal to the build so its progress shows. An
+  empty Images tab suggests `b`, and image `build` events show in green.
 - `sbx system df` shows the build cache, and `sbx system prune` removes it (JSON `build_cache` in the prune
   report).
 - `sbx images` shows `SIZE`, `SHARED` and `UNIQUE` (on disk), and `--format json` adds `disk_size`, `shared_size`

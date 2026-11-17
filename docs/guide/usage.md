@@ -193,7 +193,8 @@ works (postgres, redis, gRPC, HTTP), and the client doesn't need to know about p
 - **Counting.** The bytes count against the connecting sandbox's `--egress-limit` (both directions; the target's own
   limit is not touched), and its connections count toward its open-connection cap.
 
-`sbx inspect` and `ps --format json` show the list under `network.connect`. The `network` events (`lookup`,
+`sbx inspect` and `ps --format json` show the list under `network.connect`, next to `network.allow`; so does the
+details view (Enter) of `sbx tui`. The `network` events (`lookup`,
 `connect`, `close`, `refuse`) carry `target` (as recorded) and `target_id`; `--filter sandbox=` matches either side:
 
 ```sh
@@ -399,6 +400,10 @@ sbx builder prune -a -f        # every cached step; layers images use stay with 
 `sbx system prune` empties the cache too (the layers it alone kept go in the same run). In `sbx tui`, `B` on the
 Images tab runs `builder prune`.
 
+In `sbx tui`, `b` on the Images tab fills in `build -t ` for you to finish (a name, the context and any other
+flags), and `R` fills in `build -t NAME ` with the selected image's name, to build it again; the build takes the
+terminal so you see its progress. An image doesn't record its context or Dockerfile, so you type those.
+
 What Docker does differently, and what isn't there yet, is in the build rows of
 [the compatibility table](tool-compatibility.md#build). In short: `ADD` copies a local file but refuses an archive Docker
 would unpack; `ONBUILD` (in the Dockerfile or the base image), `RUN --mount`, heredocs and `--platform` other than the
@@ -451,7 +456,11 @@ change to them is in [COMPATIBILITY.md](../../COMPATIBILITY.md).
 every key runs an `sbx` command and shows its command line, so anything you do there you can script.
 
 The bottom line shows the keys you can use right now; `?` lists them all, by tab (so does `sbx tui --help`). Enter
-opens the selected row's details, with the `sbx … --format json` command that prints the same fields. An empty tab
-says what to do next, for example to install an executor before the first sandbox.
+opens the selected row's details, with the `sbx … --format json` command that prints the same fields; a sandbox's
+details include its network mode, `--allow` rules and `--connect` targets. An empty tab says what to do next, for
+example to install an executor before the first sandbox. Commands that need more than the selected row, such as
+`build` (`b`, and `R` to rebuild under the selected name), `tag` or `volume create`, are filled in on the bottom
+line for you to finish; Enter runs them. Commands that need the terminal or print progress (`exec -it`, `logs -f`,
+`build`, `push`) take it over and give it back when you press Enter after they exit.
 The header shows the `sbx` version, and a newer release in parentheses (red when it fixes a vulnerability or yours
 was yanked); `V` runs `sbx upgrade`.
