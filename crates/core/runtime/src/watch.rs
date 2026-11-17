@@ -29,7 +29,7 @@
 //!
 //! **믿지 않음**: 게스트가 하는 일은 `Done`이나 오류로 답하는 것뿐이다. 게스트가 보낸 어떤 값도 무엇을 언제 보낼지를
 //! 바꾸지 않는다. 기록에 넣는 게스트의 오류 문장은 [`MAX_NOTE`](crate::clock::MAX_NOTE) 글자로 자른다. 게스트가 답하지
-//! 않으면 메시지 하나가 [`REQUEST_TIMEOUT`](crate::client::REQUEST_TIMEOUT)까지 이 스레드를 붙잡을 뿐이다(그동안 온 사건은
+//! 않으면 메시지 하나가 `client::REQUEST_TIMEOUT`(10초)까지 이 스레드를 붙잡을 뿐이다(그동안 온 사건은
 //! 채널에 쌓였다가 다음 묶음이 된다).
 //!
 //! **수명**: [`Running`]을 버리면(소유 기록이 사라지면) 감시를 멈추고 스레드가 끝난다.
@@ -194,8 +194,11 @@ pub struct Running {
     _watcher: notify::RecommendedWatcher,
 }
 
-/// 보내는 쪽. 실제로는 [`Guest::share_changed`]이고 테스트는 기록한다.
-pub type SendFn = Box<dyn FnMut(&str, &[String]) -> Result<(), RuntimeError> + Send>;
+/// 보내는 쪽. 실제로는 `Guest::share_changed`이고 테스트는 기록한다.
+pub type SendFn = Box<SendDyn>;
+
+/// [`SendFn`]이 담는 것: (게스트 경로, 상대 경로들)을 보낸다.
+pub type SendDyn = dyn FnMut(&str, &[String]) -> Result<(), RuntimeError> + Send;
 
 /// `shares`를 보기 시작하고 스레드를 띄운다. 하나도 보지 못하거나 스레드를 띄우지 못하면 `None`이다(기록은 `notes`).
 pub fn start(shares: Vec<Share>, mut send: SendFn, mut notes: Notes) -> Option<Running> {
@@ -236,7 +239,7 @@ pub fn start(shares: Vec<Share>, mut send: SendFn, mut notes: Notes) -> Option<R
 pub fn run(
     rx: &Receiver<notify::Result<Event>>,
     pending: &mut Pending,
-    send: &mut (dyn FnMut(&str, &[String]) -> Result<(), RuntimeError> + Send),
+    send: &mut SendDyn,
     notes: &mut Notes,
 ) {
     let add = |pending: &mut Pending, r: notify::Result<Event>| match r {

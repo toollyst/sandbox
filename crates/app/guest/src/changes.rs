@@ -158,7 +158,7 @@ mod tests {
 
         // 조상이 모두 없으면 `target` 자신. 빈 경로도 `target`이다.
         let touched = apply(target, &s(&["nope/a/b", ""])).unwrap();
-        assert_eq!(touched, [d.clone()]);
+        assert_eq!(touched, std::slice::from_ref(&d));
         // `target`이 없으면 아무것도 하지 않는다.
         let gone = d.join("missing");
         assert!(

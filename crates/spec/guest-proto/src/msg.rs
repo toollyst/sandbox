@@ -402,7 +402,7 @@ pub enum HostMsg {
     /// - 게스트는 경로마다, 있으면 그 항목의 수정 시각을 지금 값 그대로 다시 쓴다(`IN_MODIFY`가 생긴다. 내용과 시각은
     ///   그대로다). 없으면(지워졌거나 옮겨졌다) `target` 안에서 가장 가까운 있는 조상에 같은 일을 한다.
     ///
-    /// 흐름: 게스트가 [`GuestMsg::Done`]. 경로가 규칙에 맞지 않으면 [`GuestMsg::Error`](`InvalidArgument`). 항목 하나를
+    /// 흐름: 게스트가 [`GuestMsg::Done`]. 경로가 규칙에 맞지 않으면 [`GuestMsg::Error`] (`InvalidArgument`). 항목 하나를
     /// 알리지 못한 것(읽기 전용 공유 등)은 오류가 아니다. 모르는 게스트는 `Protocol` 오류로 답한다(공유는 시작할 때만
     /// 붙이므로 같은 판의 게스트가 받는다).
     ShareChanged {
