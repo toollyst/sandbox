@@ -5978,9 +5978,16 @@ COPY a1 ./
         let o = e.sbx(&["--format", "json", "system", "df"]);
         let rows: Vec<DiskUsage> = serde_json::from_slice(&o.stdout).unwrap();
         let im = rows.iter().find(|r| r.kind == "images").unwrap();
-        // 바탕 층(64 KiB)은 바탕 이미지와 두 빌드가 함께 쓰고 한 번만 센다.
+        // 바탕 층(64 KiB)은 바탕 이미지와 두 빌드가 함께 쓰고 한 번만 센다. 크기는 할당된 블록이라 파일 시스템마다
+        // 다르므로(ext4는 디렉터리도 4 KiB, APFS는 0) 정한 수가 아니라 `images`의 크기와 견준다: 전체는 한 이미지만
+        // 쓰는 것과 함께 쓰는 것(한 번)의 합이고, 이미지마다의 합보다 바탕 두 번 이상만큼 작다.
+        let o = e.sbx(&["--format", "json", "images"]);
+        let list: Vec<sbx_cli::output::Image> = serde_json::from_slice(&o.stdout).unwrap();
+        let unique: u64 = list.iter().map(|i| i.unique_size).sum();
+        let each: u64 = list.iter().map(|i| i.disk_size).sum();
         assert!(im.shared >= 64 * 1024, "{rows:?}");
-        assert!(im.size < 2 * 64 * 1024 + 64 * 1024, "{rows:?}");
+        assert_eq!(im.size, unique + im.shared, "{rows:?} {list:?}");
+        assert!(each >= im.size + 2 * 64 * 1024, "{rows:?} {list:?}");
         let cache = rows.iter().find(|r| r.kind == "build cache").unwrap();
         assert!(cache.total >= 3, "{rows:?}");
         // 이미지를 지워도 캐시는 남는다. prune이 캐시를 비우면 그 층도 간다.

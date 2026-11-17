@@ -6,7 +6,11 @@
 //!   `ExportLayer`는 다시 훑어 견주고, overlay가 위층에 남겼을 것을 보낸다.
 //!   - 새로 생기거나 적어 둔 것과 다른 항목, 그리고 그 위 디렉터리 전부.
 //!   - 지워진 항목은 맨 위 것만 whiteout으로(부모가 그대로 있는 디렉터리일 때). 지우고 같은 이름으로 다시 만든
-//!     디렉터리(inode가 다르다)는 opaque이고, 그 안은 모두 보낸다.
+//!     디렉터리는 opaque이고(overlay와 같다), 그 안은 모두 보낸다.
+//!   - 같은 디렉터리인지는 inode로 가린다. 파일 시스템은 지운 inode 번호를 곧 다시 쓰므로(ext4가 그렇다, APFS는
+//!     아니다) `OpenLayer`가 디렉터리를 열어 두어(처음 [`MAX_HELD`]개) 그 번호가 층이 열린 동안 다시 쓰이지 않게
+//!     한다. 그 밖의 것은 만든 시각도 함께 견준다(파일 시스템이 알려 줄 때). 호스트 OS에 따라 같은 변경이 다른 층이
+//!     되지 않게.
 //!   - 같은 inode의 일반 파일은 처음 것만 내용과 함께, 나머지는 하드 링크로.
 //! - 실제 overlay와 다른 점: 아래층 파일의 하드 링크는 끊어지지 않는다(overlay는 복사할 때 끊는다). xattr은
 //!   보내지 않는다. 소켓은 건너뛴다.
@@ -44,6 +48,8 @@ struct Node {
     size: u64,
     dev: u64,
     ino: u64,
+    /// 만든 시각(파일 시스템이 알려 줄 때). inode 번호가 다시 쓰였을 때 다른 것임을 안다.
+    born: Option<std::time::SystemTime>,
     nlink: u64,
 }
 
@@ -95,6 +101,7 @@ fn snapshot(root: &Path) -> io::Result<Snap> {
                     size: m.len(),
                     dev: m.dev(),
                     ino: m.ino(),
+                    born: m.created().ok(),
                     nlink: m.nlink(),
                 },
             );
@@ -124,8 +131,8 @@ pub(crate) struct DirLayers {
     disks: Vec<PathBuf>,
     /// 층을 열었다. 그 뒤로 연결의 경로를 뿌리 아래로 옮긴다([`crate::rootdir::rebase`]).
     opened: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// (마지막으로 연 층 번호, 열 때의 모습).
-    state: Mutex<(u32, Option<Snap>)>,
+    /// (마지막으로 연 층 번호, 열 때의 모습, 그때 있던 디렉터리를 열어 둔 것).
+    state: Mutex<(u32, Option<Snap>, Vec<fs::File>)>,
 }
 
 impl DirLayers {
@@ -138,9 +145,27 @@ impl DirLayers {
             root,
             disks,
             opened,
-            state: Mutex::new((0, None)),
+            state: Mutex::new((0, None, Vec::new())),
         }
     }
+}
+
+/// 층이 열린 동안 열어 두는 디렉터리 수의 상한. 파일 디스크립터 한도(macOS 기본 256)를 다 쓰지 않게.
+const MAX_HELD: usize = 128;
+
+/// 모습에 있는 디렉터리를 연다. 연 동안은 지워져도 inode가 남아 그 번호를 새 디렉터리가 받지 않는다. 상한을 넘거나
+/// 열 수 없으면 거기서 그친다(만든 시각으로 가린다).
+fn hold_dirs(root: &Path, snap: &Snap) -> Vec<fs::File> {
+    snap.iter()
+        .filter(|(_, n)| n.kind == Kind::Dir)
+        .take(MAX_HELD)
+        .map_while(|(p, _)| fs::File::open(root.join(p)).ok())
+        .collect()
+}
+
+/// 지우고 다시 만든 것이 아니라 같은 디렉터리다.
+fn same_object(b: &Node, n: &Node) -> bool {
+    b.dev == n.dev && b.ino == n.ino && b.born == n.born
 }
 
 fn io_err(what: &str, e: &io::Error) -> Error {
@@ -161,7 +186,10 @@ impl Layers for DirLayers {
                 .map_err(|e| io_err("build root", &e))?;
         }
         fs::create_dir_all(&self.root).map_err(|e| io_err("build root", &e))?;
+        // 앞 층의 것을 먼저 닫는다(한도 안에서 이번 층의 것을 연다).
+        st.2.clear();
         let snap = snapshot(&self.root).map_err(|e| io_err("build root", &e))?;
+        st.2 = hold_dirs(&self.root, &snap);
         self.opened.store(true, std::sync::atomic::Ordering::SeqCst);
         st.0 += 1;
         st.1 = Some(snap);
@@ -177,12 +205,12 @@ impl Layers for DirLayers {
         // 지우고 다시 만든 디렉터리.
         let replaced = |p: &str| {
             matches!((before.get(p), now.get(p)), (Some(b), Some(n))
-                if b.kind == Kind::Dir && n.kind == Kind::Dir && b.ino != n.ino)
+                if b.kind == Kind::Dir && n.kind == Kind::Dir && !same_object(b, n))
         };
         // 그대로 있는 디렉터리(그 안의 지워진 항목에 whiteout이 필요하다).
         let same_dir = |p: &str| {
             matches!((before.get(p), now.get(p)), (Some(b), Some(n))
-                if b.kind == Kind::Dir && n.kind == Kind::Dir && b.ino == n.ino)
+                if b.kind == Kind::Dir && n.kind == Kind::Dir && same_object(b, n))
         };
         let mut send: BTreeSet<String> = BTreeSet::new();
         for (p, n) in &now {
