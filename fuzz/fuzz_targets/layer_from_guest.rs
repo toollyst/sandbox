@@ -8,6 +8,8 @@
 //! - 받아들인 tar는 `prepare`의 길(`sbx-manage`의 레이어 읽기, `sbx-rootfs`의 병합)을 오류 없이 지난다.
 //!   하드 링크가 없는 대상을 가리키거나, 디렉터리가 아닌 것 아래에 무엇이 오는 층은 받지 않는다는 뜻이다.
 //! - tar 안의 `.wh.` 이름은 게스트가 종류로 보낸 whiteout과 opaque 디렉터리뿐이다(사용자 이름이 지우기가 되지 않는다).
+//! - tar 안의 이름은 게스트가 보낸 경로(와 whiteout·opaque 표시)이고, `tar` 크레이트(PAX 기록을 줄바꿈으로 나누어
+//!   읽는다)와 sbx의 레이어 읽기(길이로 나누어 읽는다)가 같게 읽는다. 이름에는 줄바꿈이 올 수 있다.
 
 #![no_main]
 
@@ -113,6 +115,29 @@ fuzz_target!(|input: Input| {
             )
         })
         .count();
+    // 받아들였다면 tar의 이름은 이것이다(모듈 문서의 tar 형식).
+    let expected: Vec<String> = msgs
+        .iter()
+        .take_while(|m| !matches!(m, GuestMsg::End))
+        .filter_map(|m| match m {
+            GuestMsg::LayerEntry(e) => Some(e),
+            _ => None,
+        })
+        .flat_map(|e| match e.kind {
+            LayerKind::Dir { opaque } => {
+                let mut v = vec![format!("{}/", e.path)];
+                if opaque {
+                    v.push(format!("{}/.wh..wh..opq", e.path));
+                }
+                v
+            }
+            LayerKind::Whiteout => vec![match e.path.rsplit_once('/') {
+                Some((dir, name)) => format!("{dir}/.wh.{name}"),
+                None => format!(".wh.{}", e.path),
+            }],
+            _ => vec![e.path.clone()],
+        })
+        .collect();
     let mut it = msgs.into_iter();
     let mut next = || {
         it.next()
@@ -142,12 +167,17 @@ fuzz_target!(|input: Input| {
         })
         .count();
     assert_eq!(wh, markers, "{names:?}");
+    // `tar` 크레이트(PAX 기록을 줄바꿈으로 나눈다)도 보낸 이름 그대로 읽는다.
+    assert_eq!(names, expected);
 
     let spool = std::env::temp_dir().join(format!("sbx-fuzz-layer-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&spool);
     std::fs::create_dir_all(&spool).unwrap();
     let entries = sbx_manage::fuzzing::read_layer(0, out.as_slice(), &spool)
         .expect("an accepted layer reads back");
+    // sbx의 레이어 읽기(PAX 기록을 길이로 나눈다)도 같은 이름을 본다.
+    let read: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+    assert_eq!(read, expected);
     MergedTree::new()
         .apply_layer(entries)
         .expect("an accepted layer merges");

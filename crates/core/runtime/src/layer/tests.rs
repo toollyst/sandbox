@@ -191,6 +191,53 @@ fn every_kind_becomes_the_oci_tar_entry() {
     assert_eq!(headers[11].mode().unwrap(), 0o700);
 }
 
+/// 100바이트를 넘는 이름과 링크 대상에 줄바꿈이 있어도 `tar` 크레이트가 보낸 그대로 읽는다. 크레이트는 PAX 기록을
+/// 줄바꿈으로 나누어 읽으므로, 긴 이름을 PAX `path`로 쓰면 그 기록을 놓치고 머리의 앞 100바이트를 이름으로 쓰거나
+/// (opaque 디렉터리와 그 표시가 같은 이름이 되었다. 퍼징 `layer_from_guest`가 찾았다), 값 안의 기록처럼 보이는 줄을
+/// 이름으로 쓴다(사용자 이름이 `.wh.` 지우기로 읽힌다). 긴 이름은 GNU 긴 이름 항목으로 쓴다.
+#[test]
+fn long_names_with_newlines_read_back_with_any_reader() {
+    let d = format!("{}\n{}", "d".repeat(60), "e".repeat(50));
+    // "17 path=.wh.evil"과 뒤의 줄바꿈이 17바이트다: 줄로 나누어 읽으면 맞는 기록이다.
+    let forged = format!("{d}/{}\n17 path=.wh.evil", "f".repeat(100));
+    let gone = format!("{}\ng", "w".repeat(100));
+    let link = format!("{d}/{}\nl", "l".repeat(100));
+    let mut msgs = vec![GuestMsg::LayerEntry(LayerEntry {
+        mode: 0o755,
+        ..entry(&d, LayerKind::Dir { opaque: true })
+    })];
+    msgs.extend(file(&forged, b"x"));
+    msgs.push(GuestMsg::LayerEntry(entry(
+        &format!("{d}/{gone}"),
+        LayerKind::Whiteout,
+    )));
+    msgs.push(GuestMsg::LayerEntry(entry(
+        &link,
+        LayerKind::Symlink {
+            target: forged.clone(),
+        },
+    )));
+    msgs.push(GuestMsg::LayerEntry(entry(
+        &format!("{d}/h"),
+        LayerKind::Hardlink {
+            target: forged.clone(),
+        },
+    )));
+    let (b, _) = tar_of(msgs, 1).unwrap();
+    let got: Vec<(String, Option<String>)> = read_tar(&b).into_iter().map(|r| (r.0, r.2)).collect();
+    assert_eq!(
+        got,
+        vec![
+            (format!("{d}/"), None),
+            (format!("{d}/.wh..wh..opq"), None),
+            (forged.clone(), None),
+            (format!("{d}/.wh.{gone}"), None),
+            (link, Some(forged.clone())),
+            (format!("{d}/h"), Some(forged)),
+        ]
+    );
+}
+
 #[test]
 fn large_ids_and_odd_times_still_read_back() {
     let msgs = vec![GuestMsg::LayerEntry(LayerEntry {

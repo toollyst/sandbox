@@ -11,8 +11,8 @@
 //!   [`MAX_PATH`] 안이다.
 //! - xattr 이름은 비어 있지 않고 [`MAX_XATTR_NAME`] 안이며 `=`, NUL, 줄바꿈이 없고(PAX 기록에 담을 수 없다)
 //!   `trusted.overlay.`로 시작하지 않고, 한 항목에 한 번만 온다. 값은 [`MAX_XATTR_VALUE`] 안이다(Linux의 한도와 같다).
-//!   값에 줄바꿈(0x0a)이 있으면 오류다: PAX 기록은 길이로 끝을 알리므로 담을 수는 있지만, sbx가 이미지 레이어를
-//!   읽는 쪽(`sbx-manage`, `tar` 크레이트)이 PAX 기록을 줄바꿈에서 나누어 그 층을 읽지 못한다. 조용히 빼지 않고 알린다.
+//!   값에 줄바꿈(0x0a)이 있으면 오류다: PAX 기록은 길이로 끝을 알리므로 담을 수는 있지만, PAX 기록을 줄바꿈에서
+//!   나누어 읽는 쪽(`tar` 크레이트)이 그 층을 다르게 읽는다. 조용히 빼지 않고 알린다.
 //! - 장치 번호는 ustar 필드(8진 7자리) 안이다.
 //! - 일반 파일 내용의 합계는 부르는 쪽이 준 한도 안이다. 알린 크기가 남은 한도보다 크면 내용을 받기 전에 오류다.
 //!   `Data`는 알린 크기를 넘지 않고, 다음 항목이나 `End` 전에 정확히 그만큼 온다.
@@ -23,8 +23,12 @@
 //!
 //! - 항목은 받은 차례로 쓴다. ustar 머리이고 디렉터리 이름은 `/`로 끝난다. 앞에 `./`를 붙이지 않는다. 사용자·그룹
 //!   이름은 비운다.
-//! - 이름이나 링크 대상이 100바이트를 넘거나 xattr이 있으면 바로 앞에 PAX 확장 머리(`x`)를 둔다: `path`, `linkpath`,
-//!   `SCHILY.xattr.<이름>`.
+//! - xattr이 있으면 바로 앞에 PAX 확장 머리(`x`)를 둔다: `SCHILY.xattr.<이름>`. PAX에는 xattr만 담고, xattr의 이름과
+//!   값에는 줄바꿈이 없다(위의 규칙). 그래서 PAX 기록을 줄바꿈으로 나누어 읽는 쪽(`tar` 크레이트)도 같게 읽는다.
+//! - 이름이나 링크 대상이 100바이트를 넘으면 그 다음, 머리 바로 앞에 GNU 긴 이름 항목(`././@LongLink`, `L`·`K`)을
+//!   둔다. 이름에는 줄바꿈이 올 수 있으므로 PAX `path`·`linkpath`로 쓰지 않는다(줄로 나누어 읽는 쪽은 그 기록을
+//!   놓치거나, 값 안의 기록처럼 보이는 줄을 다른 이름으로 읽는다). 빌드의 다른 tar(`COPY`, 정해진 모양의 층)도 GNU
+//!   긴 이름을 쓴다.
 //! - 크기, uid, gid가 8진 필드를 넘으면 GNU base-256으로 쓴다. 수정 시각은 0과 8진 11자리 사이로 자른다(음수는 0).
 //! - whiteout은 `<부모>/.wh.<이름>`, opaque 디렉터리는 그 디렉터리 머리 바로 뒤의 `<디렉터리>/.wh..wh..opq`다.
 //!   둘 다 크기 0인 일반 파일이고, 권한은 0, 소유자와 시각은 게스트가 보낸 값(opaque 표시는 디렉터리의 것)이다.
@@ -316,7 +320,7 @@ impl TarWriter<'_> {
         Ok(())
     }
 
-    /// 머리 하나(필요하면 PAX 머리 먼저).
+    /// 머리 하나(필요하면 PAX 머리와 GNU 긴 이름 항목 먼저).
     #[allow(clippy::too_many_arguments)]
     fn raw_header(
         &mut self,
@@ -332,12 +336,6 @@ impl TarWriter<'_> {
         xattrs: &[(String, Vec<u8>)],
     ) -> Result<(), RuntimeError> {
         let mut pax = Vec::new();
-        if name.len() > 100 {
-            pax_record(&mut pax, "path", name.as_bytes());
-        }
-        if link.len() > 100 {
-            pax_record(&mut pax, "linkpath", link.as_bytes());
-        }
         for (k, v) in xattrs {
             pax_record(&mut pax, &format!("SCHILY.xattr.{k}"), v);
         }
@@ -347,11 +345,17 @@ impl TarWriter<'_> {
             self.write(&pax)?;
             self.pad(pax.len() as u64)?;
         }
+        if name.len() > 100 {
+            self.long_name(b'L', name)?;
+        }
+        if link.len() > 100 {
+            self.long_name(b'K', link)?;
+        }
         let short = |s: &str| -> String {
             if s.len() <= 100 {
                 s.to_owned()
             } else {
-                // PAX 기록이 정본이다. 필드에는 UTF-8 경계에서 자른 앞부분을 둔다.
+                // GNU 긴 이름 항목이 정본이다. 필드에는 UTF-8 경계에서 자른 앞부분을 둔다.
                 let mut end = 100;
                 while !s.is_char_boundary(end) {
                     end -= 1;
@@ -371,6 +375,29 @@ impl TarWriter<'_> {
             device,
         );
         self.write(&h)
+    }
+
+    /// GNU 긴 이름 항목(`L`은 이름, `K`는 링크 대상): GNU 머리의 `././@LongLink`, 내용은 값과 NUL 하나.
+    /// `tar` 크레이트가 이 모양으로 쓴다.
+    fn long_name(&mut self, typeflag: u8, value: &str) -> Result<(), RuntimeError> {
+        let mut data = value.as_bytes().to_vec();
+        data.push(0);
+        let mut h = header_block(
+            "././@LongLink",
+            typeflag,
+            0o644,
+            0,
+            0,
+            data.len() as u64,
+            0,
+            "",
+            (0, 0),
+        );
+        h[257..265].copy_from_slice(b"ustar  \0");
+        seal(&mut h);
+        self.write(&h)?;
+        self.write(&data)?;
+        self.pad(data.len() as u64)
     }
 
     fn header(
@@ -460,12 +487,16 @@ fn header_block(
         number(&mut h[329..337], u64::from(major));
         number(&mut h[337..345], u64::from(minor));
     }
-    // 검사합: 검사합 칸을 공백으로 보고 모든 바이트를 더한다.
+    seal(&mut h);
+    h
+}
+
+/// 검사합: 검사합 칸을 공백으로 보고 모든 바이트를 더한다.
+fn seal(h: &mut [u8; BLOCK]) {
     h[148..156].fill(b' ');
     let sum: u32 = h.iter().map(|b| u32::from(*b)).sum();
     let s = format!("{sum:06o}\0 ");
     h[148..156].copy_from_slice(s.as_bytes());
-    h
 }
 
 #[cfg(test)]
