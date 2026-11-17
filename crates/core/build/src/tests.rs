@@ -365,6 +365,10 @@ impl Vm for FakeVm {
     }
     fn put(&mut self, entries: Vec<PutEntry>) -> BoxFuture<'_, Result<(), BuildError>> {
         Box::pin(async move {
+            // 실제 게스트(그리고 그 앞의 sbx-runtime)가 받지 않는 경로는 여기서도 받지 않는다.
+            for e in &entries {
+                sbx_guest_proto::check_relative_path(&e.path).map_err(BuildError::Backend)?;
+            }
             self.log
                 .lock()
                 .unwrap()
@@ -558,6 +562,190 @@ fn script() -> RunFn {
             None => (0, String::new(), vec![]),
         }
     })
+}
+
+/// `COPY`·`ADD`의 대상: 작업 디렉터리에 잇고 글자 그대로 정리한다. 기대값은 Docker 29.9.3에서 같은 대상으로 실제로
+/// 빌드해 본 것이다(문서는 "상대 경로는 작업 디렉터리 기준", "`/`로 끝나면 디렉터리"까지만 말한다).
+#[test]
+fn copy_destinations_are_cleaned_like_docker() {
+    for (workdir, raw, want) in [
+        ("/w", "./", "/w/"),
+        ("/w", ".", "/w/"),
+        ("/w", "./s3/", "/w/s3/"),
+        ("/w", "s4/name", "/w/s4/name"),
+        ("/w", "/abs9/", "/abs9/"),
+        ("/w", "/", "/"),
+        ("/", ".", "/"),
+        ("/", "./", "/"),
+        // 가운데의 `.`, `..`, 빈 조각.
+        ("/w10/sub", "./x/./y/../z", "/w10/sub/x/z"),
+        ("/w10/sub", "./x//q", "/w10/sub/x/q"),
+        ("/w10/sub", "../up11", "/w10/up11"),
+        // `/` 위로는 올라가지 않는다.
+        ("/w10/sub", "../../../../../top12", "/top12"),
+        // 끝의 `/.`과 `/./`은 디렉터리, 끝의 `..`은 그 경로(있는 디렉터리면 그 안으로).
+        ("/w10/sub", "t13/.", "/w10/sub/t13/"),
+        ("/w10/sub", "s16/./", "/w10/sub/s16/"),
+        ("/w10/sub", "..", "/w10"),
+        // 이미지의 작업 디렉터리가 정리되지 않은 채여도(Docker는 절대 경로 WORKDIR을 쓴 그대로 둔다).
+        ("/x/./y/../z/", "f", "/x/z/f"),
+        ("/x/./y/../z/", "./", "/x/z/"),
+    ] {
+        assert_eq!(
+            copy::dest(workdir, raw),
+            want,
+            "WORKDIR {workdir}, COPY f {raw}"
+        );
+    }
+    // 원본이 여럿이면 대상은 디렉터리여야 한다: `.`, 끝의 `/`·`/.`, 이미 있는 디렉터리(`/`가 없어도). Docker 29.9.3이
+    // 받는 꼴이다. 없는 경로를 `/` 없이 주면 Docker는 둘째 파일로 첫째를 덮어 파일 하나를 만들지만 sbx는 오류로 둔다.
+    let t = tree(&[("etc", true)]);
+    let opts = copy::Options {
+        owner: None,
+        chmod: None,
+        now: 1,
+    };
+    let two = [src_file("a"), src_file("b")];
+    for (raw, dir) in [(".", "w"), ("x/.", "w/x"), ("/etc", "etc"), ("./m/", "w/m")] {
+        let p = copy::place(&t, &two, &copy::dest("/w", raw), opts).unwrap();
+        for f in ["a", "b"] {
+            assert!(p.contains_key(&format!("{dir}/{f}")), "{raw}: {p:?}");
+        }
+    }
+    let e = copy::place(&t, &two, &copy::dest("/w", "new"), opts).unwrap_err();
+    assert!(e.contains("must be a directory"), "{e}");
+
+    for ok in ["a", "a/b", "w/s3/a3"] {
+        copy::check_path(ok).unwrap();
+    }
+    for bad in [
+        "", "/a", "a/", "a//b", ".", "a/.", "a/./b", "..", "a/../b", "a\0b",
+    ] {
+        assert!(copy::check_path(bad).is_err(), "{bad:?}");
+    }
+}
+
+/// Docker로 빌드해 본 Dockerfile(Docker 29.9.3, 2026-11-17)을 그대로 옮겨, 같은 자리에 같은 파일이 놓이는지 본다.
+/// `vm`이면 첫 `RUN`이 VM을 띄워 뒤의 `COPY`가 모두 VM에도 놓인다(가짜 VM이 게스트처럼 경로를 확인한다). 아니면
+/// `/r`의 `RUN` 앞까지 층 tar로만 놓인다(그 길도 같은 확인을 한다).
+fn docker_destination_forms(vm: bool) {
+    let r = Rig::new(script());
+    let mut ctx_files: Vec<String> = Vec::new();
+    for i in [1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 16, 17] {
+        r.ctx.write(&format!("a{i}"), "x\n");
+        ctx_files.push(format!("a{i}"));
+    }
+    r.ctx.write("d/inner", "in\n");
+    r.ctx.write("Dockerfile", "FROM alpine\n");
+    ctx_files.extend(["d/inner".to_owned(), "Dockerfile".to_owned()]);
+    let wd = |d: &str| simple(StepKind::Workdir(d.into()), &format!("WORKDIR {d}"));
+    let cp = |srcs: &[&str], dest: &str| copy_step(CopySource::Context, srcs, dest);
+    let mut steps = vec![wd("/w")];
+    if vm {
+        steps.push(run_step("start"));
+    }
+    steps.extend([
+        cp(&["a1"], "./"),
+        cp(&["a2"], "."),
+        cp(&["a3"], "./s3/"),
+        cp(&["a4"], "s4/name"),
+        cp(&["a5", "a6"], "./m5/"),
+        cp(&["a7", "a8"], "."),
+        wd("/w6"),
+        cp(&["d/"], "./"),
+        wd("/w7"),
+        cp(&["d"], "."),
+        wd("/w8"),
+        cp(&["."], "."),
+        cp(&["."], "/abs9/"),
+        wd("/w10/sub"),
+        cp(&["a10"], "./x/./y/../z"),
+        cp(&["a11"], "../up11"),
+        cp(&["a12"], "../../../../../top12"),
+        cp(&["a13"], "t13/."),
+        cp(&["a14"], ".."),
+        cp(&["a16"], "s16/./"),
+        cp(&["a17"], "./x//q"),
+        wd("/r"),
+        wd("a"),
+        wd("b"),
+        run_step("pwd1"),
+        wd("./c/../d/."),
+        run_step("pwd2"),
+        wd("../../../../../../.."),
+        run_step("pwd3"),
+        wd("/t15/"),
+    ]);
+    r.build(
+        plan(vec![stage(StageBase::Image("alpine".into()), None, steps)]),
+        false,
+    )
+    .unwrap();
+
+    let roots = ["w/", "w6/", "w7/", "w8/", "abs9/", "w10/", "top12", "r/"];
+    let got: Vec<String> = r
+        .store
+        .files()
+        .into_iter()
+        .filter(|(p, k)| k.starts_with("file") && roots.iter().any(|r| p.starts_with(r)))
+        .map(|(p, _)| p)
+        .collect();
+    let mut want: Vec<String> = [
+        "w/a1",
+        "w/a2",
+        "w/a7",
+        "w/a8",
+        "w/m5/a5",
+        "w/m5/a6",
+        "w/s3/a3",
+        "w/s4/name",
+        "w6/inner",
+        "w7/inner",
+        "w10/a14",
+        "w10/sub/s16/a16",
+        "w10/sub/t13/a13",
+        "w10/sub/x/q",
+        "w10/sub/x/z",
+        "w10/up11",
+        "top12",
+    ]
+    .iter()
+    .map(|s| (*s).to_owned())
+    .collect();
+    for root in ["w8", "abs9"] {
+        want.extend(ctx_files.iter().map(|f| format!("{root}/{f}")));
+    }
+    want.sort();
+    assert_eq!(got, want);
+    // 디렉터리: WORKDIR과 디렉터리 대상이 만든 것.
+    let files = r.store.files();
+    for d in ["r/a/b/d", "w10/sub/x", "w10/sub/t13", "w10/sub/s16"] {
+        assert!(files[d].starts_with("dir "), "{d}: {}", files[d]);
+    }
+    // RUN의 작업 디렉터리와 config: 상대 WORKDIR은 이어 정리하고, 절대 WORKDIR은 config에 쓴 그대로다.
+    let log = r.machines.log.lock().unwrap();
+    let cwds: Vec<&str> = log.runs.iter().map(|s| s.cwd.as_str()).collect();
+    let mut want_cwd = vec!["/r/a/b", "/r/a/b/d", "/"];
+    if vm {
+        want_cwd.insert(0, "/w");
+    }
+    assert_eq!(cwds, want_cwd);
+    if vm {
+        // VM에 놓은 경로도 모두 게스트가 받는 꼴이다(가짜 VM이 확인했다). 첫 COPY는 `w/a1`이다.
+        assert_eq!(log.puts[0], ["w/a1"]);
+    }
+    drop(log);
+    assert_eq!(r.store.config()["config"]["WorkingDir"], "/t15/");
+}
+
+#[test]
+fn copy_destination_forms_match_docker_without_a_vm() {
+    docker_destination_forms(false);
+}
+
+#[test]
+fn copy_destination_forms_match_docker_in_a_running_vm() {
+    docker_destination_forms(true);
 }
 
 #[test]

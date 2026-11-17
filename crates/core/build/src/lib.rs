@@ -441,10 +441,19 @@ impl Builder<'_> {
                 img.set_author(m);
                 record(img, &format!("MAINTAINER {m}"));
             }
-            StepKind::Workdir(dir) => {
-                let dir = absolute(&img.working_dir(), dir);
-                let dir = format!("/{}", source::clean(&dir).join("/"));
-                img.set("WorkingDir", dir.clone());
+            StepKind::Workdir(raw) => {
+                // 만들 디렉터리는 정리한 경로다. config에는 Docker처럼 절대 경로면 쓴 그대로, 상대 경로면 앞의
+                // 작업 디렉터리에 이어 정리한 것을 둔다(Docker 29.9.3: `WORKDIR /x/./y/../z/`는 그대로 남는다).
+                let dir = format!(
+                    "/{}",
+                    source::clean(&absolute(&img.working_dir(), raw)).join("/")
+                );
+                let config = if raw.starts_with('/') {
+                    raw.clone()
+                } else {
+                    dir.clone()
+                };
+                img.set("WorkingDir", config);
                 let k = key::step(&run.key, &step.text, &[]);
                 return self
                     .layer_step(step, run, k, step.text.clone(), |b, run| {
@@ -507,7 +516,7 @@ impl Builder<'_> {
                     created_by = strip_from(&created_by);
                 }
                 created_by.push_str(" # buildkit");
-                let dest = absolute(&run.image.working_dir(), &c.dest);
+                let dest = copy::dest(&run.image.working_dir(), &c.dest);
                 let chown = c.chown.clone();
                 let chmod = c.chmod;
                 return self
@@ -779,6 +788,7 @@ fn strip_from(text: &str) -> String {
 fn put_entries(items: &Placement) -> Result<Vec<PutEntry>, String> {
     let mut out = Vec::new();
     for (path, i) in items.iter().filter(|(_, i)| !i.existing) {
+        copy::check_path(path)?;
         let kind = match &i.kind {
             ItemKind::Dir => PutKind::Dir,
             ItemKind::File { size, content } => {
