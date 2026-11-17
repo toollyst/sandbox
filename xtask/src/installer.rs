@@ -178,22 +178,29 @@ fn with_pins(text: &str, lines: &[String]) -> Result<String, String> {
     Ok(out)
 }
 
-/// 스크립트 하나: (경로, 지금 내용, installer.env대로 쓴 내용).
+/// 파일을 LF 줄 끝으로 읽는다. Windows의 git은 꺼낼 때 CRLF로 바꿀 수 있다(`core.autocrlf`). 저장소의 내용은
+/// LF이므로 견주기와 올리기는 LF로 한다: 핀 블록은 `\n`으로 쓰고, `curl … | sh`로 받는 `install.sh`에 CR이 들면
+/// 셸이 줄마다 실패한다.
+fn read_lf(path: &Path) -> Result<String, String> {
+    std::fs::read_to_string(path)
+        .map(|t| t.replace("\r\n", "\n"))
+        .map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// 스크립트 하나: (경로, 지금 내용(LF), installer.env대로 쓴 내용).
 type Script = (PathBuf, String, String);
 
 /// 두 스크립트와 그것에 쓸 내용.
 fn scripts(root: &Path) -> Result<(Pins, Vec<Script>), String> {
     let env = root.join(ENV_FILE);
-    let pins = Pins::parse(
-        &std::fs::read_to_string(&env).map_err(|e| format!("{}: {e}", env.display()))?,
-    )?;
+    let pins = Pins::parse(&read_lf(&env)?)?;
     let mut out = Vec::new();
     for (file, lines) in [
         ("install.sh", pins.shell()),
         ("install.ps1", pins.powershell()),
     ] {
         let path = root.join(file);
-        let now = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let now = read_lf(&path)?;
         let want = with_pins(&now, &lines).map_err(|e| format!("{file}: {e}"))?;
         out.push((path, now, want));
     }
@@ -233,8 +240,7 @@ fn published(root: &Path) -> Result<Vec<(String, String)>, String> {
     let mut out = Vec::new();
     for ext in ["sh", "ps1"] {
         let src = root.join(format!("install.{ext}"));
-        let text = std::fs::read_to_string(&src).map_err(|e| format!("{}: {e}", src.display()))?;
-        out.push((format!("install-{}.{ext}", pins.installer), text));
+        out.push((format!("install-{}.{ext}", pins.installer), read_lf(&src)?));
     }
     Ok(out)
 }
@@ -432,6 +438,47 @@ mod tests {
         publish(&repo, &pages).unwrap();
         assert!(read("install.sh").ends_with("b\n") && read("install-0.0.9.sh").ends_with("a\n"));
         assert_eq!(read("install.sh"), read("install-0.0.10.sh"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Windows의 git이 CRLF로 꺼낸 저장소(`core.autocrlf`): 핀이 같으면 맞다고 하고 고쳐 쓰지 않으며, 올리는
+    /// 파일은 LF다(`curl … | sh`의 셸은 CR을 받지 못한다).
+    #[test]
+    fn a_crlf_checkout_matches_and_publishes_lf() {
+        let tmp = std::env::temp_dir().join(format!("xtask-installer-crlf-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let (repo, pages) = (tmp.join("repo"), tmp.join("pages"));
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&pages).unwrap();
+        std::fs::write(repo.join(ENV_FILE), ENV).unwrap();
+        std::fs::write(
+            repo.join("install.sh"),
+            format!("#!/bin/sh\n{BEGIN}\n{END}\necho hi\n"),
+        )
+        .unwrap();
+        std::fs::write(repo.join("install.ps1"), format!("{BEGIN}\n{END}\n'hi'\n")).unwrap();
+        write(&repo).unwrap();
+        let crlf = |n: &str| {
+            let p = repo.join(n);
+            let t = std::fs::read_to_string(&p).unwrap().replace('\n', "\r\n");
+            std::fs::write(&p, t).unwrap();
+        };
+        for n in [ENV_FILE, "install.sh", "install.ps1"] {
+            crlf(n);
+        }
+        check(&repo).unwrap();
+        assert_eq!(write(&repo).unwrap(), 0, "nothing to rewrite");
+        publish(&repo, &pages).unwrap();
+        let read = |n: &str| std::fs::read_to_string(pages.join(n)).unwrap();
+        for n in [
+            "install-0.0.2.sh",
+            "install.sh",
+            "install-0.0.2.ps1",
+            "install.ps1",
+        ] {
+            assert!(!read(n).contains('\r'), "{n}: {:?}", read(n));
+        }
+        assert!(read("install.sh").contains("\npin_sbx=0.3.0\n"));
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }
