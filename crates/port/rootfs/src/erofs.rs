@@ -198,6 +198,14 @@ impl<'a> Layout<'a> {
                 index_of.insert(path, i);
                 continue;
             }
+            if let NodeKind::CharDevice { major, minor } | NodeKind::BlockDevice { major, minor } =
+                &node.kind
+                && (*major > MAX_MAJOR || *minor > MAX_MINOR)
+            {
+                return Err(unsupported(format!(
+                    "device {major}:{minor} at {path:?}: Linux device numbers are at most {MAX_MAJOR}:{MAX_MINOR}"
+                )));
+            }
             let size = match &node.kind {
                 NodeKind::File(c) => c.size,
                 NodeKind::Symlink(t) => t.len() as u64,
@@ -408,6 +416,11 @@ impl<'a> Layout<'a> {
 fn parent_of(path: &str) -> &str {
     path.rsplit_once('/').map_or("", |(p, _)| p)
 }
+
+/// 장치 번호의 상한: 커널의 `dev_t`는 major 12비트, minor 20비트다. 넘는 것은 [`encode_dev`]가 다른 장치로 바꿔
+/// 버리므로 쓰지 않는다(tar는 더 큰 수를 담을 수 있다).
+const MAX_MAJOR: u32 = 0xfff;
+const MAX_MINOR: u32 = 0xf_ffff;
 
 /// 커널 `new_encode_dev`와 같은 장치 번호 인코딩.
 fn encode_dev(major: u32, minor: u32) -> u32 {

@@ -112,17 +112,24 @@ impl<R: Read + Seek> Disk<'_, R> {
         })
     }
 
-    fn data_at(&self, i: &Inode) -> Result<u64, RootfsError> {
+    /// 데이터가 시작하는 자리. 크기가 0이면 데이터가 없고 `i_u`의 블록 주소는 쓰이지 않는다(쓰는 쪽은 mkfs.erofs처럼
+    /// `NULL_ADDR`, 0xffffffff를 둔다. 커널도 읽지 않는다): `None`.
+    fn data_at(&self, i: &Inode) -> Result<Option<u64>, RootfsError> {
+        if i.size == 0 {
+            return Ok(None);
+        }
         let start = u64::from(i.i_u)
             .checked_mul(BLOCK)
             .filter(|s| s.checked_add(i.size).is_some_and(|e| e <= self.len))
             .ok_or_else(|| corrupt("data is outside the disk"))?;
-        Ok(start)
+        Ok(Some(start))
     }
 
     /// 디렉터리 항목들: (이름, nid). `.`과 `..`는 뺀다.
     fn dir(&mut self, i: &Inode) -> Result<Vec<(String, u64)>, RootfsError> {
-        let start = self.data_at(i)?;
+        let Some(start) = self.data_at(i)? else {
+            return Err(corrupt("a directory with no data (not even . and ..)"));
+        };
         let data = self.bytes(start, i.size)?;
         let mut out = Vec::new();
         for chunk in data.chunks(BLOCK as usize) {
@@ -301,8 +308,10 @@ pub fn read_layer(r: &mut (impl Read + Seek), layer: usize) -> Result<ReadLayer,
                     if i.nlink > 1 {
                         first_name.insert(nid, path.clone());
                     }
-                    let at = d.data_at(&i)?;
-                    out.offsets.insert(index, at);
+                    // 크기 0인 파일은 자리가 없다(내용은 빈 것으로 연다, `DiskContents`).
+                    if let Some(at) = d.data_at(&i)? {
+                        out.offsets.insert(index, at);
+                    }
                     EntryKind::File(ContentRef {
                         layer,
                         index,
@@ -314,8 +323,10 @@ pub fn read_layer(r: &mut (impl Read + Seek), layer: usize) -> Result<ReadLayer,
                 if i.size as usize > MAX_PATH {
                     return Err(corrupt(format!("{path:?}: link target too long")));
                 }
-                let at = d.data_at(&i)?;
-                let t = d.bytes(at, i.size)?;
+                let t = match d.data_at(&i)? {
+                    Some(at) => d.bytes(at, i.size)?,
+                    None => Vec::new(),
+                };
                 EntryKind::Symlink(
                     String::from_utf8(t).map_err(|_| corrupt("a link target is not UTF-8"))?,
                 )

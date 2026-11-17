@@ -275,6 +275,10 @@ mod unix {
             build_cache_stays_under_its_cap,
         ),
         (
+            "a_package_like_layer_reads_back_everywhere",
+            a_package_like_layer_reads_back_everywhere,
+        ),
+        (
             "a_missing_layer_disk_stops_the_start",
             a_missing_layer_disk_stops_the_start,
         ),
@@ -6659,6 +6663,96 @@ COPY a1 ./
         assert!(p.build_cache >= 1 && p.reclaimed > 0, "{p:?}");
         let o = e.sbx(&["builder", "prune", "-a", "-f", "--keep-storage", "1g"]);
         assert_ne!(o.status.code(), Some(0));
+    }
+
+    /// 패키지 설치 같은 층(크기 0인 파일, 블록 경계와 몇 MiB의 파일, 심볼릭 링크, 하드 링크, 깊은 디렉터리, 여러 블록에
+    /// 걸친 디렉터리)과 크기 0인 파일이 있는 바탕 층. 층 디스크를 다시 읽는 곳을 모두 지난다: 실행기가 층 디스크를 펼칠
+    /// 때, 빌드가 층을 둘 때(디스크에서 다시 만든 tar의 digest), 다음 스테이지의 `COPY --from`, 만든 이미지 위의 빌드,
+    /// 층이 디스크 수를 넘어 합칠 때, `save`, `-o type=oci`, 다른 sbx에서 `load`해 그 위에 빌드. 실제 VM에서 `apk add`의 빈
+    /// `lib/apk/db/lock` 때문에 층을 두지 못하던 것(읽는 쪽이 크기 0인 inode의 `NULL_ADDR`을 데이터 자리로 보았다).
+    fn a_package_like_layer_reads_back_everywhere() {
+        let e = Env::new();
+        let (base, _) = oci_archive_layers(
+            "local/pkgbase:1",
+            &[
+                &[("etc/os", b"base\n"), ("etc/empty", b"")],
+                &[("lib/apk/db/installed", b"")],
+            ],
+        );
+        load(&e, "base.tar", &base);
+        let ctx = e.path("ctx");
+        std::fs::create_dir_all(&ctx).unwrap();
+        write(
+            &ctx,
+            "Dockerfile",
+            "FROM local/pkgbase:1 AS pkg\n\
+             RUN mkdir -p lib/apk/db usr/lib/many usr/share/a/b/c/d/e/f/g/h && : > lib/apk/db/lock \
+             && ln lib/apk/db/lock lib/apk/db/lock.hard \
+             && for n in 1 4095 4096 4097 12305 3145733; do yes abcdefg | head -c $n > usr/lib/f$n; done \
+             && ln usr/lib/f3145733 usr/lib/libbig.so.5.0 && ln -s libbig.so.5.0 usr/lib/libbig.so.5 \
+             && ln -s /usr/lib/libbig.so.5 usr/share/a/b/c/d/e/f/g/h/abs \
+             && i=0 && while [ $i -lt 600 ]; do : > usr/lib/many/libmany-entry-$i.so; i=$((i+1)); done\n\
+             FROM local/pkgbase:1\n\
+             COPY --from=pkg /usr/ /usr/\n\
+             COPY --from=pkg /lib/apk/db/ /lib/apk/db/\n",
+        );
+        let o = build(&e, &ctx, &["-t", "local/pkg:1"], None);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let check = "n=$(wc -c < usr/lib/libbig.so.5.0); echo $((n)); \
+                     n=$(cat etc/empty lib/apk/db/lock lib/apk/db/lock.hard | wc -c); echo $((n)); \
+                     readlink usr/lib/libbig.so.5; readlink usr/share/a/b/c/d/e/f/g/h/abs; \
+                     n=$(ls usr/lib/many | wc -l); echo $((n)); \
+                     for n in 1 4095 4096 4097 12305; do m=$(wc -c < usr/lib/f$n); printf '%s ' $((m)); done; echo";
+        let want =
+            "3145733\n0\nlibbig.so.5.0\n/usr/lib/libbig.so.5\n600\n1 4095 4096 4097 12305 \n";
+        // 가짜 실행기는 빌드 VM에서만 층 디스크를 펼친다: 만든 이미지 위의 RUN이 내용을 본다.
+        let run = |e: &Env, max: Option<&str>| {
+            let dir = e.path("check");
+            std::fs::create_dir_all(&dir).unwrap();
+            write(
+                &dir,
+                "Dockerfile",
+                &format!("FROM local/pkg:1\nRUN {check}\n"),
+            );
+            let mut c = e.cmd(&[
+                "build",
+                "--no-cache",
+                "--progress",
+                "plain",
+                dir.to_str().unwrap(),
+            ]);
+            let rec = e.path("check-vm.json");
+            let _ = std::fs::remove_file(&rec);
+            c.env("SBX_FAKE_RECORD", &rec);
+            if let Some(n) = max {
+                c.env("SBX_FAKE_MAX_DISKS", n);
+            }
+            let o = c.output().unwrap();
+            let err = text(&o.stderr);
+            assert_eq!(o.status.code(), Some(0), "{err}");
+            assert!(err.contains(want), "{err}");
+            let vm: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&rec).unwrap()).unwrap();
+            let first = vm["disks"][0]["path"].as_str().unwrap().to_owned();
+            if max.is_some() {
+                assert!(first.contains("/merged/"), "{vm}");
+            }
+        };
+        run(&e, None);
+        // 디스크가 모자라면 아래 층들을 합친 디스크로(만든 층은 디스크에서 다시 읽는다).
+        run(&e, Some("2"));
+        // save와 -o type=oci는 같은 바이트이고, 다른 sbx가 들여 돌린다.
+        let saved = e.path("pkg.tar");
+        let o = e.sbx(&["save", "-o", saved.to_str().unwrap(), "local/pkg:1"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let oci = e.path("pkg-oci.tar");
+        let dest = format!("type=oci,dest={}", oci.display());
+        let o = build(&e, &ctx, &["-t", "local/pkg:1", "-o", &dest], None);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(std::fs::read(&oci).unwrap(), std::fs::read(&saved).unwrap());
+        let other = Env::new();
+        load(&other, "pkg.tar", &std::fs::read(&saved).unwrap());
+        run(&other, None);
     }
 
     /// 실행기가 층 디스크를 빠뜨리면 게스트가 센 수가 달라 시작하지 않는다(보통의 run).
