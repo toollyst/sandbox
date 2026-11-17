@@ -122,8 +122,8 @@ fn all_at_once(program: &Path, args: &[&str], n: usize) -> Result<Duration, Stri
     Ok(t.elapsed())
 }
 
-/// 정렬된 표본의 백분위 (가장 가까운 순위).
-fn percentile(sorted: &[Duration], p: f64) -> Duration {
+/// 정렬된 표본의 백분위 (가장 가까운 순위). `bench build`도 쓴다.
+pub(crate) fn percentile(sorted: &[Duration], p: f64) -> Duration {
     let rank = ((p / 100.0) * sorted.len() as f64).ceil() as usize;
     sorted[rank.clamp(1, sorted.len()) - 1]
 }
