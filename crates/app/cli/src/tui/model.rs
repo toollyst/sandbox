@@ -402,7 +402,8 @@ impl Model {
         self.visible_sandboxes().get(i).copied()
     }
 
-    fn selected_image(&self) -> Option<&Image> {
+    /// 이미지 탭에서 고른 이미지.
+    pub fn selected_image(&self) -> Option<&Image> {
         let i = self.cursors[Tab::Images.index()].selected;
         self.visible_images().get(i).copied()
     }
@@ -593,6 +594,14 @@ impl Model {
                 });
                 None
             }
+            Tab::Images if c == 'b' => {
+                // 이름과 컨텍스트(그리고 -f 등)는 사용자가 친다. Enter면 터미널을 넘겨 단계마다의 진행을 보인다.
+                self.prompt = Some(Prompt {
+                    kind: PromptKind::Command,
+                    text: "build -t ".into(),
+                });
+                None
+            }
             Tab::Images => {
                 let image = self.selected_image()?;
                 let target = image
@@ -624,6 +633,16 @@ impl Model {
                         self.prompt = Some(Prompt {
                             kind: PromptKind::Command,
                             text: format!("push {reference}"),
+                        });
+                        None
+                    }
+                    // 다시 빌드: 같은 이름으로 `build -t`. 이미지는 어떻게 만들었는지(컨텍스트, Dockerfile, 빌드 인자)를
+                    // CLI 출력에 남기지 않으므로 아는 것(이름)만 채우고 나머지는 사용자가 친다. TUI가 따로 기억하지 않는다.
+                    'R' => {
+                        let reference = image.references.first()?;
+                        self.prompt = Some(Prompt {
+                            kind: PromptKind::Command,
+                            text: format!("build -t {} ", familiar(reference)),
                         });
                         None
                     }

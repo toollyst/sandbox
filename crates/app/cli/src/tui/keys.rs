@@ -51,6 +51,16 @@ pub const KEYS: &[KeyHelp] = &[
         "sandboxes",
         "logs -f (takes the terminal; Ctrl+C stops following)",
     ),
+    k(
+        "b",
+        "images",
+        "build: type a name and the context dir (fills in)",
+    ),
+    k(
+        "R",
+        "images",
+        "rebuild under its name; type the context dir (fills in)",
+    ),
     k("D", "images", "rmi (asks first)"),
     k("U", "images", "system df: disk usage (takes the terminal)"),
     k(
@@ -154,7 +164,8 @@ pub fn keys_width() -> usize {
 pub fn help_text() -> String {
     let mut s = String::from(
         "Every action runs an sbx command and shows its command line. Commands that need the terminal\n\
-         (exec, attach, logs -f, executor install and search, `:`) take it over and give it back when they exit.\n",
+         (exec, attach, logs -f, build, push, executor install and search, `:`) take it over and give it back when\n\
+         they exit.\n",
     );
     let w = keys_width();
     for (title, keys) in grouped() {

@@ -252,6 +252,52 @@ fn image_keys_fill_in_tag_and_push() {
 }
 
 #[test]
+fn images_tab_builds_and_rebuilds_through_the_command_line() {
+    // b: 고른 이미지가 없어도 된다. 이름과 컨텍스트는 사용자가 치고, Enter면 터미널을 넘긴다(진행이 보인다).
+    let mut m = Model::default();
+    press(&mut m, KeyCode::Char('2'));
+    assert_eq!(press(&mut m, KeyCode::Char('b')), None);
+    assert_eq!(m.prompt.as_ref().unwrap().text, "build -t ");
+    chars(&mut m, "app:dev -f Dockerfile.dev .");
+    assert_eq!(
+        press(&mut m, KeyCode::Enter),
+        Some(Action::Handover(strings(&[
+            "build",
+            "-t",
+            "app:dev",
+            "-f",
+            "Dockerfile.dev",
+            "."
+        ])))
+    );
+    // R: 고른 이미지의 이름으로 다시 빌드한다. 어떻게 만들었는지는 출력에 없으므로 컨텍스트는 사용자가 친다.
+    m.apply(Msg::Images(Ok(vec![
+        image(Some("docker.io/library/app:1")),
+        image(Some("ghcr.io/me/api:2")),
+    ])));
+    assert_eq!(press(&mut m, KeyCode::Char('R')), None);
+    assert_eq!(m.prompt.as_ref().unwrap().text, "build -t app:1 ");
+    chars(&mut m, ".");
+    assert_eq!(
+        press(&mut m, KeyCode::Enter),
+        Some(Action::Handover(strings(&["build", "-t", "app:1", "."])))
+    );
+    press(&mut m, KeyCode::Down);
+    press(&mut m, KeyCode::Char('R'));
+    assert_eq!(m.prompt.take().unwrap().text, "build -t ghcr.io/me/api:2 ");
+    // Esc는 아무것도 하지 않고 닫는다.
+    press(&mut m, KeyCode::Char('R'));
+    assert_eq!(press(&mut m, KeyCode::Esc), None);
+    assert!(m.prompt.is_none() && m.status.is_none());
+    // 이름이 없는 이미지는 다시 빌드할 이름이 없다. b는 그대로 된다.
+    m.apply(Msg::Images(Ok(vec![image(None)])));
+    assert_eq!(press(&mut m, KeyCode::Char('R')), None);
+    assert!(m.prompt.is_none());
+    press(&mut m, KeyCode::Char('b'));
+    assert_eq!(m.prompt.take().unwrap().text, "build -t ");
+}
+
+#[test]
 fn every_listed_letter_key_does_something() {
     for h in KEYS.iter().filter(|h| h.tabs == "sandboxes") {
         let mut m = loaded();
@@ -265,6 +311,14 @@ fn every_listed_letter_key_does_something() {
         m.apply(Msg::Executors(Ok(executors())));
         m.tab = Tab::Executors;
         // 기본이 아닌 실행기(fake)를 고른다.
+        let c = h.keys.chars().next().unwrap();
+        let acted =
+            press(&mut m, KeyCode::Char(c)).is_some() || m.popup.is_some() || m.prompt.is_some();
+        assert!(acted, "{:?}", h.keys);
+    }
+    for h in KEYS.iter().filter(|h| h.tabs == "images") {
+        let mut m = loaded();
+        m.tab = Tab::Images;
         let c = h.keys.chars().next().unwrap();
         let acted =
             press(&mut m, KeyCode::Char(c)).is_some() || m.popup.is_some() || m.prompt.is_some();

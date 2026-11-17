@@ -341,6 +341,81 @@ fn volumes_tab_shows_size_disk_use_and_users() {
 }
 
 #[test]
+fn images_tab_offers_build_always_and_rebuild_for_named_images() {
+    use crate::tui::model::tests::image;
+    let mut m = crate::tui::model::Model {
+        tab: Tab::Images,
+        ..Default::default()
+    };
+    // 빈 탭은 빌드를 먼저 권한다. 고른 줄이 없으니 줄에 하는 키는 없다.
+    m.apply(Msg::Images(Ok(Vec::new())));
+    let s = render(&mut m, 160, 20);
+    assert!(
+        s.contains("Press b to build one, or : and type pull IMAGE (run pulls what it needs)"),
+        "{s}"
+    );
+    assert!(
+        s.contains("b build  I load") && !s.contains("R rebuild"),
+        "{s}"
+    );
+    // 이름이 있으면 다시 빌드와 올리기, 없으면 둘 다 없다.
+    m.apply(Msg::Images(Ok(vec![
+        image(Some("docker.io/library/app:1")),
+        image(None),
+    ])));
+    let s = render(&mut m, 160, 20);
+    assert!(
+        s.contains("p push  R rebuild") && s.contains("b build"),
+        "{s}"
+    );
+    m.key(KeyEvent::from(KeyCode::Down));
+    let s = render(&mut m, 160, 20);
+    assert!(
+        !s.contains("R rebuild") && !s.contains("p push") && s.contains("t tag"),
+        "{s}"
+    );
+    // R은 명령 줄을 채운다(입력 줄에 보인다).
+    m.key(KeyEvent::from(KeyCode::Up));
+    m.key(KeyEvent::from(KeyCode::Char('R')));
+    let s = render(&mut m, 160, 20);
+    assert!(
+        s.lines()
+            .last()
+            .unwrap()
+            .starts_with(":sbx build -t app:1 "),
+        "{s}"
+    );
+}
+
+#[test]
+fn sandbox_details_show_the_allow_list_and_connect_targets() {
+    let mut m = loaded();
+    let mut s = crate::tui::model::tests::sandbox(Some("app"), '3', "running");
+    s.network = serde_json::from_value(serde_json::json!({
+        "mode": "allow",
+        "allow": ["registry.npmjs.org:443", "github.com:22"],
+        "connect": [{"name": "db", "sandbox": "pg", "port": 5432}],
+    }))
+    .unwrap();
+    m.apply(Msg::Sandboxes(Ok(vec![s])));
+    m.key(KeyEvent::from(KeyCode::Enter));
+    let s = render(&mut m, 120, 50);
+    for want in [
+        "Sandbox app",
+        "network",
+        "mode   allow",
+        "allow  registry.npmjs.org:443, github.com:22",
+        "connect",
+        "- name     db",
+        "sandbox  pg",
+        "port     5432",
+        "same as: sbx inspect app --format json",
+    ] {
+        assert!(s.contains(want), "{want}\n{s}");
+    }
+}
+
+#[test]
 fn executors_in_use_show_their_sandboxes_and_rm_shows_the_refusal() {
     let mut m = loaded();
     m.tab = Tab::Executors;

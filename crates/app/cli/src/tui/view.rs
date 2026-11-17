@@ -354,10 +354,13 @@ fn images(frame: &mut Frame, model: &mut Model, area: Rect) {
         empty: Empty::new(
             "No images yet",
             hint(&[
-                "run pulls what it needs, or press ",
+                "Press ",
+                "b",
+                " to build one, or ",
                 ":",
                 " and type ",
                 "pull IMAGE",
+                " (run pulls what it needs)",
             ]),
         ),
     };
@@ -687,16 +690,20 @@ fn hints(model: &Model) -> Vec<(&'static str, &'static str)> {
             ("enter", "details"),
         ]),
         Tab::Images => {
-            if !model.visible_images().is_empty() {
-                h.extend([
-                    ("D", "rmi"),
-                    ("t", "tag"),
-                    ("p", "push"),
-                    ("O", "save"),
-                    ("enter", "details"),
-                ]);
+            if let Some(i) = model.selected_image() {
+                h.extend([("D", "rmi"), ("t", "tag")]);
+                // 올리기와 다시 빌드는 이름이 있는 이미지만.
+                if !i.references.is_empty() {
+                    h.extend([("p", "push"), ("R", "rebuild")]);
+                }
+                h.extend([("O", "save"), ("enter", "details")]);
             }
-            h.extend([("I", "load"), ("L", "login"), ("U", "usage")]);
+            h.extend([
+                ("b", "build"),
+                ("I", "load"),
+                ("L", "login"),
+                ("U", "usage"),
+            ]);
         }
         Tab::Volumes => {
             if !model.visible_volumes().is_empty() {
@@ -963,7 +970,7 @@ fn state(s: &Sandbox) -> Span<'static> {
 
 fn action_style(action: &str) -> Style {
     match action {
-        "start" | "pull" | "prepare" => Style::new().fg(Color::Green),
+        "start" | "pull" | "build" | "prepare" => Style::new().fg(Color::Green),
         "stop" | "remove" | "delete" | "untag" => Style::new().fg(Color::Red),
         _ => Style::new(),
     }
