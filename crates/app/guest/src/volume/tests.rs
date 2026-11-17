@@ -101,7 +101,14 @@ fn privileged_volumes_format_fill_survive_a_crash_and_mount_read_only() {
     fs::create_dir_all(&dev).unwrap();
     let img = d.join("volume.img");
     File::create(&img).unwrap().set_len(64 << 20).unwrap();
-    let loop_dev = sh(&format!("losetup -f --show {}", img.display()));
+    // 붙인 장치는 쓰기로 둔다(앞서 누가 남긴 읽기 전용 표시가 있어도. 아래 `Detach`).
+    let attach_rw = |img: &Path| {
+        sh(&format!(
+            "d=$(losetup -f --show {}) && blockdev --setrw $d && echo $d",
+            img.display()
+        ))
+    };
+    let loop_dev = attach_rw(&img);
     // 볼륨은 셋째 디스크(vdc): 층 하나, scratch 다음.
     symlink(&loop_dev, dev.join("vdc")).unwrap();
     let attach = linux::Attach {
@@ -160,7 +167,17 @@ fn privileged_volumes_format_fill_survive_a_crash_and_mount_read_only() {
 
     // 떠 둔 디스크를 다시 붙인다: 커널이 저널을 다시 적용하고, fsync한 파일이 있다. 비어 있지 않으니 채우지 않는다.
     fs::write(target.join("seed"), "changed image").unwrap();
-    let crash_dev = sh(&format!("losetup -f --show {}", crash.display()));
+    let crash_dev = attach_rw(&crash);
+    // 아래에서 장치를 읽기 전용으로 한다. 그 표시(BLKROSET)는 loop 장치를 떼어도 남아, 다음에 그 장치를 받는 마운트가
+    // 조용히 읽기 전용이 된다(같은 커널의 다른 테스트가 "Read-only file system"으로 실패했다). 패닉해도 되돌리고 뗀다.
+    struct Detach(String);
+    impl Drop for Detach {
+        fn drop(&mut self) {
+            let _ = Command::new("blockdev").args(["--setrw", &self.0]).status();
+            let _ = Command::new("losetup").args(["-d", &self.0]).status();
+        }
+    }
+    let crash_guard = Detach(crash_dev.clone());
     fs::remove_file(dev.join("vdc")).unwrap();
     symlink(&crash_dev, dev.join("vdc")).unwrap();
     attach.attach(2, t, false, true).unwrap();
@@ -183,6 +200,10 @@ fn privileged_volumes_format_fill_survive_a_crash_and_mount_read_only() {
     );
     assert!(fs::write(target.join("nope"), "x").is_err());
     sh(&format!("umount {t}"));
-    sh(&format!("losetup -d {crash_dev}"));
+    drop(crash_guard);
+    assert_eq!(
+        sh(&format!("blockdev --getro {crash_dev} || echo gone")),
+        "0"
+    );
     fs::remove_dir_all(d).unwrap();
 }

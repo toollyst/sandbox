@@ -203,7 +203,9 @@ fn privileged_kernel_mounts_scratch_as_overlay_upper() {
         mkdir -p {d}/s {d}/lower/keep {d}/lower/opaque {d}/merged
         echo base > {d}/lower/keep/f
         echo old > {d}/lower/opaque/old
-        mount -t ext4 -o loop {d}/scratch.img {d}/s
+        dev=$(losetup -f --show {d}/scratch.img)
+        blockdev --setrw $dev
+        mount -w -t ext4 $dev {d}/s
         mkdir {d}/s/upper {d}/s/work
         mount -t overlay overlay -o lowerdir={d}/lower,upperdir={d}/s/upper,workdir={d}/s/work {d}/merged
         echo new > {d}/merged/keep/g
@@ -212,6 +214,7 @@ fn privileged_kernel_mounts_scratch_as_overlay_upper() {
         ls -A {d}/merged/keep {d}/merged/opaque
         umount {d}/merged
         umount {d}/s
+        losetup -d $dev
         "#
     ));
     assert_eq!(out, format!("{d}/merged/keep:\ng\n\n{d}/merged/opaque:\n"));
