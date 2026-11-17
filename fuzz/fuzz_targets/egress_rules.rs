@@ -84,7 +84,8 @@ fuzz_target!(|data: &[u8]| {
         }
     }
 
-    let answer = egress::lookup(&rules, host);
+    // `--connect` 규칙 없이(이 대상은 허용 목록만 본다).
+    let answer = egress::lookup(&rules, &[], host);
     let named: Vec<&AllowRule> = rules
         .iter()
         .filter(|r| !r.is_ip() && r.matches_host(host))
