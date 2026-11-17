@@ -333,22 +333,31 @@ fn sandboxes(frame: &mut Frame, model: &mut Model, area: Rect, now_ns: u64) {
     *model.cursor(Tab::Sandboxes) = cursor;
 }
 
+/// 이미지 탭. 맨 앞 칸의 `*`는 `sbx build`로 만들어 어디서 만들었는지 기록이 있는 이미지다(`R`이 다시 빌드한다).
+/// 그 자리(컨텍스트, Dockerfile)는 상세 창에 있다. 80칸에서도 이름 칸이 남도록 경로 칸을 두지 않고 표시만 한다.
 fn images(frame: &mut Frame, model: &mut Model, area: Rect) {
     let mut cursor = *model.cursor(Tab::Images);
     let rows = model.visible_images();
+    let any_built = rows.iter().any(|i| i.build.is_some());
     let spec = Spec {
-        title: "Images",
+        title: if any_built {
+            "Images · * built here"
+        } else {
+            "Images"
+        },
         len: rows.len(),
         loaded: model.images.is_some(),
         // SIZE는 이 이미지가 쓰는 것 모두, SHARED는 그중 다른 이미지도 쓰는 층(`sbx images`와 같다).
-        header: &["REFERENCE", "ID", "ARCH", "SIZE", "SHARED", "PREPARED"],
+        header: &["", "REFERENCE", "ID", "ARCH", "SIZE", "SHARED", "PREPARED"],
         widths: &[
+            Constraint::Length(1),
             Constraint::Fill(1),
             Constraint::Length(MIN_ID_PREFIX as u16),
             Constraint::Length(6),
             Constraint::Length(9),
             Constraint::Length(9),
-            Constraint::Max(20),
+            // 형식은 지금 erofs 하나다. 이름 칸에 자리를 남긴다(80칸에서 17자).
+            Constraint::Max(10),
         ],
         filter: &model.filter,
         empty: Empty::new(
@@ -370,6 +379,7 @@ fn images(frame: &mut Frame, model: &mut Model, area: Rect) {
             .map(|i| {
                 let refs: Vec<&str> = i.references.iter().map(|r| familiar(r)).collect();
                 Row::new(vec![
+                    Cell::from(if i.build.is_some() { "*" } else { "" }),
                     Cell::from(if refs.is_empty() {
                         "<none>".to_owned()
                     } else {
@@ -692,9 +702,12 @@ fn hints(model: &Model) -> Vec<(&'static str, &'static str)> {
         Tab::Images => {
             if let Some(i) = model.selected_image() {
                 h.extend([("D", "rmi"), ("t", "tag")]);
-                // 올리기와 다시 빌드는 이름이 있는 이미지만.
+                // 올리기는 이름이 있는 이미지만, 다시 빌드는 빌드 기록이 있는 이미지만.
                 if !i.references.is_empty() {
-                    h.extend([("p", "push"), ("R", "rebuild")]);
+                    h.push(("p", "push"));
+                }
+                if i.build.is_some() {
+                    h.push(("R", "rebuild"));
                 }
                 h.extend([("O", "save"), ("enter", "details")]);
             }

@@ -59,7 +59,7 @@ pub const KEYS: &[KeyHelp] = &[
     k(
         "R",
         "images",
-        "rebuild under its name; type the context dir (fills in)",
+        "rebuild from where it was built (fills in; images marked *)",
     ),
     k("D", "images", "rmi (asks first)"),
     k("U", "images", "system df: disk usage (takes the terminal)"),
