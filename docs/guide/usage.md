@@ -1,8 +1,8 @@
 # Use it like Docker
 
 `sbx` takes the commands and flags you know from `docker`. Where it differs, it's on purpose: the
-[Docker compatibility table](docker-compatibility.md) lists every Docker command and flag, what sbx does with it, and
-why.
+[compatibility table](tool-compatibility.md) lists every command and flag of Docker (and of Podman and nerdctl), what
+sbx does with it, and why.
 
 - [Run and manage sandboxes](#run-and-manage-sandboxes)
 - [Files](#files)
@@ -424,7 +424,7 @@ sbx builder prune -a -f        # every cached step; layers images use stay with 
 Images tab runs `builder prune`.
 
 What Docker does differently, and what isn't there yet, is in the build rows of
-[Docker compatibility](docker-compatibility.md). In short: `ADD` copies a local file but refuses an archive Docker
+[the compatibility table](tool-compatibility.md#build). In short: `ADD` copies a local file but refuses an archive Docker
 would unpack; `ONBUILD` (in the Dockerfile or the base image), `RUN --mount`, heredocs and `--platform` other than the
 host's are errors with the line number, never ignored; `HEALTHCHECK` is written to the image but `sbx` doesn't run
 it.

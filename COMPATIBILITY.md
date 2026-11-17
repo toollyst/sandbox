@@ -1,6 +1,7 @@
-# Compatibility
+# Compatibility across sbx releases
 
-What you can rely on across `sbx` releases, and what may change. Security support windows are in
+What you can rely on across `sbx` releases, and what may change. How `sbx` compares with Docker, Podman, nerdctl
+and Docker Desktop is a different page: [tool-compatibility.md](docs/guide/tool-compatibility.md). Security support windows are in
 [SECURITY.md](SECURITY.md#reporting-a-vulnerability).
 
 ## Versions

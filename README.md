@@ -70,9 +70,9 @@ virtualization. It is made for running code you don't trust: **AI agents** (with
 | Images | OCI | The same OCI images, unmodified |
 | Commands | `docker …` | `sbx …`, with the same names and flags |
 
-<!-- docker-compat:begin -->
-**Docker compatibility:** 64% of the Docker CLI's commands and flags that apply to a VM work today (133 of 207); counting `build`, the Dockerfile and Compose too, 50% (166 of 330). [The table](docs/guide/docker-compatibility.md) gives every row, its difference and its test, and CI keeps it in step with the code.
-<!-- docker-compat:end -->
+<!-- compat:begin -->
+**Compatibility:** of the commands, flags and features that apply to a VM, sbx does 59% (146 of 244) of the Docker CLI's, 39% (131 of 332) of Podman's, 54% (128 of 237) of nerdctl's, 63% (21 of 33) of the Dockerfile, 0% (0 of 62) of Compose and 77% (7 of 9) of the product features of Docker Desktop and its alternatives. [The table](docs/guide/tool-compatibility.md) gives every row, its difference and its test, and CI keeps it in step with the code.
+<!-- compat:end -->
 
 `cargo xtask bench` on an Apple Silicon Mac, 1 vCPU and 512 MiB per sandbox: `sbx run --rm alpine:3.20 true` (boot,
 run, shut down, delete) takes **121 ms** at p50, `sbx exec` into a running sandbox **8 ms**, and ten runs at once
@@ -155,7 +155,7 @@ claude mcp add sbx -- sbx mcp                        # Claude Code; other client
 | Guide | |
 | --- | --- |
 | [Use it like Docker](docs/guide/usage.md) | Lifecycle, files, the network allow list, images, `--format json`, `--jq`, `events`, exit codes |
-| [Docker compatibility](docs/guide/docker-compatibility.md) | Every Docker command, flag, Dockerfile instruction and Compose key, and what sbx does with it |
+| [Compatibility with Docker, Podman and nerdctl](docs/guide/tool-compatibility.md) | Every command and flag of Docker, Podman and nerdctl, every Dockerfile instruction and Compose key, the features of Docker Desktop and its alternatives, and what sbx does with each |
 | [AI agents (MCP)](docs/guide/mcp.md) | Tools, limits, and what an agent can and can't reach |
 | [Executors](docs/guide/executors.md) | Versions the nvm way, adapters and VMM packages, bringing your own VMM, signed repositories |
 | [Install](docs/guide/install.md) | Per OS, installer options, from source, upgrade and uninstall |

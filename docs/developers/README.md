@@ -17,7 +17,7 @@ pages explain the shape and point to the code. When the two disagree, the code i
 dependency map in [crates.md](crates.md) is generated, and CI fails when it is stale. So are
 [cli-output.md](cli-output.md) and its JSON Schema: `cargo test` fails when they differ from the output types in
 `crates/app/cli/src/output.rs`, and `SBX_BLESS=1 cargo test -p sbx-cli --lib output` rewrites them. The same goes
-for [docker-compatibility.md](../guide/docker-compatibility.md) and the percentage line in the README, generated
+for [tool-compatibility.md](../guide/tool-compatibility.md) and the percentage line in the README, generated
 from `crates/app/cli/src/compat.rs` (`SBX_BLESS=1 cargo test -p sbx-cli --lib compat`).
 
 Doc comments and the design notes in [`docs/plan/`](../plan/) are written in Korean. The developer guide, the user guide, the README
@@ -124,11 +124,12 @@ Two principles shape most review comments:
 - **Cores are mechanism, not policy.** `sbx-runtime` and `sbx-manage` do exactly what they're asked, and fail
   clearly when they can't. They never fall back to something else, never pick an implementation, and never clean
   up on their own schedule. Decisions belong to the caller (the CLI, the MCP server, or an embedding app).
-- **Docker is the reference for the CLI.** A user should be able to guess flags and exit codes. Every Docker
-  command, flag, Dockerfile instruction and Compose key has a row in
+- **Docker is the reference for the CLI.** A user should be able to guess flags and exit codes. Every command and
+  flag of Docker, Podman and nerdctl, every Dockerfile instruction and Compose key, and the main features of Docker
+  Desktop and its alternatives have a row in
   [`compat.rs`](../../crates/app/cli/src/compat.rs): same, different (and why), not yet (and which step), or not
   doing (and why). Tests check each row against the clap definition and the test it names, and write the user page
-  [docker-compatibility.md](../guide/docker-compatibility.md) from it. Adding or removing a flag fails CI until its
+  [tool-compatibility.md](../guide/tool-compatibility.md) from it. Adding or removing a flag fails CI until its
   row says what it is.
 
 ## Where the rules live
