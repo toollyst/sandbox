@@ -455,7 +455,10 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("xtask lives inside the workspace");
-        let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
+        // Windows의 git은 줄 끝을 CRLF로 꺼낼 수 있다(`core.autocrlf`). 여러 줄인 Dockerfile은 LF로 견준다.
+        let readme = std::fs::read_to_string(root.join("README.md"))
+            .unwrap()
+            .replace("\r\n", "\n");
         assert!(
             readme.contains(DOCKERFILE),
             "README.md's quick start has another Dockerfile than the demo"
