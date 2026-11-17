@@ -243,6 +243,10 @@ mod unix {
         ),
         ("build_shows_blocked_names", build_shows_blocked_names),
         (
+            "build_vm_takes_cpus_and_memory",
+            build_vm_takes_cpus_and_memory,
+        ),
+        (
             "build_writes_the_image_config",
             build_writes_the_image_config,
         ),
@@ -5795,6 +5799,30 @@ CMD [\"cat\", \"/app/out.txt\"]
         assert!(r.build_cache >= 3, "{r:?}");
         let o = build(&e, &e.path("one"), &[], None);
         assert!(!text(&o.stderr).contains("CACHED"), "{}", text(&o.stderr));
+    }
+
+    /// `--cpus`와 `-m`은 스테이지의 빌드 VM 크기다(실행기가 받은 VM 설정에 그대로 간다). 없으면 1 vCPU, 512 MiB.
+    fn build_vm_takes_cpus_and_memory() {
+        let (e, ctx) = build_env();
+        write(&ctx, "Dockerfile", "FROM local/base:1\nRUN true\n");
+        let rec = e.path("vm.json");
+        let vm = |args: &[&str]| {
+            let o = build(&e, &ctx, args, Some(&rec));
+            assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+            let vm: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&rec).expect("the RUN step needs a VM"))
+                    .unwrap();
+            (vm["vcpus"].as_u64(), vm["memory_mib"].as_u64())
+        };
+        assert_eq!(vm(&["--no-cache"]), (Some(1), Some(512)));
+        assert_eq!(
+            vm(&["--no-cache", "--cpus", "2", "-m", "1g"]),
+            (Some(2), Some(1024))
+        );
+        assert_eq!(
+            vm(&["--no-cache", "--memory", "768m"]),
+            (Some(1), Some(768))
+        );
     }
 
     /// 실패한 단계가 막힌 이름을 썼으면 그것을 열 `--allow`를 보인다(포트는 짐작하지 않는다).

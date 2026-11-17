@@ -71,7 +71,7 @@ virtualization. It is made for running code you don't trust: **AI agents** (with
 | Commands | `docker …` | `sbx …`, with the same names and flags |
 
 <!-- compat:begin -->
-**Compatibility:** of the commands, flags and features that apply to a VM, sbx does 59% (146 of 244) of the Docker CLI's, 39% (130 of 331) of Podman's, 54% (128 of 237) of nerdctl's, 63% (21 of 33) of the Dockerfile, 0% (0 of 62) of Compose and 77% (7 of 9) of the product features of Docker Desktop and its alternatives. [The table](docs/guide/tool-compatibility.md) gives every row, its difference and its test, and CI keeps it in step with the code.
+**Compatibility:** of the commands, flags and features that apply to a VM, sbx does 59% (146 of 244) of the Docker CLI's, 39% (131 of 332) of Podman's, 54% (128 of 237) of nerdctl's, 63% (21 of 33) of the Dockerfile, 0% (0 of 62) of Compose and 77% (7 of 9) of the product features of Docker Desktop and its alternatives. [The table](docs/guide/tool-compatibility.md) gives every row, its difference and its test, and CI keeps it in step with the code.
 <!-- compat:end -->
 
 `cargo xtask bench` on an Apple Silicon Mac, 1 vCPU and 512 MiB per sandbox: `sbx run --rm alpine:3.20 true` (boot,

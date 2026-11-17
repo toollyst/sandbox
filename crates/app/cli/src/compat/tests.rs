@@ -242,6 +242,21 @@ fn product_rows_cite_official_pages() {
                 "{what}: {:?} twice",
                 o.product
             );
+            // "No"는 문서가 없다고 말할 때만 쓰고, 그 글을 따옴표로 옮겨 둔다. 추론한 "없다"는 Says(문서가 대신 말하는
+            // 것)이거나 빈 칸이다.
+            match o.has {
+                Has::Yes => {}
+                Has::No => assert!(
+                    o.detail.len() > 2 && o.detail.starts_with('"') && o.detail.ends_with('"'),
+                    "{what}: {:?} \"No\" needs the page's own words, quoted",
+                    o.product
+                ),
+                Has::Says => assert!(
+                    !o.detail.is_empty(),
+                    "{what}: {:?} say what the page says",
+                    o.product
+                ),
+            }
         }
     }
     for r in ROWS {
@@ -251,7 +266,7 @@ fn product_rows_cite_official_pages() {
             check(&what, r.offers);
             // ➕는 견주는 어느 제품에도 없다는 뜻이다.
             if r.status == Status::SbxOnly {
-                assert!(r.offers.iter().all(|o| !o.has), "{what}");
+                assert!(r.offers.iter().all(|o| o.has != Has::Yes), "{what}");
             }
         } else {
             assert!(
@@ -263,11 +278,7 @@ fn product_rows_cite_official_pages() {
     }
     for f in FACTS {
         check(f.what, f.offers);
-        assert!(
-            f.offers.iter().all(|o| o.has && !o.detail.is_empty()),
-            "{}",
-            f.what
-        );
+        assert!(f.offers.iter().all(|o| o.has == Has::Says), "{}", f.what);
         assert!(!f.sbx.is_empty(), "{}", f.what);
     }
 }
@@ -566,18 +577,19 @@ fn evidence_cell(r: &Row) -> String {
     }
 }
 
-/// 제품 하나의 칸: 출처로 가는 "Yes"나 "No"와 짧은 설명. 공식 문서가 말하지 않으면 빈 칸이다.
-fn offer_cell(offers: &[Offer], p: Product, yes_no: bool) -> String {
+/// 제품 하나의 칸: 출처로 가는 "Yes"나 "No"와 짧은 설명, 또는 문서가 대신 말하는 것. 공식 문서가 말하지 않으면 빈
+/// 칸이다.
+fn offer_cell(offers: &[Offer], p: Product) -> String {
     let Some(o) = offers.iter().find(|o| o.product == p) else {
         return String::new();
     };
-    let word = match (yes_no, o.has) {
-        (false, _) => cell(o.detail),
-        (true, true) => "Yes".to_owned(),
-        (true, false) => "No".to_owned(),
+    let word = match o.has {
+        Has::Says => return format!("[{}]({})", cell(o.detail), o.source),
+        Has::Yes => "Yes",
+        Has::No => "No",
     };
     let mut s = format!("[{word}]({})", o.source);
-    if yes_no && !o.detail.is_empty() {
+    if !o.detail.is_empty() {
         let _ = write!(s, ": {}", cell(o.detail));
     }
     s
@@ -655,7 +667,7 @@ fn products_section(md: &mut String) {
     for r in ROWS.iter().filter(|r| r.area == Area::Features) {
         let offers: Vec<String> = Product::ALL
             .iter()
-            .map(|p| offer_cell(r.offers, *p, true))
+            .map(|p| offer_cell(r.offers, *p))
             .collect();
         let _ = writeln!(
             md,
@@ -675,7 +687,7 @@ fn products_section(md: &mut String) {
     for f in FACTS {
         let offers: Vec<String> = Product::ALL
             .iter()
-            .map(|p| offer_cell(f.offers, *p, false))
+            .map(|p| offer_cell(f.offers, *p))
             .collect();
         let _ = writeln!(
             md,

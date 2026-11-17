@@ -231,14 +231,26 @@ impl Product {
     }
 }
 
-/// 제품 하나가 그 기능을 가졌는지. 출처는 그 제품의 공식 문서(공개 저장소면 그 README와 문서)다.
+/// 공식 문서가 그 기능에 대해 말하는 것.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Has {
+    /// 있다고 말한다.
+    Yes,
+    /// 없다고 말한다. `detail`은 그것을 말하는 문서의 글을 따옴표로 그대로 옮긴 것이다(추론한 "없다"는 쓰지 않는다).
+    No,
+    /// 있다 없다 대신 다른 것을 말한다(`detail`이 그것이다). 예: "`brew upgrade colima`로 올린다".
+    Says,
+}
+
+/// 제품 하나가 그 기능에 대해 공식 문서(공개 저장소면 그 README와 문서)에서 말하는 것. 문서가 말하지 않는 것은 적지
+/// 않는다(칸을 비운다).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Offer {
     /// 제품.
     pub product: Product,
-    /// 가졌는지.
-    pub has: bool,
-    /// 짧은 설명(없어도 된다).
+    /// 문서가 말하는 것.
+    pub has: Has,
+    /// 짧은 설명. [`Has::Yes`]면 없어도 되고, 그 밖에는 있어야 한다.
     pub detail: &'static str,
     /// 그것을 말하는 공식 문서의 주소.
     pub source: &'static str,
@@ -247,15 +259,15 @@ pub struct Offer {
 const fn yes(product: Product, detail: &'static str, source: &'static str) -> Offer {
     Offer {
         product,
-        has: true,
+        has: Has::Yes,
         detail,
         source,
     }
 }
-const fn no(product: Product, detail: &'static str, source: &'static str) -> Offer {
+const fn says(product: Product, detail: &'static str, source: &'static str) -> Offer {
     Offer {
         product,
-        has: false,
+        has: Has::Says,
         detail,
         source,
     }
@@ -520,9 +532,10 @@ impl Area {
             }
             Area::Features => {
                 "What people install Docker Desktop or one of its alternatives for, beyond the command line. Each \
-                 product's cell links the official page that says so; an empty cell means its documentation \
-                 doesn't say, not that it lacks the feature. The *sbx* column uses the same legend as the rest of \
-                 the page."
+                 product's cell links the official page it comes from. *Yes* means the page says the product has \
+                 it, and *No* is used only where the page says it doesn't (in its own words). A cell without Yes \
+                 or No gives what the page says instead, and an empty cell means its documentation doesn't say, \
+                 not that it lacks the feature. The *sbx* column uses the same legend as the rest of the page."
             }
             _ => "",
         }
@@ -1437,7 +1450,10 @@ pub const ROWS: &[Row] = &[
     na(Build, "--runtime, --runtime-flag, --hooks-dir", "They configure an OCI runtime and its hooks; each build stage is a VM.").only_in(P),
     na(Build, "--disable-content-trust", NO_DCT).only_in(P),
     only(Build, "--cpus", "vCPUs of the build VM (default 1)."),
-    only(Build, "-m, --memory", "Memory of the build VM (default 512m). Podman's `build -m` limits each step's container instead."),
+    differs(Build, "-m, --memory", "The memory of each stage's build VM (default 512m); Podman's limits the container of each step.", &[
+        "build_vm_takes_cpus_and_memory",
+    ])
+    .only_in(P),
     na(Build, "--builder", "There are no builder instances: each build stage gets its own VM.").only_in(D),
     na(Build, "--cgroup-parent", CGROUP).lacks(N),
     // ── Dockerfile ───────────────────────────────────────────────────────
@@ -1567,7 +1583,7 @@ pub const ROWS: &[Row] = &[
         yes(DockerDesktop, "", "https://docs.docker.com/desktop/features/networking/"),
         yes(PodmanDesktop, "", "https://podman-desktop.io/docs/containers/starting-a-container"),
         yes(OrbStack, "", "https://docs.orbstack.dev/docker/network"),
-        yes(Colima, "automatic port forwarding", COLIMA),
+        says(Colima, "\"Automatic Port Forwarding\"", COLIMA),
         yes(RancherDesktop, "", "https://docs.rancherdesktop.io/tutorials/working-with-containers/"),
     ]),
     differs(Features, "Building images from a Dockerfile", "`sbx build`, one VM per stage, with the network closed unless `--allow` opens it.", &[
@@ -1577,24 +1593,24 @@ pub const ROWS: &[Row] = &[
         yes(DockerDesktop, "", DD_OVERVIEW),
         yes(PodmanDesktop, "", "https://podman-desktop.io/features"),
         yes(OrbStack, "BuildKit", "https://docs.orbstack.dev/docker/images"),
-        yes(Colima, "BuildKit, through the Docker client", COLIMA_DEFAULTS),
+        says(Colima, "BuildKit enabled by default", COLIMA_DEFAULTS),
         yes(RancherDesktop, "", "https://docs.rancherdesktop.io/ui/images"),
     ]),
     not_yet(Features, "Compose", "C1")
         .offers(&[
             yes(DockerDesktop, "included", DD_OVERVIEW),
-            yes(PodmanDesktop, "installs a Compose provider", "https://podman-desktop.io/docs/compose/setting-up-compose"),
+            yes(PodmanDesktop, "can install the Compose engine", "https://podman-desktop.io/docs/compose/setting-up-compose"),
             yes(OrbStack, "included", "https://docs.orbstack.dev/docker/"),
-            yes(RancherDesktop, "`docker-compose` and `nerdctl compose` included", "https://docs.rancherdesktop.io/references/bundled-utilities/"),
+            yes(RancherDesktop, "`docker-compose` bundled", "https://docs.rancherdesktop.io/references/bundled-utilities/"),
         ]),
     not_yet(Features, "A local Kubernetes cluster", UNPLANNED)
         .note("The roadmap's Kubernetes item is sbx as a containerd runtime (RuntimeClass), not a local cluster.")
         .offers(&[
             yes(DockerDesktop, "kubeadm or kind", "https://docs.docker.com/desktop/features/kubernetes/"),
-            yes(PodmanDesktop, "kind or minikube, through extensions", "https://podman-desktop.io/docs/kind/installing-extension"),
+            yes(PodmanDesktop, "kind, a built-in extension", "https://podman-desktop.io/docs/kind/installing-extension"),
             yes(OrbStack, "single node", "https://docs.orbstack.dev/kubernetes/"),
             yes(Colima, "k3s", COLIMA_DEFAULTS),
-            yes(RancherDesktop, "k3s", "https://docs.rancherdesktop.io/ui/preferences/kubernetes"),
+            yes(RancherDesktop, "k3s", "https://docs.rancherdesktop.io/"),
         ]),
     differs(Features, "A dashboard of containers", "`sbx tui`: sandboxes, images, volumes, events and executors in the terminal, not a graphical app. Every key runs an `sbx` command and shows it.", &[
         "tui::view::tests::sandboxes_tab_shows_rows_hints_and_recent_events",
@@ -1604,7 +1620,7 @@ pub const ROWS: &[Row] = &[
         yes(DockerDesktop, "", "https://docs.docker.com/desktop/use-desktop/"),
         yes(PodmanDesktop, "", "https://github.com/podman-desktop/podman-desktop"),
         yes(OrbStack, "", "https://docs.orbstack.dev/docker/"),
-        no(Colima, "command line only", COLIMA),
+        says(Colima, "\"Simple CLI interface\"", COLIMA),
         yes(RancherDesktop, "", "https://docs.rancherdesktop.io/ui/images"),
     ]),
     differs(Features, "Managing images and volumes on screen", "The `sbx tui` images and volumes tabs: list, size and disk use, remove, prune, tag and push.", &[
@@ -1615,7 +1631,6 @@ pub const ROWS: &[Row] = &[
         yes(DockerDesktop, "", "https://docs.docker.com/desktop/use-desktop/"),
         yes(PodmanDesktop, "", "https://podman-desktop.io/tutorial/managing-your-application-resources"),
         yes(OrbStack, "", "https://docs.orbstack.dev/release-notes"),
-        no(Colima, "command line only", COLIMA),
         yes(RancherDesktop, "volumes are experimental", "https://docs.rancherdesktop.io/ui/volumes"),
     ]),
     wont(Features, "Extensions", NO_EXTENSIONS).offers(&[
@@ -1629,8 +1644,8 @@ pub const ROWS: &[Row] = &[
     .offers(&[
         yes(DockerDesktop, "", DD_SETTINGS),
         yes(PodmanDesktop, "", "https://podman-desktop.io/docs/configuration/settings-reference"),
-        yes(OrbStack, "with the app", "https://docs.orbstack.dev/headless"),
-        no(Colima, "through the package manager", "https://github.com/abiosoft/colima/blob/main/docs/FAQ.md"),
+        yes(OrbStack, "with the GUI, not headless", "https://docs.orbstack.dev/headless"),
+        says(Colima, "updated with `brew upgrade colima`", COLIMA_FAQ),
         yes(RancherDesktop, "macOS and Windows", "https://docs.rancherdesktop.io/ui/preferences/application/general"),
     ]),
     differs(Features, "Setting the VM's CPUs, memory and disk", "Per sandbox (`--cpus`, `-m`, `--storage-opt size=`), since each sandbox is its own VM; there is no shared VM to size.", &[
@@ -1640,7 +1655,7 @@ pub const ROWS: &[Row] = &[
         yes(DockerDesktop, "", DD_SETTINGS),
         yes(PodmanDesktop, "when the machine is created", "https://podman-desktop.io/docs/podman/creating-a-podman-machine"),
         yes(OrbStack, "CPUs and memory", "https://docs.orbstack.dev/settings"),
-        yes(Colima, "", COLIMA),
+        yes(Colima, "`--cpu`, `--memory`, `--disk`", COLIMA),
         yes(RancherDesktop, "CPUs and memory", "https://docs.rancherdesktop.io/ui/preferences/virtual-machine/hardware"),
     ]),
     wont(Features, "Running x86-64 images on Apple silicon (Rosetta, QEMU)", NO_EMULATION).offers(&[
@@ -1654,7 +1669,7 @@ pub const ROWS: &[Row] = &[
         yes(DockerDesktop, "", DD_SETTINGS),
         yes(PodmanDesktop, "", "https://podman-desktop.io/docs/migrating-from-docker/managing-docker-compatibility"),
         yes(OrbStack, "", "https://docs.orbstack.dev/docker/"),
-        yes(Colima, "", "https://github.com/abiosoft/colima/blob/main/docs/FAQ.md"),
+        yes(Colima, "`$HOME/.colima/default/docker.sock`", COLIMA_FAQ),
         yes(RancherDesktop, "with the moby engine", "https://docs.rancherdesktop.io/how-to-guides/using-testcontainers/"),
     ]),
 ];
@@ -1665,6 +1680,7 @@ const DD_OVERVIEW: &str = "https://docs.docker.com/desktop/";
 const PODMAN_MACHINE_INIT: &str =
     "https://docs.podman.io/en/latest/markdown/podman-machine-init.1.html";
 const COLIMA: &str = "https://github.com/abiosoft/colima";
+const COLIMA_FAQ: &str = "https://github.com/abiosoft/colima/blob/main/docs/FAQ.md";
 const COLIMA_DEFAULTS: &str =
     "https://github.com/abiosoft/colima/blob/main/embedded/defaults/colima.yaml";
 
@@ -1675,7 +1691,7 @@ pub struct Fact {
     pub what: &'static str,
     /// sbx의 것.
     pub sbx: &'static str,
-    /// 제품마다의 것. `has`는 늘 참이고 `detail`이 내용이다.
+    /// 제품마다의 것. 모두 [`Has::Says`]이고 `detail`이 내용이다.
     pub offers: &'static [Offer],
 }
 
@@ -1685,25 +1701,25 @@ pub const FACTS: &[Fact] = &[
         what: "License and price",
         sbx: "Apache-2.0 or MIT, free",
         offers: &[
-            yes(
+            says(
                 DockerDesktop,
                 "Free for personal use, education, non-commercial open source and small businesses (fewer than 250 employees and less than $10 million in annual revenue); a paid subscription otherwise",
                 "https://docs.docker.com/subscription/desktop-license/",
             ),
-            yes(
+            says(
                 PodmanDesktop,
-                "Apache-2.0, free",
+                "Apache-2.0",
                 "https://github.com/podman-desktop/podman-desktop",
             ),
-            yes(
+            says(
                 OrbStack,
                 "Free for personal, non-commercial use; a paid license per user for commercial use",
                 "https://docs.orbstack.dev/licensing",
             ),
-            yes(Colima, "MIT, free", COLIMA),
-            yes(
+            says(Colima, "MIT", COLIMA),
+            says(
                 RancherDesktop,
-                "Apache-2.0, free",
+                "Apache-2.0",
                 "https://github.com/rancher-sandbox/rancher-desktop",
             ),
         ],
@@ -1712,19 +1728,19 @@ pub const FACTS: &[Fact] = &[
         what: "Host operating systems",
         sbx: "Linux, and macOS 15+ on Apple silicon; Windows installs, but has no tested executor to run sandboxes yet",
         offers: &[
-            yes(DockerDesktop, "macOS, Windows, Linux", DD_OVERVIEW),
-            yes(
+            says(DockerDesktop, "macOS, Windows, Linux", DD_OVERVIEW),
+            says(
                 PodmanDesktop,
                 "macOS, Windows, Linux",
                 "https://podman-desktop.io/docs/installation",
             ),
-            yes(
+            says(
                 OrbStack,
                 "macOS 14 and newer",
                 "https://docs.orbstack.dev/faq",
             ),
-            yes(Colima, "macOS, Linux", COLIMA),
-            yes(
+            says(Colima, "macOS, Linux", COLIMA),
+            says(
                 RancherDesktop,
                 "macOS, Windows, Linux",
                 "https://docs.rancherdesktop.io/",
