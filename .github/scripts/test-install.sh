@@ -17,7 +17,10 @@ sha() { if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1;
 pin() { sed -n "s/^$1=//p" "$root/install.sh"; }
 installer_version=$(pin installer_version)
 pin_sbx=$(pin pin_sbx)
-[ -n "$installer_version" ] && [ -n "$pin_sbx" ] || { echo "FAIL: no pins in install.sh"; exit 1; }
+if [ -z "$installer_version" ] || [ -z "$pin_sbx" ]; then
+    echo "FAIL: no pins in install.sh"
+    exit 1
+fi
 
 # 가짜 릴리스: sbx(버전을 찍고, `executor ...`는 받은 인자를 FAKE_SBX_LOG에 적는 스크립트)와 sbx-shim.
 release() { # release <디렉터리> [shim 없이: noshim]
