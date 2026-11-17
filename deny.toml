@@ -24,6 +24,8 @@ allow = [
     "Unicode-3.0",
     "Zlib",
     "CDLA-Permissive-2.0",
+    # 퍼블릭 도메인 헌정(저작권 포기). notify(공유 폴더 감시)가 쓴다.
+    "CC0-1.0",
 ]
 confidence-threshold = 0.9
 

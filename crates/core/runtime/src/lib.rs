@@ -56,12 +56,16 @@
 //! **시계**: VM을 소유한 프로세스는 게스트 시계를 호스트에 맞춘다(시작 직후, 1분마다, 호스트 시계가 뛰면 곧바로).
 //! 시작을 기다리게 하지 않고, 실패는 `logs/executor.log`에 종류마다 한 번 쓴다. 규칙은 [`clock`]에 있다.
 //!
+//! **공유 폴더 변경**: VM을 소유한 프로세스는 쓰기로 붙인 `bind` 공유의 호스트 디렉터리를 보고, 바뀐 경로를 게스트에
+//! 알려 게스트의 파일 감시(inotify)가 보게 한다(virtio-fs는 전하지 않는다). 공유를 마운트한 뒤 시작하고, 실패는
+//! `logs/executor.log`에 종류마다 한 번 쓴다. 규칙은 [`watch`]에 있다.
+//!
 //! **잇기** (`spec.connect`, `--connect`): VM을 소유한 프로세스가 같은 data_dir의 다른 샌드박스에 연결마다 잇는다.
 //! 네트워크가 `Disabled`여도 투명 TCP를 켜지만 프록시는 띄우지 않고 잇기 이름 말고는 열지 않는다.
 //! [`Runtime::create`]는 대상이 모두 있고 `connect_scope` 안인지 본다(규칙 검사는 [`validate`]). 연결마다의 규칙은
 //! `connect` 모듈과 [`egress`]에 있다.
 //!
-//! **층**: `lib` → `egress`, `clock` → `connect` → `client` → `hostfs`, `layer`, `volume` → `records` → `process`, `validate`, `cpplan`, `chan` → `error`.
+//! **층**: `lib` → `egress`, `watch` → `clock` → `connect` → `client` → `hostfs`, `layer`, `volume` → `records` → `process`, `validate`, `cpplan`, `chan` → `error`.
 //!
 //! - 의존: `sbx-model`, `sbx-guest-proto`, `sbx-executor`, `sbx-store`(읽기), `sbx-events`
 
@@ -93,6 +97,7 @@ pub mod process;
 mod records;
 pub mod validate;
 pub mod volume;
+pub mod watch;
 
 /// 퍼징(`fuzz/`)만 쓰는 입구: 게스트가 보낸 파일을 호스트에 받는 `hostfs`. `fuzzing` feature를 켜야 있다.
 /// 배포하는 바이너리는 이 feature를 켜지 않는다(`cargo xtask check-deps`가 확인한다).
@@ -149,6 +154,8 @@ struct Owned {
     _ports: Option<ports::Forwarding>,
     /// 게스트 시계 맞추기. 버리면 멈춘다. 끝낼 때 VM에 종료를 요청하기 전에 먼저 버린다.
     clock: Option<clock::Running>,
+    /// 공유 폴더의 호스트 쪽 변경 알림. 버리면 멈춘다. 시계처럼 끝낼 때 먼저 버린다.
+    watch: Option<watch::Running>,
     _lease: RootfsLease,
     /// 붙인 볼륨의 잠금. VM을 정리할 때(소유 잠금과 함께) 놓는다.
     _volumes: Vec<volume::Hold>,
@@ -677,6 +684,7 @@ impl Runtime {
         let error = owned.ended_by.take().or(error);
         // 꺼지는 VM과 시계를 맞추다 실패를 기록하지 않게 먼저 멈춘다.
         owned.clock.take();
+        owned.watch.take();
         let _ = self.guest(&owned.control).shutdown();
         if !chan::block_on(owned.vm.wait(grace)).unwrap_or(false) {
             let _ = owned.vm.kill();
@@ -1022,6 +1030,7 @@ impl Sandbox {
             scope: spec.connect_scope.clone(),
         });
         let clock_log = paths.executor_log();
+        let watch_log = paths.executor_log();
         let (vm, started) = blocking(move || {
             let mut vm = vm;
             let r = (|| {
@@ -1047,6 +1056,16 @@ impl Sandbox {
                 for (i, m) in binds.enumerate() {
                     guest.share(&share_tag(i), &m.destination, m.readonly)?;
                 }
+                // 마운트한 뒤에 호스트 쪽 변경을 보기 시작한다. 읽기 전용 공유는 게스트가 알림을 만들 수 없다(`watch`).
+                let watched: Vec<watch::Share> = mounts
+                    .iter()
+                    .filter(|m| m.kind == MountKind::Bind && !m.readonly)
+                    .map(|m| watch::Share {
+                        host: m.source.clone(),
+                        target: m.destination.clone(),
+                    })
+                    .collect();
+                let watching = watch::start_for(guest.clone(), watched, watch_log);
                 for m in mounts.iter().filter(|m| m.kind == MountKind::Copy) {
                     let target = guest.stat(&m.destination)?;
                     match target {
@@ -1095,7 +1114,7 @@ impl Sandbox {
                 let forwarding =
                     (!bound.listeners_empty()).then(|| ports::serve(bound, guest.clone()));
                 let started = if hold { guest.hold() } else { guest.exec(main) };
-                started.map(|(c, pid)| (c, pid, egress_port, forwarding, clock))
+                started.map(|(c, pid)| (c, pid, egress_port, forwarding, (clock, watching)))
             })();
             if r.is_err() {
                 let _ = vm.kill();
@@ -1103,7 +1122,8 @@ impl Sandbox {
             (vm, r)
         })
         .await;
-        let (conn, pid, egress_port, forwarding, clock) = started.map_err(record_failure)?;
+        let (conn, pid, egress_port, forwarding, (clock, watching)) =
+            started.map_err(record_failure)?;
 
         let state = StateRecord {
             state: State::Running,
@@ -1127,6 +1147,7 @@ impl Sandbox {
                 ended_by: None,
                 _ports: forwarding,
                 clock: Some(clock),
+                watch: watching,
                 _lease: lease,
                 _volumes: holds,
                 _lock: owner,

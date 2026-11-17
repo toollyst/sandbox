@@ -5,6 +5,8 @@
 //! - `SBX_FAKE_RECORD=<파일>`: 받은 `Launch`의 VM 설정을 JSON으로 그 파일에 쓴다.
 //! - `SBX_FAKE_DROP_LAYER_DISK=1`: 받은 층 디스크 가운데 마지막 것을 게스트에 주지 않는다(디스크를 빠뜨린 실행기).
 //! - `SBX_FAKE_MAX_DISKS=<수>`: `capabilities`가 알리는 `max_disks`(기본 [`crate::MAX_DISKS`]). 더 많이 받으면 거부한다.
+//! - `SBX_FAKE_LIVE_SHARE=0`: 공유 폴더를 붙일 수 없는 실행기(upstream Firecracker처럼 `live_share: false`). 공유가 오면
+//!   `Error`다.
 //! - `SBX_FAKE_PROTOCOL=<버전>`: 그 규약 버전 하나만 말한다(옛 실행기 흉내). 없으면 2부터 [`proto::VERSION`]까지.
 //! - `SBX_FAKE_LINGER_MS=<밀리초>`: 표준 입력이 닫힌 뒤(소유 프로세스가 죽은 뒤) VM을 끄기까지 그만큼 둔다. 그동안
 //!   제어 소켓도 그대로 듣는다(VM을 천천히 끄는 실행기 흉내). `Kill`에는 곧바로 끈다.
@@ -36,7 +38,7 @@ pub fn capabilities() -> proto::Capabilities {
             proto::Arch::Amd64
         },
         rootfs_formats: vec!["erofs".into()],
-        live_share: true,
+        live_share: std::env::var_os("SBX_FAKE_LIVE_SHARE").is_none_or(|v| v != "0"),
         custom_kernel: true,
         snapshot: false,
         max_disks: std::env::var("SBX_FAKE_MAX_DISKS")
@@ -98,6 +100,12 @@ fn run() -> ExitCode {
     let caps = capabilities();
     if vm.vcpus == 0 || vm.memory_mib == 0 || vm.disks.len() > caps.max_disks as usize {
         return fail(&mut out, "unsupported vm spec".into());
+    }
+    if !vm.shares.is_empty() && !caps.live_share {
+        return fail(
+            &mut out,
+            "this executor cannot attach shared folders".into(),
+        );
     }
     let shares = vm
         .shares

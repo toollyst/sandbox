@@ -7,7 +7,7 @@
 //!
 //! 1. 호스트가 [`HostMsg::Hello`]를 보낸다. 게스트는 버전이 같으면 [`GuestMsg::HelloAck`],
 //!    다르면 [`GuestMsg::Error`]를 보내고 연결을 닫는다. 1.0 전까지 호환 규칙은 "같아야 한다"이다.
-//! 2. 호스트가 요청 하나를 보낸다: [`HostMsg::Exec`], [`HostMsg::ExecDetached`], [`HostMsg::CopyIn`], [`HostMsg::CopyOut`], [`HostMsg::Stat`], [`HostMsg::Share`], [`HostMsg::EgressListen`], [`HostMsg::EgressSlot`], [`HostMsg::SignalMain`], [`HostMsg::Usage`], [`HostMsg::Forward`], [`HostMsg::OpenLayer`], [`HostMsg::ExportLayer`], [`HostMsg::Transparent`], [`HostMsg::ClockSync`], [`HostMsg::Volume`], [`HostMsg::Shutdown`].
+//! 2. 호스트가 요청 하나를 보낸다: [`HostMsg::Exec`], [`HostMsg::ExecDetached`], [`HostMsg::CopyIn`], [`HostMsg::CopyOut`], [`HostMsg::Stat`], [`HostMsg::Share`], [`HostMsg::EgressListen`], [`HostMsg::EgressSlot`], [`HostMsg::SignalMain`], [`HostMsg::Usage`], [`HostMsg::Forward`], [`HostMsg::OpenLayer`], [`HostMsg::ExportLayer`], [`HostMsg::Transparent`], [`HostMsg::ClockSync`], [`HostMsg::Volume`], [`HostMsg::ShareChanged`], [`HostMsg::Shutdown`].
 //! 3. 요청별 흐름은 각 메시지 문서에 있다. 실패는 언제든 [`GuestMsg::Error`] 하나로 끝난다.
 //!
 //! **버전**: 메시지를 **더하는 것**으로는 [`PROTOCOL_VERSION`]을 올리지 않는다. 있던 메시지의 모양이나 뜻을 바꿀 때만 올린다.
@@ -23,6 +23,8 @@
 //! 시계([`HostMsg::ClockSync`], 그 안의 [`GuestMsg::ClockAsk`]와 [`HostMsg::ClockNow`]): 소유 프로세스가 혼자 보낸다.
 //! 모르는 게스트면 그 VM에서 맞추기를 조용히 그만둔다(기록은 한 줄).
 //! 볼륨([`HostMsg::Volume`]): 시작할 때만 보내므로 언제나 같은 판의 게스트가 받는다.
+//! 공유 폴더 변경 알림([`HostMsg::ShareChanged`]): 공유를 마운트한 소유 프로세스가 혼자 보낸다. 공유는 시작할 때만
+//! 붙이므로 같은 판의 게스트가 받는다. 그래도 모르는 게스트면 그 VM에서 알리기를 그만둔다(기록은 한 줄).
 //!
 //! **인코딩**: 프레임([`frame`]) 하나에 메시지 하나. 본문의 첫 바이트가 메시지 종류이고,
 //! 필드는 정해진 순서로 이어진다. 정수는 big-endian, 바이트열과 문자열은 길이(u32) 다음에 내용,
@@ -50,6 +52,9 @@ pub const MAX_LAYERS: u32 = 500;
 
 /// [`HostMsg::ClockSync`] 연결 하나에서 게스트가 호스트 시각을 묻는 최대 횟수. 호스트는 넘으면 연결을 끊는다.
 pub const CLOCK_ROUNDS: u32 = 4;
+
+/// [`HostMsg::ShareChanged`] 하나에 담는 경로의 최대 개수. 호스트는 더 많으면 나눠 보내고, 게스트는 넘으면 거부한다.
+pub const MAX_SHARE_CHANGES: u32 = 1024;
 
 /// 게스트가 듣는 vsock 포트.
 pub const GUEST_PORT: u32 = 1024;

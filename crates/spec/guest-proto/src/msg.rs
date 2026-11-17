@@ -392,6 +392,25 @@ pub enum HostMsg {
         /// Unix 시각(나노초).
         unix_nanos: i64,
     },
+    /// 호스트에서 바뀐 공유 폴더 항목을 게스트의 파일 감시(inotify)에 알린다. virtio-fs는 호스트 쪽 변경을 게스트
+    /// inotify로 전하지 않는다. 그래서 VM을 소유한 프로세스가 호스트에서 공유 폴더를 감시하고 바뀐 경로를 보낸다.
+    /// 규칙은 `sbx-guest`의 `changes` 모듈(게스트가 하는 일)과 `sbx-runtime`의 `watch` 모듈(언제 무엇을 보내나)에 있다.
+    ///
+    /// - `target`은 [`HostMsg::Share`]로 마운트한 게스트 절대 경로, `paths`는 그 아래의 상대 경로다. 빈 문자열은 `target`
+    ///   자신이다. 구성 요소가 `..`, `.`, 빈 것이거나 NUL이 있거나 `/`로 시작하는 경로는 오류다.
+    ///   많아야 [`MAX_SHARE_CHANGES`](crate::MAX_SHARE_CHANGES)개다.
+    /// - 게스트는 경로마다, 있으면 그 항목의 수정 시각을 지금 값 그대로 다시 쓴다(`IN_MODIFY`가 생긴다. 내용과 시각은
+    ///   그대로다). 없으면(지워졌거나 옮겨졌다) `target` 안에서 가장 가까운 있는 조상에 같은 일을 한다.
+    ///
+    /// 흐름: 게스트가 [`GuestMsg::Done`]. 경로가 규칙에 맞지 않으면 [`GuestMsg::Error`] (`InvalidArgument`). 항목 하나를
+    /// 알리지 못한 것(읽기 전용 공유 등)은 오류가 아니다. 모르는 게스트는 `Protocol` 오류로 답한다(공유는 시작할 때만
+    /// 붙이므로 같은 판의 게스트가 받는다).
+    ShareChanged {
+        /// 공유를 마운트한 게스트 절대 경로.
+        target: String,
+        /// `target` 아래의 상대 경로들.
+        paths: Vec<String>,
+    },
 }
 
 /// 게스트 → 호스트.
@@ -537,6 +556,8 @@ mod tag {
     pub const CLOCK_NOW: u8 = 0x21;
     // 0x28부터: 볼륨.
     pub const VOLUME: u8 = 0x28;
+    // 0x30부터: 공유 폴더.
+    pub const SHARE_CHANGED: u8 = 0x30;
 
     pub const HELLO_ACK: u8 = 0x81;
     pub const STARTED: u8 = 0x82;
@@ -854,6 +875,12 @@ impl HostMsg {
                 e = Encoder::new(tag::VOLUME);
                 e.u32(*disk).str(target).bool(*readonly).bool(*copy);
             }
+            HostMsg::ShareChanged { target, paths } => {
+                e = Encoder::new(tag::SHARE_CHANGED);
+                e.str(target).list(paths, |e, p| {
+                    e.str(p);
+                });
+            }
         }
         e.finish()
     }
@@ -935,6 +962,10 @@ impl HostMsg {
                 target: d.string()?,
                 readonly: d.bool()?,
                 copy: d.bool()?,
+            },
+            tag::SHARE_CHANGED => HostMsg::ShareChanged {
+                target: d.string()?,
+                paths: d.list(|d| d.string())?,
             },
             t => return bad(format!("unknown host message {t:#04x}")),
         };

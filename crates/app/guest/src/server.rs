@@ -9,7 +9,7 @@ use sbx_guest_proto::{Error, ErrorKind, GuestMsg, HostMsg, PROTOCOL_VERSION};
 use crate::egress::{Egress, Slot};
 use crate::layer::{self, Layers};
 use crate::wire::{Conn, Out, protocol};
-use crate::{clock, copy, exec, sys};
+use crate::{changes, clock, copy, exec, sys};
 
 /// 게스트 쪽 설정.
 pub struct Ctx {
@@ -176,6 +176,12 @@ pub fn serve<C: Conn>(conn: C, ctx: &Ctx) {
                 ErrorKind::InvalidArgument,
                 "volumes are not supported by this guest",
             )),
+        },
+        Ok(HostMsg::ShareChanged { target, paths }) => match changes::apply(&target, &paths) {
+            Ok(_) => {
+                let _ = out.send(&GuestMsg::Done);
+            }
+            Err(e) => out.error(Error::new(ErrorKind::InvalidArgument, e)),
         },
         Ok(HostMsg::EgressListen) => match ctx.egress.listen() {
             Ok(port) => {

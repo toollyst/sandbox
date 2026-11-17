@@ -28,7 +28,9 @@
 //! - 커널 명령줄: `console=ttyS0 quiet reboot=k panic=1`(x86_64는 `pci=off`도), `sbx.hostname=`, `sbx.halt=reboot`
 //!   (Firecracker는 게스트의 재시작 요청을 VM 종료로 다룬다). `quiet`는 부팅 메시지를 시리얼 콘솔에 쓰는 시간
 //!   (약 100ms)을 없앤다. 경고와 오류는 그대로 나온다.
-//! - 네트워크 장치와 공유 폴더(virtio-fs)는 없다(`live_share: false`). 스냅샷도 아직 알리지 않는다.
+//! - 네트워크 장치와 공유 폴더(virtio-fs)는 없다(`live_share: false`). 스냅샷도 아직 알리지 않는다. upstream
+//!   Firecracker에는 virtio-fs가 없고, wick의 것은 설계만 있다(인터페이스가 정해지지 않았다). 설정 파일에는 upstream이
+//!   읽는 키만 쓰고, firecracker에는 upstream이 아는 인자만 준다.
 //!
 //! # 프로세스 ([`session`])
 //!

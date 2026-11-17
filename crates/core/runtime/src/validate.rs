@@ -40,6 +40,7 @@ pub fn check(spec: &SandboxSpec, caps: &Capabilities) -> Result<(), RuntimeError
     {
         return Err(RuntimeError::BindUnsupported {
             executor: caps.name,
+            source: m.source.clone(),
             destination: m.destination.clone(),
         });
     }
@@ -221,10 +222,18 @@ mod tests {
     #[test]
     fn bind_requires_live_share_and_is_not_downgraded() {
         let s = spec(vec![mount(MountKind::Bind)]);
-        assert!(matches!(
-            check(&s, &caps(vec![RootfsFormat::Erofs], false)),
-            Err(RuntimeError::BindUnsupported { destination, .. }) if destination == "/work"
-        ));
+        let e = check(&s, &caps(vec![RootfsFormat::Erofs], false)).unwrap_err();
+        assert!(
+            matches!(&e, RuntimeError::BindUnsupported { destination, .. } if destination == "/work"),
+            "{e:?}"
+        );
+        // 오류가 다른 길을 알린다: 그대로 붙여 쓸 수 있는 copy 마운트와 실시간 공유가 있는 실행기.
+        let msg = e.to_string();
+        assert!(
+            msg.contains("--mount type=copy,source=/host,target=/work")
+                && msg.contains("live share"),
+            "{msg}"
+        );
         assert!(check(&s, &caps(vec![RootfsFormat::Erofs], true)).is_ok());
     }
 

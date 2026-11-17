@@ -325,6 +325,63 @@ fn netlink_ack(buf: &[u8], seq: u32) -> Option<i32> {
     None
 }
 
+/// `path`의 수정 시각을 지금 값 그대로 다시 쓴다. 접근 시각은 두고(`UTIME_OMIT`), 마지막 링크는 따라가지 않는다.
+/// 커널은 이것을 `IN_MODIFY`로 알린다(`changes` 모듈). Linux는 시각을 캐시가 아닌 파일 시스템에 새로 묻는다
+/// (`statx`의 `AT_STATX_FORCE_SYNC`. virtio-fs·FUSE는 서버에 묻는다). 다른 OS(호스트에서 도는 fake 실행기)는 `lstat`이다.
+// timespec 필드의 C 형은 OS마다 다르다.
+#[allow(clippy::unnecessary_cast, clippy::useless_conversion)]
+pub fn touch_mtime(path: &std::path::Path) -> io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    #[cfg(target_os = "linux")]
+    let (sec, nsec) = {
+        // SAFETY: statx는 정수 필드만 있는 C 구조체라 0으로 채워도 된다.
+        let mut st: libc::statx = unsafe { std::mem::zeroed() };
+        // SAFETY: c는 NUL로 끝나는 문자열이고 st는 쓸 수 있는 statx다. 커널은 st 밖을 쓰지 않는다. libc의 statx 함수
+        // 대신 시스템 호출을 쓴다(오래된 musl에는 그 함수가 없다).
+        let ret = unsafe {
+            libc::syscall(
+                libc::SYS_statx,
+                libc::AT_FDCWD,
+                c.as_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW | libc::AT_STATX_FORCE_SYNC,
+                libc::STATX_MTIME,
+                &mut st as *mut libc::statx,
+            )
+        };
+        if ret == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        (st.stx_mtime.tv_sec as i64, st.stx_mtime.tv_nsec as i64)
+    };
+    #[cfg(not(target_os = "linux"))]
+    let (sec, nsec) = {
+        use std::os::unix::fs::MetadataExt;
+        let m = std::fs::symlink_metadata(path)?;
+        (m.mtime(), m.mtime_nsec())
+    };
+    let times = [
+        libc::timespec {
+            tv_sec: 0,
+            tv_nsec: libc::UTIME_OMIT as _,
+        },
+        libc::timespec {
+            tv_sec: sec as libc::time_t,
+            tv_nsec: nsec as _,
+        },
+    ];
+    // SAFETY: c는 NUL로 끝나는 문자열이고 times는 timespec 두 개짜리 배열이다. utimensat은 둘을 읽기만 한다.
+    check(unsafe {
+        libc::utimensat(
+            libc::AT_FDCWD,
+            c.as_ptr(),
+            times.as_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    })
+}
+
 /// Linux 전용 시스템 호출. 부팅(`boot`)과 빌드 층(`overlay`, `layer`)과 투명 TCP(`transparent`)가 쓴다.
 #[cfg(target_os = "linux")]
 pub mod linux {
@@ -618,6 +675,56 @@ pub mod linux {
                 None if n == 0 => return Err(io::ErrorKind::UnexpectedEof.into()),
                 None => {}
             }
+        }
+    }
+
+    /// 디렉터리 하나를 보는 inotify(테스트가 알림을 확인한다).
+    #[cfg(test)]
+    pub struct Inotify(OwnedFd);
+
+    #[cfg(test)]
+    impl Inotify {
+        /// `dir`의 모든 사건을 본다. 읽기는 기다리지 않는다.
+        pub fn watch(dir: &Path) -> io::Result<Self> {
+            // SAFETY: inotify_init1은 메모리를 건드리지 않는다.
+            let fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: fd는 방금 열어 아무도 갖지 않은 파일 기술자다.
+            let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+            let c = cpath(dir)?;
+            // SAFETY: c는 NUL로 끝나는 문자열이다.
+            let wd =
+                unsafe { libc::inotify_add_watch(fd.as_raw_fd(), c.as_ptr(), libc::IN_ALL_EVENTS) };
+            if wd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(Self(fd))
+        }
+
+        /// 쌓인 사건: (마스크, 이름). 이름이 없으면(디렉터리 자신) 빈 문자열.
+        pub fn read_events(&self) -> io::Result<Vec<(u32, String)>> {
+            let mut buf = [0u8; 4096];
+            // SAFETY: buf는 그 길이만큼 쓸 수 있다.
+            let n = unsafe { libc::read(self.0.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
+            if n < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let n = n as usize;
+            let mut out = Vec::new();
+            let mut at = 0;
+            // struct inotify_event: wd(i32), mask(u32), cookie(u32), len(u32), 이름(len 바이트, NUL로 채움).
+            while at + 16 <= n {
+                let word =
+                    |i: usize| u32::from_ne_bytes([buf[i], buf[i + 1], buf[i + 2], buf[i + 3]]);
+                let (mask, len) = (word(at + 4), word(at + 12) as usize);
+                let name = &buf[at + 16..(at + 16 + len).min(n)];
+                let name = name.split(|b| *b == 0).next().unwrap_or_default();
+                out.push((mask, String::from_utf8_lossy(name).into_owned()));
+                at += 16 + len;
+            }
+            Ok(out)
         }
     }
 

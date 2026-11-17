@@ -10,10 +10,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use sbx_executor_proto::{
-    Capabilities, DiskRole, DiskSpec, Event, Request, VERSION, VmSpec, read_line, write_line,
+    Capabilities, DiskRole, DiskSpec, Event, Request, ShareSpec, VERSION, VmSpec, read_line,
+    write_line,
 };
 
 const FAKE: &str = r#"#!/bin/sh
+# 불린 인자를 한 줄씩 남긴다(어댑터가 upstream이 모르는 인자를 주지 않는지 본다).
+echo "$*" >> "$FAKE_FC_DIR/args"
 cfg=""
 while [ $# -gt 0 ]; do
   case "$1" in --config-file) cfg="$2"; shift;; esac
@@ -274,4 +277,58 @@ fn wrong_version_is_refused() {
     let ev = next(&mut BufReader::new(child.stdout.take().unwrap()));
     assert!(matches!(ev, Event::Error { .. }), "{ev:?}");
     assert!(!child.wait().unwrap().success());
+}
+
+/// firecracker는 VM을 띄울 때 한 번, upstream이 아는 인자(`--no-api --config-file <파일>`)로만 불린다. `capabilities`는
+/// 부르지 않는다. 공유 폴더는 알리지 않으므로(`live_share: false`), 공유가 오면 firecracker를 띄우지 않고 `Error`다.
+#[test]
+fn firecracker_sees_only_upstream_arguments() {
+    let e = Env::new();
+    let args = e.dir.join("args");
+    let out = e.cmd("", "capabilities").output().unwrap();
+    assert!(out.status.success());
+    let caps: Capabilities = read_line(&mut out.stdout.as_slice()).unwrap().unwrap();
+    assert!(!caps.live_share);
+    assert!(!args.exists(), "capabilities ran firecracker");
+
+    let mut vm = e.vm();
+    vm.shares.push(ShareSpec {
+        host_path: e.dir.clone(),
+        tag: "sbx0".into(),
+        readonly: false,
+    });
+    let mut child = e
+        .cmd("wait", "run")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    write_line(
+        &mut stdin,
+        &Request::Launch {
+            version: VERSION,
+            vm,
+        },
+    )
+    .unwrap();
+    let ev = next(&mut BufReader::new(child.stdout.take().unwrap()));
+    assert!(
+        matches!(&ev, Event::Error { message } if message.contains("shared folders")),
+        "{ev:?}"
+    );
+    assert!(!child.wait().unwrap().success());
+    assert!(!args.exists(), "a share reached firecracker");
+
+    let (mut child, stdin, _out, first) = e.launch("wait");
+    assert!(matches!(first, Event::Started { .. }), "{first:?}");
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+    e.assert_fake_gone();
+    let config = e.dir.join("c.sock.firecracker.json");
+    assert_eq!(
+        std::fs::read_to_string(&args).unwrap(),
+        format!("--no-api --config-file {}\n", config.display())
+    );
 }

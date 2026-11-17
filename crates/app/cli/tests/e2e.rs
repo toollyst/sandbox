@@ -204,6 +204,10 @@ mod unix {
         ),
         ("attach_tty_and_signal_proxy", attach_tty_and_signal_proxy),
         ("volume_is_shared_live", volume_is_shared_live),
+        (
+            "live_share_tells_the_guest_or_points_elsewhere",
+            live_share_tells_the_guest_or_points_elsewhere,
+        ),
         ("network_allow_list", network_allow_list),
         (
             "transparent_tcp_reaches_allowed_names",
@@ -1698,6 +1702,70 @@ mod unix {
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
         assert_eq!(text(&o.stdout), "hello");
         assert_eq!(std::fs::read(host.join("out.txt")).unwrap(), b"back\n");
+    }
+
+    /// 실시간 공유가 없는 실행기에서는 `-v` 호스트 폴더만 오류이고 오류가 다른 길(그대로 붙여 쓸 수 있는 copy 마운트,
+    /// 실시간 공유가 있는 실행기)을 알린다. 있는 실행기에서는 호스트에서 고친 파일을 게스트에 알린다(detached: 소유
+    /// 프로세스는 shim). fake 게스트의 경로는 호스트 경로라 게스트의 알림 연산(수정 시각을 그대로 다시 쓴다)은 호스트
+    /// 파일의 ctime만 바꾼다. 그것으로 알림이 닿았는지, 되도는 고리가 없는지 본다.
+    fn live_share_tells_the_guest_or_points_elsewhere() {
+        use std::os::unix::fs::MetadataExt;
+        let e = Env::new();
+        let host = e.path("src");
+        std::fs::create_dir(&host).unwrap();
+        std::fs::write(host.join("in.txt"), b"hi").unwrap();
+        let guest = e.path("app");
+        let v = format!("{}:{}", host.display(), guest.display());
+        let without = |args: &[&str]| {
+            e.cmd(args)
+                .env("SBX_FAKE_LIVE_SHARE", "0")
+                .output()
+                .unwrap()
+        };
+        let o = without(&["run", "--rm", "-v", &v, IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(125), "{}", text(&o.stderr));
+        let copy = format!(
+            "--mount type=copy,source={},target={}",
+            host.display(),
+            guest.display()
+        );
+        let err = text(&o.stderr);
+        assert!(err.contains(&copy) && err.contains("live share"), "{err}");
+        assert!(e.ps().is_empty());
+        // 알린 길은 그대로 된다. 공유가 없는 다른 것도 그대로다.
+        let mut args: Vec<&str> = vec!["run", "--rm"];
+        args.extend(copy.split_once(' ').map(|(a, b)| [a, b]).unwrap());
+        let cat = format!("{}/in.txt", guest.display());
+        args.extend([IMAGE, "cat", &cat]);
+        let o = without(&args);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "hi");
+        std::fs::remove_dir_all(&guest).unwrap();
+
+        let o = e.sbx(&["run", "-d", "-v", &v, IMAGE, "sleep", "30"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let id = text(&o.stdout).trim().to_owned();
+        // 감시는 공유를 마운트한 뒤 열린다. FSEvents는 연 직후의 사건을 놓칠 수 있다.
+        std::thread::sleep(Duration::from_millis(500));
+        let f = host.join("main.js");
+        let ctime = || {
+            let m = std::fs::metadata(&f).unwrap();
+            (m.ctime(), m.ctime_nsec())
+        };
+        std::fs::write(&f, b"1").unwrap();
+        let written = ctime();
+        let modified = std::fs::metadata(&f).unwrap().modified().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while ctime() == written {
+            assert!(Instant::now() < deadline, "the guest was not told");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(std::fs::metadata(&f).unwrap().modified().unwrap(), modified);
+        std::thread::sleep(Duration::from_millis(1500));
+        let told = ctime();
+        std::thread::sleep(Duration::from_millis(1500));
+        assert_eq!(ctime(), told, "the change bounced back and forth");
+        assert_eq!(e.sbx(&["rm", "-f", &id]).status.code(), Some(0));
     }
 
     fn run_i_forwards_stdin() {

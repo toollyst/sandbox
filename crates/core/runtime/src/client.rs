@@ -394,6 +394,24 @@ impl Guest {
         }
     }
 
+    /// 공유 폴더 `target` 아래의 바뀐 경로들을 게스트의 파일 감시에 알리게 한다([`HostMsg::ShareChanged`], 규칙은
+    /// [`crate::watch`]). 이 메시지를 모르는 게스트는 `Guest(Protocol)` 오류다.
+    pub fn share_changed(&self, target: &str, paths: &[String]) -> Result<(), RuntimeError> {
+        let mut c = self.open()?;
+        send(
+            &mut *c,
+            &HostMsg::ShareChanged {
+                target: target.to_owned(),
+                paths: paths.to_vec(),
+            },
+        )?;
+        match recv(&mut *c)? {
+            GuestMsg::Done => Ok(()),
+            GuestMsg::Error(e) => Err(RuntimeError::Guest(e)),
+            other => Err(proto_err(format!("expected Done, got {other:?}"))),
+        }
+    }
+
     /// 이름 붙은 볼륨 디스크(`disk`번째)를 `target`에 붙이게 한다(`HostMsg::Volume`). 게스트가 처음이면 포맷하고,
     /// `copy`이고 비었으면 이미지 내용으로 채운다. 실패는 볼륨 이름을 붙여 알린다.
     pub fn volume(
