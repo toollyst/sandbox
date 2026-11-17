@@ -246,7 +246,8 @@ sbx save -o alpine.tar alpine:3.20            # docker load, podman load and sbx
 
 `load` checks every digest just like `pull`, and reads only the layout files out of a tar (no links, nothing outside
 it). `save` writes the manifest, config and layers exactly as they were pulled, so loading the archive anywhere
-gives the same image ID. An image pulled by `sbx` older than 0.2.1 has to be pulled again before it can be saved. In
+gives the same image ID. An image made by `sbx build` is exported from its layers (see [Build](#build)), and saving
+it again writes the same bytes. An image pulled by `sbx` older than 0.2.1 has to be pulled again before it can be saved. In
 `sbx tui`, `I` and `O` on the Images tab fill in `load -i` and `save -o`.
 
 `tag` adds a name to an image, and `push` uploads it to the registry that name points at, as with Docker:
@@ -259,7 +260,8 @@ sbx --format json push ghcr.io/me/alpine:3.20  # one Pushed line per tag
 ```
 
 `push` sends the layers, the config and last the manifest, exactly as they were pulled or loaded, so the image keeps
-its ID (the registry reports the same digest). A layer the registry already has is not sent again; one that came
+its ID (the registry reports the same digest). A built image is exported from its layers, with the same digest on
+every push. A layer the registry already has is not sent again; one that came
 from another repository of the same registry is mounted from there instead of uploaded. If anything fails before the
 manifest, the tag on the registry is left as it was. Credentials are the same as for pulls below; `sbx login` with an
 account that may push. `-q` prints only the pushed reference; `--format json` prints one `Pushed` line per tag, with
@@ -334,12 +336,13 @@ for `sbx` and an image can't set them.
 
 ## Build
 
-`sbx build` makes an image from a Dockerfile, with buildx's flag names. The image goes into the same store as pulled
-images, so `sbx run` can use it right away:
+`sbx build` makes an image from a Dockerfile, with buildx's flag names. By default the image goes into the same
+store as pulled images, so `sbx run` can use it right away:
 
 ```sh
 sbx build -t local/app:dev .                     # PATH/Dockerfile, the context is PATH
 sbx build -f ci/Dockerfile --target test --build-arg VERSION=1.2 .
+sbx build -f - . < Dockerfile.dev                # the Dockerfile from stdin, the context is still .
 sbx build --network allow --allow registry.npmjs.org:443 -t local/web .  # RUN npm ci may reach npm
 sbx build --progress plain .                     # stream RUN output as it comes
 sbx build -q .                                   # print only the image ID
@@ -358,25 +361,70 @@ output is shown with the exit code.
 The **network is closed** while building, unlike Docker. `--network allow` with `--allow HOST:PORT` opens
 destinations for `RUN` steps exactly as for `sbx run`, through the proxy and transparent TCP. When a failed step
 was refused a name, `sbx` lists it: `blocked: registry.npmjs.org — add --allow registry.npmjs.org:PORT`. The port is
-left for you to fill in, because only the name was asked for.
+left for you to fill in, because only the name was asked for. With the default closed network the names a failed
+step looked up are listed too, with `--network allow` in the hint and a line saying the build network is closed.
 
 The **context** is a local directory. Files that `.dockerignore` (or `FILE.dockerignore` next to `-f FILE`, which
 wins, as in BuildKit) excludes don't exist for `COPY`. Paths can't leave the context: `../x` and symlinks are
-resolved with the context as `/`, as Docker does. Sockets, FIFOs and devices in the context are skipped. A URL, a
-tar on stdin and `-f -` are refused.
+resolved with the context as `/`, as Docker does. Sockets, FIFOs and devices in the context are skipped. A URL and
+a tar on stdin as the context are refused; `-f -` reads only the Dockerfile from stdin.
+
+**Outputs.** `--output` (`-o`) says where the image goes, and can be repeated. Given outputs replace the default, so
+`sbx build` only does what you ask:
+
+```sh
+sbx build -t local/app:dev .                                  # sbx's image store (type=sbx, the default)
+sbx build -t app:dev --load .                                 # into docker load (type=docker); nothing kept in sbx
+sbx build -t app:dev -o type=docker,dest=app.tar .            # the same tar into a file; no docker needed
+sbx build -o type=oci,dest=app.tar .                          # an OCI archive (dest=- for stdout)
+sbx build -o type=oci,dest=app-layout/ .                      # an OCI image layout directory
+sbx build -t ghcr.io/me/app:1 --push .                        # push (type=registry); credentials as for push
+sbx build -t ghcr.io/me/app:1 -o type=sbx -o type=registry .  # keep it and push it
+```
+
+The archive is the same file `sbx save` writes (an OCI image layout with Docker's `manifest.json`), so `docker load`,
+`podman load` and `sbx load` all read it. `name=NAME:TAG` in an `--output` names the image for that output instead
+of `-t`. `--load` needs `docker` on `PATH`; without it the build stops before it starts. Without `type=sbx` the
+image isn't kept in sbx, but its layers and cache records are, so the next build is just as fast. `--format json`
+ends with a `built` line (`stored` says whether it was kept) and one `exported` line per output, with the manifest
+digest.
+
+A built layer is stored only as its disk image, so an export writes each layer as a tar again and gzips it with
+fixed settings. The first time a layer is exported its compressed digest and size are recorded next to the layer
+(a few bytes); every later export reuses them, so the same image always has the same manifest digest, whether it is
+saved, loaded into docker or pushed, today or next month. The compressed layers themselves are never stored, and a
+registry that already has a layer costs no compression at all.
+
+**`SOURCE_DATE_EPOCH`** works as in BuildKit: set it in the environment or with `--build-arg SOURCE_DATE_EPOCH=N`
+(Unix seconds; the build argument wins). It sets the image's `created` time and its history times, and caps the
+file times in the layers the build makes, so the exported layer tars carry no build time. Layers from the base image
+keep their times. It is part of the cache key. What `sbx` promises is that the same input and the same cache give
+the same digest.
 
 The **cache** keeps every step that makes a layer, keyed by the step, the layer below it, its build arguments and,
 for `COPY`, the content it copies (names, modes, sizes, link targets and file contents; not modification times). A
 rebuild with nothing changed gives the same image ID. `--no-cache` doesn't read the cache but still records what it
 builds. Images built on the same base share its layer disks, and so do the layers the cache holds. `sbx system df`
-shows the cache as `build cache`, and `sbx system prune` empties it (the layers it alone kept go in the same run).
+shows the cache as `build cache`: the layers only the cache holds.
+
+The cache **keeps itself under a size**: after every build, if the layers only the cache holds take more than
+`SBX_BUILD_CACHE_MAX` (default `10g`; `none` turns it off), the least recently used steps are dropped until they
+fit. Layers an image uses don't count and aren't dropped. To empty it yourself:
+
+```sh
+sbx builder prune              # cached steps whose layers no image uses (asks first; -f doesn't)
+sbx builder prune --keep-storage 2g   # keep the most recently used 2 GiB of them
+sbx builder prune -a -f        # every cached step; layers images use stay with the images
+```
+
+`sbx system prune` empties the cache too (the layers it alone kept go in the same run). In `sbx tui`, `B` on the
+Images tab runs `builder prune`.
 
 What Docker does differently, and what isn't there yet, is in the build rows of
 [Docker compatibility](docker-compatibility.md). In short: `ADD` copies a local file but refuses an archive Docker
 would unpack; `ONBUILD` (in the Dockerfile or the base image), `RUN --mount`, heredocs and `--platform` other than the
 host's are errors with the line number, never ignored; `HEALTHCHECK` is written to the image but `sbx` doesn't run
-it. A built image has no tar layers yet, so `sbx save` and `sbx push` refuse it until the layer export step (`-o
-type=docker|oci` comes with it).
+it.
 
 ## Resources
 

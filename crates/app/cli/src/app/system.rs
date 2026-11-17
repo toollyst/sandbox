@@ -18,6 +18,14 @@
 //!   임시 것은 [`LEFTOVER_AGE`]보다 오래된 것만 지운다(다른 프로세스가 지금 쓰는 중일 수 있다).
 //!
 //! 지우기 전에 묻는다. 터미널이 아니면 `-f`가 있어야 한다.
+//!
+//! `builder prune`(Docker `builder prune`): 빌드 캐시만.
+//!
+//! - 기본: 어느 이미지도 쓰지 않는 층을 가리키는 캐시 기록과 그 층(`system df`의 build cache 크기가 이것이다).
+//!   `--keep-storage SIZE`면 마지막으로 쓴 것부터 그 크기까지 남긴다(빌드 뒤에 저절로 하는 줄이기와 같은 규칙,
+//!   `Manager::trim_build_cache`).
+//! - `-a`: 캐시 기록을 모두(이미지가 쓰는 층은 이미지와 함께 남는다)와 끝나지 않은 빌드의 뿌리 기록. `system prune`이
+//!   빌드 캐시에 하는 것과 같다.
 
 use std::fs;
 use std::path::Path;
@@ -399,6 +407,63 @@ impl Ctx {
                 println!();
             }
         }
+        println!(
+            "Total reclaimed space: {}",
+            behavior::human_size(report.reclaimed)
+        );
+        Ok(0)
+    }
+
+    /// `builder prune`: 빌드 캐시를 지운다(모듈 문서의 아래). 층은 같은 자리에서 정리한다.
+    pub(super) fn builder_prune(
+        &self,
+        all: bool,
+        force: bool,
+        keep_storage: Option<&str>,
+    ) -> AppResult<u8> {
+        let keep = keep_storage
+            .map(|k| parse::size_or_zero(k).map_err(|e| msg(format!("--keep-storage {k}: {e}"))))
+            .transpose()?;
+        if all && keep.is_some() {
+            return Err(msg(
+                "--keep-storage keeps cache that no image uses; it can't be used with -a",
+            ));
+        }
+        if !force {
+            let what = if all {
+                "all build cache"
+            } else {
+                "build cache that no image uses"
+            };
+            if !super::volume::confirm(what)? {
+                return Ok(0);
+            }
+        }
+        let m = self.manager()?;
+        let layout = m.store().layout().clone();
+        let stored = |l: &CacheLayout| {
+            disk_usage(&l.blobs_dir())
+                + disk_usage(&l.layers_dir())
+                + disk_usage(&l.merged_dir())
+                + disk_usage(&l.build_cache_dir())
+        };
+        let before = stored(&layout);
+        let removed = if all {
+            let n = m.prune_build_cache()?;
+            m.collect()?;
+            n
+        } else {
+            m.trim_build_cache(keep.unwrap_or(0), &disk_usage)?.records
+        };
+        let report = output::BuildCachePruned {
+            build_cache: removed as u64,
+            reclaimed: before.saturating_sub(stored(&layout)),
+        };
+        if self.json() {
+            output::print_value(&report)?;
+            return Ok(0);
+        }
+        println!("Deleted build cache: {} steps", report.build_cache);
         println!(
             "Total reclaimed space: {}",
             behavior::human_size(report.reclaimed)

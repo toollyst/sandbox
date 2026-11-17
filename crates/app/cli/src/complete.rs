@@ -488,6 +488,7 @@ mod tests {
             hold: false,
             connect: Vec::new(),
             connect_scope: Default::default(),
+            record_names: false,
         };
         std::fs::write(dir.join("spec.json"), serde_json::to_vec(&spec).unwrap()).unwrap();
         std::fs::write(dir.join("state.json"), br#"{"state":"stopped"}"#).unwrap();

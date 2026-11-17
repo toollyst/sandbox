@@ -10,8 +10,11 @@
 //! 확인하는 것: 출력과 종료 코드(0, 7, 127), 표준 입력, `/dev/fd`·`/dev/stdin` 링크, 네트워크 장치 없음, 이름 풀기가 곧바로 실패함(5초 시간
 //! 초과를 기다리지 않음), 쓰기 가능한 루트, detached 실행과
 //! `exec`/`cp`/`logs`/`stop`(SIGTERM으로 143)/`rm`, `--connect`(다른 샌드박스의 포트에 이름으로, 열지 않은 포트는 닫힘),
-//! 허용 목록(허용한 곳은 200, 나머지는 막힘). 실행기가 실시간 공유(`live_share`)를 알리면 `-v`도: 양쪽이 서로의 쓰기를
-//! 보고, 호스트에서 고친 파일을 게스트의 inotify(busybox `inotifyd`)가 본다. 알리지 않으면 건너뛴다고 쓴다.
+//! `build`(두 스테이지, 닫힌 네트워크의 `RUN`, `COPY --from`; 만든 것을 돌리고, `-o type=oci`로 내보내 `load`하면
+//! 내보낸 ID이고 그것도 돌며, 다시 만들면 `RUN`과 `COPY`가 캐시다), 허용 목록(허용한 곳은 200, 나머지는 막힘).
+//! 모두 27개이고 `--no-internet`이면 25개다. 실행기가 실시간 공유(`live_share`)를 알리면 4개가 더 있다: `-v`로
+//! 양쪽이 서로의 쓰기를 보고, 호스트에서 고친 파일을 게스트의 inotify(busybox `inotifyd`)가 본다. 알리지 않으면
+//! 건너뛴다고 쓴다.
 //! 하나라도 다르면 무엇이 달랐는지 쓰고 실패한다.
 
 use std::io::Write;
@@ -20,6 +23,30 @@ use std::process::{Command, Output, Stdio};
 
 const IMAGE: &str = "alpine:3.20";
 const CURL: &str = "curlimages/curl:8.11.1";
+
+/// 빌드 확인의 Dockerfile: 첫 스테이지의 `RUN`은 닫힌 네트워크에서 돌고(이름 풀기가 곧바로 실패해 `closed`),
+/// 둘째 스테이지가 그 파일을 `COPY --from`으로 가져온다.
+fn dockerfile() -> String {
+    format!(
+        "FROM {IMAGE} AS gen\n\
+         RUN echo built > /made.txt && \
+         (wget -q -T 3 -O /dev/null http://example.com 2>/dev/null && echo open || echo closed) > /net.txt\n\
+         FROM {IMAGE}\n\
+         COPY --from=gen /made.txt /net.txt /app/\n\
+         CMD [\"cat\", \"/app/made.txt\", \"/app/net.txt\"]\n"
+    )
+}
+
+/// 만든 이미지를 돌린 출력.
+const BUILT_OUTPUT: &str = "built\nclosed\n";
+
+/// `--format json build`의 줄들.
+fn build_events(out: &str) -> Result<Vec<serde_json::Value>, String> {
+    out.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).map_err(|e| format!("build output {l:?}: {e}")))
+        .collect()
+}
 
 struct Sbx(PathBuf);
 
@@ -413,6 +440,114 @@ pub fn run(root: &Path, args: &[String]) -> Result<usize, String> {
     let rm = expect(&s, "connect target rm", &["rm", "-f", &db], None, 0, None);
     result?;
     check(rm)?;
+
+    // build: 두 스테이지(닫힌 네트워크의 RUN, COPY --from)를 만들어 돌리고, OCI 아카이브로 내보내 들이면 내보낸
+    // ID이고 그것도 돈다. 바뀐 것 없이 다시 만들면 RUN과 COPY가 모두 캐시다. Docker도 인터넷도 쓰지 않는다.
+    let pid = std::process::id();
+    let tag = format!("sbx-smoke-build:{pid}");
+    let dir = std::env::temp_dir().join(format!("sbx-smoke-build-{pid}"));
+    let ctx = dir.join("ctx");
+    let archive = dir.join("image.tar");
+    let mut made: Vec<String> = Vec::new();
+    let result = (|| {
+        std::fs::create_dir_all(&ctx).map_err(|e| format!("{}: {e}", ctx.display()))?;
+        std::fs::write(ctx.join("Dockerfile"), dockerfile())
+            .map_err(|e| format!("{}: {e}", ctx.display()))?;
+        let ctx_s = ctx.to_string_lossy().into_owned();
+        let built = check(expect(
+            &s,
+            "build (two stages, closed network, COPY --from)",
+            &["build", "-q", "-t", &tag, &ctx_s],
+            None,
+            0,
+            None,
+        ))?;
+        made.push(built.trim().to_owned());
+        check(expect(
+            &s,
+            "run the built image",
+            &["run", "--rm", &tag],
+            None,
+            0,
+            Some(BUILT_OUTPUT),
+        ))?;
+        let dest = format!("type=oci,dest={}", archive.display());
+        let out = check(expect(
+            &s,
+            "build -o type=oci",
+            &["--format", "json", "build", "-t", &tag, "-o", &dest, &ctx_s],
+            None,
+            0,
+            None,
+        ))?;
+        let exported = build_events(&out)?
+            .into_iter()
+            .find(|e| e["type"] == "exported")
+            .and_then(|e| e["id"].as_str().map(str::to_owned))
+            .ok_or_else(|| format!("build -o type=oci: no exported line in {out:?}"))?;
+        made.push(exported.clone());
+        let archive_s = archive.to_string_lossy().into_owned();
+        let loaded = check(expect(
+            &s,
+            "load the archive",
+            &["--format", "json", "load", "-i", &archive_s],
+            None,
+            0,
+            None,
+        ))?;
+        let loaded: serde_json::Value =
+            serde_json::from_str(&loaded).map_err(|e| format!("load: {e}: {loaded:?}"))?;
+        if loaded[0]["id"] != exported.as_str() {
+            return Err(format!(
+                "load the archive: the image ID is {}, the build exported {exported}",
+                loaded[0]["id"]
+            ));
+        }
+        eprintln!("smoke: ok   the loaded image ID is the exported one");
+        check(expect(
+            &s,
+            "run the loaded image",
+            &["run", "--rm", &tag],
+            None,
+            0,
+            Some(BUILT_OUTPUT),
+        ))?;
+        let again = check(expect(
+            &s,
+            "rebuild",
+            &["--format", "json", "build", "-t", &tag, &ctx_s],
+            None,
+            0,
+            None,
+        ))?;
+        // 단계마다 마지막 상태(`started` 뒤의 `cached`나 `done`).
+        let mut last: Vec<(String, String)> = Vec::new();
+        for e in build_events(&again)? {
+            if e["type"] != "step" || e["status"] == "started" {
+                continue;
+            }
+            let text = e["text"].as_str().unwrap_or_default().to_owned();
+            last.push((text, e["status"].as_str().unwrap_or_default().to_owned()));
+        }
+        let layered: Vec<&(String, String)> = last
+            .iter()
+            .filter(|(t, _)| t.starts_with("RUN") || t.starts_with("COPY"))
+            .collect();
+        if layered.len() != 2 || layered.iter().any(|(_, st)| st != "cached") {
+            return Err(format!(
+                "rebuild: RUN and COPY should both come from the cache, got {last:?}"
+            ));
+        }
+        eprintln!("smoke: ok   the rebuild came from the cache");
+        Ok(())
+    })();
+    // 실패해도 지운다(빌드 캐시는 남긴다: 이 사용자의 것이기도 하다).
+    let _ = s.out(&["rmi", "-f", &tag], None);
+    for id in &made {
+        let _ = s.out(&["rmi", "-f", id], None);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    result?;
 
     if internet {
         check(expect(

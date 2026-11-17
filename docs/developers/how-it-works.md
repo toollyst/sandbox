@@ -68,8 +68,10 @@ neither. The CLI then calls the management core:
   writing and reports progress (the CLI draws the bar). The manifest and config are kept as pulled (for `sbx save`),
   and the image record and reference are written last.
   `sbx load` runs the same steps with an OCI image layout as the source ([`layout.rs`](../../crates/adapter/oci/src/layout.rs)).
-- **`push`** (the other way, `sbx push`): `sbx-manage` reads the stored manifest and config, checks that the
-  manifest still hashes to the image ID and each layer file has the size the manifest says, and hands the blobs to an
+- **`push`** (the other way, `sbx push`): `sbx-manage` prepares an export ([`export.rs`](../../crates/core/manage/src/export.rs)).
+  For a pulled image it reads the stored manifest and config, checks that the
+  manifest still hashes to the image ID and each layer file has the size the manifest says (a built image is
+  exported from its layer disks, see [`sbx build`](#sbx-build)), and hands the blobs to an
   [`ImageDestination`](../../crates/port/image/src/lib.rs) one by one, the manifest last. `sbx-oci`
   ([`push.rs`](../../crates/adapter/oci/src/push.rs)) speaks the Distribution push protocol for each: `HEAD` to skip a
   blob the registry has, a cross-repository mount when the image was pulled from another repository of the same
@@ -390,9 +392,14 @@ Four crates take part, and only the CLI knows all of them
    reader as a pulled layer and turns it into a layer disk under `layers/<diff_id>/`. There is no compressed blob:
    a built layer is only its disk (a layer that can't stand alone, such as a hard link to a file in a lower layer,
    keeps its tar as an uncompressed blob and is merged with the layers below). A tar with no entries is the well-known empty layer, which takes no disk
-   and is skipped when stacking. `commit_built` writes the OCI config the core assembled
+   and is skipped when stacking. The layer's diff_id is not the hash of the tar the VM sent: `add_layer` writes the
+   disk, reads it back and writes the entries as a *canonical tar* ([`canon.rs`](../../crates/core/manage/src/canon.rs):
+   GNU headers, PAX records only for extended attributes, entries in the disk's order, nothing taken from the
+   clock), and the diff_id is that tar's `sha256`. So the export below can write the same tar again from the disk
+   alone. `commit_built` writes the OCI config the core assembled
    ([`config.rs`](../../crates/core/build/src/config.rs), with BuildKit's history entries); the image ID is that
-   config's `sha256`, and the image is recorded with `source = "sbx build"`.
+   config's `sha256`, and the image is recorded with `source = "sbx build"`. It is skipped when `--output` doesn't
+   ask for sbx's store; the layers and cache records are kept either way.
 
 The build VM is an ordinary sandbox with no main process (`hold`), the label `io.github.toollyst.sandbox.build=1`, a
 16 GiB sparse writable disk and the build's network policy. Its clock is kept on the host's like any sandbox's
@@ -405,15 +412,37 @@ to it. Its root is a hidden image record (`sbx build (working
 root)`) holding the stage's layers so far, removed with the VM when the stage ends, even on failure. Refused names for a failed
 step's `blocked:` lines come from the network log (`refuse` events of that sandbox).
 
+With the network closed (`--network none`, the default) the build VM still answers name lookups through the host
+(`SandboxSpec::record_names`): the host has no rules, so every name is refused and recorded as a `refuse` event,
+which is where a failed step's `blocked:` lines and the "the build network is closed" hint come from. No name is
+resolved and nothing leaves the VM; it only replaces an instant NXDOMAIN in the guest with an NXDOMAIN from the host.
+
+**`SOURCE_DATE_EPOCH`** (environment or `--build-arg`) is part of every step's cache key. It sets the config's
+`created` and the history times, and `add_layer` clamps every file time in the layers the build makes to it
+(BuildKit's rule: later times become the epoch, earlier ones stay). Base image layers keep their times.
+
 **Cache records** live in `cache_dir/build/<key>`, one small JSON file each (`layer` and `created`). They hold
 layers alive: the collector in `sbx-store` keeps every layer and blob a record names, so `sbx rmi` of the last
-image on a layer leaves the disk while the cache can reuse it. `sbx system prune` removes the records and stale
-build roots first, then collects. There is no size limit or age-based eviction yet; `system df` shows the cache.
-While a build runs it holds claims on the layers it has made or reused, so a concurrent prune doesn't delete them
-before the image or record is written.
+image on a layer leaves the disk while the cache can reuse it. A cache hit sets the record's modification time to
+now, which is what "least recently used" means below. After every build (even a failed one) the CLI trims the cache
+(`Manager::trim_build_cache`) under `SBX_BUILD_CACHE_MAX` (default 10 GiB, `none` for no cap): it counts only layers
+that no image uses (the `build cache` row of `system df`), and while the total is over the cap it removes every
+record of the least recently used layer, then collects. `sbx builder prune` does the same with `--keep-storage`
+(default 0), `-a` and `sbx system prune` remove every record and stale build root first, then collect.
+While a build runs it holds claims on the layers it has made or reused (cache hits included), so a concurrent
+prune or trim doesn't delete them before the image or record is written.
 
-A built image has layer disks but no layer tars or manifest, so `save` and `push` refuse it
-(`ManageError::NotExportable`) until the export step that writes tars from the disks.
+**Export** ([`export.rs`](../../crates/core/manage/src/export.rs)) turns a built image, stored or not, into an OCI
+image: `save`, `push`, and `build --output type=docker|oci|registry` all go through `Export`. A layer with a blob
+(a base image's, or one that needs the layers below) is sent as is. Any other layer is read back from its disk as the
+canonical tar (its `sha256` must be the diff_id, or the export fails), gzipped with fixed settings (level 6, no name,
+time 0, OS 255; the test `gzip_is_pinned` catches a compressor that changes its bytes). The first export of a layer
+compresses it once into a hashing sink and records the blob's digest and size in `layers/<diff_id>/export.json`;
+every later export uses the record, so the manifest (built from the layer list with fixed key order) and its digest
+never change. The compressed blob is never stored: it is compressed again while it is sent and checked against the
+record at the end (a mismatch deletes the record and fails: run again). A registry that already has the blob (`HEAD`)
+costs no compression at all. So exporting costs disk only for a small record per layer, and the time of compressing
+each new layer twice (once on the first export).
 
 The fake executor ([`sbx-executor-fake`](../../crates/executor/fake/src/lib.rs)) plays the build VM for tests: on
 the first `OpenLayer` it unpacks the EROFS layer disks into a directory on the host and moves every guest path under

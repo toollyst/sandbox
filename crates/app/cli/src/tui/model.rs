@@ -571,6 +571,12 @@ impl Model {
                     .collect(),
             ),
             Tab::Images if c == 'U' => Some(Action::Handover(vec!["system".into(), "df".into()])),
+            Tab::Images if c == 'B' => self.confirm(
+                ["builder", "prune", "-f"]
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+            ),
             Tab::Images if c == 'L' => {
                 // 레지스트리를 쳐서 끝낸다. 터미널을 넘기므로 비밀번호는 sbx login이 보이지 않게 묻는다.
                 self.prompt = Some(Prompt {

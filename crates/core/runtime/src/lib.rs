@@ -1021,6 +1021,7 @@ impl Sandbox {
         let egress_limit = spec.egress_limit_bytes;
         let data_dir = rt.inner.config.data_dir.clone();
         let id_for_egress = id.as_str().to_owned();
+        let record_names = spec.record_names;
         let peers = (!spec.connect.is_empty()).then(|| connect::Peers {
             rules: spec.connect.clone(),
             data_dir: data_dir.clone(),
@@ -1093,6 +1094,11 @@ impl Sandbox {
                     sandbox: id_for_egress.clone(),
                 };
                 let egress_port = match (network, peers) {
+                    // 닫힌 네트워크에서 이름 묻기만 받아 모두 거부하고 기록한다(빌드의 안내, `record_names`).
+                    (NetworkPolicy::Disabled, None) if record_names => {
+                        egress::start(guest.clone(), Vec::new(), None, limits, record);
+                        None
+                    }
                     (NetworkPolicy::Disabled, None) => None,
                     (NetworkPolicy::Disabled, Some(peers)) => {
                         egress::start(guest.clone(), Vec::new(), Some(peers), limits, record);

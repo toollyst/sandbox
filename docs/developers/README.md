@@ -88,7 +88,7 @@ cargo xtask check-deps                     # layers, crate rules, module cycles,
 
 cargo xtask dist                           # release sbx + sbx-shim, guest init embedded
 cargo xtask install                        # dist, then install them where the installers do
-cargo xtask smoke                          # checks on real VMs with the installed executor
+cargo xtask smoke                          # 27 checks on real VMs with the installed executor (4 more with live sharing)
 cargo xtask bench                          # timings (add --docker to compare with docker run)
 ```
 

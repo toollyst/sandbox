@@ -84,9 +84,32 @@
       ],
       "type": "object"
     },
+    "BuildCachePruned": {
+      "additionalProperties": false,
+      "description": "What `builder prune` removed.",
+      "properties": {
+        "build_cache": {
+          "description": "How many build cache entries (cached steps) were removed.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reclaimed": {
+          "description": "Bytes freed on disk.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "build_cache",
+        "reclaimed"
+      ],
+      "type": "object"
+    },
     "BuildEvent": {
       "additionalProperties": false,
-      "description": "One line of `build` (JSON Lines): a step's progress (`step`), a piece of `RUN` output (`output`), and last the\nimage (`built`). A failed build ends with the error line instead.",
+      "description": "One line of `build` (JSON Lines): a step's progress (`step`), a piece of `RUN` output (`output`), then the image\n(`built`), then one `exported` line for each output that is not sbx's image store (one per pushed name). A failed\nbuild ends with the error line instead.",
       "properties": {
         "data": {
           "description": "`output`: the bytes as text (invalid UTF-8 replaced).",
@@ -95,8 +118,15 @@
             "null"
           ]
         },
+        "dest": {
+          "description": "`exported`: where it went: a file or directory path, `-` (stdout), `docker` (`docker load`), or the reference\nthat was pushed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "id": {
-          "description": "`built`: the image ID.",
+          "description": "`built`: the image ID (the config's digest, also when the image was not kept). `exported`: the manifest's\ndigest (the same each time the same image is exported).",
           "type": [
             "string",
             "null"
@@ -117,6 +147,13 @@
           "minimum": 0,
           "type": [
             "integer",
+            "null"
+          ]
+        },
+        "output": {
+          "description": "`exported`: the output's type: `docker`, `oci` or `registry`.",
+          "type": [
+            "string",
             "null"
           ]
         },
@@ -161,6 +198,13 @@
             "null"
           ]
         },
+        "stored": {
+          "description": "`built`: whether the image was kept in sbx's image store (`--output type=sbx`, the default).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "stream": {
           "description": "`output`: `stdout` or `stderr`.",
           "type": [
@@ -186,7 +230,7 @@
           ]
         },
         "type": {
-          "description": "`step`, `output` or `built`.",
+          "description": "`step`, `output`, `built` or `exported`.",
           "type": "string"
         }
       },

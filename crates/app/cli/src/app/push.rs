@@ -74,7 +74,7 @@ pub fn push_targets(
 }
 
 /// 사람이 읽는 줄들(모듈 문서). 마지막 blob은 config라 줄을 내지 않는다.
-fn report(p: &Pushed) -> Vec<String> {
+pub(super) fn report(p: &Pushed) -> Vec<String> {
     let layers = &p.blobs[..p.blobs.len().saturating_sub(1)];
     let mut lines: Vec<String> = layers
         .iter()
@@ -95,7 +95,7 @@ fn report(p: &Pushed) -> Vec<String> {
     lines
 }
 
-fn json(p: &Pushed) -> output::Pushed {
+pub(super) fn json(p: &Pushed) -> output::Pushed {
     output::Pushed {
         reference: p.reference.clone(),
         id: p.id.to_string(),

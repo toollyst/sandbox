@@ -1082,6 +1082,11 @@ pub struct SandboxSpec {
     /// 샌드박스든 된다. 정책은 부르는 쪽이 정한다(예: MCP 서버는 MCP로 만든 샌드박스로 좁힌다).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub connect_scope: BTreeMap<String, String>,
+    /// 네트워크가 `Disabled`이고 `connect`가 없어도 게스트의 이름 묻기를 호스트에 돌린다(투명 TCP를 규칙 없이 켠다).
+    /// 그래서 모든 이름이 거부되고 거부된 이름이 나가는 연결 기록(`refuse`, `via=dns`)에 남는다. 열리는 것은 없다.
+    /// 빌드가 닫힌 네트워크에서 실패한 `RUN`이 찾은 이름을 알리는 데 쓴다.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub record_names: bool,
 }
 
 /// `-p [IP:][HOST_PORT:]PORT[/tcp]`: 호스트의 `IP:HOST_PORT`에 온 TCP 연결을 게스트 `127.0.0.1:PORT`로 잇는다.

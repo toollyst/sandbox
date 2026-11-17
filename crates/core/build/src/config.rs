@@ -293,9 +293,18 @@ impl Image {
         &self.created
     }
 
+    /// 이미지의 `created`를 정한다(`SOURCE_DATE_EPOCH`).
+    pub fn set_created(&mut self, created: &str) {
+        self.created = created.to_owned();
+    }
+
     /// history 한 줄을 더한다. `created`가 없으면(config만 바꾸는 단계) 앞 항목의 시각이다.
     pub fn record(&mut self, created_by: &str, created: Option<&str>) {
-        let empty = created.is_none();
+        self.record_layer(created_by, created, created.is_none());
+    }
+
+    /// [`record`](Self::record)와 같고, 층이 없는 단계인지(`empty_layer`)를 따로 준다.
+    pub fn record_layer(&mut self, created_by: &str, created: Option<&str>, empty: bool) {
         if let Some(c) = created {
             self.created = c.to_owned();
         }

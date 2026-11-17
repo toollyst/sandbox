@@ -3,7 +3,8 @@
 //! - `load`: tar(gzip이어도 된다, 표준 입력도 된다)는 캐시의 작업 공간에 풀고([`sbx_oci::layout::unpack`]),
 //!   디렉터리는 그대로 연다. 그 뒤는 `pull`과 같다: 같은 검증(digest, 플랫폼, 레이어 수)과 같은 저장.
 //!   이름은 archive의 것을 쓰고, `--tag`는 이미지가 하나일 때만 받는다.
-//! - `save`: 받은 문서와 blob 그대로 쓴다([`Manager::save`]). 파일이면 옆에 쓰고 이름을 바꾼다(반쯤 쓴 tar가
+//! - `save`: 받은 이미지는 받은 문서와 blob 그대로, 만든 이미지는 층 디스크에서 tar를 다시 만들어 쓴다
+//!   ([`Manager::save`], 규칙은 `sbx_manage::export`). 파일이면 옆에 쓰고 이름을 바꾼다([`write_file`], 반쯤 쓴 tar가
 //!   남지 않는다). 표준 출력이 터미널이면 거절한다.
 
 use std::fs::File;
@@ -21,6 +22,33 @@ use crate::behavior::ImageMatch;
 use crate::output;
 use crate::parse;
 use crate::progress::Status;
+
+/// `path`에 쓴다: 옆의 임시 파일에 `write`로 쓰고 디스크에 내린 뒤 이름을 바꾼다. 실패하면 임시 파일을 지운다
+/// (반쯤 쓴 파일이 남지 않는다). `save -o`, `build --output type=oci|docker,dest=FILE`.
+pub(super) fn write_file(
+    path: &Path,
+    write: &mut dyn FnMut(&mut dyn Write) -> AppResult<()>,
+) -> AppResult<()> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| msg(format!("{}: not a file name", path.display())))?;
+    let mut tmp_name = std::ffi::OsString::from(".");
+    tmp_name.push(name);
+    tmp_name.push(format!(".sbx-{}", std::process::id()));
+    let tmp = path.with_file_name(tmp_name);
+    let r = (|| -> AppResult<()> {
+        let f = File::create(&tmp).map_err(|e| msg(format!("{}: {e}", tmp.display())))?;
+        let mut out = io::BufWriter::new(f);
+        write(&mut out)?;
+        out.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+        std::fs::rename(&tmp, path)?;
+        Ok(())
+    })();
+    if r.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    r
+}
 
 /// 끝나면(실패해도) 지우는 작업 디렉터리.
 struct Scratch(PathBuf);
@@ -156,28 +184,10 @@ impl Ctx {
                 m.save(found.id(), reference, &mut out)?;
                 out.flush()?;
             }
-            Some(path) => {
-                let name = path
-                    .file_name()
-                    .ok_or_else(|| msg(format!("{}: not a file name", path.display())))?;
-                let mut tmp_name = std::ffi::OsString::from(".");
-                tmp_name.push(name);
-                tmp_name.push(format!(".sbx-{}", std::process::id()));
-                let tmp = path.with_file_name(tmp_name);
-                let r = (|| -> AppResult<()> {
-                    let f =
-                        File::create(&tmp).map_err(|e| msg(format!("{}: {e}", tmp.display())))?;
-                    let mut out = io::BufWriter::new(f);
-                    m.save(found.id(), reference, &mut out)?;
-                    out.into_inner().map_err(|e| e.into_error())?.sync_all()?;
-                    std::fs::rename(&tmp, path)?;
-                    Ok(())
-                })();
-                if r.is_err() {
-                    let _ = std::fs::remove_file(&tmp);
-                }
-                r?;
-            }
+            Some(path) => write_file(path, &mut |out| {
+                m.save(found.id(), reference, out)?;
+                Ok(())
+            })?,
         }
         Ok(0)
     }

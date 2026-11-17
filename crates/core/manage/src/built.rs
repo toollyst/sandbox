@@ -46,3 +46,14 @@ pub struct BuildCacheUsage {
     /// 캐시 기록과 이미지가 함께 쓰는 층 디렉터리와 blob. 있는 것만.
     pub shared: Vec<PathBuf>,
 }
+
+/// 빌드 캐시를 줄인 결과([`Manager::trim_build_cache`](crate::Manager::trim_build_cache)).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Trimmed {
+    /// 지운 캐시 기록 수.
+    pub records: usize,
+    /// 줄이기 전에 캐시 기록만 쥔 층이 차지한 바이트(재는 함수로 잰 것).
+    pub before: u64,
+    /// 줄인 뒤.
+    pub after: u64,
+}

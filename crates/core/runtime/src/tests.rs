@@ -130,6 +130,7 @@ impl Env {
             hold: false,
             connect: Vec::new(),
             connect_scope: Default::default(),
+            record_names: false,
         }
     }
 
@@ -1410,6 +1411,52 @@ fn transparent_tcp_resolves_from_the_list_and_passes_names_to_the_host_check() {
     assert!(egress::was_resolved(&ok));
     assert!(!egress::was_resolved(&blocked));
     block_on(s.stop(None, Duration::from_secs(5))).unwrap();
+    let _ = std::fs::remove_dir_all(&e.root);
+}
+
+/// 닫힌 네트워크에서 `record_names`(빌드 VM): 어느 이름도 열리지 않지만(NXDOMAIN), 물은 이름은 거부로 남는다.
+/// 그것이 빌드의 "열려면 --allow" 안내의 재료다. `record_names`가 없으면 물어도 남는 것이 없다.
+#[cfg(unix)]
+#[test]
+fn a_closed_network_can_record_the_names_it_refuses() {
+    use sbx_executor_fake::probe;
+
+    let pid = std::process::id();
+    let e = Env::new("recnames");
+    e.prepare_image();
+    let mut ids = Vec::new();
+    for record in [true, false] {
+        let mut spec = e.spec(&["sh", "-c", "sleep 30"]);
+        spec.record_names = record;
+        let s = block_on(e.rt.create(spec)).unwrap();
+        let _main = block_on(s.start(IoMode::default())).unwrap();
+        let dir = sbx_executor_fake::net_dir(
+            &e.root
+                .join("d/sandboxes")
+                .join(s.id().as_str())
+                .join("scratch.img"),
+        );
+        let name = format!("{record}-{pid}.invalid");
+        if record {
+            let r = probe::lookup(&dir, &name, 1).unwrap();
+            assert_eq!((r.rcode, r.addrs.len()), (3, 0));
+        } else {
+            // 투명 TCP를 켜지 않았다: 이름을 물을 곳도 없다.
+            assert!(!dir.join("etc/resolv.conf").exists());
+        }
+        ids.push((s, name));
+    }
+    let events = network_events(&e, |all| all.iter().any(|ev| ev.action == "refuse"));
+    let refused: Vec<(&str, &str)> = events
+        .iter()
+        .filter(|ev| ev.action == "refuse")
+        .map(|ev| (ev.id.as_str(), ev.attributes["host"].as_str()))
+        .collect();
+    assert_eq!(refused, [(ids[0].0.id().as_str(), ids[0].1.as_str())]);
+    assert!(!egress::was_resolved(&ids[0].1));
+    for (s, _) in ids {
+        block_on(s.stop(None, Duration::from_secs(5))).unwrap();
+    }
     let _ = std::fs::remove_dir_all(&e.root);
 }
 

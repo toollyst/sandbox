@@ -186,6 +186,11 @@ pub enum Command {
     },
     #[command(about = about("build"), override_usage = "sbx build [OPTIONS] PATH")]
     Build(BuildArgs),
+    #[command(about = about("builder"))]
+    Builder {
+        #[command(subcommand)]
+        command: BuilderCommand,
+    },
     #[command(about = about("pull"))]
     Pull {
         /// linux/amd64 or linux/arm64. Defaults to the host architecture.
@@ -368,6 +373,23 @@ so it always matches the installed sbx.",
     Completion {
         /// Shell to enable completion for.
         shell: clap_complete::Shell,
+    },
+}
+
+/// `builder` 아래 명령.
+#[derive(Debug, Subcommand)]
+pub enum BuilderCommand {
+    /// Remove build cache that no image uses (cached steps whose layers only the cache holds).
+    Prune {
+        /// Remove all build cache: also cached steps whose layers images use (their layers stay with the images).
+        #[arg(short = 'a', long)]
+        all: bool,
+        /// Don't ask for confirmation.
+        #[arg(short = 'f', long)]
+        force: bool,
+        /// Keep the most recently used cache up to this size (e.g. 5g); remove the rest, oldest first.
+        #[arg(long, value_name = "SIZE")]
+        keep_storage: Option<String>,
     },
 }
 
@@ -705,6 +727,22 @@ pub struct BuildArgs {
     /// Only print the image ID.
     #[arg(short, long)]
     pub quiet: bool,
+    /// Where the image goes (repeatable; given outputs replace the default): type=sbx (sbx's image store, the
+    /// default), type=docker (into `docker load`; dest=FILE writes a tar instead), type=oci,dest=FILE|DIR/|- (an
+    /// OCI archive, an OCI layout directory, or stdout), type=registry (push). name=NAME:TAG names it instead of -t.
+    #[arg(
+        short = 'o',
+        long = "output",
+        value_name = "type=TYPE[,KEY=VALUE…]",
+        help_heading = "Output"
+    )]
+    pub outputs: Vec<String>,
+    /// Shorthand for --output type=docker.
+    #[arg(long, help_heading = "Output")]
+    pub load: bool,
+    /// Shorthand for --output type=registry: push each -t name.
+    #[arg(long, help_heading = "Output")]
+    pub push: bool,
     /// Network for RUN steps: none (no access) or allow (only --allow destinations, through a proxy).
     #[arg(long, default_value = "none", help_heading = "Network")]
     pub network: String,

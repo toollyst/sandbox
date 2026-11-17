@@ -41,8 +41,9 @@ pub enum ManageError {
     Rootfs(RootfsError),
     /// 0.2.1 전에 받아 원래 문서가 없는 이미지(`sbx save`, `sbx push`). 다시 받으면 된다.
     NoDocuments(ImageId),
-    /// `sbx build`가 만든 이미지(`sbx save`, `sbx push`). 층이 디스크로만 있어 올리거나 쓸 층 tar가 없다.
-    NotExportable(ImageId),
+    /// 이미지를 내보낼 수 없다(`save`, `push`, `build --output`): 층이 없거나 층 디스크가 기록된 diff_id를 다시 내지
+    /// 못한다.
+    Export(String),
     /// 레이어 합계가 상한([`crate::Manager::with_max_image_bytes`])을 넘는다.
     TooLarge {
         /// 참조.
@@ -82,10 +83,7 @@ impl fmt::Display for ManageError {
                 f,
                 "image {id} was pulled by an sbx older than 0.2.1, which didn't keep its manifest; pull it again to save or push it"
             ),
-            ManageError::NotExportable(id) => write!(
-                f,
-                "image {id} was made by sbx build; saving or pushing a built image needs its layers as tar files, which sbx does not make from the stored layer disks yet (the layer export step of a later release)"
-            ),
+            ManageError::Export(m) => write!(f, "cannot export the image: {m}"),
             ManageError::Store(e) => e.fmt(f),
             ManageError::Io(e) => write!(f, "io: {e}"),
         }
