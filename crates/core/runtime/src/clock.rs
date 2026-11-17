@@ -374,14 +374,20 @@ mod tests {
 
     #[test]
     fn unix_nanos_handles_both_sides_of_1970() {
+        // 값은 100 ns의 배수로 고른다: Windows의 SystemTime은 100 ns 단위(FILETIME)라서 그보다 잘게는 나타낼 수
+        // 없다(더하면 버려진다). 벽시계가 주는 값은 늘 그 단위이므로 함수가 다루는 값은 이것이다.
         assert_eq!(unix_nanos(SystemTime::UNIX_EPOCH), 0);
         assert_eq!(
-            unix_nanos(SystemTime::UNIX_EPOCH + Duration::from_nanos(5)),
-            5
+            unix_nanos(SystemTime::UNIX_EPOCH + Duration::from_nanos(1_234_500)),
+            1_234_500
         );
         assert_eq!(
             unix_nanos(SystemTime::UNIX_EPOCH - Duration::from_secs(1)),
             -1_000_000_000
+        );
+        assert_eq!(
+            unix_nanos(SystemTime::UNIX_EPOCH - Duration::from_nanos(1_500_000_100)),
+            -1_500_000_100
         );
     }
 

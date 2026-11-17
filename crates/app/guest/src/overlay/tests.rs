@@ -39,8 +39,13 @@ fn sh(script: &str) {
 }
 
 /// scratch(우리 mkfs로 포맷한 ext4)를 loop로 마운트한 작업 공간. 버리면 모두 내린다.
+///
+/// loop 장치는 직접 붙이고 쓰기로 되돌린 뒤(`blockdev --setrw`) `mount -w`로 마운트한다. 앞서 누가 그 장치에
+/// 읽기 전용 표시(BLKROSET)를 남겼으면 떼어도 남고, `mount -o loop`는 그런 장치를 알리지 않고 읽기 전용으로
+/// 마운트한다(그래서 층 준비가 "Read-only file system"으로 실패했다). `-w`면 그때 마운트가 실패한다.
 struct Scratch {
     dir: PathBuf,
+    dev: String,
 }
 
 impl Scratch {
@@ -59,12 +64,22 @@ impl Scratch {
         f.set_len(bytes).unwrap();
         mkfs::format(&mut f, bytes, *b"sbx-overlay-test", mkfs::Disk::Zeroed).unwrap();
         drop(f);
+        let out = Command::new("losetup")
+            .args(["-f", "--show"])
+            .arg(&img)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let dev = String::from_utf8(out.stdout).unwrap().trim().to_owned();
         sh(&format!(
-            "mount -t ext4 -o loop,noatime {} {}",
-            img.display(),
+            "blockdev --setrw {dev} && mount -w -t ext4 -o noatime {dev} {}",
             dir.join("s").display()
         ));
-        Self { dir }
+        Self { dir, dev }
     }
 
     fn layers(&self) -> PathBuf {
@@ -94,6 +109,7 @@ impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = Command::new("umount").arg("-R").arg(self.root()).status();
         let _ = Command::new("umount").arg(self.dir.join("s")).status();
+        let _ = Command::new("losetup").args(["-d", &self.dev]).status();
         let _ = fs::remove_dir_all(&self.dir);
     }
 }

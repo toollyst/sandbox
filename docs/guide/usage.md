@@ -135,7 +135,8 @@ sbx volume rm pgdata                           # refused while a sandbox (even a
   with `/`, `.` or `~` (or has a `/` in it) is a host path; anything else is a volume name. `-v /path` alone (an
   anonymous volume in Docker) is refused: name it.
 - Each volume is a disk of its own, a sparse file under the data directory (`volumes/<name>/disk.img`), 16 GiB by
-  default (`sbx volume create --opt size=50g NAME`); the host only spends what is written. The guest formats it (ext4
+  default (`sbx volume create --opt size=50g NAME`); the host only spends what is written (on Windows, which has no
+  executor yet, the file isn't sparse and takes its full size at once). The guest formats it (ext4
   with a journal) the first time a sandbox attaches it, and fills it with what the image has at that path, keeping
   owners and modes, so an image that ships files or a directory owned by its service user works as in Docker.
   `nocopy` (`-v NAME:/path:nocopy`, `volume-nocopy` in `--mount`) skips that.
