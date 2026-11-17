@@ -15,11 +15,8 @@ use sbx_executor_proto::{
 };
 
 const FAKE: &str = r#"#!/bin/sh
-# --features: FAKE_FC_FEATURES가 있으면 그것을 답하고(wick 같은 빌드), 없으면 upstream처럼 모르는 인자로 끝난다.
-if [ "$1" = --features ]; then
-  if [ -n "$FAKE_FC_FEATURES" ]; then echo "$FAKE_FC_FEATURES"; exit 0; fi
-  echo "Arguments parsing error: Found argument '--features' which wasn't expected" >&2; exit 1
-fi
+# 불린 인자를 한 줄씩 남긴다(어댑터가 upstream이 모르는 인자를 주지 않는지 본다).
+echo "$*" >> "$FAKE_FC_DIR/args"
 cfg=""
 while [ $# -gt 0 ]; do
   case "$1" in --config-file) cfg="$2"; shift;; esac
@@ -85,23 +82,10 @@ impl Env {
 
     /// `run`을 띄우고 `Launch`를 보낸 뒤 첫 사건을 돌려준다.
     fn launch(&self, mode: &str) -> (Child, ChildStdin, BufReader<ChildStdout>, Event) {
-        self.launch_vm(mode, self.vm(), None)
-    }
-
-    /// [`Env::launch`]를 `vm`으로. `features`가 있으면 가짜 firecracker가 `--features`에 그것을 답한다.
-    fn launch_vm(
-        &self,
-        mode: &str,
-        vm: VmSpec,
-        features: Option<&str>,
-    ) -> (Child, ChildStdin, BufReader<ChildStdout>, Event) {
         // 남은 소켓 파일은 지우고 시작해야 한다.
         std::fs::write(&self.socket, b"stale").unwrap();
-        let mut cmd = self.cmd(mode, "run");
-        if let Some(f) = features {
-            cmd.env("FAKE_FC_FEATURES", f);
-        }
-        let mut child = cmd
+        let mut child = self
+            .cmd(mode, "run")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -113,7 +97,7 @@ impl Env {
             &mut stdin,
             &Request::Launch {
                 version: VERSION,
-                vm,
+                vm: self.vm(),
             },
         )
         .unwrap();
@@ -171,15 +155,6 @@ fn capabilities_need_firecracker_and_a_kernel() {
     assert_eq!((caps.version, caps.name.as_str()), (VERSION, "firecracker"));
     assert_eq!(caps.rootfs_formats, vec!["erofs"]);
     assert!(!caps.live_share);
-
-    // `--features`가 `fs`를 알리면 공유 폴더를 알린다.
-    let out = e
-        .cmd("", "capabilities")
-        .env("FAKE_FC_FEATURES", r#"{"extensions":["fs"]}"#)
-        .output()
-        .unwrap();
-    let caps: Capabilities = read_line(&mut out.stdout.as_slice()).unwrap().unwrap();
-    assert!(caps.live_share);
 
     std::fs::remove_file(e.dir.join("kernel")).unwrap();
     let out = e.cmd("", "capabilities").output().unwrap();
@@ -304,52 +279,56 @@ fn wrong_version_is_refused() {
     assert!(!child.wait().unwrap().success());
 }
 
-fn with_share(e: &Env) -> VmSpec {
+/// firecracker는 VM을 띄울 때 한 번, upstream이 아는 인자(`--no-api --config-file <파일>`)로만 불린다. `capabilities`는
+/// 부르지 않는다. 공유 폴더는 알리지 않으므로(`live_share: false`), 공유가 오면 firecracker를 띄우지 않고 `Error`다.
+#[test]
+fn firecracker_sees_only_upstream_arguments() {
+    let e = Env::new();
+    let args = e.dir.join("args");
+    let out = e.cmd("", "capabilities").output().unwrap();
+    assert!(out.status.success());
+    let caps: Capabilities = read_line(&mut out.stdout.as_slice()).unwrap().unwrap();
+    assert!(!caps.live_share);
+    assert!(!args.exists(), "capabilities ran firecracker");
+
     let mut vm = e.vm();
     vm.shares.push(ShareSpec {
         host_path: e.dir.clone(),
         tag: "sbx0".into(),
         readonly: false,
     });
-    vm
-}
-
-fn config(e: &Env) -> serde_json::Value {
-    serde_json::from_slice(&std::fs::read(e.dir.join("config.json")).unwrap()).unwrap()
-}
-
-/// 확장을 알리는 firecracker에는 공유를 `extensions.fs`로 넘기고, upstream에는 VM을 띄우지 않고 `Error`다.
-#[test]
-fn shares_need_the_fs_extension() {
-    let e = Env::new();
-    let (mut child, stdin, _out, first) =
-        e.launch_vm("wait", with_share(&e), Some(r#"{"extensions":{"fs":{}}}"#));
-    assert!(matches!(first, Event::Started { .. }), "{first:?}");
-    assert_eq!(
-        config(&e)["extensions"]["fs"]["shares"][0]["path"],
-        e.dir.to_str().unwrap()
+    let mut child = e
+        .cmd("wait", "run")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    write_line(
+        &mut stdin,
+        &Request::Launch {
+            version: VERSION,
+            vm,
+        },
+    )
+    .unwrap();
+    let ev = next(&mut BufReader::new(child.stdout.take().unwrap()));
+    assert!(
+        matches!(&ev, Event::Error { message } if message.contains("shared folders")),
+        "{ev:?}"
     );
-    drop(stdin);
-    assert!(child.wait().unwrap().success());
-    e.assert_fake_gone();
-
-    // 공유가 없으면 확장을 알려도 설정 파일은 upstream 모양이다.
-    let (mut child, stdin, _out, first) =
-        e.launch_vm("wait", e.vm(), Some(r#"{"extensions":["fs"]}"#));
-    assert!(matches!(first, Event::Started { .. }), "{first:?}");
-    let c = config(&e);
-    assert!(c.get("extensions").is_none(), "{c}");
-    drop(stdin);
-    assert!(child.wait().unwrap().success());
-    e.assert_fake_gone();
-
-    // upstream(`--features`를 모른다): firecracker를 띄우지 않는다.
-    std::fs::remove_file(e.dir.join("pid")).unwrap();
-    let (mut child, _stdin, _out, first) = e.launch_vm("wait", with_share(&e), None);
-    match first {
-        Event::Error { message } => assert!(message.contains("`fs`"), "{message}"),
-        other => panic!("expected an error, got {other:?}"),
-    }
     assert!(!child.wait().unwrap().success());
-    assert!(!e.dir.join("pid").exists());
+    assert!(!args.exists(), "a share reached firecracker");
+
+    let (mut child, stdin, _out, first) = e.launch("wait");
+    assert!(matches!(first, Event::Started { .. }), "{first:?}");
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+    e.assert_fake_gone();
+    let config = e.dir.join("c.sock.firecracker.json");
+    assert_eq!(
+        std::fs::read_to_string(&args).unwrap(),
+        format!("--no-api --config-file {}\n", config.display())
+    );
 }
