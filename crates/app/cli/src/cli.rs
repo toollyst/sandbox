@@ -21,6 +21,14 @@ pub enum Format {
     Json,
 }
 
+/// `sbx`가 명령을 돌리는 스레드의 스택 크기(8 MiB, Linux와 macOS의 주 스레드와 같다). 주 스레드의 스택은 OS가
+/// 정해서 Windows는 1 MiB뿐이라, `sbx`는 주 스레드 대신 이 크기의 스레드에서 돈다.
+///
+/// 디버그 빌드는 명령 트리([`Cli::command`](clap::CommandFactory::command))를 만드는 데만 1 MiB 가까이 쓴다.
+/// 배포 빌드는 200 KiB 아래다(macOS arm64에서 잰 값). 테스트가 명령 트리와 인자 읽기가 이것의 4분의 1에 드는지
+/// 본다.
+pub const MAIN_STACK: usize = 8 * 1024 * 1024;
+
 /// `sbx`.
 #[derive(Debug, Parser)]
 #[command(
@@ -984,6 +992,25 @@ mod tests {
     fn definition_is_consistent() {
         // 인자 이름 충돌 같은 정의 오류를 실행하기 전에 잡는다.
         <Cli as clap::CommandFactory>::command().debug_assert();
+    }
+
+    #[test]
+    fn the_command_tree_fits_in_a_quarter_of_the_main_stack() {
+        // 명령이 늘어 MAIN_STACK에 가까워지면 여기서 먼저 넘친다(테스트 실행 파일은 디버그 빌드다).
+        let parse = std::thread::Builder::new()
+            .stack_size(MAIN_STACK / 4)
+            .spawn(|| {
+                let version = <Cli as clap::CommandFactory>::command()
+                    .version("0.0.0")
+                    .try_get_matches_from(["sbx", "--version"]);
+                assert_eq!(
+                    version.unwrap_err().kind(),
+                    clap::error::ErrorKind::DisplayVersion
+                );
+                assert!(Cli::try_parse_from(["sbx", "ps"]).is_ok());
+            })
+            .unwrap();
+        parse.join().unwrap();
     }
 
     #[test]
