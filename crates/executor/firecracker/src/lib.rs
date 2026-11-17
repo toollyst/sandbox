@@ -28,7 +28,20 @@
 //! - 커널 명령줄: `console=ttyS0 quiet reboot=k panic=1`(x86_64는 `pci=off`도), `sbx.hostname=`, `sbx.halt=reboot`
 //!   (Firecracker는 게스트의 재시작 요청을 VM 종료로 다룬다). `quiet`는 부팅 메시지를 시리얼 콘솔에 쓰는 시간
 //!   (약 100ms)을 없앤다. 경고와 오류는 그대로 나온다.
-//! - 네트워크 장치와 공유 폴더(virtio-fs)는 없다(`live_share: false`). 스냅샷도 아직 알리지 않는다.
+//! - 네트워크 장치는 없다. 스냅샷도 아직 알리지 않는다. 공유 폴더는 아래 "확장"이 있을 때만이다.
+//!
+//! # 확장 ([`features`])
+//!
+//! upstream Firecracker에는 virtio-fs가 없다. 같은 인터페이스를 구현한 빌드가 더 가진 장치는 이렇게 알아내고 쓴다.
+//!
+//! - `capabilities`와 (공유가 있는) `run`은 `firecracker --features`를 돌린다. 5초 안에 0으로 끝나고 표준 출력이 JSON
+//!   객체이며 그 `extensions`(이름 목록이나 이름을 키로 한 객체)에 `fs`가 있을 때만 `live_share: true`다. 그 밖(upstream은
+//!   그 인자를 모르고 오류로 끝난다)은 확장 없음이고 upstream과 똑같이 돈다.
+//! - `fs`가 있고 `VmSpec::shares`가 있으면 설정 파일 최상위에 `extensions.fs`를 넣는다:
+//!   `{"shares": [{"id": "fs0", "tag": <태그>, "path": <호스트 디렉터리>, "read_only": <bool>}, …]}`. 태그는 36바이트
+//!   이하(virtio-fs 명세). 공유가 없으면 `extensions`를 넣지 않는다. `fs`를 알리지 않은 VMM에 공유가 오면 `Error`다.
+//! - 이 인자와 키는 wick(macOS HVF Firecracker 빌드)이 제안했다. 어느 VMM인지는 보지 않는다: 같은 모양으로 답하는
+//!   VMM이면 무엇이든 그대로 쓴다.
 //!
 //! # 프로세스 ([`session`])
 //!
@@ -44,6 +57,7 @@
 //! - VM이 끝나면 `Exited`: firecracker가 0으로 끝나면 `guest powered off`, 죽였으면 `killed`.
 
 pub mod config;
+pub mod features;
 pub mod session;
 pub mod settings;
 

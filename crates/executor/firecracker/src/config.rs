@@ -2,8 +2,10 @@
 
 use std::path::Path;
 
-use sbx_executor_proto::{DiskRole, VmSpec};
+use sbx_executor_proto::{DiskRole, ShareSpec, VmSpec};
 use serde_json::{Value, json};
+
+use crate::features::Features;
 
 /// Unix 소켓 경로의 최대 바이트 수 (macOS가 가장 짧다: `sun_path` 104바이트, 끝의 NUL 포함).
 pub const MAX_SOCKET_PATH: usize = 103;
@@ -11,16 +13,24 @@ pub const MAX_SOCKET_PATH: usize = 103;
 /// 게스트 vsock CID. 게스트 쪽에서는 의미가 없고, 3 이상이면 된다.
 pub const GUEST_CID: u32 = 3;
 
+/// virtio-fs 태그의 최대 바이트 수(virtio 명세의 `virtio_fs_config.tag`, 36바이트).
+pub const MAX_TAG: usize = 36;
+
 /// 설정 파일 내용. 커널은 `vm.kernel`(이미지가 담은 커널), 없으면 `default_kernel`이다.
-/// `x86_64`면 x86_64 게스트용 명령줄을 쓴다.
+/// `x86_64`면 x86_64 게스트용 명령줄을 쓴다. 공유 폴더는 VMM이 `fs` 확장을 알렸을 때만 붙인다(`extensions.fs`).
 pub fn firecracker_config(
     vm: &VmSpec,
     default_kernel: &Path,
     x86_64: bool,
+    features: Features,
 ) -> Result<Value, String> {
     let kernel = vm.kernel.as_deref().unwrap_or(default_kernel);
-    if !vm.shares.is_empty() {
-        return Err("this executor cannot attach shared folders (live_share is false)".into());
+    if !vm.shares.is_empty() && !features.fs {
+        return Err(
+            "this firecracker cannot attach shared folders: `firecracker --features` does not \
+             announce the `fs` extension (upstream Firecracker has no virtio-fs)"
+                .into(),
+        );
     }
     if vm.hostname.is_empty()
         || !vm
@@ -75,7 +85,7 @@ pub fn firecracker_config(
             Ok(drive)
         })
         .collect::<Result<Vec<_>, String>>()?;
-    Ok(json!({
+    let mut config = json!({
         "boot-source": {
             "kernel_image_path": utf8(kernel, "kernel")?,
             "initrd_path": utf8(&vm.guest_init, "guest init")?,
@@ -91,6 +101,43 @@ pub fn firecracker_config(
             "guest_cid": GUEST_CID,
             "uds_path": socket,
         },
+    });
+    // upstream Firecracker는 모르는 최상위 키를 무시하지만, 확장을 알리지 않은 VMM에는 아예 넣지 않는다.
+    if !vm.shares.is_empty() {
+        let shares = vm
+            .shares
+            .iter()
+            .enumerate()
+            .map(|(i, s)| fs_share(i, s))
+            .collect::<Result<Vec<_>, String>>()?;
+        config["extensions"] = json!({ "fs": { "shares": shares } });
+    }
+    Ok(config)
+}
+
+/// `extensions.fs.shares`의 한 항목: `id`(`fs<차례>`), `tag`, `path`(호스트 디렉터리, 절대 경로), `read_only`.
+fn fs_share(i: usize, s: &ShareSpec) -> Result<Value, String> {
+    if s.tag.is_empty() || s.tag.len() > MAX_TAG || s.tag.bytes().any(|b| b == 0) {
+        return Err(format!(
+            "share tag {:?} must be 1 to {MAX_TAG} bytes without NUL",
+            s.tag
+        ));
+    }
+    if !s.host_path.is_absolute() {
+        return Err(format!(
+            "share path must be absolute: {}",
+            s.host_path.display()
+        ));
+    }
+    let path = s
+        .host_path
+        .to_str()
+        .ok_or_else(|| format!("share path is not UTF-8: {}", s.host_path.display()))?;
+    Ok(json!({
+        "id": format!("fs{i}"),
+        "tag": s.tag,
+        "path": path,
+        "read_only": s.readonly,
     }))
 }
 
@@ -125,7 +172,8 @@ mod tests {
 
     #[test]
     fn spec_becomes_firecracker_config() {
-        let c = firecracker_config(&vm(), Path::new("/k/kernel"), false).unwrap();
+        let c =
+            firecracker_config(&vm(), Path::new("/k/kernel"), false, Features::default()).unwrap();
         assert_eq!(c["boot-source"]["kernel_image_path"], "/k/kernel");
         assert_eq!(c["boot-source"]["initrd_path"], "/c/initramfs");
         assert_eq!(
@@ -151,7 +199,7 @@ mod tests {
         assert_eq!(c["machine-config"]["vcpu_count"], 2);
         assert_eq!(c["machine-config"]["mem_size_mib"], 512);
         assert_eq!(c["vsock"]["uds_path"], "/s/abc.sock");
-        let x86 = firecracker_config(&vm(), Path::new("/k"), true).unwrap();
+        let x86 = firecracker_config(&vm(), Path::new("/k"), true, Features::default()).unwrap();
         assert!(
             x86["boot-source"]["boot_args"]
                 .as_str()
@@ -161,7 +209,7 @@ mod tests {
         // 이미지가 담은 커널이 있으면 그것으로 부팅한다.
         let mut v = vm();
         v.kernel = Some("/c/images/x/kernel".into());
-        let c = firecracker_config(&v, Path::new("/k/kernel"), false).unwrap();
+        let c = firecracker_config(&v, Path::new("/k/kernel"), false, Features::default()).unwrap();
         assert_eq!(c["boot-source"]["kernel_image_path"], "/c/images/x/kernel");
     }
 
@@ -176,7 +224,7 @@ mod tests {
                 readonly: true,
             });
         }
-        let c = firecracker_config(&v, Path::new("/k/kernel"), false).unwrap();
+        let c = firecracker_config(&v, Path::new("/k/kernel"), false, Features::default()).unwrap();
         let d = c["drives"].as_array().unwrap();
         let got: Vec<(&str, &str, bool)> = d
             .iter()
@@ -214,7 +262,7 @@ mod tests {
             role: DiskRole::Volume,
             readonly: true,
         });
-        let c = firecracker_config(&v, Path::new("/k/kernel"), false).unwrap();
+        let c = firecracker_config(&v, Path::new("/k/kernel"), false, Features::default()).unwrap();
         let d = c["drives"].as_array().unwrap();
         assert!(d[..2].iter().all(|x| x.get("cache_type").is_none()));
         assert_eq!(d[2]["drive_id"], "volume2");
@@ -230,11 +278,11 @@ mod tests {
     fn unsupported_or_unsafe_specs_are_refused() {
         let mut v = vm();
         v.hostname = "a b".into();
-        assert!(firecracker_config(&v, Path::new("/k"), false).is_err());
+        assert!(firecracker_config(&v, Path::new("/k"), false, Features::default()).is_err());
         let mut v = vm();
         v.control_socket = format!("/{}", "s".repeat(MAX_SOCKET_PATH)).into();
         assert!(
-            firecracker_config(&v, Path::new("/k"), false)
+            firecracker_config(&v, Path::new("/k"), false, Features::default())
                 .unwrap_err()
                 .contains("bytes")
         );
@@ -244,6 +292,55 @@ mod tests {
             tag: "sbx0".into(),
             readonly: true,
         });
-        assert!(firecracker_config(&v, Path::new("/k"), false).is_err());
+        // upstream(확장 없음)에는 공유를 붙이지 않는다.
+        let e = firecracker_config(&v, Path::new("/k"), false, Features::default()).unwrap_err();
+        assert!(e.contains("--features"), "{e}");
+    }
+
+    /// `fs` 확장을 알린 VMM에만, 공유가 있을 때만 `extensions.fs`를 넣는다. upstream 모양은 그대로다.
+    #[test]
+    fn shares_go_to_the_fs_extension_only_when_announced() {
+        let fs = Features { fs: true };
+        // 공유가 없으면 확장을 알려도 `extensions`가 없다.
+        let c = firecracker_config(&vm(), Path::new("/k"), false, fs).unwrap();
+        assert!(c.get("extensions").is_none());
+        let plain = firecracker_config(&vm(), Path::new("/k"), false, Features::default()).unwrap();
+        assert_eq!(c, plain);
+
+        let mut v = vm();
+        for (tag, ro) in [("sbx0", false), ("sbx1", true)] {
+            v.shares.push(ShareSpec {
+                host_path: format!("/h/{tag}").into(),
+                tag: tag.into(),
+                readonly: ro,
+            });
+        }
+        let c = firecracker_config(&v, Path::new("/k"), false, fs).unwrap();
+        assert_eq!(
+            c["extensions"],
+            serde_json::json!({"fs": {"shares": [
+                {"id": "fs0", "tag": "sbx0", "path": "/h/sbx0", "read_only": false},
+                {"id": "fs1", "tag": "sbx1", "path": "/h/sbx1", "read_only": true},
+            ]}})
+        );
+        // 디스크와 vsock은 공유가 없을 때와 같다.
+        assert_eq!(c["drives"], plain["drives"]);
+
+        for (tag, path) in [
+            ("", "/h"),
+            (&"t".repeat(MAX_TAG + 1)[..], "/h"),
+            ("sbx0", "rel"),
+        ] {
+            let mut v = vm();
+            v.shares.push(ShareSpec {
+                host_path: path.into(),
+                tag: tag.into(),
+                readonly: false,
+            });
+            assert!(
+                firecracker_config(&v, Path::new("/k"), false, fs).is_err(),
+                "{tag:?} {path}"
+            );
+        }
     }
 }

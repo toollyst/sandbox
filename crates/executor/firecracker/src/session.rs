@@ -12,6 +12,7 @@ use sbx_executor_proto::{
 };
 
 use crate::config::firecracker_config;
+use crate::features::{self, Features};
 use crate::settings::Settings;
 
 /// 감시 프로세스 모드의 첫 인자 (내부용).
@@ -23,8 +24,8 @@ pub const READY_TIMEOUT: Duration = Duration::from_secs(10);
 /// 프로세스 상태를 다시 보는 간격.
 const POLL: Duration = Duration::from_millis(2);
 
-/// 이 실행기가 알리는 기능.
-pub fn capabilities_value() -> Capabilities {
+/// 이 실행기가 알리는 기능. 공유 폴더(`live_share`)는 VMM이 `fs` 확장을 알렸을 때만이다([`features`]).
+pub fn capabilities_value(features: Features) -> Capabilities {
     Capabilities {
         version: VERSION,
         // 규약 2를 말하는 sbx(볼륨 없음)도 쓸 수 있다.
@@ -36,20 +37,24 @@ pub fn capabilities_value() -> Capabilities {
             Arch::Amd64
         },
         rootfs_formats: vec!["erofs".into()],
-        live_share: false,
+        live_share: features.fs,
         custom_kernel: true,
         snapshot: false,
         max_disks: 8,
     }
 }
 
-/// `capabilities`: 실행 파일과 커널을 찾을 수 있을 때만 성공한다.
+/// `capabilities`: 실행 파일과 커널을 찾을 수 있을 때만 성공한다. VMM의 확장은 `firecracker --features`로 알아낸다.
 pub fn capabilities() -> ExitCode {
-    if let Err(e) = Settings::locate() {
-        eprintln!("sbx-executor-firecracker: {e}");
-        return ExitCode::FAILURE;
-    }
-    match write_line(&mut io::stdout(), &capabilities_value()) {
+    let settings = match Settings::locate() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("sbx-executor-firecracker: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let caps = capabilities_value(features::probe(&settings.firecracker));
+    match write_line(&mut io::stdout(), &caps) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("sbx-executor-firecracker: {e}");
@@ -106,7 +111,14 @@ pub fn run() -> ExitCode {
         Ok(s) => s,
         Err(e) => return fail(e),
     };
-    let config = match firecracker_config(&vm, &settings.kernel, cfg!(target_arch = "x86_64")) {
+    // 공유가 있을 때만 VMM에 묻는다. 없으면 upstream과 같은 설정 파일이다.
+    let features = if vm.shares.is_empty() {
+        Features::default()
+    } else {
+        features::probe(&settings.firecracker)
+    };
+    let x86_64 = cfg!(target_arch = "x86_64");
+    let config = match firecracker_config(&vm, &settings.kernel, x86_64, features) {
         Ok(c) => c,
         Err(e) => return fail(e),
     };
