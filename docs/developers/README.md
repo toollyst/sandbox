@@ -90,6 +90,7 @@ cargo xtask dist                           # release sbx + sbx-shim, guest init 
 cargo xtask install                        # dist, then install them where the installers do
 cargo xtask smoke                          # 27 checks on real VMs with the installed executor (4 more with live sharing)
 cargo xtask bench                          # timings (add --docker to compare with docker run)
+cargo xtask bench build                    # sbx build next to docker build on the same Dockerfiles
 ```
 
 | `cargo xtask …` | What it does | Source |
@@ -101,6 +102,7 @@ cargo xtask bench                          # timings (add --docker to compare wi
 | `kernel --arch A` | The default guest kernel, built in Docker | [`kernel.rs`](../../xtask/src/kernel.rs) |
 | `smoke [--sbx F]` | Real-VM checks: pull, exec, cp, logs, stop, egress… | [`smoke.rs`](../../xtask/src/smoke.rs) |
 | `bench [--docker]` | p50/p90 of `run`, `exec` and parallel runs | [`bench.rs`](../../xtask/src/bench.rs) |
+| `bench build` | `sbx build` and `docker build` on the same Dockerfiles: uncached, cached, one file changed, multi-stage ([Comparing builds](testing-and-releasing.md#comparing-sbx-build-with-docker-build)) | [`build_bench.rs`](../../xtask/src/build_bench.rs) |
 | `demo` | Re-records `assets/demo.svg` from real commands | [`demo.rs`](../../xtask/src/demo.rs) |
 | `repo-add` | Adds an executor, adapter or VMM package to a static executor repository | [`repo.rs`](../../xtask/src/repo.rs) |
 | `fuzz [--time S] [T…]`, `fuzz --seeds` | Runs the cargo-fuzz targets in `fuzz/` (nightly, `cargo-fuzz`), or regenerates their seeds ([Fuzzing](testing-and-releasing.md#fuzzing)) | [`fuzz.rs`](../../xtask/src/fuzz.rs) |

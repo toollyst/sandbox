@@ -27,6 +27,7 @@ fake executor serves it over the same protocol. Real VMs are the last check, not
 | Fuzzing | [`fuzz/`](../../fuzz), `cargo xtask fuzz` ([below](#fuzzing)) | nightly, `cargo-fuzz` | inputs no hand-written test thought of, in every parser that reads bytes from a guest, a registry, an image or an executor repository |
 | Real VMs | `cargo xtask smoke` | an installed executor | 27 checks (25 with `--no-internet`): output and exit codes, stdin, `/dev/fd` and `/dev/stdin` links, no network device, fast DNS failure, writable root, detached `exec`/`cp`/`logs`/`stop`/`rm`, `--connect`, `build` (two stages with a closed-network `RUN` and `COPY --from`, run, `-o type=oci` then `load` gives the exported ID and runs, a rebuild comes from the cache), allow list. 4 more when the executor announces `live_share`: `-v` both ways, and a host edit reaching the guest's `inotifyd` |
 | Numbers | `cargo xtask bench [--docker]` | an installed executor (and Docker for `--docker`) | regressions on the hot path: `run`, `exec`, parallel runs |
+| Build numbers | `cargo xtask bench build` ([below](#comparing-sbx-build-with-docker-build)) | an installed executor; Docker to compare (without it, sbx alone) | `sbx build` against `docker build` on the same Dockerfiles: uncached, cached, one file changed, multi-stage; that both images hold the same files |
 
 When you fix a bug, add the test at the lowest level that can see it. If it took a real VM to find, ask whether a
 unit test or the fake executor could have found it.
@@ -42,6 +43,57 @@ cargo xtask smoke --sbx target/release/sbx
 `smoke` and `bench` use the same directories and default executor as `sbx` (`SBX_DATA_DIR`, `SBX_CACHE_DIR`, …).
 Point them at scratch directories to keep test sandboxes away from your own. `--no-internet` skips the check that
 needs an HTTPS site.
+
+### Comparing `sbx build` with `docker build`
+
+```sh
+cargo xtask bench build --sbx target/release/sbx                 # Markdown table on stdout, progress on stderr
+cargo xtask bench build --sbx target/release/sbx --format json   # the same numbers for a job summary or the README
+cargo xtask bench build --dry-run                                # the Dockerfiles and every command; nothing runs
+```
+
+It builds the same Dockerfiles with `sbx build` and `docker build` ([`build_bench.rs`](../../xtask/src/build_bench.rs)
+has them) and prints, per case and tool, the first build (cold) and the min, p50, p90 and max of the next `--runs`
+builds (warm, default 10), the sbx/docker ratio of the p50s, and whether both images hold the same files.
+
+| Case | What is timed |
+| --- | --- |
+| `no-cache` | `build --no-cache` of one stage: `WORKDIR`, `COPY`, a `RUN` making 200 files, `COPY src/`, a `RUN` |
+| `cached` | the same Dockerfile again with nothing changed: every step comes from the cache (sbx starts no VM) |
+| `one-file-changed` | the same Dockerfile after `src/main.txt` changed: `COPY src/` and the `RUN` after it run again |
+| `multi-stage` | `build --no-cache` of three stages: two independent ones with a `RUN` each, then two `COPY --from` |
+| `network` (`--network`) | `build --no-cache` of `RUN apk add --no-cache jq`. It downloads from `dl-cdn.alpinelinux.org`, so the mirror is in the numbers; sbx gets `--network allow --allow dl-cdn.alpinelinux.org:443`, Docker's builder has network by default |
+
+How it keeps the comparison fair:
+
+- The base image (`--image`, default `alpine:3.20`) is pulled on both sides before timing, and `sbx prepare`d; that
+  is not timed. Every `FROM` names a tag of it made for this run only (`sbx-bench-build/base:<nonce>`), so neither
+  builder asks a registry. Both build for the host's architecture; a Docker server for another platform is not
+  compared.
+- Each time is the tool's process from start to exit, with `-q`. sbx and docker take turns going first, so load and
+  warm caches don't favour one side. `one-file-changed` writes the new content before both builds of a round.
+- After each case, its last image is run once on each side (not timed) to list the checked paths: type, mode, owner,
+  size and sha256 of every file, link targets, the working directory, user and `ENV`. Times and layer digests are
+  not compared. If the lists differ, the report says where and the command fails.
+- Both tools run with their defaults, and the report says what that leaves different: sbx runs each stage's steps in
+  a VM (1 vCPU and 512 MiB unless you pass `--cpus` and `--memory`), Docker runs `RUN` steps in containers with all
+  of its VM or host; Docker's builder runs independent stages at once, sbx one after another; Docker exports to its
+  image store with whatever its builder adds by default. The header prints both versions, the executor,
+  Docker's product, builder driver and resources, and the host.
+
+What it does not measure: large images and real projects, pushing, cache import and export, the first start of
+Docker's VM or of an executor, and builds that need the network other than the `network` case.
+
+Docker is optional. When `docker` is not on PATH, its daemon is not reachable or it builds for another platform, the
+report says why and shows sbx alone; `--no-docker` skips it. Nothing in CI needs Docker for this, and `cargo xtask
+bench` itself is unchanged.
+
+It removes only what it made, by name, also when a build fails: every tag (`sbx-bench-build/<case>:<nonce>-<n>`),
+the base tag, the base image if this run pulled it, Docker's build records (`docker buildx history rm`) and its
+temporary directory (`sbx-bench-build-<nonce>` in the system temp directory). It never removes by image ID. Build
+cache entries stay on both sides (`sbx builder prune`, `docker builder prune` reclaim them). If you interrupt it, those
+names are what is left: find them with `sbx images` and `docker images --filter reference='sbx-bench-build/*'`,
+`docker buildx history ls`, and remove them with `rmi`; check `sbx ps -a` for a build VM of a killed `sbx build`.
 
 ## Fuzzing
 
