@@ -695,6 +695,8 @@ mod tests {
         assert!(platform("windows/amd64").is_err());
     }
 
+    // 아래 둘은 `volumes`와 `mounts`만 쓴다. 그 테스트는 Unix 호스트 경로(`/data`)를 쓰므로 Unix에서만 돈다.
+    #[cfg(unix)]
     fn folder(a: ParseResult<Attach>) -> Mount {
         match a {
             Ok(Attach::Folder(m)) => m,
@@ -702,6 +704,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn named_volume(a: ParseResult<Attach>) -> VolumeMount {
         match a {
             Ok(Attach::Volume(v)) => v,
