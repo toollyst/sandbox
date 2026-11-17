@@ -174,6 +174,10 @@ read it afterwards: read **Upgrading from 0.2** first.
   VM used.
 - `sbx system df` counts the executors and adapters that running sandboxes were started with as active (it always
   showed 0).
+- An image layer with an xattr whose value holds a newline byte (binary values such as POSIX ACLs and file
+  capabilities can) failed to pull or load with `malformed pax extension`. PAX records are now split by their length,
+  as Docker (Go `archive/tar`) and GNU tar split them. A layer in which a record's value holds a line that reads as
+  another record is refused, since tar readers would disagree on what it contains.
 
 ### Notes
 

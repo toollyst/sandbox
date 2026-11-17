@@ -9,13 +9,45 @@
 //! 8진수 글자이거나 첫 바이트의 최상위 비트가 켜진 base-256이다. PAX `x` 헤더의 `size`는 다음 항목의 크기를
 //! 바꾼다(그래서 `x`의 내용은 상한 안에서 모아 읽는다). GNU sparse(`S`)는 확장 블록이 따로 있어 따라가지 않고,
 //! 그 뒤로는 그대로 넘긴다(레이어 읽기가 그 항목을 거부한다).
+//!
+//! PAX 기록도 여기서 읽는다([`parse_pax`]). 기록은 길이로 나뉘고 값에는 줄바꿈을 포함한 아무 바이트나 올 수 있다
+//! (xattr 값은 바이너리다. POSIX, Go `archive/tar`, GNU tar가 그렇게 읽는다). `tar` 크레이트는 줄바꿈으로 나누어
+//! 그런 값을 "malformed pax extension"으로 거부하고, `path`·`size` 같은 기록을 값 안의 줄에서 찾을 수도 있다. 그래서
+//! 다음 항목에 붙은 기록을 [`PaxSlot`]으로 넘기고, 레이어 읽기가 xattr을 거기서 얻고 크레이트가 본 경로·크기와
+//! 견준다(다르면 읽는 쪽마다 다른 레이어이므로 거부한다).
 
+use std::cell::RefCell;
 use std::io::{self, Read};
+use std::rc::Rc;
 
 /// 확장 헤더 하나의 내용 상한(바이트).
 pub const MAX_EXTENSION: u64 = 1 << 20;
 
 const BLOCK: usize = 512;
+
+/// PAX 기록들(키, 값), 적힌 순서. 같은 키가 또 오면 뒤의 것이 이긴다.
+pub type PaxRecords = Vec<(Vec<u8>, Vec<u8>)>;
+
+/// 마지막으로 읽은 항목 헤더에 붙은 PAX 확장 헤더의 내용([`parse_pax`]로 읽히는 것만). [`Limited`]가 채우고, 그
+/// 항목을 받은 쪽이 [`PaxSlot::take`]한다.
+#[derive(Clone, Default)]
+pub struct PaxSlot(Rc<RefCell<Vec<u8>>>);
+
+impl PaxSlot {
+    /// 지금 항목의 PAX 내용을 꺼낸다(없으면 빈 것).
+    pub fn take(&self) -> Vec<u8> {
+        std::mem::take(&mut self.0.borrow_mut())
+    }
+}
+
+/// `records`에서 `key`의 값(마지막 것).
+pub fn pax_value<'a>(records: &'a PaxRecords, key: &[u8]) -> Option<&'a [u8]> {
+    records
+        .iter()
+        .rev()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.as_slice())
+}
 
 /// [`Read`]를 감싸 확장 헤더의 크기를 본다.
 pub struct Limited<R> {
@@ -26,8 +58,12 @@ pub struct Limited<R> {
     data_left: u64,
     /// 모으는 `x` 헤더 내용과 그 실제 크기.
     pax: Option<(Vec<u8>, usize)>,
+    /// 다음 항목에 붙을 PAX 내용(다 읽은 `x`).
+    next_pax: Option<Vec<u8>>,
     /// 다음 항목의 크기(`x`의 `size`).
     next_size: Option<u64>,
+    /// 지금 항목의 기록을 넘기는 곳.
+    slot: PaxSlot,
     /// 더 따라가지 않는다(GNU sparse).
     passthrough: bool,
 }
@@ -41,9 +77,35 @@ impl<R: Read> Limited<R> {
             filled: 0,
             data_left: 0,
             pax: None,
+            next_pax: None,
             next_size: None,
+            slot: PaxSlot::default(),
             passthrough: false,
         }
+    }
+
+    /// 항목마다 그 PAX 기록을 받는 곳. 감싼 것을 `tar::Archive`에 넘기기 전에 얻는다.
+    pub fn pax_slot(&self) -> PaxSlot {
+        self.slot.clone()
+    }
+
+    /// 다 모은 `x` 헤더 내용: 바로 다음 항목 하나에 적용한다(뒤의 `x`가 앞의 것을 바꾼다).
+    fn pax_done(&mut self, buf: Vec<u8>) -> io::Result<()> {
+        let records = parse_pax(&buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        if let Some(v) = pax_value(&records, b"size") {
+            let s = std::str::from_utf8(v)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "a PAX size that is not a number",
+                    )
+                })?;
+            self.next_size = Some(s);
+        }
+        self.next_pax = Some(buf);
+        Ok(())
     }
 
     fn observe(&mut self, mut b: &[u8]) -> io::Result<()> {
@@ -61,10 +123,7 @@ impl<R: Read> Limited<R> {
                 if self.data_left == 0
                     && let Some((buf, _)) = self.pax.take()
                 {
-                    // 바로 다음 항목 하나에 적용한다(뒤의 `x`가 앞의 것을 바꾼다).
-                    if let Some(s) = pax_size(&buf) {
-                        self.next_size = Some(s);
-                    }
+                    self.pax_done(buf)?;
                 }
                 continue;
             }
@@ -98,8 +157,11 @@ impl<R: Read> Limited<R> {
                     ),
                 ));
             }
-        } else if let Some(s) = self.next_size.take() {
-            size = s;
+        } else {
+            if let Some(s) = self.next_size.take() {
+                size = s;
+            }
+            *self.slot.0.borrow_mut() = self.next_pax.take().unwrap_or_default();
         }
         if kind == b'S' {
             self.passthrough = true;
@@ -113,9 +175,8 @@ impl<R: Read> Limited<R> {
         self.data_left = size.div_ceil(BLOCK as u64) * BLOCK as u64;
         if self.data_left == 0
             && let Some((buf, _)) = self.pax.take()
-            && let Some(s) = pax_size(&buf)
         {
-            self.next_size = Some(s);
+            self.pax_done(buf)?;
         }
         Ok(())
     }
@@ -152,23 +213,33 @@ fn header_size(f: &[u8]) -> io::Result<u64> {
     u64::from_str_radix(s, 8).map_err(|_| bad())
 }
 
-/// PAX 기록(`<길이> <키>=<값>\n`)에서 `size`.
-fn pax_size(mut b: &[u8]) -> Option<u64> {
-    let mut found = None;
+/// PAX 확장 헤더의 내용: `<길이> <키>=<값>\n`이 이어진 것. 길이는 그 기록 전체(자기 자릿수와 줄바꿈 포함)의
+/// 바이트 수이고, 값은 그 길이 안의 아무 바이트다(줄바꿈도). 모양이 어긋나면 오류다(Go `archive/tar`처럼).
+pub fn parse_pax(mut b: &[u8]) -> Result<PaxRecords, &'static str> {
+    const BAD: &str = "malformed PAX record";
+    let mut out = Vec::new();
     while !b.is_empty() {
-        let sp = b.iter().position(|&c| c == b' ')?;
-        let len: usize = std::str::from_utf8(&b[..sp]).ok()?.parse().ok()?;
+        let sp = b.iter().position(|&c| c == b' ').ok_or(BAD)?;
+        let digits = &b[..sp];
+        if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
+            return Err(BAD);
+        }
+        let len: usize = std::str::from_utf8(digits)
+            .ok()
+            .and_then(|d| d.parse().ok())
+            .ok_or(BAD)?;
         if len <= sp + 1 || len > b.len() {
-            return found;
+            return Err(BAD);
         }
-        let rec = &b[sp + 1..len];
-        let rec = rec.strip_suffix(b"\n").unwrap_or(rec);
-        if let Some(v) = rec.strip_prefix(b"size=") {
-            found = std::str::from_utf8(v).ok().and_then(|v| v.parse().ok());
+        let rec = b[sp + 1..len].strip_suffix(b"\n").ok_or(BAD)?;
+        let eq = rec.iter().position(|&c| c == b'=').ok_or(BAD)?;
+        if eq == 0 {
+            return Err(BAD);
         }
+        out.push((rec[..eq].to_vec(), rec[eq + 1..].to_vec()));
         b = &b[len..];
     }
-    found
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -255,8 +326,38 @@ mod tests {
         f[10] = 2;
         assert_eq!(header_size(&f).unwrap(), 0x201);
         assert!(header_size(b"9\0\0\0\0\0\0\0\0\0\0\0").is_err());
-        assert_eq!(pax_size(b"9 size=5\n"), Some(5));
-        assert_eq!(pax_size(b"11 path=ab\n9 size=7\n"), Some(7));
-        assert_eq!(pax_size(b"99 size=5\n"), None);
+    }
+
+    #[test]
+    fn pax_records_are_split_by_length_not_by_newline() {
+        let size = |b: &[u8]| {
+            parse_pax(b)
+                .map(|r| pax_value(&r, b"size").map(<[u8]>::to_vec))
+                .ok()
+                .flatten()
+        };
+        assert_eq!(size(b"9 size=5\n"), Some(b"5".to_vec()));
+        assert_eq!(size(b"11 path=ab\n9 size=7\n"), Some(b"7".to_vec()));
+        // 값 안의 줄바꿈과, 기록처럼 보이는 줄.
+        let r = parse_pax(b"35 SCHILY.xattr.user.a=x\n9 size=9\n\n").unwrap();
+        assert_eq!(
+            r,
+            vec![(b"SCHILY.xattr.user.a".to_vec(), b"x\n9 size=9\n".to_vec())]
+        );
+        assert_eq!(pax_value(&r, b"size"), None);
+        for bad in [
+            &b"99 size=5\n"[..],
+            b"9 size=5x",
+            b"x size=5\n",
+            b"5 =5\n",
+            b"7 size\n",
+            b"9 size=5\n3",
+        ] {
+            assert!(
+                parse_pax(bad).is_err(),
+                "{:?}",
+                String::from_utf8_lossy(bad)
+            );
+        }
     }
 }
