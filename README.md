@@ -90,7 +90,7 @@ architectures. (Docker's own Docker Sandboxes also has a CLI named `sbx`; this i
 `sbx run --rm alpine:3.20 true` (boot, run, shut down, delete) took **121 ms** at p50, `sbx exec` into a running
 sandbox **8 ms**, and ten runs at once finished in **0.50 s**. Try it on your machine ([source](xtask/src/bench.rs)).
 
-<!-- build-timings: the build comparison with docker build (cargo xtask bench, roadmap D6) goes here, measured on a
+<!-- build-timings: the build comparison with docker build (cargo xtask bench build, roadmap D6) goes here, measured on a
 real VM, with the machine and the date. No numbers until then. -->
 
 ## Install
