@@ -1436,7 +1436,7 @@ impl Ctx {
         self.each(&rt, &a.ids, async |id| {
             let s = rt.get(&id).await?;
             let timeout = behavior::stop_timeout(a.time, s.info().spec.stop.timeout_secs);
-            s.stop(signal, timeout).await?;
+            behavior::stopped_anyway(s.stop(signal, timeout).await)?;
             Ok(())
         })
         .await
@@ -1450,7 +1450,7 @@ impl Ctx {
             let s = rt.get(&id).await?;
             if s.state() == State::Running {
                 let timeout = behavior::stop_timeout(a.time, s.info().spec.stop.timeout_secs);
-                s.stop(signal, timeout).await?;
+                behavior::stopped_anyway(s.stop(signal, timeout).await)?;
             }
             self.start_detached(&id, false).await
         })
@@ -1484,8 +1484,8 @@ impl Ctx {
                 if !force {
                     return Err(msg("sandbox is running; stop it first or use -f"));
                 }
-                // Docker의 SIGKILL처럼 기다리지 않고 끈다.
-                sandbox.stop(None, Duration::ZERO).await?;
+                // Docker의 SIGKILL처럼 기다리지 않고 끈다. 그 사이 스스로 끝났으면 그대로 지운다.
+                behavior::stopped_anyway(sandbox.stop(None, Duration::ZERO).await)?;
                 rt.get(&id).await?.delete().await?;
             } else {
                 sandbox.delete().await?;

@@ -211,6 +211,22 @@ pub fn stop_timeout(given: Option<u64>, recorded: Option<u32>) -> Duration {
     Duration::from_secs(given.or(recorded.map(u64::from)).unwrap_or(10))
 }
 
+/// 멈추기의 결과: 샌드박스가 실행 중이 아니어서 실패했으면 된 것으로 본다(Docker의 `stop`처럼). 상태를 읽은 뒤
+/// 멈추기 전에 샌드박스가 스스로 끝날 수 있다(기본 프로세스가 그 사이 끝났다). `stop`, `restart`, `rm -f`, MCP의
+/// `remove`가 쓴다. 다른 오류는 그대로다.
+pub fn stopped_anyway(
+    r: Result<(), sbx_runtime::RuntimeError>,
+) -> Result<(), sbx_runtime::RuntimeError> {
+    match r {
+        Err(sbx_runtime::RuntimeError::InvalidState { current, .. })
+            if current != sbx_model::State::Running =>
+        {
+            Ok(())
+        }
+        r => r,
+    }
+}
+
 /// `--network`와 `--allow`로 네트워크 정책을 정한다.
 ///
 /// | `--network` | `--allow` | 결과 |
@@ -551,6 +567,24 @@ pub fn human_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{LogTimes, familiar, human_ago, human_size, last_lines, prefix_lines, rfc3339};
+
+    #[test]
+    fn stopping_what_already_stopped_is_done() {
+        use sbx_model::State;
+        use sbx_runtime::RuntimeError;
+        let not = |current| {
+            super::stopped_anyway(Err(RuntimeError::InvalidState {
+                current,
+                action: "stop",
+            }))
+        };
+        assert!(not(State::Stopped).is_ok());
+        assert!(not(State::Created).is_ok());
+        // 실행 중인데 실패한 것과 다른 오류는 그대로다.
+        assert!(not(State::Running).is_err());
+        assert!(super::stopped_anyway(Err(RuntimeError::Invalid("x".into()))).is_err());
+        assert!(super::stopped_anyway(Ok(())).is_ok());
+    }
 
     #[test]
     fn tail_counts_lines_across_records() {

@@ -1798,6 +1798,10 @@ mod unix {
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
         let id = text(&o.stdout).trim().to_owned();
         assert_eq!(e.ps()[0]["state"], "created");
+        // 실행 중이 아닌 것을 멈추면 아무것도 하지 않고 성공한다(Docker와 같다).
+        let o = e.sbx(&["stop", &id]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(e.ps()[0]["state"], "created");
 
         // start는 붙어서 기본 프로세스가 끝날 때까지 기다린다.
         let o = e.sbx(&["start", "-a", &id]);
@@ -1817,6 +1821,9 @@ mod unix {
 
         // 다시 시작할 수 있다(Docker와 같다).
         assert_eq!(e.sbx(&["start", "-a", &id]).status.code(), Some(3));
+        let o = e.sbx(&["stop", &id]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout).trim(), id);
 
         let o = e.sbx(&["rm", &id]);
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
