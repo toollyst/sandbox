@@ -282,3 +282,140 @@ fn damaged_disks_are_errors_not_panics() {
         let _ = read_layer(&mut Cursor::new(b), 0);
     }
 }
+
+/// 크기 `n`인 내용(블록 경계가 어긋나면 드러나게 자리마다 다른 바이트).
+fn pattern(n: usize, seed: u8) -> Vec<u8> {
+    (0..n)
+        .map(|i| (i as u32).wrapping_mul(2_654_435_761).to_le_bytes()[3] ^ seed)
+        .collect()
+}
+
+/// 비교할 모습(내용은 바이트 그대로): 경로 → (종류, 권한, 소유자, 시각, xattr, 하드 링크인지, 내용).
+fn exact(tree: &MergedTree, content: &dyn ContentSource) -> BTreeMap<String, (String, Vec<u8>)> {
+    tree.iter()
+        .map(|(p, n)| {
+            let mut bytes = Vec::new();
+            let kind = match &n.kind {
+                NodeKind::File(c) => {
+                    content.open(c).unwrap().read_to_end(&mut bytes).unwrap();
+                    assert_eq!(bytes.len() as u64, c.size, "{p}");
+                    "file".to_owned()
+                }
+                k => format!("{k:?}"),
+            };
+            let m = &n.meta;
+            let head = format!(
+                "{kind} {:o} {}:{} {} {:?} link={}",
+                m.mode,
+                m.uid,
+                m.gid,
+                m.mtime,
+                m.xattrs,
+                n.link_group.is_some()
+            );
+            (p.to_owned(), (head, bytes))
+        })
+        .collect()
+}
+
+/// 쓰고 다시 읽으면 같은 트리와 같은 바이트다. 모든 종류, 크기 경계(0, 1, BLOCK-1, BLOCK, BLOCK+1, 여러 블록,
+/// 몇 MiB), 하드 링크(크기 0인 파일의 것도), 긴 이름(255바이트)과 긴 링크 대상, xattr, 깊은 디렉터리, 여러 블록에 걸친
+/// 넓은 디렉터리, 빈 디렉터리. 크기 0인 파일은 블록 주소가 `NULL_ADDR`이다(패키지 설치가 늘 만든다:
+/// `apk add`의 `lib/apk/db/lock`).
+#[test]
+fn every_kind_and_size_boundary_round_trips() {
+    let b = BLOCK as usize;
+    let mut mem = Mem::default();
+    let mut l = Layer::new(0);
+    l.dir("s");
+    for (k, n) in [0, 1, b - 1, b, b + 1, 3 * b, 3 * b + 17, (3 << 20) + 5]
+        .into_iter()
+        .enumerate()
+    {
+        l.file(&format!("s/f{n}"), &pattern(n, k as u8), &mut mem);
+    }
+    l.dir("h")
+        .file("h/empty", b"", &mut mem)
+        .push(
+            "h/empty-again",
+            EntryKind::Hardlink("h/empty".into()),
+            0o644,
+        )
+        .file("h/big", &pattern(2 * b + 3, 9), &mut mem)
+        .push("h/big-again", EntryKind::Hardlink("h/big".into()), 0o644)
+        .push("h/big-third", EntryKind::Hardlink("h/big".into()), 0o644);
+    l.dir("l")
+        .push("l/short", EntryKind::Symlink("../s/f1".into()), 0o777)
+        .push("l/long", EntryKind::Symlink("x/".repeat(1500)), 0o777)
+        .push(
+            "l/abs",
+            EntryKind::Symlink("/usr/lib/libpq.so.5".into()),
+            0o777,
+        )
+        .push(
+            "l/null",
+            EntryKind::CharDevice { major: 1, minor: 3 },
+            0o666,
+        )
+        .push(
+            "l/disk",
+            EntryKind::BlockDevice {
+                major: 259,
+                minor: 70_000,
+            },
+            0o660,
+        )
+        .push("l/fifo", EntryKind::Fifo, 0o600);
+    let long = format!("n/{}", "a".repeat(255));
+    l.dir("n").file(&long, b"long name", &mut mem).dir("empty");
+    let mut deep = String::from("d");
+    l.dir(&deep);
+    for i in 0..60 {
+        deep.push_str(&format!("/{i}"));
+        l.dir(&deep);
+    }
+    l.file(&format!("{deep}/leaf"), b"deep", &mut mem);
+    l.dir("w");
+    for i in 0..3000usize {
+        l.file(
+            &format!("w/lib-{i:05}.so.{}", i % 7),
+            &pattern(i % 5, i as u8),
+            &mut mem,
+        );
+    }
+    for (path, name, value) in [
+        ("s/f1", "user.a", &b"1"[..]),
+        ("s/f4096", "security.capability", &[1, 0, 0, 2, 0, 0][..]),
+        ("w", "user.dir", b"d"),
+        ("n", "system.posix_acl_access", &[2, 0, 0, 0][..]),
+    ] {
+        let e = l.entries.iter_mut().find(|e| e.path == path).unwrap();
+        e.meta.xattrs.insert(name.into(), value.to_vec());
+    }
+
+    let mut want = MergedTree::new();
+    want.apply_layer(l.entries.clone()).unwrap();
+    let (read, bytes) = round_trip(l.entries, &mem, 0);
+    // 크기 0인 파일에는 디스크 안 자리가 없다.
+    let empty = read.entries.iter().position(|e| e.path == "s/f0").unwrap();
+    assert!(!read.offsets.contains_key(&empty));
+    let mut got = MergedTree::new();
+    got.apply_layer(read.entries).unwrap();
+    let disk = Disk(bytes, read.offsets);
+    assert_eq!(exact(&got, &disk), exact(&want, &mem));
+}
+
+/// 가장 작은 재현: 크기 0인 파일 하나. 그 inode의 블록 주소는 `NULL_ADDR`(0xffffffff)이고 읽는 쪽이 그것을
+/// 데이터 자리로 보면 "data is outside the disk"였다.
+#[test]
+fn an_empty_file_reads_back() {
+    let mut mem = Mem::default();
+    let mut l = Layer::new(0);
+    l.file("lock", b"", &mut mem);
+    let (read, _) = round_trip(l.entries, &mem, 0);
+    assert_eq!(read.entries.len(), 1);
+    assert!(matches!(
+        read.entries[0].kind,
+        EntryKind::File(ContentRef { size: 0, .. })
+    ));
+}
