@@ -3,7 +3,7 @@
 //! ```text
 //! <data_dir>/volumes/<이름>/
 //!   volume.json   VolumeRecord (만들 때 고정: 크기, 라벨, 만든 시각)
-//!   disk.img      볼륨 디스크. 만들 때 0으로 채운 새 sparse 파일이다. 게스트가 처음 쓰기로 붙일 때 포맷한다
+//!   disk.img      볼륨 디스크. 만들 때 0으로 채운 새 sparse 파일이다(Unix). 게스트가 처음 쓰기로 붙일 때 포맷한다
 //!   use.lock      붙인 동안 VM을 소유한 프로세스가 쥐는 잠금. 쓰기는 배타, 읽기 전용은 공유
 //! ```
 //!
@@ -27,6 +27,10 @@
 //!   ([`looks_like_layer`]). 게스트는 EROFS가 아닌 첫 디스크에서 층 세기를 멈추므로, 그런 볼륨이 층으로 읽히면 안 된다
 //!   (게스트가 볼륨 장치에 직접 쓸 수 있으므로 붙일 때마다 본다. 정상인 ext4는 그 자리가 inode 수다).
 //! - 기록은 비밀일 수 있다(볼륨 내용). 디렉터리는 0700, 파일은 0600이다.
+//! - **Windows**: 디스크는 sparse가 아니다. 길이를 늘리면(`set_len`, `SetFileInformationByHandle`) NTFS는 그만큼
+//!   자리를 잡고 읽으면 0이다(내용은 맞다). sparse로 하려면 `FSCTL_SET_SPARSE`가 필요한데 std에 없고 이 저장소는
+//!   unsafe를 쓰지 않는다. 그래서 차지하는 크기([`VolumeInfo::allocated_bytes`])는 길이로 센다. Windows에는 아직
+//!   샌드박스를 띄울 실행기가 없다.
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions, TryLockError};
@@ -111,7 +115,8 @@ fn check_name(name: &str) -> Result<(), RuntimeError> {
     sbx_model::check_volume_name(name).map_err(RuntimeError::InvalidName)
 }
 
-/// 파일이 호스트에서 차지하는 바이트. Unix는 할당된 블록, 다른 곳은 길이다.
+/// 파일이 호스트에서 차지하는 바이트. Unix는 할당된 블록, 다른 곳은 길이다(Windows의 디스크는 sparse가 아니라
+/// 길이만큼 잡혀 있다).
 fn allocated(path: &Path) -> u64 {
     match fs::metadata(path) {
         #[cfg(unix)]
@@ -329,8 +334,12 @@ mod tests {
         let v = create(&d, "pgdata", 128, labels.clone()).unwrap();
         assert_eq!((v.record.size_mib, &v.record.labels), (128, &labels));
         assert_eq!(fs::metadata(v.disk()).unwrap().len(), 128 << 20);
-        // sparse: 호스트에서는 거의 차지하지 않는다.
+        // Unix는 sparse: 호스트에서는 거의 차지하지 않는다. Windows는 sparse가 아니라 크기만큼 잡고 그대로 센다
+        // (모듈 문서).
+        #[cfg(unix)]
         assert!(v.allocated_bytes < 1 << 20, "{}", v.allocated_bytes);
+        #[cfg(not(unix))]
+        assert_eq!(v.allocated_bytes, 128 << 20);
         assert!(matches!(
             create(&d, "pgdata", 128, BTreeMap::new()),
             Err(RuntimeError::VolumeExists(n)) if n == "pgdata"
