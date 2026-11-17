@@ -419,3 +419,45 @@ fn an_empty_file_reads_back() {
         EntryKind::File(ContentRef { size: 0, .. })
     ));
 }
+
+/// Linux가 나타낼 수 없는 장치 번호(major 12비트, minor 20비트를 넘는 것)는 쓰지 않는다. 전에는 다른 장치로 바뀌어
+/// 써졌다(16687:0 → 303:1024, 퍼징의 쓰고 다시 읽기가 찾았다). 상한까지는 그대로 돌아온다.
+#[test]
+fn device_numbers_round_trip_up_to_the_kernel_limit() {
+    let mem = Mem::default();
+    let mut l = Layer::new(0);
+    l.push(
+        "max",
+        EntryKind::CharDevice {
+            major: 0xfff,
+            minor: 0xf_ffff,
+        },
+        0o600,
+    );
+    let (read, _) = round_trip(l.entries, &mem, 0);
+    assert_eq!(
+        read.entries[0].kind,
+        EntryKind::CharDevice {
+            major: 0xfff,
+            minor: 0xf_ffff
+        }
+    );
+    for kind in [
+        EntryKind::CharDevice {
+            major: 16687,
+            minor: 0,
+        },
+        EntryKind::BlockDevice {
+            major: 1,
+            minor: 0x10_0000,
+        },
+    ] {
+        let mut l = Layer::new(0);
+        l.push("dev", kind, 0o600);
+        let lower = lower_layer(l.entries).unwrap();
+        let e = ErofsBuilder
+            .build(&lower.tree, &mem, &mut Cursor::new(Vec::new()))
+            .unwrap_err();
+        assert!(e.to_string().contains("device numbers"), "{e}");
+    }
+}
