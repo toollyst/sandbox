@@ -502,6 +502,13 @@ fn dockerfile(out: &Path) {
         "node-target-args",
         format!("{node}\0test\nNODE_VERSION=20\nUNUSED=1").as_bytes(),
     );
+    // 회귀: CI 퍼징이 찾은 입력(원본이 둘인 `COPY … .`, 2026-11-17). 원본은 `fuzz/regressions/`에 둔다.
+    put(
+        out,
+        "dockerfile",
+        "regress-copy-several-sources-into-dot",
+        include_bytes!("../regressions/dockerfile/copy-several-sources-into-dot"),
+    );
     let ignore = "# comment\nnode_modules\n**/*.log\n!keep.log\n/dist/\n*.md\n!README*.md\n[a-c]?.txt\n\0node_modules/x\nsrc/a.log\nkeep.log\nREADME.md\nb1.txt\nsrc/main.rs";
     put(out, "dockerignore", "common", ignore.as_bytes());
     put(
