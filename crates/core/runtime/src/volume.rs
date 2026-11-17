@@ -21,8 +21,12 @@
 //! - **VM이 잠금보다 오래 사는 틈**: 소유 프로세스가 죽으면 잠금은 곧바로 풀리지만 VM은 실행기가 끌 때까지 조금 더
 //!   산다. 그래서 잠금을 쥔 뒤, 같은 볼륨과 겹치는(둘 중 하나가 쓰는) 다른 샌드박스의 VM이 아직 사는지 기록의 제어
 //!   소켓으로 보고, 살아 있으면 [`VM_GONE_WAIT`]까지 기다린 뒤에도 살아 있으면 거부한다(`Runtime::start`).
-//! - **지우기**: 배타 잠금을 쥘 수 있을 때만(아무도 붙이지 않았을 때) 이름이 아닌 임시 이름으로 rename하고 지운다.
-//!   샌드박스 기록이 가리키는 볼륨인지는 부르는 쪽(`Runtime::remove_volume`)이 먼저 본다.
+//! - **지우기**: 배타 잠금을 쥘 수 있을 때만(아무도 붙이지 않았을 때) 지운다. 잠금을 쥔 채 먼저 기록(`volume.json`)을
+//!   지운다. 그 순간부터 이름으로 찾을 수 없다(기록이 없는 디렉터리는 [`get`]·[`list`]에 없다). 이어서 디스크를
+//!   지우고, 잠금을 놓은 뒤 잠금 파일과 디렉터리를 지운다(이미지 지우기 `sbx_store::write::remove_image`와 같은
+//!   차례). 잠금 파일이 든 디렉터리를 잠금을 쥔 채 rename하지 않는다: Windows는 안에 열린 파일이 있는 디렉터리의
+//!   이름을 바꾸지 못한다("Access is denied"). 중간에 멈춰 기록 없이 남은 디렉터리는 다음 [`remove`]나 같은 이름의
+//!   [`create`]가 마저 지운다. 샌드박스 기록이 가리키는 볼륨인지는 부르는 쪽(`Runtime::remove_volume`)이 먼저 본다.
 //! - 호스트는 디스크 내용을 해석하지 않는다. 다만 1024바이트 자리에 EROFS 매직이 있는 디스크는 붙이지 않는다
 //!   ([`looks_like_layer`]). 게스트는 EROFS가 아닌 첫 디스크에서 층 세기를 멈추므로, 그런 볼륨이 층으로 읽히면 안 된다
 //!   (게스트가 볼륨 장치에 직접 쓸 수 있으므로 붙일 때마다 본다. 정상인 ext4는 그 자리가 inode 수다).
@@ -41,7 +45,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::error::RuntimeError;
-use crate::records::{atomic_write, private_dir, private_file, read_json, temp, to_json};
+use crate::records::{
+    atomic_write, io_denied, private_dir, private_file, read_json, temp, to_json, transient,
+};
 
 /// 볼륨 디스크의 가장 작은 크기(MiB). 게스트가 그 위에 저널이 있는 ext4를 만든다.
 pub const MIN_SIZE_MIB: u32 = 64;
@@ -186,6 +192,10 @@ pub fn create(
     let parent = root(data_dir);
     private_dir(&parent)?;
     let final_dir = dir(data_dir, name);
+    if final_dir.exists() && !final_dir.join(RECORD).exists() {
+        // 지우다 멈춘 것(모듈 문서의 "지우기"). 마저 지운다. 지우는 중이면 그쪽이 끝낸다.
+        let _ = remove(data_dir, name);
+    }
     if final_dir.exists() {
         return Err(RuntimeError::VolumeExists(name.to_owned()));
     }
@@ -307,13 +317,39 @@ pub fn remove(data_dir: &Path, name: &str) -> Result<(), RuntimeError> {
             holder: None,
         });
     };
-    let doomed = temp(&root(data_dir), &format!("{name}.rm"));
-    let r = fs::rename(&d, &doomed);
-    // 이름으로는 이제 찾을 수 없다. Windows는 열린 파일을 지울 수 없으므로 잠금을 놓고 지운다.
+    // 기록 먼저: 이제 이름으로 찾을 수 없다. 그다음 잠금 파일 말고 모두(붙인 쪽이 없으니 디스크를 연 쪽도 없다).
+    gone(fs::remove_file(d.join(RECORD)))?;
+    for entry in fs::read_dir(&d)? {
+        let path = entry?.path();
+        if path.file_name().is_some_and(|n| n == LOCK) {
+            continue;
+        }
+        if path.is_dir() {
+            gone(transient(|| fs::remove_dir_all(&path), io_denied))?;
+        } else {
+            gone(transient(|| fs::remove_file(&path), io_denied))?;
+        }
+    }
+    // 잠금을 놓고 잠금 파일과 디렉터리를. Windows에서는 다른 sbx가 잠금 파일을 잠깐 연 동안(붙여 보거나 쓰는지
+    // 보는 순간) 디렉터리를 지울 수 없으므로 잠깐 다시 해 본다.
     drop(held);
-    r?;
-    fs::remove_dir_all(&doomed)?;
+    gone(transient(|| fs::remove_file(d.join(LOCK)), io_denied))?;
+    gone(transient(|| fs::remove_dir(&d), dir_busy))?;
     Ok(())
+}
+
+/// 이미 없으면 된 것이다(다른 쪽이 함께 지웠다).
+fn gone(r: io::Result<()>) -> io::Result<()> {
+    match r {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        r => r,
+    }
+}
+
+/// Windows에서 디렉터리 지우기가 잠깐 실패하는 경우: 안의 파일을 다른 쪽이 열고 있다(거부, 또는 지우기를 기다리는
+/// 파일이 남아 비어 있지 않다).
+fn dir_busy(e: &io::Error) -> bool {
+    io_denied(e) || e.kind() == io::ErrorKind::DirectoryNotEmpty
 }
 
 #[cfg(test)]
@@ -357,6 +393,25 @@ mod tests {
         // 지우다 남은 디렉터리와 만드는 중인 디렉터리는 목록에 없다.
         fs::create_dir_all(root(&d).join(".x.tmp-1-2")).unwrap();
         assert_eq!(list(&d).unwrap().len(), 1);
+        // 기록을 지운 뒤 멈춘 지우기(디스크와 잠금 파일이 남았다): 목록에 없고, 같은 이름으로 다시 만들 수 있다.
+        let half = create(&d, "half", 64, BTreeMap::new()).unwrap();
+        fs::remove_file(half.dir.join(RECORD)).unwrap();
+        assert!(get(&d, "half").unwrap().is_none());
+        assert_eq!(list(&d).unwrap().len(), 1);
+        let again = create(&d, "half", 64, BTreeMap::new()).unwrap();
+        assert_eq!(again.record.size_mib, 64);
+        remove(&d, "half").unwrap();
+        // 붙인 쪽이 있으면 지우지 않고 그대로 둔다.
+        let held = hold(&d, "cache", true).unwrap().unwrap();
+        assert!(matches!(
+            remove(&d, "cache"),
+            Err(RuntimeError::VolumeBusy { .. })
+        ));
+        drop(held);
+        assert!(get(&d, "cache").unwrap().is_some());
+        remove(&d, "cache").unwrap();
+        assert!(list(&d).unwrap().is_empty());
+        assert!(!dir(&d, "cache").exists());
         fs::remove_dir_all(d).unwrap();
     }
 
