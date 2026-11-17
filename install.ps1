@@ -136,7 +136,9 @@ function Install-Sbx([string[]]$Arguments) {
 
     $sbx = Join-Path $dir 'sbx.exe'
     $v = & $sbx --version
-    if ($LASTEXITCODE -ne 0) { Fail "$sbx does not run" }
+    # sbx's own error, if any, is already printed above. The exit code says the rest (0xC00000FD: stack overflow,
+    # 0xC0000135: a DLL is missing).
+    if ($LASTEXITCODE -ne 0) { Fail ('{0} does not run: --version exited with 0x{1:X8}' -f $sbx, $LASTEXITCODE) }
     Say "installed $v to $dir"
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
     if (-not (($userPath -split ';') -contains $dir) -and -not (($env:Path -split ';') -contains $dir)) {
