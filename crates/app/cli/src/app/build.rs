@@ -16,6 +16,8 @@
 //!   넘긴다, buildx와 같다). 음이 아닌 정수(Unix 초)여야 한다. 빈 값은 없는 것이다. 쓰임은 빌드 코어 문서에 있다.
 //! - 끝나면(실패해도) 빌드 캐시를 상한 밑으로 줄인다([`Manager::trim_build_cache`]). 상한은
 //!   [`behavior::BUILD_CACHE_MAX_ENV`], 없으면 [`behavior::DEFAULT_BUILD_CACHE_MAX`].
+//! - 저장하면(`type=sbx`) 이미지 기록에 어디서 만들었는지(`build_record`: 컨텍스트, Dockerfile, `--target`)를 남긴다.
+//!   `images`가 보이고 `sbx tui`의 `R`이 그것으로 다시 빌드한다. 저장하지 않는 빌드는 남기지 않는다.
 
 mod outputs;
 
@@ -39,6 +41,7 @@ use sbx_model::{
 };
 use sbx_oci::Reference;
 use sbx_runtime::{IoMode, Placed, PlacedKind, Runtime};
+use sbx_store::BuildRecord;
 
 use self::outputs::{Output, Target};
 use super::{AppResult, Ctx, failure, host_arch, msg, short};
@@ -57,6 +60,21 @@ const LAYER_LIMIT: u64 = 1 << 40;
 
 fn backend(e: impl std::fmt::Display) -> BuildError {
     BuildError::backend(e)
+}
+
+/// 어디서 만들었는지(다시 빌드하려고): 컨텍스트와 Dockerfile의 절대 경로(심볼릭 링크는 풀지 않는다: 준 그대로),
+/// `--target`. Dockerfile을 표준 입력에서 읽었으면 `file`이 없다. 경로가 UTF-8이 아니거나 절대 경로로 만들 수 없으면
+/// 기록하지 않는다(빌드는 그대로 한다).
+fn build_record(context: &Path, file: Option<&Path>, target: Option<&str>) -> Option<BuildRecord> {
+    let text = |p: &Path| Some(std::path::absolute(p).ok()?.to_str()?.to_owned());
+    Some(BuildRecord {
+        context: text(context)?,
+        file: match file {
+            Some(f) => Some(text(f)?),
+            None => None,
+        },
+        target: target.map(str::to_owned),
+    })
 }
 
 /// `.dockerignore`.
@@ -87,6 +105,8 @@ struct BuildStore<'a> {
     arch: Arch,
     work: PathBuf,
     tags: Vec<String>,
+    /// 어디서 만들었는지. 저장할 때(`type=sbx`) 이미지 기록에만 남는다.
+    build: Option<BuildRecord>,
     /// 빌드가 쓰는 층을 끝날 때까지 쥔다(정리가 지우지 않게).
     claims: Mutex<Vec<sbx_manage::BlobClaim>>,
     quiet: bool,
@@ -192,6 +212,7 @@ impl Store for BuildStore<'_> {
                 image.layers.clone(),
                 image.arch,
                 &self.tags,
+                self.build.clone(),
             )
             .map_err(backend)
     }
@@ -722,6 +743,11 @@ impl Ctx {
             arch,
             work: work.clone(),
             tags: store_tags.clone(),
+            build: build_record(
+                context,
+                (!stdin_file).then_some(file.as_path()),
+                a.target.as_deref(),
+            ),
             claims: Mutex::default(),
             quiet: !human,
         };

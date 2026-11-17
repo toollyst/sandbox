@@ -341,6 +341,108 @@ fn volumes_tab_shows_size_disk_use_and_users() {
 }
 
 #[test]
+fn images_tab_offers_build_always_and_rebuild_for_built_images() {
+    use crate::tui::model::tests::{built, image};
+    let mut m = crate::tui::model::Model {
+        tab: Tab::Images,
+        ..Default::default()
+    };
+    // 빈 탭은 빌드를 먼저 권한다. 고른 줄이 없으니 줄에 하는 키는 없다.
+    m.apply(Msg::Images(Ok(Vec::new())));
+    let s = render(&mut m, 160, 20);
+    assert!(
+        s.contains("Press b to build one, or : and type pull IMAGE (run pulls what it needs)"),
+        "{s}"
+    );
+    assert!(
+        s.contains("b build  I load") && !s.contains("R rebuild"),
+        "{s}"
+    );
+    // 만든 이미지(빌드 기록이 있다)는 `*`이고 다시 빌드할 수 있다. 받은 이미지는 올리기만, 이름 없는 것은 둘 다 없다.
+    m.apply(Msg::Images(Ok(vec![
+        built(
+            Some("docker.io/library/app:1"),
+            Some("/home/me/app/Dockerfile"),
+            None,
+        ),
+        image(Some("docker.io/library/alpine:3.20")),
+        image(None),
+    ])));
+    let s = render(&mut m, 160, 20);
+    assert!(s.contains("Images · * built here"), "{s}");
+    let row = |s: &str, what: &str| s.lines().find(|l| l.contains(what)).unwrap().to_owned();
+    assert!(row(&s, "app:1").contains("│ *  app:1"), "{s}");
+    assert!(!row(&s, "alpine:3.20").contains('*'), "{s}");
+    assert!(
+        s.contains("p push  R rebuild") && s.contains("b build"),
+        "{s}"
+    );
+    m.key(KeyEvent::from(KeyCode::Down));
+    let s = render(&mut m, 160, 20);
+    assert!(s.contains("p push") && !s.contains("R rebuild"), "{s}");
+    m.key(KeyEvent::from(KeyCode::Down));
+    let s = render(&mut m, 160, 20);
+    assert!(
+        !s.contains("R rebuild") && !s.contains("p push") && s.contains("t tag"),
+        "{s}"
+    );
+    // 80칸에서도 이름이 다 보인다.
+    let s = render(&mut m, 80, 20);
+    assert!(s.contains("*  app:1") && s.contains("alpine:3.20"), "{s}");
+    // 상세 창에 어디서 만들었는지.
+    m.key(KeyEvent::from(KeyCode::Char('g')));
+    m.key(KeyEvent::from(KeyCode::Enter));
+    let s = render(&mut m, 120, 40);
+    for want in [
+        "Image app:1",
+        "build",
+        "context  /home/me/app",
+        "file     /home/me/app/Dockerfile",
+    ] {
+        assert!(s.contains(want), "{want}\n{s}");
+    }
+    // R은 명령 줄을 채운다(입력 줄에 보인다). 실행은 Enter 뒤다.
+    m.key(KeyEvent::from(KeyCode::Esc));
+    m.key(KeyEvent::from(KeyCode::Char('R')));
+    let s = render(&mut m, 160, 20);
+    assert!(
+        s.lines()
+            .last()
+            .unwrap()
+            .starts_with(":sbx build -t app:1 -f /home/me/app/Dockerfile /home/me/app"),
+        "{s}"
+    );
+}
+
+#[test]
+fn sandbox_details_show_the_allow_list_and_connect_targets() {
+    let mut m = loaded();
+    let mut s = crate::tui::model::tests::sandbox(Some("app"), '3', "running");
+    s.network = serde_json::from_value(serde_json::json!({
+        "mode": "allow",
+        "allow": ["registry.npmjs.org:443", "github.com:22"],
+        "connect": [{"name": "db", "sandbox": "pg", "port": 5432}],
+    }))
+    .unwrap();
+    m.apply(Msg::Sandboxes(Ok(vec![s])));
+    m.key(KeyEvent::from(KeyCode::Enter));
+    let s = render(&mut m, 120, 50);
+    for want in [
+        "Sandbox app",
+        "network",
+        "mode   allow",
+        "allow  registry.npmjs.org:443, github.com:22",
+        "connect",
+        "- name     db",
+        "sandbox  pg",
+        "port     5432",
+        "same as: sbx inspect app --format json",
+    ] {
+        assert!(s.contains(want), "{want}\n{s}");
+    }
+}
+
+#[test]
 fn executors_in_use_show_their_sandboxes_and_rm_shows_the_refusal() {
     let mut m = loaded();
     m.tab = Tab::Executors;

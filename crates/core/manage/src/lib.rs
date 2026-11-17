@@ -372,6 +372,7 @@ impl Manager {
             config: resolved.config,
             layers: resolved.layers,
             ignored_fields: resolved.ignored_fields,
+            build: None,
         };
         if let Some(d) = &resolved.documents {
             let info = sbx_store::DocumentsInfo {

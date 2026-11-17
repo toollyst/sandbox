@@ -263,6 +263,10 @@ mod unix {
             build_source_date_epoch_fixes_the_digest,
         ),
         (
+            "build_records_where_it_was_built",
+            build_records_where_it_was_built,
+        ),
+        (
             "build_cache_stays_under_its_cap",
             build_cache_stays_under_its_cap,
         ),
@@ -444,6 +448,7 @@ mod unix {
                 },
                 layers: vec![],
                 ignored_fields: vec![],
+                build: None,
             };
             write::write_image_record(&layout, &record).unwrap();
             write::set_ref(&layout, &record.reference, &id).unwrap();
@@ -5012,6 +5017,7 @@ mod unix {
             config,
             layers: vec![],
             ignored_fields: vec![],
+            build: None,
         };
         write::write_image_record(&layout, &record).unwrap();
         write::set_ref(&layout, &record.reference, &id).unwrap();
@@ -6166,6 +6172,151 @@ CMD [\"cat\", \"/app/out.txt\"]
         let o = e.sbx(&["push", &four]);
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
         assert_eq!(stored("team/built:4"), stored("team/built:1"));
+    }
+
+    /// 저장한 빌드는 어디서 만들었는지를 이미지 기록에 남기고 `images --format json`이 `build`로 낸다: 컨텍스트와
+    /// Dockerfile의 절대 경로(준 그대로, 상대 경로는 작업 디렉터리에서), `--target`. `-f -`면 `file`이 없다. 받은
+    /// 이미지에는 없다. 저장하지 않는 빌드(`-o type=oci`)는 기록을 바꾸지 않고, 같은 이미지를 다른 디렉터리에서 다시
+    /// 저장하면 그 디렉터리가 남는다(마지막 것). 내보낸 것(`save`)에는 경로가 없다.
+    fn build_records_where_it_was_built() {
+        let (e, ctx) = build_env();
+        write(&ctx, "src/a.txt", "a\n");
+        write(
+            &ctx,
+            "ci/Dockerfile.dev",
+            "FROM local/base:1 AS app\nCOPY src/ /app/\nFROM app\nRUN echo not built\n",
+        );
+        write(&ctx, "Dockerfile", "FROM local/base:1\nCOPY src/ /plain/\n");
+        let images = |e: &Env| -> Vec<sbx_cli::output::Image> {
+            let o = e.sbx(&["--format", "json", "images"]);
+            assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+            serde_json::from_slice(&o.stdout).unwrap()
+        };
+        let find = |list: &[sbx_cli::output::Image], name: &str| {
+            list.iter()
+                .find(|i| i.references.iter().any(|r| r.ends_with(name)))
+                .cloned()
+                .unwrap_or_else(|| panic!("{name}: {list:?}"))
+        };
+        let s = |p: &Path| p.to_str().unwrap().to_owned();
+
+        // 상대 경로: 작업 디렉터리(그 실제 경로)에서 절대 경로로.
+        let o = e
+            .cmd(&[
+                "build",
+                "-t",
+                "local/rec:1",
+                "-f",
+                "ci/Dockerfile.dev",
+                "--target",
+                "app",
+                ".",
+            ])
+            .current_dir(&ctx)
+            .output()
+            .unwrap();
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let real = ctx.canonicalize().unwrap();
+        let rec = find(&images(&e), "local/rec:1");
+        assert_eq!(
+            rec.build,
+            Some(sbx_cli::output::ImageBuild {
+                context: s(&real),
+                file: Some(s(&real.join("ci/Dockerfile.dev"))),
+                target: Some("app".into()),
+            })
+        );
+        // 기본 Dockerfile, 절대 경로는 준 그대로.
+        let o = build(&e, &ctx, &["-t", "local/plain:1"], None);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let plain = find(&images(&e), "local/plain:1");
+        assert_eq!(
+            plain.build,
+            Some(sbx_cli::output::ImageBuild {
+                context: s(&ctx),
+                file: Some(s(&ctx.join("Dockerfile"))),
+                target: None,
+            })
+        );
+        // JSON에서: 표준 입력이면 file은 null, target이 없으면 null. 받은 이미지는 build가 없다.
+        let o = build_stdin(
+            &e,
+            &ctx,
+            "FROM local/base:1\nCOPY src/ /stdin/\n",
+            &["-t", "local/stdin:1"],
+            None,
+        );
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = e.sbx(&["--format", "json", "images"]);
+        let raw: Vec<serde_json::Value> = serde_json::from_slice(&o.stdout).unwrap();
+        let by = |name: &str| {
+            raw.iter()
+                .find(|i| {
+                    i["references"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|r| r.as_str().unwrap().ends_with(name))
+                })
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(
+            by("local/stdin:1")["build"],
+            serde_json::json!({"context": s(&ctx), "file": null, "target": null})
+        );
+        assert!(by("local/base:1").get("build").is_none(), "{raw:?}");
+
+        // 같은 이미지를 다른 디렉터리에서: 저장하지 않으면 기록은 그대로, 저장하면 그 디렉터리가 남는다.
+        let other = e.path("other");
+        write(&other, "src/a.txt", "a\n");
+        write(
+            &other,
+            "Dockerfile",
+            "FROM local/base:1\nCOPY src/ /plain/\n",
+        );
+        let oci = e.path("plain.tar");
+        let dest = format!("type=oci,dest={}", oci.display());
+        let o = build(&e, &other, &["-t", "local/plain:1", "-o", &dest], None);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let again = find(&images(&e), "local/plain:1");
+        assert_eq!(
+            again.build, plain.build,
+            "an output-only build records nothing"
+        );
+        let o = build(&e, &other, &["-t", "local/plain:2"], None);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let list = images(&e);
+        let (one, two) = (find(&list, "local/plain:1"), find(&list, "local/plain:2"));
+        assert_eq!(one.id, two.id, "the same image");
+        assert_eq!(one.build.unwrap().context, s(&other), "the last build wins");
+
+        // 내보낸 것에는 호스트 경로가 없다(save, 저장하지 않은 출력). 층 tar도 풀어 본다.
+        let saved = e.path("rec.tar");
+        let o = e.sbx(&["save", "-o", saved.to_str().unwrap(), "local/rec:1"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        for archive in [saved, oci] {
+            let bytes = std::fs::read(&archive).unwrap();
+            let mut all = vec![bytes.clone()];
+            for f in tar_files(&bytes).into_values() {
+                let mut out = Vec::new();
+                if std::io::Read::read_to_end(&mut flate2::read::GzDecoder::new(&f[..]), &mut out)
+                    .is_ok()
+                {
+                    all.push(out);
+                }
+                all.push(f);
+            }
+            for b in &all {
+                for path in [s(&ctx), s(&real), s(&other)] {
+                    assert!(
+                        !b.windows(path.len()).any(|w| w == path.as_bytes()),
+                        "{path} leaked into {}",
+                        archive.display()
+                    );
+                }
+            }
+        }
     }
 
     /// `build -f -`로 Dockerfile을 표준 입력에서 읽는 `build`.

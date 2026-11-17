@@ -81,6 +81,7 @@ impl Env {
             config: Default::default(),
             layers: vec![],
             ignored_fields: vec![],
+            build: None,
         })
         .unwrap()
     }

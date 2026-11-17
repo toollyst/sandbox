@@ -1625,8 +1625,9 @@ pub const ROWS: &[Row] = &[
         says(Colima, "\"Simple CLI interface\"", COLIMA),
         yes(RancherDesktop, "", "https://docs.rancherdesktop.io/ui/images"),
     ]),
-    differs(Features, "Managing images and volumes on screen", "The `sbx tui` images and volumes tabs: list, size and disk use, remove, prune, tag and push.", &[
+    differs(Features, "Managing images and volumes on screen", "The `sbx tui` images and volumes tabs: list, size and disk use, remove, prune, tag, push, build, and rebuild an image from where it was built.", &[
         "tui::model::tests::images_tab_prunes_and_shows_disk_usage",
+        "tui::model::tests::images_tab_builds_and_rebuilds_through_the_command_line",
         "tui::model::tests::volumes_tab_lists_users_by_name_and_runs_volume_commands",
     ])
     .offers(&[

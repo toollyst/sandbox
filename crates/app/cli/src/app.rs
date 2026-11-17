@@ -959,6 +959,11 @@ impl Ctx {
                         ignored_fields: i.record.ignored_fields.clone(),
                         exposed_ports: i.record.config.exposed_ports.clone(),
                         volumes: i.record.config.volumes.clone(),
+                        build: i.record.build.as_ref().map(|b| output::ImageBuild {
+                            context: b.context.clone(),
+                            file: b.file.clone(),
+                            target: b.target.clone(),
+                        }),
                     }
                 })
                 .collect();

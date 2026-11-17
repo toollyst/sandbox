@@ -217,7 +217,8 @@ works (postgres, redis, gRPC, HTTP), and the client doesn't need to know about p
 - **Counting.** The bytes count against the connecting sandbox's `--egress-limit` (both directions; the target's own
   limit is not touched), and its connections count toward its open-connection cap.
 
-`sbx inspect` and `ps --format json` show the list under `network.connect`. The `network` events (`lookup`,
+`sbx inspect` and `ps --format json` show the list under `network.connect`, next to `network.allow`; so does the
+details view (Enter) of `sbx tui`. The `network` events (`lookup`,
 `connect`, `close`, `refuse`) carry `target` (as recorded) and `target_id`; `--filter sandbox=` matches either side:
 
 ```sh
@@ -423,6 +424,20 @@ sbx builder prune -a -f        # every cached step; layers images use stay with 
 `sbx system prune` empties the cache too (the layers it alone kept go in the same run). In `sbx tui`, `B` on the
 Images tab runs `builder prune`.
 
+**Where an image was built** is kept with it: when a build stores the image in sbx, the image's record in the
+cache directory notes the context directory and the Dockerfile as absolute paths (as you gave them, made absolute
+from the current directory) and the `--target`. `images --format json` shows it as `build`
+(`{"context": …, "file": …, "target": …}`; `file` is null for `-f -`). It is only what you need to build again
+from the same place: build arguments, `--allow` rules and other flags are not kept. An image ID has one record, so
+building the same image again from another directory replaces it, and a build that stores nothing (only
+`--output type=oci` and the like) leaves it as it was. The paths stay on your machine: they are never written into
+the image's config, history or labels, nor into anything `save`, `push` or `--output` writes.
+
+In `sbx tui`, `b` on the Images tab fills in `build -t ` for you to finish (a name, the context and any other
+flags). Images built here are marked `*`; `R` on one fills in the whole command,
+`build -t NAME -f FILE [--target T] CONTEXT`, for you to change or run with Enter. The build takes the terminal so
+you see its progress. If the directory or the Dockerfile is gone, `sbx build` says so.
+
 What Docker does differently, and what isn't there yet, is in the build rows of
 [the compatibility table](tool-compatibility.md#build). In short: `ADD` copies a local file but refuses an archive Docker
 would unpack; `ONBUILD` (in the Dockerfile or the base image), `RUN --mount`, heredocs and `--platform` other than the
@@ -475,7 +490,11 @@ change to them is in [COMPATIBILITY.md](../../COMPATIBILITY.md).
 every key runs an `sbx` command and shows its command line, so anything you do there you can script.
 
 The bottom line shows the keys you can use right now; `?` lists them all, by tab (so does `sbx tui --help`). Enter
-opens the selected row's details, with the `sbx … --format json` command that prints the same fields. An empty tab
-says what to do next, for example to install an executor before the first sandbox.
+opens the selected row's details, with the `sbx … --format json` command that prints the same fields; a sandbox's
+details include its network mode, `--allow` rules and `--connect` targets. An empty tab says what to do next, for
+example to install an executor before the first sandbox. Commands that need more than the selected row, such as
+`build` (`b`; `R` rebuilds an image marked `*` from where it was built), `tag` or `volume create`, are filled in
+on the bottom line for you to finish; Enter runs them. Commands that need the terminal or print progress (`exec -it`, `logs -f`,
+`build`, `push`) take it over and give it back when you press Enter after they exit.
 The header shows the `sbx` version, and a newer release in parentheses (red when it fixes a vulnerability or yours
 was yanked); `V` runs `sbx upgrade`.

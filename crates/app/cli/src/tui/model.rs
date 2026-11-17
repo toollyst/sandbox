@@ -402,7 +402,8 @@ impl Model {
         self.visible_sandboxes().get(i).copied()
     }
 
-    fn selected_image(&self) -> Option<&Image> {
+    /// 이미지 탭에서 고른 이미지.
+    pub fn selected_image(&self) -> Option<&Image> {
         let i = self.cursors[Tab::Images.index()].selected;
         self.visible_images().get(i).copied()
     }
@@ -593,6 +594,14 @@ impl Model {
                 });
                 None
             }
+            Tab::Images if c == 'b' => {
+                // 이름과 컨텍스트(그리고 -f 등)는 사용자가 친다. Enter면 터미널을 넘겨 단계마다의 진행을 보인다.
+                self.prompt = Some(Prompt {
+                    kind: PromptKind::Command,
+                    text: "build -t ".into(),
+                });
+                None
+            }
             Tab::Images => {
                 let image = self.selected_image()?;
                 let target = image
@@ -624,6 +633,16 @@ impl Model {
                         self.prompt = Some(Prompt {
                             kind: PromptKind::Command,
                             text: format!("push {reference}"),
+                        });
+                        None
+                    }
+                    // 다시 빌드: `images`가 내는 빌드 기록(`build`)이 있는 이미지만. 실행하지 않고 명령 줄을 채운다
+                    // (빌드는 오래 걸리고 무엇을 바꿔 칠지 모른다). Enter면 터미널을 넘긴다.
+                    'R' => {
+                        let text = rebuild_line(image)?;
+                        self.prompt = Some(Prompt {
+                            kind: PromptKind::Command,
+                            text,
                         });
                         None
                     }
@@ -837,6 +856,30 @@ fn scroll_key(key: KeyEvent, scroll: &mut u16) -> bool {
         _ => return false,
     }
     true
+}
+
+/// 만든 이미지를 같은 자리에서 다시 빌드하는 명령 줄(앞의 `sbx` 없이, `:` 입력 줄에 채운다):
+/// `build -t NAME -f FILE [--target T] CONTEXT`. 이름은 첫 참조(없으면 `-t`도 없다). Dockerfile을 표준 입력에서
+/// 읽었으면(`file`이 없다) 끝에 `-f `를 두어 사용자가 칠 자리를 남긴다. 빌드 기록이 없으면 `None`.
+/// 기록한 경로가 지금도 있는지는 보지 않는다(없으면 CLI가 말한다).
+pub fn rebuild_line(image: &Image) -> Option<String> {
+    let b = image.build.as_ref()?;
+    let mut words: Vec<String> = vec!["build".into()];
+    if let Some(r) = image.references.first() {
+        words.extend(["-t".into(), familiar(r).to_owned()]);
+    }
+    if let Some(f) = &b.file {
+        words.extend(["-f".into(), f.clone()]);
+    }
+    if let Some(t) = &b.target {
+        words.extend(["--target".into(), t.clone()]);
+    }
+    words.push(b.context.clone());
+    let mut line: Vec<String> = words.iter().map(|w| super::detail::quote(w)).collect();
+    if b.file.is_none() {
+        line.push("-f ".into());
+    }
+    Some(line.join(" "))
 }
 
 /// 명령에 넘기는 샌드박스: 이름이 있으면 이름, 없으면 전체 ID.

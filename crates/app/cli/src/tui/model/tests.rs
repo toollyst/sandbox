@@ -41,6 +41,21 @@ pub(crate) fn image(reference: Option<&str>) -> Image {
     .unwrap()
 }
 
+/// `sbx build`가 저장한 이미지: `images`가 낼 `build` 기록이 있다.
+pub(crate) fn built(reference: Option<&str>, file: Option<&str>, target: Option<&str>) -> Image {
+    let mut i = image(reference);
+    i.id = format!("sha256:{}", "ef".repeat(32));
+    i.build = Some(
+        serde_json::from_value(serde_json::json!({
+            "context": "/home/me/app",
+            "file": file,
+            "target": target,
+        }))
+        .unwrap(),
+    );
+    i
+}
+
 pub(crate) fn volume(name: &str, users: &[char]) -> Volume {
     serde_json::from_value(serde_json::json!({
         "name": name,
@@ -252,6 +267,84 @@ fn image_keys_fill_in_tag_and_push() {
 }
 
 #[test]
+fn images_tab_builds_and_rebuilds_through_the_command_line() {
+    // b: 고른 이미지가 없어도 된다. 이름과 컨텍스트는 사용자가 치고, Enter면 터미널을 넘긴다(진행이 보인다).
+    let mut m = Model::default();
+    press(&mut m, KeyCode::Char('2'));
+    assert_eq!(press(&mut m, KeyCode::Char('b')), None);
+    assert_eq!(m.prompt.as_ref().unwrap().text, "build -t ");
+    chars(&mut m, "app:dev -f Dockerfile.dev .");
+    assert_eq!(
+        press(&mut m, KeyCode::Enter),
+        Some(Action::Handover(strings(&[
+            "build",
+            "-t",
+            "app:dev",
+            "-f",
+            "Dockerfile.dev",
+            "."
+        ])))
+    );
+    // R: 빌드 기록(`images`의 `build`)으로 명령 줄을 다 채운다. 실행하지 않는다: 고쳐 친 뒤 Enter.
+    m.apply(Msg::Images(Ok(vec![
+        built(
+            Some("docker.io/library/app:1"),
+            Some("/home/me/app/ci/Dockerfile dev"),
+            Some("prod"),
+        ),
+        built(
+            Some("ghcr.io/me/api:2"),
+            Some("/home/me/app/Dockerfile"),
+            None,
+        ),
+        image(Some("docker.io/library/alpine:3.20")),
+    ])));
+    assert_eq!(press(&mut m, KeyCode::Char('R')), None);
+    assert_eq!(
+        m.prompt.as_ref().unwrap().text,
+        "build -t app:1 -f '/home/me/app/ci/Dockerfile dev' --target prod /home/me/app"
+    );
+    chars(&mut m, " --no-cache");
+    assert_eq!(
+        press(&mut m, KeyCode::Enter),
+        Some(Action::Handover(strings(&[
+            "build",
+            "-t",
+            "app:1",
+            "-f",
+            "/home/me/app/ci/Dockerfile dev",
+            "--target",
+            "prod",
+            "/home/me/app",
+            "--no-cache"
+        ])))
+    );
+    assert!(m.status.is_none(), "nothing ran before Enter");
+    press(&mut m, KeyCode::Down);
+    press(&mut m, KeyCode::Char('R'));
+    assert_eq!(
+        m.prompt.take().unwrap().text,
+        "build -t ghcr.io/me/api:2 -f /home/me/app/Dockerfile /home/me/app"
+    );
+    // Esc는 아무것도 하지 않고 닫는다.
+    press(&mut m, KeyCode::Char('R'));
+    assert_eq!(press(&mut m, KeyCode::Esc), None);
+    assert!(m.prompt.is_none() && m.status.is_none());
+    // 받은 이미지(빌드 기록 없음)에는 R이 없다.
+    press(&mut m, KeyCode::Down);
+    assert_eq!(press(&mut m, KeyCode::Char('R')), None);
+    assert!(m.prompt.is_none());
+    // 표준 입력에서 읽은 Dockerfile(`-f -`)은 다시 줄 수 없으니 `-f ` 뒤를 비워 둔다. 이름 없는 이미지는 `-t`도 없다.
+    m.apply(Msg::Images(Ok(vec![built(None, None, None)])));
+    // (고른 줄은 그릴 때 줄 수에 맞춘다. 여기서는 그리지 않으니 처음으로 옮긴다.)
+    press(&mut m, KeyCode::Char('g'));
+    press(&mut m, KeyCode::Char('R'));
+    assert_eq!(m.prompt.take().unwrap().text, "build /home/me/app -f ");
+    press(&mut m, KeyCode::Char('b'));
+    assert_eq!(m.prompt.take().unwrap().text, "build -t ");
+}
+
+#[test]
 fn every_listed_letter_key_does_something() {
     for h in KEYS.iter().filter(|h| h.tabs == "sandboxes") {
         let mut m = loaded();
@@ -265,6 +358,19 @@ fn every_listed_letter_key_does_something() {
         m.apply(Msg::Executors(Ok(executors())));
         m.tab = Tab::Executors;
         // 기본이 아닌 실행기(fake)를 고른다.
+        let c = h.keys.chars().next().unwrap();
+        let acted =
+            press(&mut m, KeyCode::Char(c)).is_some() || m.popup.is_some() || m.prompt.is_some();
+        assert!(acted, "{:?}", h.keys);
+    }
+    for h in KEYS.iter().filter(|h| h.tabs == "images") {
+        let mut m = loaded();
+        m.apply(Msg::Images(Ok(vec![built(
+            Some("docker.io/library/app:1"),
+            Some("/home/me/app/Dockerfile"),
+            None,
+        )])));
+        m.tab = Tab::Images;
         let c = h.keys.chars().next().unwrap();
         let acted =
             press(&mut m, KeyCode::Char(c)).is_some() || m.popup.is_some() || m.prompt.is_some();
