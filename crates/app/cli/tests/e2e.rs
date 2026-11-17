@@ -6499,21 +6499,43 @@ CMD [\"cat\", \"/app/out.txt\"]
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
         let p: BuildCachePruned = serde_json::from_slice(&o.stdout).unwrap();
         assert!(p.build_cache >= 1, "{p:?}");
-        let o = run(&["-t", "local/cap:1"], "none");
+        // 그 이미지도 지운다(기록이 없으니 층도 함께 간다). 다음 빌드가 만드는 층을 쥔 이미지가 따로 남지 않게:
+        // 같은 초에 다시 만든 층은 같은 층이라, 이름만 옮겨 간 앞 이미지가 그 층을 쥐고 있을 수 있다(아래).
+        assert_eq!(e.sbx(&["rmi", "local/cap:1"]).status.code(), Some(0));
+        let prune0 = || {
+            let o = e.sbx(&[
+                "--format",
+                "json",
+                "builder",
+                "prune",
+                "-f",
+                "--keep-storage",
+                "0",
+            ]);
+            assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+            serde_json::from_slice::<BuildCachePruned>(&o.stdout).unwrap()
+        };
+        let o = run(&["-q", "-t", "local/cap:1"], "none");
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
         assert!(rec.is_file(), "the cache is gone, so the step runs again");
-        // 이미지를 지우면 그 층은 캐시만 쥔다: --keep-storage 0이면 지운다.
+        let first = text(&o.stdout).trim().to_owned();
+        // 이름을 잃은 이미지도 층을 쥔다: LABEL만 더한 Dockerfile은 RUN이 캐시라 같은 층이고, 이름이 새 이미지로
+        // 옮겨 가 앞 이미지는 이름 없이 남는다. 이름 붙은 이미지를 지워도 그 층은 앞 이미지가 쓰므로 빌드 캐시가 아니다.
+        write(
+            &ctx,
+            "Dockerfile",
+            "FROM local/base:1\nRUN echo cap > c.txt\nLABEL v=2\n",
+        );
+        let o = run(&["-q", "-t", "local/cap:1"], "none");
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(!rec.exists(), "RUN came from the cache: the same layer");
+        assert_ne!(text(&o.stdout).trim(), first);
         assert_eq!(e.sbx(&["rmi", "local/cap:1"]).status.code(), Some(0));
-        let o = e.sbx(&[
-            "--format",
-            "json",
-            "builder",
-            "prune",
-            "-f",
-            "--keep-storage",
-            "0",
-        ]);
-        let p: BuildCachePruned = serde_json::from_slice(&o.stdout).unwrap();
+        let p = prune0();
+        assert_eq!(p, BuildCachePruned::default(), "the untagged image uses it");
+        // 그 이미지까지 지우면 층은 캐시만 쥔다: --keep-storage 0이면 지운다.
+        assert_eq!(e.sbx(&["rmi", &first]).status.code(), Some(0));
+        let p = prune0();
         assert!(p.build_cache >= 1 && p.reclaimed > 0, "{p:?}");
         let o = e.sbx(&["builder", "prune", "-a", "-f", "--keep-storage", "1g"]);
         assert_ne!(o.status.code(), Some(0));
