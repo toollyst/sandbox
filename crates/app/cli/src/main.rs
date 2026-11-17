@@ -3,15 +3,35 @@
 //!
 //! 맨 먼저 셸 자동완성 요청인지 본다: 환경 변수 `COMPLETE`(비어 있지 않고 `0`이 아님)가 있으면 명령을 실행하지 않고
 //! 후보(또는 등록 스크립트)를 찍고 끝낸다([`sbx_cli::complete`]). 비동기 런타임도 그 뒤에 만든다(탭마다 빨라야 한다).
+//!
+//! 모든 일은 스택 크기를 정한 스레드([`MAIN_STACK`])에서 한다. 주 스레드의 스택은 OS가 정해서 Windows는 1 MiB뿐이다
+//! (Linux와 macOS는 8 MiB). 디버그 빌드는 명령 트리(clap)를 만드는 데만 1 MiB 가까이 써서 Windows에서 모든 명령이
+//! `has overflowed its stack`으로 끝났다.
 
 use std::process::ExitCode;
 
 use clap::{CommandFactory, FromArgMatches, Parser};
 
-use sbx_cli::cli::{Cli, Format};
+use sbx_cli::cli::{Cli, Format, MAIN_STACK};
 use sbx_cli::{app, complete, output, update};
 
 fn main() -> ExitCode {
+    let main = std::thread::Builder::new()
+        .name("main".to_owned())
+        .stack_size(MAIN_STACK)
+        .spawn(sbx);
+    match main.map(std::thread::JoinHandle::join) {
+        Ok(Ok(code)) => code,
+        // 패닉: 메시지는 패닉 훅이 이미 찍었다. 주 스레드에서 패닉한 것처럼 101로 끝낸다.
+        Ok(Err(_)) => ExitCode::from(101),
+        Err(e) => {
+            eprintln!("sbx: cannot start the main thread: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn sbx() -> ExitCode {
     clap_complete::CompleteEnv::with_factory(Cli::command)
         .var(complete::ENV_VAR)
         .complete();

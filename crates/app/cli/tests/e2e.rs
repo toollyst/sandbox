@@ -63,6 +63,7 @@ mod unix {
     type Test = (&'static str, fn());
 
     const TESTS: &[Test] = &[
+        ("runs_with_a_1_mib_main_stack", runs_with_a_1_mib_main_stack),
         (
             "run_streams_output_and_returns_the_exit_code",
             run_streams_output_and_returns_the_exit_code,
@@ -2564,6 +2565,34 @@ mod unix {
             text(&o.stdout),
             format!("sbx {}\n", env!("CARGO_PKG_VERSION"))
         );
+    }
+
+    /// Windows의 주 스레드 스택은 1 MiB다. 이 테스트는 Windows에서 돌지 않으므로 주 스레드 스택을 1 MiB로 줄여
+    /// 흉내 낸다: 디버그 빌드의 `sbx`도 돈다(`sbx`는 주 스레드가 아니라 `MAIN_STACK` 크기의 스레드에서 돈다).
+    fn runs_with_a_1_mib_main_stack() {
+        let e = Env::new();
+        for args in [&["--version"][..], &["--help"], &["ps"]] {
+            let c = e.cmd(args);
+            let mut sh = Command::new("sh");
+            sh.arg("-c")
+                .arg(r#"ulimit -s 1024 && exec "$0" "$@""#)
+                .arg(c.get_program())
+                .args(c.get_args())
+                .stdin(Stdio::null());
+            for (k, v) in c.get_envs() {
+                match v {
+                    Some(v) => sh.env(k, v),
+                    None => sh.env_remove(k),
+                };
+            }
+            let o = sh.output().unwrap();
+            assert_eq!(
+                o.status.code(),
+                Some(0),
+                "sbx {args:?}: {}",
+                text(&o.stderr)
+            );
+        }
     }
 
     fn exec_cp_stop_on_a_running_sandbox() {
