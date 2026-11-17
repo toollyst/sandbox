@@ -93,6 +93,18 @@ What the protocol asks of an executor (`capabilities` prints one JSON line withi
 request on stdin and reports `Started` and `Exited`), and how to test one, is in the
 [developer docs](../developers/how-it-works.md).
 
+### Live sharing
+
+Live sharing (`-v ./dir:/path`) works with any executor that announces `live_share` in its `capabilities`: it
+attaches one virtio-fs device per share, with the tag `sbx` gives, and the guest mounts it. `sbx` itself passes host
+edits on to file watchers in the guest, so the executor only has to share the folder. `sbx info` shows whether the
+executor you use announces it (`live share yes`).
+
+The bundled `firecracker` adapter doesn't announce it yet: upstream Firecracker has no virtio-fs, and wick's is
+designed but not built, so there is no interface for the adapter to drive. With it, `-v` with a host folder is an
+error that names the alternatives, and everything else works. The adapter writes only the config keys upstream
+Firecracker reads and passes it only the arguments upstream knows.
+
 ## Repositories
 
 Executors and adapters come from **static repositories** that follow an

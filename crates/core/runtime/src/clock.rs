@@ -151,16 +151,45 @@ pub fn kind(e: &RuntimeError) -> Kind {
     }
 }
 
+/// 기록 하나가 무엇에 대한 것인지: 줄의 앞머리, 종류를 정하는 법, 메시지를 모르는 게스트일 때 덧붙이는 말.
+/// 시계 맞추기([`Topic::CLOCK`])와 공유 폴더 변경 알림(`watch` 모듈)이 같은 기록 방식을 쓴다.
+#[derive(Clone, Copy)]
+pub struct Topic {
+    /// 줄의 앞머리(예: `sbx: guest clock: `).
+    pub prefix: &'static str,
+    /// 오류의 종류.
+    pub kind: fn(&RuntimeError) -> Kind,
+    /// [`Kind::Unsupported`]일 때 덧붙이는 말.
+    pub unsupported: &'static str,
+}
+
+impl Topic {
+    /// 시계 맞추기.
+    pub const CLOCK: Topic = Topic {
+        prefix: "sbx: guest clock: ",
+        kind,
+        unsupported: "; this guest cannot keep its clock in step with the host \
+                      (restart the sandbox after upgrading sbx)",
+    };
+}
+
 /// 종류마다 한 번만 쓰는 기록.
 pub struct Notes {
+    topic: Topic,
     seen: Vec<Kind>,
     sink: Box<dyn FnMut(&str) + Send>,
 }
 
 impl Notes {
-    /// `sink`가 한 줄씩 받는다.
+    /// `sink`가 한 줄씩 받는다(시계 맞추기의 기록).
     pub fn new(sink: Box<dyn FnMut(&str) + Send>) -> Self {
+        Self::about(Topic::CLOCK, sink)
+    }
+
+    /// `topic`의 기록. `sink`가 한 줄씩 받는다.
+    pub fn about(topic: Topic, sink: Box<dyn FnMut(&str) + Send>) -> Self {
         Self {
+            topic,
             seen: Vec::new(),
             sink,
         }
@@ -168,38 +197,51 @@ impl Notes {
 
     /// 파일 끝에 덧붙인다(실행기도 같은 파일에 덧붙여 쓴다). 쓰지 못해도 그만이다.
     pub fn append_to(path: PathBuf) -> Self {
-        Self::new(Box::new(move |line| {
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-            {
-                let _ = f.write_all(format!("{line}\n").as_bytes());
-            }
-        }))
+        Self::about_in(Topic::CLOCK, path)
+    }
+
+    /// `topic`의 기록을 파일 끝에 덧붙인다([`Notes::append_to`]처럼).
+    pub fn about_in(topic: Topic, path: PathBuf) -> Self {
+        Self::about(
+            topic,
+            Box::new(move |line| {
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+                {
+                    let _ = f.write_all(format!("{line}\n").as_bytes());
+                }
+            }),
+        )
     }
 
     /// `e`를 그 종류로 처음이면 쓴다.
     pub fn once(&mut self, e: &RuntimeError) {
-        let k = kind(e);
+        let k = (self.topic.kind)(e);
         if self.seen.contains(&k) {
             return;
         }
         self.seen.push(k);
-        let mut msg: String = e
-            .to_string()
-            .chars()
-            .map(|c| if c.is_control() { ' ' } else { c })
-            .take(MAX_NOTE)
-            .collect();
+        let mut msg = clean(&e.to_string());
         if k == Kind::Unsupported {
-            msg.push_str(
-                "; this guest cannot keep its clock in step with the host \
-                 (restart the sandbox after upgrading sbx)",
-            );
+            msg.push_str(self.topic.unsupported);
         }
-        (self.sink)(&format!("sbx: guest clock: {msg}"));
+        (self.sink)(&format!("{}{msg}", self.topic.prefix));
     }
+
+    /// 한 줄을 쓴다(종류를 세지 않는다). 제어 문자는 공백으로 바꾸고 [`MAX_NOTE`] 글자로 자른다.
+    pub fn line(&mut self, msg: &str) {
+        (self.sink)(&format!("{}{}", self.topic.prefix, clean(msg)));
+    }
+}
+
+/// 제어 문자를 공백으로 바꾸고 [`MAX_NOTE`] 글자로 자른다(게스트가 보낸 문장도 들어간다).
+fn clean(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(MAX_NOTE)
+        .collect()
 }
 
 /// 맞추기를 돈다: 곧바로 한 번, [`PERIOD`]마다, 뛰면 곧바로, 실패하면 늘려 가며 다시. `ticker.wait`가 거짓이거나

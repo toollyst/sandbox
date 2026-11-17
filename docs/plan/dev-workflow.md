@@ -279,6 +279,11 @@ wick 답변(2026-11-13)에서 sbx 쪽 일로 정해진 것:
 - **기능 알아내기.** wick은 config 최상위 `extensions`(`fs`, 나중에 `gpu`)로 새 장치를 받는다. upstream Firecracker는
   모르는 키를 조용히 무시하므로, 어댑터는 `firecracker --features`(wick 전용, JSON)가 성공하고 그 확장을 알릴 때만
   `extensions`를 넣고 `live_share: true`를 알린다. 실패하면 upstream으로 보고 아무것도 넣지 않는다.
+  (2026-11-17: 이 부분은 wick을 기다린다. wick 설계의 `extensions.fs.shares[]`는 디렉터리가 아니라 공유마다 하나인
+  `wick-fsd`의 소켓을 받고, `--features` 출력 모양, `wick-fsd`가 어디에 담겨 오는지와 인자 이름·준비 신호, 수정 시각
+  setattr이 호스트까지 가는지, `cache=never`가 아직 정해지지 않았다. 그래서 어댑터는 `--features`를 묻지 않고
+  `extensions`를 넣지 않으며 `live_share`를 알리지 않는다. 나머지 sbx 쪽은 `live_share`를 알리는 어느 실행기에서나
+  돌고 fake 실행기로 시험한다.)
 - **호스트 변경 알림.** virtio-fs는 호스트 쪽 변경을 게스트 inotify로 전하지 않는다. 그러면 핫 리로드(vite, webpack,
   nodemon)가 돌지 않는다. sbx가 호스트에서 공유 폴더를 감시하고(FSEvents, inotify, ReadDirectoryChangesW) vsock으로
   게스트에 알리면, 게스트가 거기서 알림을 만든다. 바뀐 파일은 게스트에서 시각을 그대로 다시 써서 `IN_ATTRIB`을
@@ -398,7 +403,7 @@ VM에 네트워크 장치를 붙이지 않고, 이름 단위 허용 목록과 �
 | N1 | 투명 TCP(8장): `Lookup`, 가짜 주소 DNS, 게스트 리스너, `resolv.conf` 덮기, 막힌 이름 기록 | ssh로 `git clone`(`--allow github.com:22`)과 바깥 postgres에 `psql`이 되고, 목록에 없는 이름은 호스트가 풀지 않은 채 `refuse`로 남는다. `HOST:*`는 프록시로만 나간다 |
 | V1 | 볼륨 | postgres 데이터가 `rm` 뒤에도 남고, 두 번째 쓰기 붙이기는 거부된다 |
 | V2 | `--connect` | 앱 샌드박스에서 `psql -h db`가 되고, 열지 않은 포트와 다른 샌드박스는 닿지 않는다 |
-| V3 | 실시간 마운트(7.3): 어댑터의 `--features` 확인과 `extensions.fs`, 호스트 변경 알림, 안내와 smoke | `live_share`가 없는 실행기에서 오류가 다른 길을 알리고, upstream에는 `extensions`를 넣지 않는다. wick에서 vite 개발 서버가 호스트에서 고친 파일에 다시 읽는다 |
+| V3 | 실시간 마운트(7.3): 어댑터의 `--features` 확인과 `extensions.fs`(2026-11-17: wick을 기다린다), 호스트 변경 알림, 안내와 smoke | `live_share`가 없는 실행기에서 오류가 다른 길을 알리고, upstream에는 `extensions`를 넣지 않는다. wick에서 vite 개발 서버가 호스트에서 고친 파일에 다시 읽는다(wick의 virtio-fs가 생긴 뒤) |
 | V4 | 시계 맞추기(7.4) | 호스트를 재운 뒤 깨워도 게스트 시계가 1초 안에 맞고, 하루 돌려도 어긋남이 0.1초 아래다 |
 | R1 | 문서, README 문구와 비교표, `build` → `run` → `--connect`로 postgres까지 잇는 데모 → 0.3.0 | docs-before-main 확인 |
 | C1 | `sbx compose`(0.3 뒤) | 앱 + postgres + redis 예제가 `up` 한 번으로 뜨고 `down`으로 정리된다 |

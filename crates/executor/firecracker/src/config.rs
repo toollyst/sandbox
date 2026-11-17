@@ -226,6 +226,29 @@ mod tests {
         );
     }
 
+    /// 설정 파일은 upstream Firecracker가 읽는 키만 담는다: 아래가 전부다(빠진 키도, 더한 키도 없다). 확장 키
+    /// (`extensions` 같은 것)는 VMM의 인터페이스가 정해지기 전에는 넣지 않는다.
+    #[test]
+    fn config_has_exactly_the_upstream_keys() {
+        let c = firecracker_config(&vm(), Path::new("/k/kernel"), false).unwrap();
+        assert_eq!(
+            c,
+            json!({
+                "boot-source": {
+                    "kernel_image_path": "/k/kernel",
+                    "initrd_path": "/c/initramfs",
+                    "boot_args": "console=ttyS0 quiet reboot=k panic=1 sbx.hostname=box-1 sbx.halt=reboot",
+                },
+                "drives": [
+                    {"drive_id": "rootfs0", "path_on_host": "/c/rootfs.erofs", "is_root_device": false, "is_read_only": true},
+                    {"drive_id": "scratch1", "path_on_host": "/d/scratch.img", "is_root_device": false, "is_read_only": false},
+                ],
+                "machine-config": {"vcpu_count": 2, "mem_size_mib": 512, "smt": false},
+                "vsock": {"guest_cid": 3, "uds_path": "/s/abc.sock"},
+            })
+        );
+    }
+
     #[test]
     fn unsupported_or_unsafe_specs_are_refused() {
         let mut v = vm();

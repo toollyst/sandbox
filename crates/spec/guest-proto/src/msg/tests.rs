@@ -109,6 +109,14 @@ fn host_samples() -> Vec<HostMsg> {
             readonly: true,
             copy: false,
         },
+        HostMsg::ShareChanged {
+            target: "/app".into(),
+            paths: vec!["".into(), "src/main.ts".into(), "gone".into()],
+        },
+        HostMsg::ShareChanged {
+            target: "/w".into(),
+            paths: vec![],
+        },
         HostMsg::ExecDetached(Exec {
             args: vec!["sleep".into(), "9".into()],
             env: vec![],

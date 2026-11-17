@@ -24,6 +24,8 @@ to release a tag without one. Changes land under `## Unreleased` first, and the 
   `run`, `start` or `prepare` builds the layer disks from the layers already pulled. `sbx` 0.2.x refuses a migrated
   cache directory; point it at another `SBX_CACHE_DIR` if you need to go back.
 - `sbx system prune` also removes layer disks no image uses.
+- With an executor that can't share live, the error for `-v ./dir:/path` now names the alternatives: the
+  `--mount type=copy,source=…,target=…` line to paste, or an executor that announces live sharing (`sbx info`).
 - The Docker compatibility table is now [tool-compatibility.md](docs/guide/tool-compatibility.md) and compares
   `sbx` with what people install: the Docker CLI and Compose, Podman, nerdctl, and the features of Docker Desktop,
   Podman Desktop, OrbStack, Colima and Rancher Desktop (each product cell links the product's own documentation).
@@ -116,6 +118,12 @@ to release a tag without one. Changes land under `## Unreleased` first, and the 
   names. The MCP tools `run` and `create` take `connect`, limited to sandboxes created through MCP (checked at
   creation and at every connection). `sbx build` has no `--connect`. Needs a sandbox started by this `sbx`; the
   guest protocol is unchanged.
+- Live shares (`-v ./dir:/path`) pass host edits to file watchers in the sandbox, so hot reload (vite, webpack,
+  nodemon) works: the process that owns the VM watches each writable share on the host and the guest raises an inotify
+  "modified" event on each changed file, or on the nearest existing folder of a removed one (there are no create or
+  delete events, and none on a `:ro` share). Failures go to the sandbox's `logs/executor.log`. The guest protocol
+  gains `ShareChanged`; its version stays 2. This works with any executor that announces `live_share`; the bundled
+  `firecracker` adapter doesn't yet (upstream Firecracker has no virtio-fs, and wick's is designed but not built).
 
 ### Fixed
 

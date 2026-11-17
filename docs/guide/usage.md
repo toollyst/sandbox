@@ -63,8 +63,32 @@ sbx cp dev:/out/result.json ./result.json
 `cp` from a sandbox never writes outside the destination you name: the host picks the top-level name, and names that
 are paths or devices on the host are refused.
 
-Live sharing (`-v ./dir:/work[:ro]`) needs an executor with virtio-fs. The Firecracker executor doesn't have it yet,
-and `sbx` says so instead of silently copying.
+### Live sharing
+
+`-v ./dir:/work[:ro]` shares a host folder live: both sides see each other's writes at once. It needs an executor
+that announces live sharing (virtio-fs), which `sbx info` shows as `live share yes`. The bundled Firecracker executor
+doesn't yet: upstream Firecracker has no virtio-fs, and wick's is designed but not built
+([executors](executors.md#live-sharing)). With an executor like that, only `-v` with a host folder fails, and the
+error names the alternatives: copy the folder in with the `--mount type=copy,...` line it prints, or use an executor
+that shares live. `sbx` never switches to copying behind your back.
+
+With an executor that shares live:
+
+```sh
+sbx run -d --name web -p 5173:5173 -v ./app:/app -w /app node:22 npx vite --host
+# edit ./app/src/main.ts on the host: the dev server reloads
+```
+
+Virtio-fs doesn't tell the guest when the host changes a file, so file watchers (vite, webpack, nodemon,
+`uvicorn --reload`) would miss your edits. `sbx` watches the shared folder on the host and tells the guest, which
+raises a "modified" event (inotify `IN_MODIFY`) on the changed file, or on the nearest folder that still exists for
+one you removed. What differs from Docker:
+
+- There are no create or delete events: a new file shows up as a modified one, a removed file as its folder being
+  modified. Watchers that rescan the folder on any event (chokidar in vite and webpack, Node's `fs.watch`) see adds
+  and removals; watchers that only act on create or delete events see a modification instead.
+- A `:ro` share gets no events (the guest can't touch it to raise them).
+- Files the sandbox writes into the share come back as one more "modified" event each.
 
 ## Volumes
 

@@ -375,7 +375,10 @@ The sandbox lifecycle: `Runtime::create`, `resolve` (ID, name or ID prefix) and 
 - **Connecting sandboxes** (`connect`): also in the VM's owner. For a `--connect` name it looks the target up at
   each connection (same data directory, exact ID or name), checks it, and joins the connection to the target's
   guest through `Forward`, the `-p` path.
-- Modules: `lib` → `egress`, `clock` → `connect` → `client` → `hostfs`, `layer`, `volume` → `records` →
+- **Live share changes** (`watch`): also in the VM's owner. It watches each writable live share on the host
+  (`notify`) and sends the guest the paths whose type, size or modification time changed (`ShareChanged`), so file
+  watchers in the guest see host edits.
+- Modules: `lib` → `egress`, `watch` → `clock` → `connect` → `client` → `hostfs`, `layer`, `volume` → `records` →
   `process`, `validate`, `cpplan`, `chan` → `error`.
 
 ### `sbx-manage` · [`crates/core/manage`](../../crates/core/manage)
@@ -466,7 +469,7 @@ but everything it runs is untrusted user code, so the host never trusts what it 
 ```text
 boot                         PID 1 and the connection-handling process (Linux)
 server                       one connection: version check, dispatch
-exec   copy   egress  clock  one request each (egress: HTTP proxy and the connections lent by the host, clock: setting the guest clock)
+exec   copy   egress  clock  changes  one request each (egress: HTTP proxy and the connections lent by the host, clock: setting the guest clock, changes: raising inotify events for host edits in a live share)
 transparent                  transparent TCP: stand-in addresses for allowed names, listeners (egress owns it)
 volume                       attaching a volume: format on first use (ext4 with a journal), fill from the image, mount
 wire   passwd  mkfs  cmdline  dns   messages, user lookup, formatting scratch and volumes, kernel command line, loopback DNS
@@ -494,7 +497,8 @@ The `firecracker` adapter. It is shipped as an adapter package: `sbx-executor` n
 - `settings` finds `firecracker` (`SBX_FIRECRACKER`, then the VMM package directory, then next to itself, then
   `PATH`) and the kernel (`SBX_FIRECRACKER_KERNEL`, then next to itself). `config` writes the VM config (initrd,
   disks, vsock, kernel command line). `session` runs the protocol session and writes the config file next to the
-  control socket as a new `0600` file.
+  control socket as a new `0600` file. It writes only keys upstream reads and passes only arguments upstream knows,
+  and announces no `live_share` (upstream has no virtio-fs; wick's is designed but its interface isn't fixed).
 - It knows nothing about `sbx` except the executor protocol (`sbx-executor-proto` is its only workspace dependency).
 
 ### `sbx-executor-fake` · [`crates/executor/fake`](../../crates/executor/fake) · bin `sbx-executor-fake`
