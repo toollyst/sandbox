@@ -437,7 +437,7 @@ cores in order, and prints.
 | `mcp` | `sbx mcp`: the same operations as MCP tools over stdio, with progress notifications |
 | `complete` | `sbx completion` and `COMPLETE=<shell> sbx`: sandbox names and IDs, image references and installed executors as tab candidates, read-only |
 | `behavior` | exit codes, `--pull`, `rmi` protection, time formatting |
-| `compat` | the Docker compatibility table (every Docker command, flag, Dockerfile instruction and Compose key), checked against clap, and the generated [docker-compatibility.md](../guide/docker-compatibility.md) |
+| `compat` | the compatibility table (every command and flag of Docker, Podman and nerdctl, every Dockerfile instruction and Compose key, and product features of Docker Desktop and its alternatives), checked against clap, and the generated [tool-compatibility.md](../guide/tool-compatibility.md) |
 | `dirs` | default `data_dir`, `cache_dir` and `socket_dir` per OS |
 | `guest` | the embedded guest initramfs (empty in a plain `cargo build`) |
 | `host`, `progress` | `sbx info` host checks, and the pull progress line |
