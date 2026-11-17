@@ -391,10 +391,14 @@ Images and the cache: `pull` (with `pull_with` for progress), `prepare`, `images
   Whether a *stopped* sandbox's image may go is the caller's decision, because this crate doesn't know `data_dir`.
 - After a pull, a prepare that built something, an untag or a delete, it appends an event to
   `<cache_dir>/events/images`.
-- For `sbx build` (`build`): `add_layer` turns a layer tar into a layer disk with no compressed blob,
-  `commit_built` records the image (`source = "sbx build"`), and build cache records keep their layers alive until
-  `prune_build_cache`. `save` and `push` refuse a built image (`NotExportable`).
-- It never cleans up on its own.
+- For `sbx build` (`build`): `add_layer` turns a layer tar into a layer disk with no compressed blob (its diff_id is
+  the hash of the canonical tar read back from the disk, `canon`), `commit_built` records the image
+  (`source = "sbx build"`), and build cache records keep their layers alive until `prune_build_cache` or
+  `trim_build_cache` (least recently used first, under a size the caller gives) removes them.
+- `export` makes one `Export` for `save`, `push` and `build --output`: a pulled image as pulled, a built one from its
+  layer disks, gzipped with fixed settings, its blob digests fixed by the first export (`layers/<diff_id>/export.json`)
+  and never stored as blobs.
+- It never cleans up on its own: `trim_build_cache` runs only when the caller asks (the CLI does after a build).
 
 ### `sbx-build` · [`crates/core/build`](../../crates/core/build)
 

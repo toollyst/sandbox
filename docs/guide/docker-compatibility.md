@@ -24,22 +24,22 @@ The table is code, [`compat.rs`](../../crates/app/cli/src/compat.rs), and a test
 ## Progress
 
 <!-- compat-progress:begin -->
-Counted from the 413 rows below. "What applies to sbx" leaves out ⚫, ⚪ and ➕ rows.
+Counted from the 421 rows below. "What applies to sbx" leaves out ⚫, ⚪ and ➕ rows.
 
 | | |
 | --- | --- |
-| **Works (🟢 or 🟡), of what applies to sbx** | **`█████░░░░░` 48% (157 of 323)** |
-| **The Docker CLI alone** (without `build`, the Dockerfile and Compose) | **`██████░░░░` 64% (128 of 200)** |
-| 🟢 Same as Docker | 71 |
-| 🟡 Works, with differences | 86 |
-| 🔴 Not yet | 166 (4 of them in 0.3) |
+| **Works (🟢 or 🟡), of what applies to sbx** | **`█████░░░░░` 50% (166 of 330)** |
+| **The Docker CLI alone** (without `build`, the Dockerfile and Compose) | **`██████░░░░` 64% (133 of 207)** |
+| 🟢 Same as Docker | 75 |
+| 🟡 Works, with differences | 91 |
+| 🔴 Not yet | 164 (0 of them in 0.3) |
 | ⚫ Will not do | 25 |
-| ⚪ Not applicable in a VM | 41 |
+| ⚪ Not applicable in a VM | 42 |
 | ➕ sbx only | 24 |
 
 | Area | Works, of what applies to sbx |
 | --- | --- |
-| [Commands](#commands) | `██████░░░░` 63% (37 of 58) |
+| [Commands](#commands) | `███████░░░` 66% (39 of 59) |
 | [Global options](#global-options) | `███░░░░░░░` 25% (1 of 4) |
 | [docker run, docker create](#docker-run-docker-create) | `█████░░░░░` 51% (25 of 49) |
 | [docker exec](#docker-exec) | `█████████░` 87% (7 of 8) |
@@ -68,9 +68,10 @@ Counted from the 413 rows below. "What applies to sbx" leaves out ⚫, ⚪ and �
 | [docker volume prune](#docker-volume-prune) | `██████████` 100% (3 of 3) |
 | [docker system df](#docker-system-df) | `█████░░░░░` 50% (1 of 2) |
 | [docker system prune](#docker-system-prune) | `██████████` 100% (4 of 4) |
+| [docker builder prune](#docker-builder-prune) | `█████░░░░░` 50% (3 of 6) |
 | [Behavior](#behavior) | `██████████` 100% (6 of 6) |
-| [docker build](#docker-build) | `███░░░░░░░` 32% (9 of 28) |
-| [Dockerfile](#dockerfile) | `██████░░░░` 60% (20 of 33) |
+| [docker build](#docker-build) | `████░░░░░░` 42% (12 of 28) |
+| [Dockerfile](#dockerfile) | `██████░░░░` 63% (21 of 33) |
 | [docker compose](#docker-compose) | `░░░░░░░░░░` 0% (0 of 28) |
 | [compose.yaml](#composeyaml) | `░░░░░░░░░░` 0% (0 of 34) |
 <!-- compat-progress:end -->
@@ -99,7 +100,7 @@ Every `docker` command and management command. The flags of the commands sbx has
 | `pull` | 🟡 | Also follows the containers `registries.conf` (mirrors, blocked registries) and `policy.json` (cosign signatures). | `registries_conf_is_read_for_pulls`, `policy_json_is_followed` |
 | `images` | 🟡 | Also lists which root filesystem disks are prepared, and SIZE / SHARED / UNIQUE on disk (layers several images use are shared, as in `docker system df -v`). | `names_work_in_place_of_ids`, `json_output_contract`, `images_on_one_base_store_it_once` |
 | `rmi` | 🟡 | Never removes the image of a running sandbox, even with `-f`. | `json_output_contract`, `docker_options_reach_the_sandbox`, `behavior::tests::rmi_table` |
-| `save` | 🟡 | One image per archive, written as an OCI image layout (with Docker's `manifest.json`), exactly as it was pulled. | `load_and_save_round_trip_an_oci_archive` |
+| `save` | 🟡 | One image per archive, written as an OCI image layout (with Docker's `manifest.json`): a pulled image exactly as it was pulled, a built one exported from its layers (the same bytes every time). | `load_and_save_round_trip_an_oci_archive`, `build_outputs_export_one_image_everywhere` |
 | `load` | 🟡 | Reads OCI image layout archives or directories: `docker save` from Docker 25 on, `podman save --format oci-archive`, skopeo. | `load_and_save_round_trip_an_oci_archive` |
 | `login` | 🟢 | Writes Docker's `config.json` or its credential helper, so `docker login` works too. | `login_and_logout_use_dockers_config` |
 | `logout` | 🟢 |  | `login_and_logout_use_dockers_config` |
@@ -111,10 +112,11 @@ Every `docker` command and management command. The flags of the commands sbx has
 | `system prune` | 🟡 | Stopped sandboxes, unused layers (blobs and layer disks) and leftovers of interrupted pulls older than an hour; volumes only with `--volumes`. | `system_df_and_prune_free_what_nothing_uses` |
 | `system events` | 🔴 | `sbx events` does this. | not planned yet |
 | `system info` | 🔴 | `sbx info` does this. | not planned yet |
-| `build` | 🟡 | Each stage's `RUN` steps run in one microVM with the network closed unless `--allow` opens it; `COPY`, `ADD` and `WORKDIR` layers are made on the host, so a `FROM scratch` stage of copies needs no VM. The image goes to the sbx image store (`--output type=sbx`); `save` and `push` of a built image come with the layer export step. | `build_runs_stages_and_caches_steps`, `build_scratch_without_a_vm_and_shared_base_layers` |
+| `build` | 🟡 | Each stage's `RUN` steps run in one microVM with the network closed unless `--allow` opens it; `COPY`, `ADD` and `WORKDIR` layers are made on the host, so a `FROM scratch` stage of copies needs no VM. The image goes to the sbx image store unless `--output` says otherwise; `save` and `push` export a built image like any other. | `build_runs_stages_and_caches_steps`, `build_scratch_without_a_vm_and_shared_base_layers`, `build_outputs_export_one_image_everywhere` |
 | `buildx build` | ⚫ | *Why:* `sbx build` is the builder and takes buildx's flag names; there is no builder plugin to call. |  |
-| `builder` | 🔴 | `sbx system prune` clears the build cache; `sbx system df` shows it. | not planned yet |
-| `push` | 🟡 | Sends the layers, config and manifest exactly as they were pulled, so the image keeps its digest; one blob at a time (Docker sends several at once). Only to the registry the name points at: never to a `registries.conf` mirror, and a blocked registry is refused. | `tag_and_push_to_a_registry`, `app::push::tests::report_reads_like_docker_push` |
+| `builder` | 🟡 | `prune` only. The build cache also keeps itself under a cap after every build (`SBX_BUILD_CACHE_MAX`, default 10 GiB), dropping the least recently used steps whose layers no image uses. `sbx system df` shows it; `sbx system prune` clears it. | `build_cache_stays_under_its_cap` |
+| `builder prune` | 🟡 | Removes cached steps whose layers no image uses (`-a`: every cached step; `--keep-storage`: keeps the most recently used up to a size). Without a terminal it needs `-f`. | `build_cache_stays_under_its_cap` |
+| `push` | 🟡 | Sends the layers, config and manifest exactly as they were pulled, so the image keeps its digest; a built image is exported from its layers, with the same digest on every push. One blob at a time (Docker sends several at once). Only to the registry the name points at: never to a `registries.conf` mirror, and a blocked registry is refused. | `tag_and_push_to_a_registry`, `build_outputs_export_one_image_everywhere`, `app::push::tests::report_reads_like_docker_push` |
 | `tag` | 🟢 | Moves a reference that pointed at another image, as Docker does, and records an image `tag` event. | `tag_and_push_to_a_registry` |
 | `volume` | 🟡 | `create`, `ls`, `inspect`, `rm`, `prune`. A volume is a sparse disk that outlives sandboxes. One running sandbox at a time attaches a volume read-write; read-only attaches share it while nobody writes. A second writer is refused and told which sandbox holds it. *Why:* A volume is a block device with one file system on it. Two kernels writing it at once would corrupt it, so the host locks it for the VM's lifetime. | `volume_data_outlives_the_sandbox`, `a_volume_has_one_writer_at_a_time` |
 | `volume create` | 🟡 | 16 GiB by default (sparse: the host spends only what is written). Creating an existing name again returns it, as Docker does; with another size or labels it is an error. | `volume_data_outlives_the_sandbox`, `app::volume::tests::only_the_size_option_is_known` |
@@ -496,6 +498,18 @@ A volume is a sparse disk of its own, formatted (ext4 with a journal) by the gue
 | `--filter` | 🟡 | Keys `until` and `label`, for sandboxes; `label` also for volumes. | `system_df_and_prune_free_what_nothing_uses` |
 | `--volumes` | 🟡 | Only with `-a` does it remove anything: every volume no sandbox points at (sbx has no anonymous volumes). | `system_df_and_prune_free_what_nothing_uses` |
 
+## docker builder prune
+
+| Docker | | Notes | Evidence or step |
+| --- | --- | --- | --- |
+| `-a, --all` | 🟡 | Removes every cached step. Layers that images use stay with the images. | `build_cache_stays_under_its_cap` |
+| `-f, --force` | 🟢 |  | `build_cache_stays_under_its_cap` |
+| `--keep-storage` | 🟡 | Keeps the most recently used cache that no image uses, up to SIZE. Not with `-a`. | `build_cache_stays_under_its_cap` |
+| `--max-used-space, --min-free-space, --reserved-space` | 🔴 | `SBX_BUILD_CACHE_MAX` caps the cache after every build. | not planned yet |
+| `--filter` | 🔴 |  | not planned yet |
+| `--verbose` | 🔴 |  | not planned yet |
+| `--builder` | ⚪ | *Why:* There are no builder instances: each build stage gets its own VM. |  |
+
 ## Behavior
 
 How sbx behaves where no single flag is involved.
@@ -519,19 +533,19 @@ How sbx behaves where no single flag is involved.
 | Docker | | Notes | Evidence or step |
 | --- | --- | --- | --- |
 | `-t, --tag` | 🟢 |  | `build_runs_stages_and_caches_steps` |
-| `-f, --file` | 🟡 | A file only: `-f -` (the Dockerfile on stdin) is refused. `FILE.dockerignore` next to it is read before the context's `.dockerignore`, as in BuildKit. | `build_runs_stages_and_caches_steps` |
+| `-f, --file` | 🟢 | `-f -` reads the Dockerfile from stdin; the context is still the directory. `FILE.dockerignore` next to the file is read before the context's `.dockerignore`, as in BuildKit. | `build_runs_stages_and_caches_steps`, `build_source_date_epoch_fixes_the_digest` |
 | `--build-arg` | 🟢 |  | `build_failures_targets_and_build_args` |
 | `--target` | 🟢 |  | `build_failures_targets_and_build_args` |
 | `--no-cache` | 🟢 |  | `build_runs_stages_and_caches_steps` |
 | `--platform` | 🔴 | Images are built for the host's architecture. | after 0.3 |
 | `--progress` | 🟡 | `auto` (the default) prints one line per step and shows a `RUN` step's output only when it fails; `plain` streams it too. There is no `tty` or `rawjson`; `--format json` prints JSON Lines. | `build_runs_stages_and_caches_steps` |
-| `-o, --output` | 🔴 | Without it the image goes to the sbx store (`type=sbx`); `type=docker` and `type=oci` come in D4. | D4 (0.3) |
-| `--load` | 🔴 |  | D4 (0.3) |
-| `--push` | 🔴 |  | D5 (0.3) |
+| `-o, --output` | 🟡 | `type=sbx` (sbx's image store, the default; `type=image` too), `type=docker` (into `docker load`, or a tar with `dest=FILE`), `type=oci,dest=FILE\|DIR/\|-` (an archive, a layout directory, or stdout), `type=registry` (push). Repeat it for several; given outputs replace the default, so `-o type=docker` alone keeps nothing in sbx (the layer cache stays). The archive is the same file `sbx save` writes. No `type=local` or `type=tar`. Layers are turned into tars when exported, and a layer's compressed digest is fixed the first time it is exported, so every export of an image has the same manifest digest. | `build_outputs_export_one_image_everywhere` |
+| `--load` | 🟢 | Needs `docker` on PATH; without it the build stops before it starts and says to write a tar instead. | `build_outputs_export_one_image_everywhere` |
+| `--push` | 🟢 |  | `build_outputs_export_one_image_everywhere` |
 | `--secret` | 🔴 |  | after 0.3 |
 | `--ssh` | 🔴 |  | after 0.3 |
 | `--add-host` | 🔴 |  | after 0.3 |
-| `--network` | 🟡 | `none` (the default; Docker's default is the full network) or `allow` with `--allow` destinations, as with `run`. | `build_shows_blocked_names` |
+| `--network` | 🟡 | `none` (the default; Docker's default is the full network) or `allow` with `--allow` destinations, as with `run`. With `none`, a failed step lists the names it looked up and says the network is closed. | `build_shows_blocked_names` |
 | `--annotation` | 🔴 |  | not planned yet |
 | `--attest, --provenance, --sbom` | 🔴 |  | not planned yet |
 | `--build-context` | 🔴 |  | not planned yet |
@@ -591,7 +605,7 @@ What `sbx build` reads. An instruction or flag it doesn't support is an error wi
 | Parser directive `# syntax=` (another frontend) | ⚫ | *Why:* Another frontend needs BuildKit. sbx reports the line instead of ignoring it. |  |
 | `.dockerignore` | 🟢 |  | `build_runs_stages_and_caches_steps` |
 | A git repository as the build context | 🔴 |  | after 0.3 |
-| `SOURCE_DATE_EPOCH` (fixed times in layers) | 🔴 |  | D4 (0.3) |
+| `SOURCE_DATE_EPOCH` (fixed times in layers) | 🟡 | From the environment variable or `--build-arg SOURCE_DATE_EPOCH=N`, as in BuildKit: it sets the image's `created` and history times and caps the file times in the layers a build makes (so in exported layer tars too). Layers of the base image keep their times. The promise is the same input and the same cache give the same digest. | `build_source_date_epoch_fixes_the_digest` |
 
 ## docker compose
 

@@ -54,8 +54,8 @@ pub trait Store: Send + Sync {
     fn cache_put(&self, key: &str, record: &CacheRecord) -> Result<(), BuildError>;
 
     /// 압축하지 않은 층 tar(`tar`)를 층으로 저장한다. diff_id는 저장소가 직접 계산한다. 그 tar는 믿지 않는 입력이다
-    /// (게스트가 보낸 것일 수 있다).
-    fn add_layer(&self, tar: &Path) -> Result<Layer, BuildError>;
+    /// (게스트가 보낸 것일 수 있다). `clamp`가 있으면 항목의 시각을 그 값(Unix 초)으로 누른다(`SOURCE_DATE_EPOCH`).
+    fn add_layer(&self, tar: &Path, clamp: Option<i64>) -> Result<Layer, BuildError>;
 
     /// 층 하나의 항목을 읽는다. `index`는 [`ContentRef::layer`]에 쓸 번호다. 내용은 돌려준 [`Contents`]로 연다.
     fn read_layer(
@@ -67,7 +67,7 @@ pub trait Store: Send + Sync {
     /// 임시 파일을 둘 디렉터리(층 tar를 쓴다). 빌드가 끝나면 비운다.
     fn work_dir(&self) -> &Path;
 
-    /// 만든 이미지를 저장한다. 이미지 ID를 돌려준다.
+    /// 만든 이미지를 저장한다(`type=sbx`). 이미지 ID를 돌려준다. [`crate::Request::store`]가 거짓이면 부르지 않는다.
     fn commit(&self, image: &Built) -> Result<ImageId, BuildError>;
 }
 

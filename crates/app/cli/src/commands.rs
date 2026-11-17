@@ -143,6 +143,11 @@ pub const COMMANDS: &[Command] = &[
         "Build an image from a Dockerfile, each RUN step in a microVM",
     ),
     cmd(
+        "builder",
+        Section::Images,
+        "Manage the build cache (prune; it also stays under SBX_BUILD_CACHE_MAX on its own)",
+    ),
+    cmd(
         "pull",
         Section::Images,
         "Download an image (only downloads)",
@@ -150,7 +155,7 @@ pub const COMMANDS: &[Command] = &[
     cmd(
         "push",
         Section::Images,
-        "Upload an image to its registry (layers and config as pulled, then the manifest)",
+        "Upload an image to its registry (layers, config, then the manifest)",
     ),
     cmd(
         "tag",

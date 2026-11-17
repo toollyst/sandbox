@@ -139,6 +139,7 @@ pub enum Area {
     VolumePrune,
     SystemDf,
     SystemPrune,
+    BuilderPrune,
     Behavior,
     Build,
     Dockerfile,
@@ -148,7 +149,7 @@ pub enum Area {
 
 impl Area {
     /// 문서의 순서.
-    pub const ALL: [Area; 34] = [
+    pub const ALL: [Area; 35] = [
         Area::Commands,
         Area::Global,
         Area::Run,
@@ -178,6 +179,7 @@ impl Area {
         Area::VolumePrune,
         Area::SystemDf,
         Area::SystemPrune,
+        Area::BuilderPrune,
         Area::Behavior,
         Area::Build,
         Area::Dockerfile,
@@ -217,6 +219,7 @@ impl Area {
             Area::VolumePrune => "docker volume prune",
             Area::SystemDf => "docker system df",
             Area::SystemPrune => "docker system prune",
+            Area::BuilderPrune => "docker builder prune",
             Area::Behavior => "Behavior",
             Area::Build => "docker build",
             Area::Dockerfile => "Dockerfile",
@@ -260,6 +263,7 @@ impl Area {
             Area::VolumePrune => flags(&[&["volume", "prune"]]),
             Area::SystemDf => flags(&[&["system", "df"]]),
             Area::SystemPrune => flags(&[&["system", "prune"]]),
+            Area::BuilderPrune => flags(&[&["builder", "prune"]]),
             Area::Build => flags(&[&["build"]]),
             Area::Behavior | Area::Dockerfile | Area::ComposeFile => Kind::Text,
         }
@@ -482,8 +486,9 @@ pub const ROWS: &[Row] = &[
         "docker_options_reach_the_sandbox",
         "behavior::tests::rmi_table",
     ]),
-    differs(Commands, "save", "One image per archive, written as an OCI image layout (with Docker's `manifest.json`), exactly as it was pulled.", &[
+    differs(Commands, "save", "One image per archive, written as an OCI image layout (with Docker's `manifest.json`): a pulled image exactly as it was pulled, a built one exported from its layers (the same bytes every time).", &[
         "load_and_save_round_trip_an_oci_archive",
+        "build_outputs_export_one_image_everywhere",
     ]),
     differs(Commands, "load", "Reads OCI image layout archives or directories: `docker save` from Docker 25 on, `podman save --format oci-archive`, skopeo.", &[
         "load_and_save_round_trip_an_oci_archive",
@@ -510,11 +515,13 @@ pub const ROWS: &[Row] = &[
     ]),
     not_yet(Commands, "system events", UNPLANNED).note("`sbx events` does this."),
     not_yet(Commands, "system info", UNPLANNED).note("`sbx info` does this."),
-    differs(Commands, "build", "Each stage's `RUN` steps run in one microVM with the network closed unless `--allow` opens it; `COPY`, `ADD` and `WORKDIR` layers are made on the host, so a `FROM scratch` stage of copies needs no VM. The image goes to the sbx image store (`--output type=sbx`); `save` and `push` of a built image come with the layer export step.", &["build_runs_stages_and_caches_steps", "build_scratch_without_a_vm_and_shared_base_layers"]),
+    differs(Commands, "build", "Each stage's `RUN` steps run in one microVM with the network closed unless `--allow` opens it; `COPY`, `ADD` and `WORKDIR` layers are made on the host, so a `FROM scratch` stage of copies needs no VM. The image goes to the sbx image store unless `--output` says otherwise; `save` and `push` export a built image like any other.", &["build_runs_stages_and_caches_steps", "build_scratch_without_a_vm_and_shared_base_layers", "build_outputs_export_one_image_everywhere"]),
     wont(Commands, "buildx build", "`sbx build` is the builder and takes buildx's flag names; there is no builder plugin to call."),
-    not_yet(Commands, "builder", UNPLANNED).note("`sbx system prune` clears the build cache; `sbx system df` shows it."),
-    differs(Commands, "push", "Sends the layers, config and manifest exactly as they were pulled, so the image keeps its digest; one blob at a time (Docker sends several at once). Only to the registry the name points at: never to a `registries.conf` mirror, and a blocked registry is refused.", &[
+    differs(Commands, "builder", "`prune` only. The build cache also keeps itself under a cap after every build (`SBX_BUILD_CACHE_MAX`, default 10 GiB), dropping the least recently used steps whose layers no image uses. `sbx system df` shows it; `sbx system prune` clears it.", &["build_cache_stays_under_its_cap"]),
+    differs(Commands, "builder prune", "Removes cached steps whose layers no image uses (`-a`: every cached step; `--keep-storage`: keeps the most recently used up to a size). Without a terminal it needs `-f`.", &["build_cache_stays_under_its_cap"]),
+    differs(Commands, "push", "Sends the layers, config and manifest exactly as they were pulled, so the image keeps its digest; a built image is exported from its layers, with the same digest on every push. One blob at a time (Docker sends several at once). Only to the registry the name points at: never to a `registries.conf` mirror, and a blocked registry is refused.", &[
         "tag_and_push_to_a_registry",
+        "build_outputs_export_one_image_everywhere",
         "app::push::tests::report_reads_like_docker_push",
     ]),
     same(Commands, "tag", &["tag_and_push_to_a_registry"])
@@ -895,6 +902,14 @@ pub const ROWS: &[Row] = &[
     differs(SystemPrune, "--volumes", "Only with `-a` does it remove anything: every volume no sandbox points at (sbx has no anonymous volumes).", &[
         "system_df_and_prune_free_what_nothing_uses",
     ]),
+    // ── builder prune ────────────────────────────────────────────────────
+    differs(BuilderPrune, "-a, --all", "Removes every cached step. Layers that images use stay with the images.", &["build_cache_stays_under_its_cap"]),
+    same(BuilderPrune, "-f, --force", &["build_cache_stays_under_its_cap"]),
+    differs(BuilderPrune, "--keep-storage", "Keeps the most recently used cache that no image uses, up to SIZE. Not with `-a`.", &["build_cache_stays_under_its_cap"]),
+    not_yet(BuilderPrune, "--max-used-space, --min-free-space, --reserved-space", UNPLANNED).note("`SBX_BUILD_CACHE_MAX` caps the cache after every build."),
+    not_yet(BuilderPrune, "--filter", UNPLANNED),
+    not_yet(BuilderPrune, "--verbose", UNPLANNED),
+    na(BuilderPrune, "--builder", "There are no builder instances: each build stage gets its own VM."),
     // ── 동작 ─────────────────────────────────────────────────────────────
     same(Behavior, "Exit codes 125, 126 and 127", &[
         "run_failures_before_the_command_are_125",
@@ -922,19 +937,19 @@ pub const ROWS: &[Row] = &[
     wont(Behavior, "Running another architecture's images (emulation)", "Out of scope: a sandbox runs the host's architecture."),
     // ── build ────────────────────────────────────────────────────────────
     same(Build, "-t, --tag", &["build_runs_stages_and_caches_steps"]),
-    differs(Build, "-f, --file", "A file only: `-f -` (the Dockerfile on stdin) is refused. `FILE.dockerignore` next to it is read before the context's `.dockerignore`, as in BuildKit.", &["build_runs_stages_and_caches_steps"]),
+    same(Build, "-f, --file", &["build_runs_stages_and_caches_steps", "build_source_date_epoch_fixes_the_digest"]).note("`-f -` reads the Dockerfile from stdin; the context is still the directory. `FILE.dockerignore` next to the file is read before the context's `.dockerignore`, as in BuildKit."),
     same(Build, "--build-arg", &["build_failures_targets_and_build_args"]),
     same(Build, "--target", &["build_failures_targets_and_build_args"]),
     same(Build, "--no-cache", &["build_runs_stages_and_caches_steps"]),
     not_yet(Build, "--platform", LATER).note("Images are built for the host's architecture."),
     differs(Build, "--progress", "`auto` (the default) prints one line per step and shows a `RUN` step's output only when it fails; `plain` streams it too. There is no `tty` or `rawjson`; `--format json` prints JSON Lines.", &["build_runs_stages_and_caches_steps"]),
-    not_yet(Build, "-o, --output", "D4").note("Without it the image goes to the sbx store (`type=sbx`); `type=docker` and `type=oci` come in D4."),
-    not_yet(Build, "--load", "D4"),
-    not_yet(Build, "--push", "D5"),
+    differs(Build, "-o, --output", "`type=sbx` (sbx's image store, the default; `type=image` too), `type=docker` (into `docker load`, or a tar with `dest=FILE`), `type=oci,dest=FILE|DIR/|-` (an archive, a layout directory, or stdout), `type=registry` (push). Repeat it for several; given outputs replace the default, so `-o type=docker` alone keeps nothing in sbx (the layer cache stays). The archive is the same file `sbx save` writes. No `type=local` or `type=tar`. Layers are turned into tars when exported, and a layer's compressed digest is fixed the first time it is exported, so every export of an image has the same manifest digest.", &["build_outputs_export_one_image_everywhere"]),
+    same(Build, "--load", &["build_outputs_export_one_image_everywhere"]).note("Needs `docker` on PATH; without it the build stops before it starts and says to write a tar instead."),
+    same(Build, "--push", &["build_outputs_export_one_image_everywhere"]),
     not_yet(Build, "--secret", LATER),
     not_yet(Build, "--ssh", LATER),
     not_yet(Build, "--add-host", LATER),
-    differs(Build, "--network", "`none` (the default; Docker's default is the full network) or `allow` with `--allow` destinations, as with `run`.", &["build_shows_blocked_names"]),
+    differs(Build, "--network", "`none` (the default; Docker's default is the full network) or `allow` with `--allow` destinations, as with `run`. With `none`, a failed step lists the names it looked up and says the network is closed.", &["build_shows_blocked_names"]),
     not_yet(Build, "--annotation", UNPLANNED),
     not_yet(Build, "--attest, --provenance, --sbom", UNPLANNED),
     not_yet(Build, "--build-context", UNPLANNED),
@@ -988,7 +1003,7 @@ pub const ROWS: &[Row] = &[
     wont(Dockerfile, "Parser directive `# syntax=` (another frontend)", "Another frontend needs BuildKit. sbx reports the line instead of ignoring it."),
     same(Dockerfile, "`.dockerignore`", &["build_runs_stages_and_caches_steps"]),
     not_yet(Dockerfile, "A git repository as the build context", LATER),
-    not_yet(Dockerfile, "`SOURCE_DATE_EPOCH` (fixed times in layers)", "D4"),
+    differs(Dockerfile, "`SOURCE_DATE_EPOCH` (fixed times in layers)", "From the environment variable or `--build-arg SOURCE_DATE_EPOCH=N`, as in BuildKit: it sets the image's `created` and history times and caps the file times in the layers a build makes (so in exported layer tars too). Layers of the base image keep their times. The promise is the same input and the same cache give the same digest.", &["build_source_date_epoch_fixes_the_digest"]),
     // ── compose ──────────────────────────────────────────────────────────
     not_yet(Compose, "up", "C1"),
     not_yet(Compose, "down", "C1"),

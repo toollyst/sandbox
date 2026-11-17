@@ -22,8 +22,12 @@
 //! - `COPY --from=이미지`, `FROM 이미지`는 저장소가 찾고 없으면 받는다.
 //! - 캐시: 층을 만드는 단계는 키 → 층 기록을 남긴다([`Store::cache_put`]). `no_cache`면 기록을 읽지 않고(새로 만든다)
 //!   새 기록은 남긴다(Docker와 같다).
-//! - 만든 이미지의 ID는 config 문서의 sha256이다(manifest가 없다. 층 tar를 다시 만들어 manifest를 쓰는 일은 내보내기
-//!   단계의 몫이다).
+//! - 만든 이미지의 ID는 config 문서의 sha256이다(manifest가 없다. 층 tar를 다시 만들어 manifest를 쓰는 일은 내보내기,
+//!   `sbx-manage`의 `export`의 몫이다). 저장소에 두는 것(`type=sbx`)은 [`Request::store`]일 때만이다. 아니면 만든 것을
+//!   돌려주기만 한다(`type=docker`, `type=oci`, `type=registry`만 고른 빌드).
+//! - `SOURCE_DATE_EPOCH`([`Request::source_date_epoch`]): 이 빌드가 더한 history의 시각과 이미지의 `created`가 그 값이고,
+//!   새 층의 파일 시각을 그 값으로 누른다(저장소가 한다, [`Store::add_layer`]). 캐시 키에도 들어간다([`key::epoch`]).
+//!   그래서 같은 입력과 같은 캐시면 같은 이미지 ID다. `RUN`이 매번 다른 내용을 쓰면 다르다(sbx가 만드는 차이는 없다).
 //!
 //! - 의존: `sbx-model`, `sbx-rootfs`(합친 트리와 층 항목)
 
@@ -70,13 +74,19 @@ pub struct Request {
     pub no_cache: bool,
     /// 만들 이미지의 아키텍처.
     pub arch: Arch,
+    /// `SOURCE_DATE_EPOCH`(Unix 초). 규칙은 크레이트 문서에 있다.
+    pub source_date_epoch: Option<i64>,
+    /// 만든 이미지를 저장소에 둔다([`Store::commit`], `type=sbx`).
+    pub store: bool,
 }
 
 /// 빌드 결과.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outcome {
-    /// 저장한 이미지 ID.
+    /// 이미지 ID(config 문서의 sha256). 저장했으면 저장소의 ID다.
     pub id: ImageId,
+    /// 저장소에 두었는지([`Request::store`]).
+    pub stored: bool,
     /// 만든 이미지.
     pub image: Built,
     /// 띄운 빌드 VM 수.
@@ -156,6 +166,8 @@ struct Builder<'a> {
     vms: usize,
     cached: usize,
     seq: usize,
+    /// `SOURCE_DATE_EPOCH`의 RFC 3339 꼴.
+    epoch: Option<String>,
 }
 
 /// 만드는 중인 스테이지.
@@ -187,16 +199,20 @@ pub async fn build(
         vms: 0,
         cached: 0,
         seq: 0,
+        epoch: req.source_date_epoch.map(time::rfc3339),
     };
     for (i, stage) in req.plan.stages.iter().enumerate() {
         let f = b.stage(i, stage).await?;
         b.done[i] = Some(f);
     }
-    let last = b
+    let mut last = b
         .done
         .pop()
         .flatten()
         .ok_or_else(|| BuildError::Backend("the build plan has no stages".into()))?;
+    if let Some(e) = &b.epoch {
+        last.image.set_created(e);
+    }
     let diff_ids: Vec<String> = last.layers.iter().map(|l| l.diff_id.to_string()).collect();
     let image = Built {
         config_json: last.image.document(&diff_ids),
@@ -204,13 +220,25 @@ pub async fn build(
         layers: last.layers,
         arch: req.arch,
     };
-    let id = store.commit(&image)?;
+    let id = if req.store {
+        store.commit(&image)?
+    } else {
+        ImageId::new(digest(&image.config_json))
+    };
     Ok(Outcome {
         id,
+        stored: req.store,
         image,
         vms: b.vms,
         cached: b.cached,
     })
+}
+
+/// sha256 digest.
+fn digest(bytes: &[u8]) -> sbx_model::Digest {
+    use sha2::Digest as _;
+    let hex = source::hex(&sha2::Sha256::digest(bytes));
+    sbx_model::Digest::parse(&format!("sha256:{hex}")).expect("a sha256 digest")
 }
 
 fn now_secs() -> i64 {
@@ -239,6 +267,12 @@ fn looks_like_archive(head: &[u8]) -> bool {
 }
 
 impl Builder<'_> {
+    /// 지금(Unix 초). `SOURCE_DATE_EPOCH`가 더 이르면 그것.
+    fn now(&self) -> i64 {
+        let now = now_secs();
+        self.req.source_date_epoch.map_or(now, |e| now.min(e))
+    }
+
     fn emit(&self, e: Event) {
         (self.events)(e)
     }
@@ -292,6 +326,10 @@ impl Builder<'_> {
                 (f.layers, f.image, f.key)
             }
             StageBase::Scratch => (Vec::new(), Image::scratch(self.req.arch), key::scratch()),
+        };
+        let key = match self.req.source_date_epoch {
+            Some(e) => key::epoch(&key, e),
+            None => key,
         };
         self.step_event(
             si,
@@ -348,56 +386,60 @@ impl Builder<'_> {
 
     /// 단계 하나. 캐시에서 왔으면 `true`.
     async fn step(&mut self, step: &Step, run: &mut Run) -> Result<bool, BuildError> {
+        let epoch = self.epoch.clone();
+        let now = self.now();
         let img = &mut run.image;
+        // config만 바꾸는 단계의 history. `SOURCE_DATE_EPOCH`면 그 시각이다.
+        let record = |img: &mut Image, text: &str| img.record_layer(text, epoch.as_deref(), true);
         match &step.kind {
             StepKind::Env(pairs) => {
                 img.set_env(pairs);
                 let text: Vec<String> = pairs.iter().map(|(k, v)| format!("{k}={v}")).collect();
-                img.record(&format!("ENV {}", text.join(" ")), None);
+                record(img, &format!("ENV {}", text.join(" ")));
             }
             StepKind::User(u) => {
                 img.set("User", u.clone());
-                img.record(&format!("USER {u}"), None);
+                record(img, &format!("USER {u}"));
             }
             StepKind::Label(pairs) => {
                 img.add_labels(pairs);
                 let text: Vec<String> = pairs.iter().map(|(k, v)| format!("{k}={v}")).collect();
-                img.record(&format!("LABEL {}", text.join(" ")), None);
+                record(img, &format!("LABEL {}", text.join(" ")));
             }
             StepKind::Expose(ports) => {
                 img.add_keys("ExposedPorts", ports);
-                img.record(&format!("EXPOSE {}", go_plain(ports)), None);
+                record(img, &format!("EXPOSE {}", go_plain(ports)));
             }
             StepKind::Volume(v) => {
                 img.add_keys("Volumes", v);
-                img.record(&format!("VOLUME {}", go_plain(v)), None);
+                record(img, &format!("VOLUME {}", go_plain(v)));
             }
             StepKind::Entrypoint(c) => {
                 let argv = c.argv();
                 img.set_entrypoint(&argv, !run.cmd_set);
-                img.record(&format!("ENTRYPOINT {}", go_quoted(&argv)), None);
+                record(img, &format!("ENTRYPOINT {}", go_quoted(&argv)));
             }
             StepKind::Cmd(c) => {
                 let argv = c.argv();
                 img.set_cmd(&argv);
                 run.cmd_set = true;
-                img.record(&format!("CMD {}", go_quoted(&argv)), None);
+                record(img, &format!("CMD {}", go_quoted(&argv)));
             }
             StepKind::StopSignal(s) => {
                 img.set("StopSignal", s.clone());
-                img.record(&format!("STOPSIGNAL {s}"), None);
+                record(img, &format!("STOPSIGNAL {s}"));
             }
             StepKind::Shell(s) => {
                 img.set_shell(s);
-                img.record(&format!("SHELL {}", go_plain(s)), None);
+                record(img, &format!("SHELL {}", go_plain(s)));
             }
             StepKind::Healthcheck(h) => {
                 img.set_healthcheck(h);
-                img.record(&format!("HEALTHCHECK {}", go_quoted(&h.test)), None);
+                record(img, &format!("HEALTHCHECK {}", go_quoted(&h.test)));
             }
             StepKind::Maintainer(m) => {
                 img.set_author(m);
-                img.record(&format!("MAINTAINER {m}"), None);
+                record(img, &format!("MAINTAINER {m}"));
             }
             StepKind::Workdir(dir) => {
                 let dir = absolute(&img.working_dir(), dir);
@@ -417,7 +459,7 @@ impl Builder<'_> {
                             copy::Options {
                                 owner: Some(owner),
                                 chmod: None,
-                                now: now_secs(),
+                                now,
                             },
                         )
                         .map_err(|m| BuildError::step(step, m))
@@ -482,11 +524,7 @@ impl Builder<'_> {
                             &view.tree,
                             &srcs,
                             &dest,
-                            copy::Options {
-                                owner,
-                                chmod,
-                                now: now_secs(),
-                            },
+                            copy::Options { owner, chmod, now },
                         )
                         .map_err(|m| BuildError::step(step, m))
                     })
@@ -507,7 +545,8 @@ impl Builder<'_> {
 
     fn push(&self, run: &mut Run, key: String, rec: CacheRecord, created_by: &str) {
         run.layers.push(rec.layer);
-        run.image.record(created_by, Some(&rec.created));
+        let created = self.epoch.clone().unwrap_or(rec.created);
+        run.image.record(created_by, Some(&created));
         run.key = key;
     }
 
@@ -520,7 +559,7 @@ impl Builder<'_> {
 
     /// 새 층을 저장하고 캐시 기록을 남긴다.
     fn store_layer(&self, tar: &std::path::Path, key: &str) -> Result<CacheRecord, BuildError> {
-        let added = self.store.add_layer(tar);
+        let added = self.store.add_layer(tar, self.req.source_date_epoch);
         let _ = std::fs::remove_file(tar);
         let rec = CacheRecord {
             layer: added?,

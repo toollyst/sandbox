@@ -348,9 +348,15 @@ fn predefined_platform_args() {
 fn unused_build_args_are_a_warning() {
     let plan = with_args(
         "ARG USED\nFROM alpine AS x\nARG ALSO\nFROM alpine\nARG LAST\n",
-        &[("USED", "1"), ("ALSO", "2"), ("LAST", "3"), ("NOPE", "4")],
+        &[
+            ("USED", "1"),
+            ("ALSO", "2"),
+            ("LAST", "3"),
+            ("NOPE", "4"),
+            ("SOURCE_DATE_EPOCH", "0"),
+        ],
     );
-    // ALSO는 빠진 스테이지에만 있다.
+    // ALSO는 빠진 스테이지에만 있다. SOURCE_DATE_EPOCH는 빌드가 직접 쓰므로 알리지 않는다.
     let w: Vec<_> = plan.warnings.iter().map(|w| w.to_string()).collect();
     assert_eq!(
         w,

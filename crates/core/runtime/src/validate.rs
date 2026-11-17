@@ -197,6 +197,7 @@ mod tests {
             hold: false,
             connect: Vec::new(),
             connect_scope: BTreeMap::new(),
+            record_names: false,
         }
     }
 

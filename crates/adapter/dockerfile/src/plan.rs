@@ -323,10 +323,11 @@ pub fn plan(
         });
     }
 
+    // `SOURCE_DATE_EPOCH`는 빌드가 직접 쓰는 인자다(BuildKit과 같다). 선언하지 않아도 알리지 않는다.
     let mut unused: Vec<&String> = p
         .build_args
         .keys()
-        .filter(|k| !p.consumed.contains(*k))
+        .filter(|k| !p.consumed.contains(*k) && k.as_str() != "SOURCE_DATE_EPOCH")
         .collect();
     unused.sort();
     if !unused.is_empty() {

@@ -247,6 +247,18 @@ mod unix {
             build_writes_the_image_config,
         ),
         (
+            "build_outputs_export_one_image_everywhere",
+            build_outputs_export_one_image_everywhere,
+        ),
+        (
+            "build_source_date_epoch_fixes_the_digest",
+            build_source_date_epoch_fixes_the_digest,
+        ),
+        (
+            "build_cache_stays_under_its_cap",
+            build_cache_stays_under_its_cap,
+        ),
+        (
             "a_missing_layer_disk_stops_the_start",
             a_missing_layer_disk_stops_the_start,
         ),
@@ -449,6 +461,9 @@ mod unix {
                 .env("DOCKER_CONFIG", self.root.join("docker"))
                 .env("XDG_CONFIG_HOME", self.root.join("xdg-config"))
                 .env_remove("REGISTRY_AUTH_FILE")
+                // 빌드의 시각과 캐시 상한은 테스트가 정한다.
+                .env_remove("SOURCE_DATE_EPOCH")
+                .env_remove("SBX_BUILD_CACHE_MAX")
                 // registries.conf도(사용자 drop-in은 HOME 아래).
                 .env(
                     "CONTAINERS_REGISTRIES_CONF",
@@ -5632,19 +5647,22 @@ CMD [\"cat\", \"/app/out.txt\"]
         assert_eq!(o.status.code(), Some(0), "{err}");
         assert!(!err.contains("CACHED"), "{err}");
         assert!(rec.is_file());
-        // 만든 이미지는 아직 save·push하지 못한다(층 tar 내보내기 단계의 자리).
+        // 만든 이미지도 save한다(층 디스크에서 내보낸다). 다른 sbx가 들여 돌린다.
         let o = e.sbx(&[
             "save",
             "-o",
             e.path("app.tar").to_str().unwrap(),
             "local/app:1",
         ]);
-        assert_ne!(o.status.code(), Some(0));
-        assert!(
-            text(&o.stderr).contains("made by sbx build"),
-            "{}",
-            text(&o.stderr)
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let other = Env::new();
+        load(
+            &other,
+            "app.tar",
+            &std::fs::read(e.path("app.tar")).unwrap(),
         );
+        let o = other.sbx(&["run", "--rm", "local/app:1", "true"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
     }
 
     /// 실패한 RUN은 그 출력과 코드를 보인다. 백그라운드로 남긴 프로세스는 단계를 붙잡지 않는다. `--target`은 그
@@ -5804,6 +5822,454 @@ CMD [\"cat\", \"/app/out.txt\"]
             err.contains("blocked: blocked.invalid — add --allow blocked.invalid:PORT"),
             "{err}"
         );
+        assert!(!err.contains("network is closed"), "{err}");
+        // 닫힌 네트워크(기본)에서도 물은 이름을 알고, 네트워크가 닫혀 있다고 말한다.
+        let o = build(&e, &ctx, &[], None);
+        let err = text(&o.stderr);
+        assert_eq!(o.status.code(), Some(1), "{err}");
+        assert!(err.contains("blocked.invalid: rcode 3 []"), "{err}");
+        assert!(
+            err.contains(
+                "blocked: blocked.invalid — add --network allow --allow blocked.invalid:PORT"
+            ),
+            "{err}"
+        );
+        assert!(err.contains("the build network is closed"), "{err}");
+    }
+
+    /// `sha256:<16진수>`.
+    fn sha256_id(b: &[u8]) -> String {
+        use sha2::Digest as _;
+        let hex: String = sha2::Sha256::digest(b)
+            .iter()
+            .map(|x| format!("{x:02x}"))
+            .collect();
+        format!("sha256:{hex}")
+    }
+
+    /// tar의 일반 파일들(경로 → 내용).
+    fn tar_files(tar: &[u8]) -> std::collections::BTreeMap<String, Vec<u8>> {
+        use std::io::Read;
+        let mut out = std::collections::BTreeMap::new();
+        for entry in tar::Archive::new(tar).entries().unwrap() {
+            let mut entry = entry.unwrap();
+            if !entry.header().entry_type().is_file() {
+                continue;
+            }
+            let path = entry.path().unwrap().to_string_lossy().into_owned();
+            let mut b = Vec::new();
+            entry.read_to_end(&mut b).unwrap();
+            out.insert(path, b);
+        }
+        out
+    }
+
+    /// `--format json build`의 줄들.
+    fn build_events(o: &Output) -> Vec<sbx_cli::output::BuildEvent> {
+        text(&o.stdout)
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{e}: {l}")))
+            .collect()
+    }
+
+    /// 만든 이미지 하나를 sbx 저장소, `save`, OCI tar와 layout, `docker load`, 레지스트리로 내보낸다. 어디로 가든
+    /// manifest digest가 같다: 다른 sbx가 들인 이미지 ID, 레지스트리의 digest, 두 번 올린 digest가 모두 같다.
+    /// `type=docker`만 주면 sbx 저장소에 남지 않고(층 캐시는 남는다), docker가 없으면 빌드 전에 멈춘다.
+    fn build_outputs_export_one_image_everywhere() {
+        let (e, ctx) = build_env();
+        write(
+            &ctx,
+            "Dockerfile",
+            "FROM local/base:1\nRUN echo out > f.txt\nCMD [\"cat\", \"f.txt\"]\n",
+        );
+        let o = build(&e, &ctx, &["-t", "local/out:1"], None);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        // save를 두 번 해도 같은 바이트다.
+        let (a, b) = (e.path("a.tar"), e.path("b.tar"));
+        for p in [&a, &b] {
+            let o = e.sbx(&["save", "-o", p.to_str().unwrap(), "local/out:1"]);
+            assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        }
+        let saved = std::fs::read(&a).unwrap();
+        assert_eq!(
+            saved,
+            std::fs::read(&b).unwrap(),
+            "save writes the same bytes"
+        );
+        // 다른 sbx가 들이면 그 manifest digest가 이미지 ID다.
+        let other = Env::new();
+        std::fs::write(other.path("a.tar"), &saved).unwrap();
+        let o = other.sbx(&[
+            "--format",
+            "json",
+            "load",
+            "-i",
+            other.path("a.tar").to_str().unwrap(),
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let loaded: Vec<sbx_cli::output::Pulled> = serde_json::from_slice(&o.stdout).unwrap();
+        let id = loaded[0].id.clone();
+
+        // 저장하지 않는 같은 빌드(모두 캐시)를 OCI tar로: save와 같은 파일이다.
+        let oci = e.path("oci.tar");
+        let dest = format!("type=oci,dest={}", oci.display());
+        let o = build(
+            &e,
+            &ctx,
+            &["--format", "json", "-t", "local/out:1", "-o", &dest],
+            None,
+        );
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let ev = build_events(&o);
+        let built = ev.iter().find(|x| x.kind == "built").unwrap();
+        assert_eq!(built.stored, Some(false));
+        let exported = ev.iter().find(|x| x.kind == "exported").unwrap();
+        assert_eq!(
+            (exported.output.as_deref(), exported.id.as_deref()),
+            (Some("oci"), Some(id.as_str()))
+        );
+        assert_eq!(std::fs::read(&oci).unwrap(), saved);
+        // layout 디렉터리.
+        let layout = e.path("layout");
+        let dest = format!("type=oci,dest={}/", layout.display());
+        let o = build(&e, &ctx, &["-o", &dest], None);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let index: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(layout.join("index.json")).unwrap()).unwrap();
+        assert_eq!(index["manifests"][0]["digest"], id.as_str());
+        assert!(layout.join("oci-layout").is_file());
+        assert!(layout.join("blobs/sha256").join(&id[7..]).is_file());
+        assert!(!layout.join("manifest.json").exists());
+
+        // type=docker: docker load에 흘린다(가짜 docker가 받은 것을 적는다). sbx 저장소에는 남지 않는다.
+        let bin = e.path("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let got = e.path("docker-in.tar");
+        std::fs::write(
+            bin.join("docker"),
+            format!(
+                "#!/bin/sh\n[ \"$1\" = load ] || exit 2\ncat > {}\necho 'Loaded image: local/dk:1'\n",
+                got.display()
+            ),
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(bin.join("docker"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        let path = format!(
+            "{}:{}",
+            bin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let dk = e.path("dk");
+        write(
+            &dk,
+            "Dockerfile",
+            "FROM local/base:1\nRUN echo docker > d.txt\n",
+        );
+        let rec = e.path("vm.json");
+        let run_dk = |extra: &[&str], path: &str| {
+            let mut all = vec!["build", "-t", "local/dk:1"];
+            all.extend_from_slice(extra);
+            all.push(dk.to_str().unwrap());
+            let _ = std::fs::remove_file(&rec);
+            e.cmd(&all)
+                .env("PATH", path)
+                .env("SBX_FAKE_RECORD", &rec)
+                .output()
+                .unwrap()
+        };
+        let o = run_dk(&["--load"], &path);
+        let err = text(&o.stderr);
+        assert_eq!(o.status.code(), Some(0), "{err}");
+        assert!(err.contains("Loaded image: local/dk:1"), "{err}");
+        let files = tar_files(&std::fs::read(&got).unwrap());
+        let manifest = String::from_utf8(files["manifest.json"].clone()).unwrap();
+        assert!(manifest.contains("local/dk:1"), "{manifest}");
+        let o = e.sbx(&["--format", "json", "images"]);
+        let list: Vec<sbx_cli::output::Image> = serde_json::from_slice(&o.stdout).unwrap();
+        assert!(
+            !list
+                .iter()
+                .any(|i| i.references.iter().any(|r| r.contains("local/dk"))),
+            "{list:?}"
+        );
+        // 층 캐시는 남는다: 다시 하면 VM 없이.
+        let o = run_dk(&["-o", "type=docker"], &path);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(!rec.exists(), "the layer cache is still used");
+        // docker가 없으면 빌드 전에 멈춘다.
+        let empty = e.path("empty-path");
+        std::fs::create_dir_all(&empty).unwrap();
+        let o = run_dk(&["--load"], empty.to_str().unwrap());
+        let err = text(&o.stderr);
+        assert_ne!(o.status.code(), Some(0), "{err}");
+        assert!(err.contains("docker is not on PATH"), "{err}");
+        assert!(err.contains("type=docker,dest=FILE"), "{err}");
+        assert!(!rec.exists());
+
+        // 레지스트리: 올린 manifest의 digest가 같은 ID다. 두 번째는 보내지 않는다.
+        let reg = registry();
+        let host = format!("127.0.0.1:{}", reg.port);
+        let one = format!("{host}/team/built:1");
+        let o = build(&e, &ctx, &["--push", "-t", &one], None);
+        let out = text(&o.stdout);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(
+            out.contains(&format!(
+                "The push refers to repository [{host}/team/built]"
+            )),
+            "{out}"
+        );
+        assert!(out.contains(&format!("1: digest: {id} size: ")), "{out}");
+        let stored = |tag: &str| {
+            reg.manifests
+                .lock()
+                .unwrap()
+                .get(tag)
+                .cloned()
+                .unwrap_or_else(|| panic!("no {tag}"))
+        };
+        assert_eq!(sha256_id(&stored("team/built:1")), id);
+        let two = format!("type=registry,name={host}/team/built:2");
+        let o = build(&e, &ctx, &["-o", &two], None);
+        let out = text(&o.stdout);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(out.contains(": Layer already exists"), "{out}");
+        assert_eq!(stored("team/built:2"), stored("team/built:1"));
+        // 저장해 둔 이미지를 sbx push로 올려도 같다.
+        let three = format!("{host}/team/built:3");
+        assert_eq!(
+            e.sbx(&["tag", "local/out:1", &three]).status.code(),
+            Some(0)
+        );
+        let o = e.sbx(&["push", &three]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(stored("team/built:3"), stored("team/built:1"));
+        // 이름이 없으면 올릴 곳이 없다.
+        let o = build(&e, &ctx, &["--push"], None);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("needs a name"),
+            "{}",
+            text(&o.stderr)
+        );
+        // 바탕 이미지를 지우고 정리해도 만든 이미지는 같은 바이트로 save되고 같은 digest로 올라간다(만든 이미지의
+        // 기록이 바탕 층의 blob을 쥔다).
+        assert_eq!(e.sbx(&["rmi", "local/base:1"]).status.code(), Some(0));
+        let o = e.sbx(&["system", "prune", "-f"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let c = e.path("c.tar");
+        let o = e.sbx(&["save", "-o", c.to_str().unwrap(), "local/out:1"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(std::fs::read(&c).unwrap(), saved);
+        let four = format!("{host}/team/built:4");
+        assert_eq!(e.sbx(&["tag", "local/out:1", &four]).status.code(), Some(0));
+        let o = e.sbx(&["push", &four]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(stored("team/built:4"), stored("team/built:1"));
+    }
+
+    /// `build -f -`로 Dockerfile을 표준 입력에서 읽는 `build`.
+    fn build_stdin(
+        e: &Env,
+        ctx: &Path,
+        dockerfile: &str,
+        args: &[&str],
+        epoch: Option<&str>,
+    ) -> Output {
+        let mut all = vec!["build", "-f", "-"];
+        all.extend_from_slice(args);
+        all.push(ctx.to_str().unwrap());
+        let mut c = e.cmd(&all);
+        c.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(v) = epoch {
+            c.env("SOURCE_DATE_EPOCH", v);
+        }
+        let mut child = c.spawn().unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(dockerfile.as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    }
+
+    /// `SOURCE_DATE_EPOCH`: config와 history의 시각이 그것이고, 빌드가 만든 층의 파일 시각이 그보다 늦지 않다. 같은
+    /// 입력이면 캐시 없이 다시 만들어도 같은 바이트다(가짜 실행기에서; 문서는 같은 캐시까지만 약속한다).
+    /// `--build-arg`가 환경 변수를 이긴다.
+    fn build_source_date_epoch_fixes_the_digest() {
+        use std::io::Read;
+        let (e, ctx) = build_env();
+        let df = "FROM local/base:1\nRUN echo x > made.txt\n";
+        let tars: Vec<PathBuf> = (0..3).map(|i| e.path(&format!("e{i}.tar"))).collect();
+        let dest = |p: &Path| format!("type=oci,dest={}", p.display());
+        let o = build_stdin(
+            &e,
+            &ctx,
+            df,
+            &["--no-cache", "-o", &dest(&tars[0])],
+            Some("1000000000"),
+        );
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(!text(&o.stderr).contains("not used"), "{}", text(&o.stderr));
+        let o = build_stdin(
+            &e,
+            &ctx,
+            df,
+            &["--no-cache", "-o", &dest(&tars[1])],
+            Some("1000000000"),
+        );
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let first = std::fs::read(&tars[0]).unwrap();
+        assert_eq!(first, std::fs::read(&tars[1]).unwrap());
+        // --build-arg로 줘도 같다.
+        let o = build_stdin(
+            &e,
+            &ctx,
+            df,
+            &[
+                "--no-cache",
+                "--build-arg",
+                "SOURCE_DATE_EPOCH=1000000000",
+                "-o",
+                &dest(&tars[2]),
+            ],
+            None,
+        );
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(first, std::fs::read(&tars[2]).unwrap());
+        // config와 history의 시각, 맨 위 층(RUN)의 파일 시각.
+        let files = tar_files(&first);
+        let index: serde_json::Value = serde_json::from_slice(&files["index.json"]).unwrap();
+        let blob = |d: &str| files[&format!("blobs/sha256/{}", &d[7..])].clone();
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&blob(index["manifests"][0]["digest"].as_str().unwrap()))
+                .unwrap();
+        let config: serde_json::Value =
+            serde_json::from_slice(&blob(manifest["config"]["digest"].as_str().unwrap())).unwrap();
+        assert_eq!(config["created"], "2001-09-09T01:46:40Z");
+        let history = config["history"].as_array().unwrap();
+        assert_eq!(
+            history.last().unwrap()["created"],
+            "2001-09-09T01:46:40Z",
+            "{history:?}"
+        );
+        let top = manifest["layers"].as_array().unwrap().last().unwrap()["digest"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let mut tar = Vec::new();
+        flate2::read::GzDecoder::new(&blob(&top)[..])
+            .read_to_end(&mut tar)
+            .unwrap();
+        let mut names = Vec::new();
+        for entry in tar::Archive::new(&tar[..]).entries().unwrap() {
+            let entry = entry.unwrap();
+            let name = entry.path().unwrap().to_string_lossy().into_owned();
+            assert!(
+                entry.header().mtime().unwrap() <= 1_000_000_000,
+                "{name}: {}",
+                entry.header().mtime().unwrap()
+            );
+            names.push(name);
+        }
+        assert!(names.iter().any(|n| n.ends_with("made.txt")), "{names:?}");
+        // --build-arg가 환경 변수를 이긴다. 틀린 값은 빌드 전에 거부한다.
+        let o = build_stdin(
+            &e,
+            &ctx,
+            df,
+            &["--build-arg", "SOURCE_DATE_EPOCH=soon"],
+            Some("1000000000"),
+        );
+        assert_ne!(o.status.code(), Some(0));
+        assert!(text(&o.stderr).contains("Unix time"), "{}", text(&o.stderr));
+    }
+
+    /// 빌드 캐시 상한(`SBX_BUILD_CACHE_MAX`): 빌드가 끝나면 이미지가 쓰지 않는 캐시를 상한 밑으로 줄인다. 이미지가
+    /// 쓰는 층의 캐시는 남는다. `builder prune`은 이미지가 쓰지 않는 캐시를, `-a`는 모두 지운다.
+    fn build_cache_stays_under_its_cap() {
+        use sbx_cli::output::BuildCachePruned;
+        let (e, ctx) = build_env();
+        write(
+            &ctx,
+            "Dockerfile",
+            "FROM local/base:1\nRUN echo cap > c.txt\n",
+        );
+        let rec = e.path("vm.json");
+        let tar = format!("type=oci,dest={}", e.path("c.tar").display());
+        let run = |args: &[&str], max: &str| {
+            let mut all = vec!["build"];
+            all.extend_from_slice(args);
+            all.push(ctx.to_str().unwrap());
+            let _ = std::fs::remove_file(&rec);
+            e.cmd(&all)
+                .env("SBX_BUILD_CACHE_MAX", max)
+                .env("SBX_FAKE_RECORD", &rec)
+                .output()
+                .unwrap()
+        };
+        // 저장하지 않는 빌드(층은 캐시만 쥔다), 상한 1바이트: 끝나면 지운다. 다음 빌드는 다시 만든다.
+        let o = run(&["-o", &tar], "1");
+        let err = text(&o.stderr);
+        assert_eq!(o.status.code(), Some(0), "{err}");
+        assert!(err.contains("build cache: removed 1 old step(s)"), "{err}");
+        let o = run(&["-o", &tar], "none");
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(rec.is_file(), "the step was trimmed, so it runs again");
+        let o = run(&["-o", &tar], "none");
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(!rec.exists(), "no cap: the step stays cached");
+        // 틀린 상한은 경고만 한다.
+        let o = run(&["-o", &tar], "lots");
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(
+            text(&o.stderr).contains("SBX_BUILD_CACHE_MAX=lots"),
+            "{}",
+            text(&o.stderr)
+        );
+        // 이미지가 쓰는 층의 캐시는 상한이 1이어도 남는다.
+        let o = run(&["-t", "local/cap:1"], "1");
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = run(&["-t", "local/cap:1"], "1");
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(!rec.exists(), "a layer an image uses is not trimmed");
+        // builder prune: 이미지가 쓰는 층의 캐시는 기본으로 남고, -a면 지운다.
+        let o = e.sbx(&["--format", "json", "builder", "prune", "-f"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let p: BuildCachePruned = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(p.build_cache, 0, "{p:?}");
+        let o = e.sbx(&["builder", "prune"]);
+        assert_ne!(o.status.code(), Some(0), "asks first; no terminal means -f");
+        assert!(text(&o.stderr).contains("-f"), "{}", text(&o.stderr));
+        let o = e.sbx(&["--format", "json", "builder", "prune", "-a", "-f"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let p: BuildCachePruned = serde_json::from_slice(&o.stdout).unwrap();
+        assert!(p.build_cache >= 1, "{p:?}");
+        let o = run(&["-t", "local/cap:1"], "none");
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(rec.is_file(), "the cache is gone, so the step runs again");
+        // 이미지를 지우면 그 층은 캐시만 쥔다: --keep-storage 0이면 지운다.
+        assert_eq!(e.sbx(&["rmi", "local/cap:1"]).status.code(), Some(0));
+        let o = e.sbx(&[
+            "--format",
+            "json",
+            "builder",
+            "prune",
+            "-f",
+            "--keep-storage",
+            "0",
+        ]);
+        let p: BuildCachePruned = serde_json::from_slice(&o.stdout).unwrap();
+        assert!(p.build_cache >= 1 && p.reclaimed > 0, "{p:?}");
+        let o = e.sbx(&["builder", "prune", "-a", "-f", "--keep-storage", "1g"]);
+        assert_ne!(o.status.code(), Some(0));
     }
 
     /// 실행기가 층 디스크를 빠뜨리면 게스트가 센 수가 달라 시작하지 않는다(보통의 run).

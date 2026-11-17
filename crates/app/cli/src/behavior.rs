@@ -137,6 +137,12 @@ pub const DEFAULT_SCRATCH_MIB: u32 = 1024;
 /// 볼륨 디스크의 기본 크기(MiB). sparse라서 호스트에서는 쓴 만큼만 차지한다(`volume create --opt size=`로 바꾼다).
 pub const DEFAULT_VOLUME_MIB: u32 = 16 * 1024;
 
+/// 빌드 캐시의 상한 기본값(바이트): 캐시 기록만 쥔 층의 합. 환경 변수 [`BUILD_CACHE_MAX_ENV`]로 바꾼다.
+pub const DEFAULT_BUILD_CACHE_MAX: u64 = 10 << 30;
+
+/// 빌드 캐시 상한을 바꾸는 환경 변수: 크기(`20g`, `512m`) 또는 `none`(상한 없음).
+pub const BUILD_CACHE_MAX_ENV: &str = "SBX_BUILD_CACHE_MAX";
+
 /// 이미지 ID 앞부분으로 찾을 때 필요한 최소 길이. `images`의 IMAGE ID 열과 같은 12자리다.
 /// 짧은 문자열이 우연히 ID 앞부분과 맞아 엉뚱한 이미지를 지우는 일을 막는다.
 pub const MIN_ID_PREFIX: usize = 12;

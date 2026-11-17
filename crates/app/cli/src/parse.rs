@@ -134,6 +134,14 @@ pub fn transfer_bytes(value: &str) -> ParseResult<u64> {
         .ok_or_else(|| format!("invalid size {value:?} (bytes, or e.g. 500m, 2g)"))
 }
 
+/// 크기(`SBX_BUILD_CACHE_MAX`, `builder prune --keep-storage`): [`transfer_bytes`]와 같고 `0`도 받는다.
+pub fn size_or_zero(value: &str) -> ParseResult<u64> {
+    if value.trim() == "0" {
+        return Ok(0);
+    }
+    transfer_bytes(value)
+}
+
 /// `--cpus`. VM의 vCPU 개수라서 1 이상의 정수만 받는다.
 pub fn cpus(value: &str) -> ParseResult<u8> {
     match value.parse::<u8>() {

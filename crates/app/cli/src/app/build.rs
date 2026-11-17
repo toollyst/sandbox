@@ -7,10 +7,20 @@
 //!   (`hold`), 라벨 [`BUILD_LABEL`]이 있다. 끝나면(실패해도) 지운다.
 //! - 빌드 VM의 쓰기 디스크는 [`BUILD_SCRATCH_MIB`]다(희소 파일이라 쓴 만큼만 든다).
 //! - 실패한 `RUN`: `--progress plain`이 아니면 그 출력의 끝을 보이고, VM이 거부한 이름마다 열 방법을 보인다
-//!   (`blocked: NAME — add --allow NAME:PORT`). 포트는 짐작하지 않는다(거부된 것은 이름뿐이다).
+//!   (`blocked: NAME — add --allow NAME:PORT`). 포트는 짐작하지 않는다(거부된 것은 이름뿐이다). 닫힌 네트워크
+//!   (`--network none`, 기본)에서도 빌드 VM은 물은 이름을 거부로 기록한다(`SandboxSpec::record_names`). 그런 이름이
+//!   있으면 네트워크가 닫혀 있다고 함께 알린다.
+//! - 출력(`--output`, `--load`, `--push`): 규칙은 [`outputs`]. sbx 저장소가 아닌 출력은 만든 이미지를 내보낸다
+//!   ([`Manager::export_built`]). 저장소에 두지 않아도 층과 캐시 기록은 남는다(다음 빌드가 쓴다).
+//! - `SOURCE_DATE_EPOCH`: `--build-arg SOURCE_DATE_EPOCH=N`, 없으면 같은 이름의 환경 변수(그때는 빌드 인자로도
+//!   넘긴다, buildx와 같다). 음이 아닌 정수(Unix 초)여야 한다. 빈 값은 없는 것이다. 쓰임은 빌드 코어 문서에 있다.
+//! - 끝나면(실패해도) 빌드 캐시를 상한 밑으로 줄인다([`Manager::trim_build_cache`]). 상한은
+//!   [`behavior::BUILD_CACHE_MAX_ENV`], 없으면 [`behavior::DEFAULT_BUILD_CACHE_MAX`].
+
+mod outputs;
 
 use std::collections::BTreeMap;
-use std::io::{self, Read};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -21,6 +31,7 @@ use sbx_build::{
 };
 use sbx_image::Platform;
 use sbx_manage::Manager;
+use sbx_manage::export::Export;
 use sbx_model::build::{BuildOptions, BuildPlan, StageBase};
 use sbx_model::{
     Arch, BoxFuture, ExecSpec, ImageId, Layer, NetworkPolicy, ProcessDefaults, Resources,
@@ -29,6 +40,7 @@ use sbx_model::{
 use sbx_oci::Reference;
 use sbx_runtime::{IoMode, Placed, PlacedKind, Runtime};
 
+use self::outputs::{Output, Target};
 use super::{AppResult, Ctx, failure, host_arch, msg, short};
 use crate::behavior;
 use crate::cli::{BuildArgs, BuildProgress};
@@ -126,14 +138,19 @@ impl Store for BuildStore<'_> {
     }
 
     fn cache_get(&self, key: &str) -> Result<Option<CacheRecord>, BuildError> {
-        Ok(self
-            .m
-            .build_cache(key)
-            .map_err(backend)?
-            .map(|r| CacheRecord {
-                layer: r.layer,
-                created: r.created,
-            }))
+        let Some(r) = self.m.build_cache(key).map_err(backend)? else {
+            return Ok(None);
+        };
+        // 쓰는 동안 다른 빌드의 캐시 줄이기나 정리가 지우지 않게 쥔다.
+        self.hold(
+            self.m
+                .claim_layers(std::slice::from_ref(&r.layer))
+                .map_err(backend)?,
+        );
+        Ok(Some(CacheRecord {
+            layer: r.layer,
+            created: r.created,
+        }))
     }
 
     fn cache_put(&self, key: &str, record: &CacheRecord) -> Result<(), BuildError> {
@@ -148,8 +165,8 @@ impl Store for BuildStore<'_> {
             .map_err(backend)
     }
 
-    fn add_layer(&self, tar: &Path) -> Result<Layer, BuildError> {
-        let (layer, claim) = self.m.add_layer(tar).map_err(backend)?;
+    fn add_layer(&self, tar: &Path, clamp: Option<i64>) -> Result<Layer, BuildError> {
+        let (layer, claim) = self.m.add_layer(tar, clamp).map_err(backend)?;
         self.hold(claim);
         Ok(layer)
     }
@@ -229,6 +246,7 @@ impl Machines for BuildMachines {
                     hold: true,
                     connect: Vec::new(),
                     connect_scope: Default::default(),
+                    record_names: true,
                 };
                 let sb = self.rt.create(spec).await.map_err(backend)?;
                 match sb.start(IoMode::default()).await {
@@ -411,6 +429,88 @@ fn build_args(given: &[String]) -> AppResult<Vec<(String, String)>> {
     Ok(out)
 }
 
+/// `SOURCE_DATE_EPOCH`(모듈 문서): `args`(풀어 둔 `--build-arg`)에 있으면 그것, 없으면 `env`(그때는 `args`에도
+/// 더한다).
+fn source_date_epoch(
+    args: &mut Vec<(String, String)>,
+    env: Option<String>,
+) -> AppResult<Option<i64>> {
+    const NAME: &str = "SOURCE_DATE_EPOCH";
+    let value = match args.iter().rev().find(|(k, _)| k == NAME) {
+        Some((_, v)) => v.clone(),
+        None => match env {
+            Some(v) if !v.is_empty() => {
+                args.push((NAME.to_owned(), v.clone()));
+                v
+            }
+            _ => return Ok(None),
+        },
+    };
+    if value.is_empty() {
+        return Ok(None);
+    }
+    match value.parse::<i64>() {
+        Ok(n) if n >= 0 => Ok(Some(n)),
+        _ => Err(msg(format!(
+            "{NAME}={value}: expected a Unix time in seconds (a non-negative integer)"
+        ))),
+    }
+}
+
+/// 빌드 캐시 상한(모듈 문서). `None`이면 상한이 없다.
+fn build_cache_max(env: Option<&str>) -> Result<Option<u64>, String> {
+    match env.map(str::trim) {
+        None | Some("") => Ok(Some(behavior::DEFAULT_BUILD_CACHE_MAX)),
+        Some(v) if v.eq_ignore_ascii_case("none") => Ok(None),
+        Some(v) => crate::parse::size_or_zero(v)
+            .map(Some)
+            .map_err(|e| format!("{}={v}: {e}", behavior::BUILD_CACHE_MAX_ENV)),
+    }
+}
+
+/// 실패한 `RUN`의 오류 끝에 붙일 줄들: 거부된 이름마다 열 방법, 닫힌 네트워크였으면 그 사실.
+fn blocked_lines(blocked: &[String], closed: bool) -> String {
+    let mut m = String::new();
+    let open = if closed { "--network allow " } else { "" };
+    for b in blocked {
+        m.push_str(&format!("\nblocked: {b} — add {open}--allow {b}:PORT"));
+    }
+    if closed && !blocked.is_empty() {
+        m.push_str(
+            "\nthe build network is closed (--network none, the default): RUN steps reach only the hosts \
+             given with --network allow --allow HOST:PORT",
+        );
+    }
+    m
+}
+
+/// 만든 이미지를 `docker load`에 흘린다. docker의 출력은 stderr로 보낸다(`quiet`면 버린다).
+fn docker_load(m: &Manager, e: &Export, names: &[String], quiet: bool) -> AppResult<()> {
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("docker")
+        .arg("load")
+        .stdin(Stdio::piped())
+        .stdout(if quiet {
+            Stdio::null()
+        } else {
+            Stdio::from(io::stderr())
+        })
+        .spawn()
+        .map_err(|e| msg(format!("docker load: {e}")))?;
+    let stdin = child.stdin.take().expect("stdin is piped");
+    let mut w = io::BufWriter::new(stdin);
+    let wrote: AppResult<()> = m
+        .write_archive(e, names, &mut w)
+        .map_err(Into::into)
+        .and_then(|()| w.flush().map_err(Into::into));
+    drop(w);
+    let status = child.wait().map_err(|e| msg(format!("docker load: {e}")))?;
+    if !status.success() {
+        return Err(msg(format!("docker load failed ({status})")));
+    }
+    wrote
+}
+
 /// 단계의 머리: `[2/7]`, 여러 스테이지면 `[build 2/7]`(이름이 없으면 `stage-N`).
 fn step_head(s: &sbx_build::StepEvent) -> String {
     if s.stages > 1 {
@@ -477,6 +577,19 @@ fn printer(json: bool, quiet: bool, plain: bool) -> sbx_build::Events {
     })
 }
 
+/// 빌드가 끝난 뒤에 쓰는 것들([`Ctx::finish_build`]).
+struct Done<'a> {
+    /// 오류에 보일 Dockerfile 이름.
+    fname: &'a str,
+    outputs: &'a [Output],
+    /// `-t`(정규화한 것).
+    tags: &'a [String],
+    /// 저장소에 붙인 이름들(`-t`와 `type=sbx,name=`).
+    store_tags: &'a [String],
+    /// 빌드 네트워크가 닫혀 있었는지.
+    closed: bool,
+}
+
 /// 계획을 푼다. `envs`는 바탕 이미지 참조 → config `Env`.
 fn plan(
     dockerfile: &str,
@@ -503,16 +616,23 @@ impl Ctx {
             )));
         }
         let file = a.file.clone().unwrap_or_else(|| context.join("Dockerfile"));
-        if file.as_os_str() == "-" {
-            return Err(msg("-f -: sbx build reads the Dockerfile from a file"));
-        }
-        let dockerfile =
-            std::fs::read_to_string(&file).map_err(|e| msg(format!("{}: {e}", file.display())))?;
+        // `-f -`: Dockerfile을 표준 입력에서 읽는다(컨텍스트는 그대로 디렉터리다).
+        let stdin_file = file.as_os_str() == "-";
+        let dockerfile = if stdin_file {
+            let mut text = String::new();
+            io::stdin()
+                .lock()
+                .read_to_string(&mut text)
+                .map_err(|e| msg(format!("-f -: {e}")))?;
+            text
+        } else {
+            std::fs::read_to_string(&file).map_err(|e| msg(format!("{}: {e}", file.display())))?
+        };
         // `<Dockerfile>.dockerignore`가 있으면 그것을, 없으면 컨텍스트의 `.dockerignore`(BuildKit과 같다).
         let mut ignore_file = file.clone().into_os_string();
         ignore_file.push(".dockerignore");
         let ignore_file = PathBuf::from(ignore_file);
-        let ignore_file = if ignore_file.is_file() {
+        let ignore_file = if !stdin_file && ignore_file.is_file() {
             ignore_file
         } else {
             context.join(".dockerignore")
@@ -533,16 +653,54 @@ impl Ctx {
             }
             tags.push(r.to_string());
         }
+        let outputs =
+            outputs::parse(&a.outputs, a.load, a.push, &tags, &|p| p.is_dir()).map_err(msg)?;
+        let to_stdout = outputs.iter().any(|o| o.target == Target::Archive(None));
+        if to_stdout && io::stdout().is_terminal() {
+            return Err(msg(
+                "refusing to write a tar to the terminal; give dest=FILE or redirect",
+            ));
+        }
+        if to_stdout && self.json() {
+            return Err(msg(
+                "--format json writes to stdout, where the tar goes (dest=-); give dest=FILE",
+            ));
+        }
+        if outputs.iter().any(|o| o.target == Target::DockerLoad)
+            && !crate::choose::on_path(Path::new("docker"))
+        {
+            return Err(msg(
+                "--output type=docker (--load) streams the image into `docker load`, but docker is not on PATH; \
+                 write a tar instead with --output type=docker,dest=FILE and load it where docker is",
+            ));
+        }
+        let store_it = outputs.iter().any(|o| o.target == Target::Store);
+        // 저장소의 이름: `-t`와 `type=sbx,name=`.
+        let mut store_tags = tags.clone();
+        for o in outputs.iter().filter(|o| o.target == Target::Store) {
+            for n in &o.names {
+                if !store_tags.contains(n) {
+                    store_tags.push(n.clone());
+                }
+            }
+        }
         let arch = host_arch()?;
+        let mut args = build_args(&a.build_args)?;
+        let epoch = source_date_epoch(&mut args, std::env::var("SOURCE_DATE_EPOCH").ok())?;
         let options = BuildOptions {
-            build_args: build_args(&a.build_args)?,
+            build_args: args,
             target: a.target.clone(),
             arch,
         };
-        let fname = file.display().to_string();
+        let fname = if stdin_file {
+            "Dockerfile (stdin)".to_owned()
+        } else {
+            file.display().to_string()
+        };
         let plan_err = |e: sbx_model::build::PlanError| msg(format!("{fname}: {e}"));
         let first = plan(&dockerfile, &options, &BTreeMap::new()).map_err(plan_err)?;
         let network = behavior::network_policy(&a.network, &a.allow).map_err(msg)?;
+        let closed = matches!(network, NetworkPolicy::Disabled);
         let human = !self.json() && !a.quiet;
         if human {
             for w in behavior::proxy_only_warnings(&network) {
@@ -563,7 +721,7 @@ impl Ctx {
             m: m.clone(),
             arch,
             work: work.clone(),
-            tags: tags.clone(),
+            tags: store_tags.clone(),
             claims: Mutex::default(),
             quiet: !human,
         };
@@ -626,6 +784,8 @@ impl Ctx {
             ignore,
             no_cache: a.no_cache,
             arch,
+            source_date_epoch: epoch,
+            store: store_it,
         };
         let plain = a.progress == BuildProgress::Plain;
         let result = sbx_build::build(
@@ -635,8 +795,41 @@ impl Ctx {
             printer(self.json(), a.quiet, plain),
         )
         .await;
+        // 내보낼 것이 있으면 빌드가 쥔 층을 놓기 전에 내보내기를 준비한다(그것이 층을 쥔다).
+        let export = match &result {
+            Ok(o) if outputs.iter().any(|x| x.target != Target::Store) => Some(
+                m.export_built(&o.image.config_json, &o.image.layers)
+                    .map_err(|e| msg(e.to_string())),
+            ),
+            _ => None,
+        };
         drop(store);
         let _ = std::fs::remove_dir_all(&work);
+        let done = Done {
+            fname: &fname,
+            outputs: &outputs,
+            tags: &tags,
+            store_tags: &store_tags,
+            closed,
+        };
+        let r = self
+            .finish_build(a, &m, &done, result, export.transpose())
+            .await;
+        self.trim_build_cache(&m, human);
+        r
+    }
+
+    /// 빌드 결과를 알리고 출력에 내보낸다.
+    async fn finish_build(
+        &self,
+        a: &BuildArgs,
+        m: &Manager,
+        d: &Done<'_>,
+        result: Result<sbx_build::Outcome, BuildError>,
+        export: AppResult<Option<Export>>,
+    ) -> AppResult<u8> {
+        let human = !self.json() && !a.quiet;
+        let plain = a.progress == BuildProgress::Plain;
         let out = match result {
             Ok(out) => out,
             Err(BuildError::RunFailed {
@@ -652,27 +845,227 @@ impl Ctx {
                         eprintln!();
                     }
                 }
-                let mut m = format!(
-                    "{fname}: line {line}: {text}: the command returned a non-zero code: {code}"
+                let m = format!(
+                    "{}: line {line}: {text}: the command returned a non-zero code: {code}{}",
+                    d.fname,
+                    blocked_lines(&blocked, d.closed)
                 );
-                for b in &blocked {
-                    m.push_str(&format!("\nblocked: {b} — add --allow {b}:PORT"));
-                }
                 return Err(failure(1, msg(m)));
             }
-            Err(e @ BuildError::Step { .. }) => return Err(msg(format!("{fname}: {e}"))),
+            Err(e @ BuildError::Step { .. }) => return Err(msg(format!("{}: {e}", d.fname))),
             Err(e) => return Err(msg(e.to_string())),
         };
+        let export = export?;
+        // tar가 stdout으로 가면 사람에게 하는 말은 stderr로.
+        let to_stdout = d.outputs.iter().any(|o| o.target == Target::Archive(None));
+        let say = |line: &str| {
+            if to_stdout {
+                eprintln!("{line}");
+            } else {
+                println!("{line}");
+            }
+        };
+        let id = out.id.to_string();
         if self.json() {
-            output::print_line(&output::BuildEvent::built(&out.id.to_string(), &tags))?;
+            output::print_line(&output::BuildEvent::built(&id, d.store_tags, out.stored))?;
         } else if a.quiet {
-            println!("{}", out.id);
-        } else {
-            println!("Successfully built {}", short(&out.id));
-            for t in &tags {
-                println!("Successfully tagged {}", behavior::familiar(t));
+            say(&id);
+        } else if out.stored {
+            say(&format!("Successfully built {}", short(&out.id)));
+            for t in d.store_tags {
+                say(&format!("Successfully tagged {}", behavior::familiar(t)));
+            }
+        }
+        let Some(e) = export else {
+            return Ok(0);
+        };
+        let exported = |o: &Output, dest: &str| -> AppResult<()> {
+            if self.json() {
+                output::print_line(&output::BuildEvent::exported(
+                    o.kind,
+                    dest,
+                    &e.id.to_string(),
+                ))?;
+            } else if human {
+                eprintln!("Exported {} to {dest}", e.id);
+            }
+            Ok(())
+        };
+        for o in d.outputs {
+            let names = o.names_or(d.tags);
+            match &o.target {
+                Target::Store => {}
+                Target::DockerLoad => {
+                    docker_load(m, &e, names, !human)?;
+                    exported(o, "docker")?;
+                }
+                Target::Archive(None) => {
+                    let mut w = io::BufWriter::new(io::stdout().lock());
+                    m.write_archive(&e, names, &mut w)?;
+                    w.flush()?;
+                    exported(o, "-")?;
+                }
+                Target::Archive(Some(path)) => {
+                    super::load::write_file(path, &mut |w| {
+                        m.write_archive(&e, names, w)?;
+                        Ok(())
+                    })?;
+                    exported(o, &path.display().to_string())?;
+                }
+                Target::Layout(dir) => {
+                    m.write_layout(&e, names, dir)?;
+                    exported(o, &dir.display().to_string())?;
+                }
+                Target::Registry => self.push_built(m, &e, o, names, a.quiet, &say).await?,
             }
         }
         Ok(0)
+    }
+
+    /// 만든 이미지를 이름마다 올린다(`push`와 같은 길, 같은 줄).
+    async fn push_built(
+        &self,
+        m: &Manager,
+        e: &Export,
+        o: &Output,
+        names: &[String],
+        quiet: bool,
+        say: &(dyn Fn(&str) + Sync),
+    ) -> AppResult<()> {
+        let dest = sbx_oci::OciImageSource::with_auth(crate::dirs::registry_auth())?
+            .with_registries(crate::dirs::registries_conf());
+        let human = !self.json() && !quiet;
+        for reference in names {
+            if human {
+                let r = Reference::parse(reference).map_err(|e| msg(e.to_string()))?;
+                say(&format!(
+                    "The push refers to repository [{}/{}]",
+                    r.registry, r.repository
+                ));
+            }
+            let status = if quiet {
+                None
+            } else {
+                Some(crate::progress::Status::new())
+            };
+            let shown = behavior::familiar(reference);
+            let p = m
+                .push_export(&dest, e, reference, &|p| {
+                    if let Some(s) = &status {
+                        s.push(shown, p)
+                    }
+                })
+                .await;
+            drop(status);
+            let p = p?;
+            if self.json() {
+                output::print_line(&output::BuildEvent::exported(
+                    o.kind,
+                    &p.reference,
+                    &p.id.to_string(),
+                ))?;
+            } else if human {
+                super::push::report(&p).iter().for_each(|l| say(l));
+            }
+        }
+        Ok(())
+    }
+
+    /// 빌드 캐시를 상한 밑으로 줄인다(모듈 문서). 실패는 경고일 뿐이다(빌드는 끝났다).
+    fn trim_build_cache(&self, m: &Manager, human: bool) {
+        let max =
+            match build_cache_max(std::env::var(behavior::BUILD_CACHE_MAX_ENV).ok().as_deref()) {
+                Ok(Some(max)) => max,
+                Ok(None) => return,
+                Err(e) => {
+                    eprintln!("warning: {e}");
+                    return;
+                }
+            };
+        match m.trim_build_cache(max, &super::system::disk_usage) {
+            Ok(t) if t.records > 0 && human => eprintln!(
+                "build cache: removed {} old step(s) to stay under {} ({} -> {})",
+                t.records,
+                behavior::human_size(max),
+                behavior::human_size(t.before),
+                behavior::human_size(t.after),
+            ),
+            Ok(_) => {}
+            Err(e) => eprintln!("warning: could not trim the build cache: {e}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_date_epoch_comes_from_the_build_arg_then_the_environment() {
+        let kv = |k: &str, v: &str| (k.to_owned(), v.to_owned());
+        let mut args = vec![kv("SOURCE_DATE_EPOCH", "100")];
+        assert_eq!(
+            source_date_epoch(&mut args, Some("200".into())).unwrap(),
+            Some(100)
+        );
+        assert_eq!(args.len(), 1);
+        // 환경 변수는 빌드 인자로도 넘긴다(buildx와 같다).
+        let mut args = Vec::new();
+        assert_eq!(
+            source_date_epoch(&mut args, Some("200".into())).unwrap(),
+            Some(200)
+        );
+        assert_eq!(args, [kv("SOURCE_DATE_EPOCH", "200")]);
+        assert_eq!(source_date_epoch(&mut Vec::new(), None).unwrap(), None);
+        assert_eq!(
+            source_date_epoch(&mut Vec::new(), Some(String::new())).unwrap(),
+            None
+        );
+        assert_eq!(
+            source_date_epoch(&mut vec![kv("SOURCE_DATE_EPOCH", "")], None).unwrap(),
+            None
+        );
+        for bad in ["-1", "soon", "1.5"] {
+            let e = source_date_epoch(&mut vec![kv("SOURCE_DATE_EPOCH", bad)], None)
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains("Unix time"), "{e}");
+        }
+    }
+
+    #[test]
+    fn the_build_cache_cap_has_a_default_and_can_be_turned_off() {
+        assert_eq!(
+            build_cache_max(None).unwrap(),
+            Some(behavior::DEFAULT_BUILD_CACHE_MAX)
+        );
+        assert_eq!(build_cache_max(Some("2g")).unwrap(), Some(2 << 30));
+        assert_eq!(build_cache_max(Some("0")).unwrap(), Some(0));
+        assert_eq!(build_cache_max(Some("none")).unwrap(), None);
+        assert!(
+            build_cache_max(Some("lots"))
+                .unwrap_err()
+                .contains(behavior::BUILD_CACHE_MAX_ENV)
+        );
+    }
+
+    #[test]
+    fn a_closed_network_says_how_to_open_it() {
+        let names = vec!["deb.debian.org".to_owned()];
+        let closed = blocked_lines(&names, true);
+        assert!(
+            closed.contains(
+                "blocked: deb.debian.org — add --network allow --allow deb.debian.org:PORT"
+            ),
+            "{closed}"
+        );
+        assert!(closed.contains("the build network is closed"), "{closed}");
+        let open = blocked_lines(&names, false);
+        assert!(
+            open.contains("blocked: deb.debian.org — add --allow deb.debian.org:PORT")
+                && !open.contains("closed"),
+            "{open}"
+        );
+        assert_eq!(blocked_lines(&[], true), "");
     }
 }

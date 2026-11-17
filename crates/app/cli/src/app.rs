@@ -39,8 +39,8 @@ use sbx_store::CacheLayout;
 use crate::attach::{self, attach};
 use crate::behavior::{self, ImageMatch, LookupError, RmiAction, RmiDecision, Step};
 use crate::cli::{
-    AttachArgs, Cli, Command, ExecArgs, ExecutorCommand, Format, LogsArgs, RunArgs, StopArgs,
-    SystemCommand,
+    AttachArgs, BuilderCommand, Cli, Command, ExecArgs, ExecutorCommand, Format, LogsArgs, RunArgs,
+    StopArgs, SystemCommand,
 };
 use crate::filter::{self, Filters};
 use crate::output;
@@ -136,6 +136,13 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
     let ctx = Ctx::new(&cli)?;
     match &cli.command {
         Command::Build(a) => ctx.build(a).await,
+        Command::Builder { command } => match command {
+            BuilderCommand::Prune {
+                all,
+                force,
+                keep_storage,
+            } => ctx.builder_prune(*all, *force, keep_storage.as_deref()),
+        },
         Command::Pull { platform, image } => ctx.pull(platform.as_deref(), image).await,
         Command::Push {
             all_tags,
@@ -1246,6 +1253,7 @@ impl Ctx {
                         hold: false,
                         connect: connect.clone(),
                         connect_scope: a.connect_scope.clone(),
+                        record_names: false,
                     };
                     let rt = self.launcher_with(&chosen)?;
                     // 없는 볼륨은 지금 만든다(Docker와 같다). 실행기가 받을 수 있는지 먼저 본다.

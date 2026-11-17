@@ -49,9 +49,24 @@ to release a tag without one. Changes land under `## Unreleased` first, and the 
   `--allow` to add. `COPY`, `ADD` and `WORKDIR` layers are made on the host, honoring `.dockerignore`, so a cached
   rebuild or a `FROM scratch` stage of copies starts no VM. Every step that makes a layer is cached; built images
   share layer disks with the images they are built on. `--format json` prints `BuildEvent` JSON Lines, and an
-  image event `build` is recorded. `ADD` of an archive, `ONBUILD`, `RUN --mount`, heredocs and other platforms are
-  errors for now, and a built image can't be saved or pushed yet. See the Build section of the usage guide and the
-  build rows of the Docker compatibility table.
+  image event `build` is recorded (only when the image is kept in sbx: events record changes to the store). `ADD`
+  of an archive, `ONBUILD`, `RUN --mount`, heredocs and other platforms are errors for now. See the Build section of
+  the usage guide and the build rows of the Docker compatibility table.
+- `sbx build --output` (`-o`, repeatable) says where the image goes: `type=sbx` (the store, the default),
+  `type=docker` (into `docker load`, or `dest=FILE`; `--load`), `type=oci,dest=FILE|DIR/|-` (an OCI archive or
+  layout), `type=registry` (`--push`). Given outputs replace the default: `--load` alone keeps nothing in sbx, but the
+  layer cache stays. `-f -` reads the Dockerfile from stdin. `--format json` adds `stored` to the `built` line and an
+  `exported` line per output.
+- Built images can be saved and pushed. Layers are written as tars again when exported and gzipped with fixed
+  settings; a layer's compressed digest is recorded on its first export (a few bytes next to the layer, the compressed
+  layer is never stored), so every `save`, `--load`, `-o type=oci` and push of an image has the same manifest digest.
+- `SOURCE_DATE_EPOCH` (environment or `--build-arg`) sets a built image's `created` and history times and caps file
+  times in the layers the build makes, as in BuildKit.
+- With the default closed build network, a failed step lists the names it looked up and says the network is closed,
+  with the `--network allow --allow NAME:PORT` to add.
+- The build cache keeps itself under `SBX_BUILD_CACHE_MAX` (default `10g`, `none` for no cap) after every build,
+  dropping the least recently used steps whose layers no image uses. `sbx builder prune [-a] [-f] [--keep-storage
+  SIZE]` empties it (JSON `BuildCachePruned`); `B` in `sbx tui` on the Images tab.
 - `sbx system df` shows the build cache, and `sbx system prune` removes it (JSON `build_cache` in the prune
   report).
 - `sbx images` shows `SIZE`, `SHARED` and `UNIQUE` (on disk), and `--format json` adds `disk_size`, `shared_size`

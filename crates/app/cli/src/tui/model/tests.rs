@@ -229,6 +229,20 @@ fn image_keys_fill_in_tag_and_push() {
             "docker.io/library/alpine:3.20"
         ])))
     );
+    // 만든 이미지(`sbx build`)도 같다: save와 push가 내보낸다. B는 빌드 캐시를 비운다(묻고).
+    m.apply(Msg::Images(Ok(vec![image(Some("docker.io/local/app:1"))])));
+    press(&mut m, KeyCode::Char('O'));
+    assert_eq!(
+        m.prompt.take().unwrap().text,
+        "save docker.io/local/app:1 -o "
+    );
+    press(&mut m, KeyCode::Char('p'));
+    assert_eq!(m.prompt.take().unwrap().text, "push docker.io/local/app:1");
+    assert_eq!(press(&mut m, KeyCode::Char('B')), None);
+    assert_eq!(
+        press(&mut m, KeyCode::Char('y')),
+        Some(Action::Run(strings(&["builder", "prune", "-f"])))
+    );
     // 참조가 없는 이미지는 올릴 수 없다(태그는 된다).
     m.apply(Msg::Images(Ok(vec![image(None)])));
     assert_eq!(press(&mut m, KeyCode::Char('p')), None);

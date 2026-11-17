@@ -98,6 +98,8 @@ struct StoreState {
     cache: HashMap<String, CacheRecord>,
     images: HashMap<String, Base>,
     committed: Vec<Built>,
+    /// `add_layer`가 받은 `clamp`들.
+    clamps: Vec<Option<i64>>,
 }
 
 struct MemStore {
@@ -250,7 +252,8 @@ impl Store for MemStore {
             .insert(key.into(), record.clone());
         Ok(())
     }
-    fn add_layer(&self, tar: &Path) -> Result<Layer, BuildError> {
+    fn add_layer(&self, tar: &Path, clamp: Option<i64>) -> Result<Layer, BuildError> {
+        self.s.lock().unwrap().clamps.push(clamp);
         let bytes = std::fs::read(tar)?;
         let diff = sha(&bytes);
         let layer = Layer {
@@ -385,6 +388,10 @@ struct Rig {
     store: MemStore,
     machines: FakeMachines,
     events: Arc<Mutex<Vec<Event>>>,
+    /// `SOURCE_DATE_EPOCH`.
+    epoch: Option<i64>,
+    /// 저장소에 둔다(`type=sbx`).
+    keep: bool,
 }
 
 impl Rig {
@@ -410,6 +417,8 @@ impl Rig {
                 log: Arc::default(),
             },
             events: Arc::default(),
+            epoch: None,
+            keep: true,
         }
     }
 
@@ -429,6 +438,8 @@ impl Rig {
             ignore,
             no_cache,
             arch: Arch::Aarch64,
+            source_date_epoch: self.epoch,
+            store: self.keep,
         };
         let ev = self.events.clone();
         block_on(build(
@@ -817,6 +828,48 @@ fn two_stages() -> BuildPlan {
             ],
         ),
     ])
+}
+
+/// `SOURCE_DATE_EPOCH`: 새 history와 `created`가 그 시각이고, 층의 시각을 누르라고 저장소에 알리고, 다른 값이면 다른
+/// 캐시다. 저장하지 않는 빌드(`type=docker`만 고른 것)는 저장소에 두지 않고 같은 ID를 돌려준다.
+#[test]
+fn source_date_epoch_fixes_the_times_and_is_part_of_the_cache_key() {
+    let mut r = Rig::new(script());
+    r.ctx.write("src.txt", "source");
+    r.epoch = Some(1_000_000_000);
+    let first = r.build(two_stages(), false).unwrap();
+    let cfg = r.store.config();
+    assert_eq!(cfg["created"], "2001-09-09T01:46:40Z");
+    let history = cfg["history"].as_array().unwrap();
+    let ours: Vec<&serde_json::Value> = history.iter().skip(history.len() - 2).collect();
+    assert!(
+        ours.iter().all(|h| h["created"] == "2001-09-09T01:46:40Z"),
+        "{ours:?}"
+    );
+    assert!(
+        r.store
+            .s
+            .lock()
+            .unwrap()
+            .clamps
+            .iter()
+            .all(|c| *c == Some(1_000_000_000))
+    );
+    // 같은 값이면 캐시, 같은 ID.
+    let again = r.build(two_stages(), false).unwrap();
+    assert_eq!((again.cached, again.id.clone()), (3, first.id.clone()));
+    // 다른 값이면 다른 층.
+    r.epoch = Some(1_000_000_001);
+    let other = r.build(two_stages(), false).unwrap();
+    assert_eq!(other.cached, 0);
+    assert_ne!(other.id, first.id);
+    // 저장하지 않는 빌드.
+    r.epoch = Some(1_000_000_000);
+    r.keep = false;
+    let before = r.store.s.lock().unwrap().committed.len();
+    let unstored = r.build(two_stages(), false).unwrap();
+    assert_eq!(r.store.s.lock().unwrap().committed.len(), before);
+    assert_eq!((unstored.stored, unstored.id), (false, first.id));
 }
 
 #[test]

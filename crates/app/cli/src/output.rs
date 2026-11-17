@@ -72,6 +72,7 @@ pub const JSON_OUTPUT: &[(&str, Form)] = &[
     ("logs", Form::Lines("LogLine")),
     ("cp", Form::Empty),
     ("build", Form::Lines("BuildEvent")),
+    ("builder prune", Form::Value("BuildCachePruned")),
     ("pull", Form::Value("Pulled")),
     ("push", Form::Lines("Pushed")),
     ("tag", Form::Value("Tagged")),
@@ -675,13 +676,25 @@ pub struct PruneReport {
     pub reclaimed: u64,
 }
 
-/// One line of `build` (JSON Lines): a step's progress (`step`), a piece of `RUN` output (`output`), and last the
-/// image (`built`). A failed build ends with the error line instead.
+/// What `builder prune` removed.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct BuildCachePruned {
+    /// How many build cache entries (cached steps) were removed.
+    pub build_cache: u64,
+    /// Bytes freed on disk.
+    pub reclaimed: u64,
+}
+
+/// One line of `build` (JSON Lines): a step's progress (`step`), a piece of `RUN` output (`output`), then the image
+/// (`built`), then one `exported` line for each output that is not sbx's image store (one per pushed name). A failed
+/// build ends with the error line instead.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct BuildEvent {
-    /// `step`, `output` or `built`.
+    /// `step`, `output`, `built` or `exported`.
     #[serde(rename = "type")]
     pub kind: String,
     /// `step`: the stage's `AS` name, or `null`.
@@ -704,10 +717,18 @@ pub struct BuildEvent {
     pub stream: Option<String>,
     /// `output`: the bytes as text (invalid UTF-8 replaced).
     pub data: Option<String>,
-    /// `built`: the image ID.
+    /// `built`: the image ID (the config's digest, also when the image was not kept). `exported`: the manifest's
+    /// digest (the same each time the same image is exported).
     pub id: Option<String>,
     /// `built`: the references from `-t`, normalized.
     pub tags: Option<Vec<String>>,
+    /// `built`: whether the image was kept in sbx's image store (`--output type=sbx`, the default).
+    pub stored: Option<bool>,
+    /// `exported`: the output's type: `docker`, `oci` or `registry`.
+    pub output: Option<String>,
+    /// `exported`: where it went: a file or directory path, `-` (stdout), `docker` (`docker load`), or the reference
+    /// that was pushed.
+    pub dest: Option<String>,
 }
 
 impl BuildEvent {
@@ -726,6 +747,9 @@ impl BuildEvent {
             data: None,
             id: None,
             tags: None,
+            stored: None,
+            output: None,
+            dest: None,
         }
     }
 
@@ -767,11 +791,22 @@ impl BuildEvent {
     }
 
     /// 만든 이미지.
-    pub fn built(id: &str, tags: &[String]) -> Self {
+    pub fn built(id: &str, tags: &[String], stored: bool) -> Self {
         Self {
             id: Some(id.into()),
             tags: Some(tags.to_vec()),
+            stored: Some(stored),
             ..Self::empty("built")
+        }
+    }
+
+    /// 내보낸 것 하나(`--output`이 sbx 저장소가 아닐 때, 올린 참조마다).
+    pub fn exported(output: &str, dest: &str, id: &str) -> Self {
+        Self {
+            output: Some(output.into()),
+            dest: Some(dest.into()),
+            id: Some(id.into()),
+            ..Self::empty("exported")
         }
     }
 }
@@ -1471,6 +1506,7 @@ mod tests {
         g.subschema_for::<Info>();
         g.subschema_for::<DiskUsage>();
         g.subschema_for::<PruneReport>();
+        g.subschema_for::<BuildCachePruned>();
         g.subschema_for::<Volume>();
         g.subschema_for::<VolumeRef>();
         g.subschema_for::<VolumePrune>();

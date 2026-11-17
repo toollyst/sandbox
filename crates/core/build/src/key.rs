@@ -7,13 +7,15 @@
 //! - 내용 해시에는 수정 시각과 호스트의 소유자가 없다([`crate::source::content_hash`]). 파일을 `touch`만 해서는 다시
 //!   만들지 않는다(Docker와 같다).
 //! - 판(`VERSION`)은 키를 만드는 규칙이나 층을 만드는 방법이 바뀌면 올린다. 그러면 옛 기록은 맞지 않아 쓰이지 않는다.
+//!   (판 2: 층의 diff_id가 층 디스크에서 다시 만든 tar의 sha256이 되었다.)
+//! - `SOURCE_DATE_EPOCH`가 있으면 스테이지의 첫 키에 [`epoch`]로 잇는다. 층의 시각이 달라지므로 다른 층이다.
 
 use sha2::{Digest as _, Sha256};
 
 use crate::source::hex;
 
 /// 키 규칙의 판.
-pub const VERSION: &str = "sbx-build-cache-v1";
+pub const VERSION: &str = "sbx-build-cache-v2";
 
 fn hash(parts: &[&str]) -> String {
     let mut h = Sha256::new();
@@ -34,6 +36,11 @@ pub fn image(id: &str) -> String {
 /// `FROM scratch`의 첫 키.
 pub fn scratch() -> String {
     hash(&["scratch"])
+}
+
+/// `SOURCE_DATE_EPOCH`를 첫 키에 잇는다.
+pub fn epoch(parent: &str, secs: i64) -> String {
+    hash(&[parent, "SOURCE_DATE_EPOCH", &secs.to_string()])
 }
 
 /// 단계 하나의 키.

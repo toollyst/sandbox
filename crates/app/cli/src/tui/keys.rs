@@ -59,6 +59,11 @@ pub const KEYS: &[KeyHelp] = &[
         "system prune -a: unused sandboxes, images, layers (asks first)",
     ),
     k(
+        "B",
+        "images",
+        "builder prune: build cache no image uses (asks first)",
+    ),
+    k(
         "L",
         "images",
         "login: save registry credentials (fills in the command)",

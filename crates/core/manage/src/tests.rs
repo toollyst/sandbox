@@ -1141,7 +1141,8 @@ fn tag_adds_or_moves_a_reference_and_records_it() {
 }
 
 /// 빌드가 낸 층: 층 디스크만 둔다(blob 없음). 혼자 설 수 없는 층은 tar를 blob으로, 빈 층은 아무것도 두지 않는다.
-/// 그런 층으로 된 이미지도 합쳐 띄울 수 있고(디스크를 다시 읽는다), save는 거부한다. 뿌리 기록은 목록에 없다.
+/// 그런 층으로 된 이미지도 합쳐 띄울 수 있고(디스크를 다시 읽는다), save하면 층을 tar로 다시 만들어 쓴다(몇 번이든
+/// 같은 바이트, 각 층을 풀면 그 diff_id). 뿌리 기록은 목록에 없다.
 #[test]
 fn built_layers_live_on_disks_and_images_made_of_them_prepare() {
     let root = temp_root("built");
@@ -1161,7 +1162,10 @@ fn built_layers_live_on_disks_and_images_made_of_them_prepare() {
         p
     };
     let (alone, c1) = m
-        .add_layer(&tar("a.tar", &[T::Dir("app"), T::File("app/x", b"x")]))
+        .add_layer(
+            &tar("a.tar", &[T::Dir("app"), T::File("app/x", b"x")]),
+            None,
+        )
         .unwrap();
     assert!(layer_disk(&m, &alone).is_file());
     assert!(!layout.blob(&alone.digest).exists());
@@ -1170,11 +1174,11 @@ fn built_layers_live_on_disks_and_images_made_of_them_prepare() {
         (true, Compression::None)
     );
     let (needs, c2) = m
-        .add_layer(&tar("b.tar", &[T::File("etc/y", b"y")]))
+        .add_layer(&tar("b.tar", &[T::File("etc/y", b"y")]), None)
         .unwrap();
     assert!(layout.layer_needs_lower(&needs.diff_id).is_file());
     assert!(layout.blob(&needs.digest).is_file());
-    let (empty, c3) = m.add_layer(&tar("e.tar", &[])).unwrap();
+    let (empty, c3) = m.add_layer(&tar("e.tar", &[]), None).unwrap();
     assert_eq!(empty.diff_id.as_str(), sbx_store::EMPTY_LAYER);
     // 디스크에서 다시 읽는다.
     let (entries, contents) = m.layer_entries(&alone, 4).unwrap();
@@ -1218,10 +1222,52 @@ fn built_layers_live_on_disks_and_images_made_of_them_prepare() {
     // 맨 위가 혼자 설 수 없으므로 디스크가 넷이어도 모두 합친 것 하나로 뜬다(이미 있다).
     assert!(!ready(m.prepare(&id, RootfsFormat::Erofs, 4)).unwrap());
     assert!(m.is_prepared(&id, RootfsFormat::Erofs, 4));
-    // save와 push는 아직 못 한다.
-    let e = m.save(&id, None, &mut Vec::new()).unwrap_err();
-    assert!(matches!(e, ManageError::NotExportable(_)), "{e}");
-    assert!(e.to_string().contains("sbx build"), "{e}");
+    // save: 층 디스크에서 tar를 다시 만들어 gzip한다. 처음 정한 digest를 기록하고, 다시 해도 같은 바이트다.
+    let (mut a, mut b) = (Vec::new(), Vec::new());
+    m.save(&id, Some("docker.io/library/built:latest"), &mut a)
+        .unwrap();
+    assert!(
+        layout
+            .layer_dir(&alone.diff_id)
+            .join(crate::export::EXPORT_RECORD)
+            .is_file()
+    );
+    m.save(&id, Some("docker.io/library/built:latest"), &mut b)
+        .unwrap();
+    assert_eq!(a, b, "a second save writes the same bytes");
+    let files = archive_files(&a);
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &files[&format!(
+            "blobs/sha256/{}",
+            m.export_image(&id).unwrap().id.digest().hex()
+        )],
+    )
+    .unwrap();
+    let descs = manifest["layers"].as_array().unwrap();
+    assert_eq!(descs.len(), layers.len());
+    for (d, l) in descs.iter().zip(&layers) {
+        let blob = &files[&format!(
+            "blobs/sha256/{}",
+            Digest::parse(d["digest"].as_str().unwrap()).unwrap().hex()
+        )];
+        assert_eq!(sha256(blob).as_str(), d["digest"].as_str().unwrap());
+        let tar = match d["mediaType"].as_str().unwrap() {
+            crate::export::LAYER_GZIP => {
+                let mut t = Vec::new();
+                flate2::read::GzDecoder::new(&blob[..])
+                    .read_to_end(&mut t)
+                    .unwrap();
+                t
+            }
+            _ => blob.clone(),
+        };
+        assert_eq!(sha256(&tar), l.diff_id, "{d}");
+    }
+    // 저장하지 않은 같은 이미지도 같은 manifest다(`build --output`).
+    assert_eq!(
+        m.export_built(doc, &layers).unwrap().id,
+        m.export_image(&id).unwrap().id
+    );
     // 뿌리 기록은 목록에 없고 지울 수 있다.
     let root_id = m.put_build_root(&layers[..2], Arch::X86_64).unwrap();
     assert_eq!(
@@ -1251,5 +1297,259 @@ fn built_layers_live_on_disks_and_images_made_of_them_prepare() {
     m.collect().unwrap();
     assert!(!layout.layer_dir(&alone.diff_id).exists());
     assert_eq!(m.build_cache(&key).unwrap(), None);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// 만든 이미지의 바탕 층: 바탕 이미지를 `rmi`해도 만든 이미지의 기록이 blob을 쥐어 같은 manifest로 save·push한다.
+/// sbx 밖에서 바탕 층의 blob이 지워졌으면(저장하지 않은 빌드도) 다시 받으라고 하고, 다시 받으면 같은 manifest다.
+/// 빌드가 만든 층의 디스크가 바뀌거나 잘리면 그 층이라고 말하고, 처음 내보낼 때 정한 기록은 지우지 않는다.
+#[test]
+fn a_built_image_exports_after_its_base_is_removed_and_names_the_remedy() {
+    let root = temp_root("built-base");
+    let base = layer(&[T::Dir("etc"), T::File("etc/os", b"base")]);
+    let m = Manager::new(
+        &root,
+        Arc::new(FakeSource::new(vec![base])),
+        vec![Arc::new(sbx_rootfs::erofs::ErofsBuilder)],
+    )
+    .unwrap();
+    let base_id = pulled(&m);
+    let base_layers = m.store().image(&base_id).unwrap().layers;
+    assert_ne!(base_layers[0].digest, base_layers[0].diff_id, "a gzip blob");
+    let layout = m.store().layout().clone();
+    let tar = |name: &str, entries: &[T<'_>]| {
+        let p = root.join(name);
+        std::fs::write(&p, layer_with(Compression::None, entries).0).unwrap();
+        p
+    };
+    let (made, claim) = m
+        .add_layer(
+            &tar("a.tar", &[T::Dir("app"), T::File("app/x", b"x")]),
+            None,
+        )
+        .unwrap();
+    let (other, other_claim) = m
+        .add_layer(
+            &tar("b.tar", &[T::Dir("app"), T::File("app/y", b"yy")]),
+            None,
+        )
+        .unwrap();
+    let mut layers = base_layers.clone();
+    layers.push(made.clone());
+    let doc = br#"{"config":{}}"#;
+    let id = m
+        .commit_built(
+            doc,
+            ImageConfig::default(),
+            layers.clone(),
+            Arch::X86_64,
+            &["docker.io/library/built:latest".into()],
+        )
+        .unwrap();
+    drop(claim);
+    let manifest = m.export_image(&id).unwrap().id;
+    let mut before = Vec::new();
+    m.save(&id, None, &mut before).unwrap();
+
+    // (a) 바탕 이미지를 지우고 정리해도 blob은 남고, save와 push가 같은 manifest다.
+    m.remove(&base_id).unwrap();
+    m.collect().unwrap();
+    assert!(!m.store().has_image(&base_id));
+    assert!(layout.blob(&base_layers[0].digest).is_file());
+    let mut after = Vec::new();
+    m.save(&id, None, &mut after).unwrap();
+    assert_eq!(after, before);
+    let dest = FakeDest::default();
+    let pushed = ready(m.push_with(&dest, &id, "reg/built:1", &|_| {})).unwrap();
+    assert_eq!(pushed.id, manifest);
+    let sent = dest.manifest.lock().unwrap().clone().unwrap().2;
+    assert_eq!(sha256(&sent), *manifest.digest());
+
+    // (b) 받은 층의 blob이 sbx 밖에서 지워졌다: 빌드가 만든 층이라고 하지 않고 다시 받으라고 한다. 저장하지 않은
+    // 내보내기도 같다. 다시 받으면(없는 blob만 받는다) 같은 manifest다.
+    std::fs::remove_file(layout.blob(&base_layers[0].digest)).unwrap();
+    for e in [
+        m.export_image(&id).unwrap_err(),
+        m.export_built(doc, &layers).unwrap_err(),
+    ] {
+        let e = e.to_string();
+        assert!(e.contains("comes from a pulled image"), "{e}");
+        assert!(e.contains("sbx pull"), "{e}");
+        assert!(!e.contains("sbx build"), "{e}");
+    }
+    let again = pulled(&m);
+    assert_eq!(again, base_id);
+    assert!(layout.blob(&base_layers[0].digest).is_file());
+    assert_eq!(m.export_built(doc, &layers).unwrap().id, manifest);
+
+    // (c) 빌드가 만든 층의 디스크가 처음 내보낸 뒤 바뀌었다(다른 층의 디스크로)거나 잘렸다: 그 층이라고 말하고
+    // 기록(`export.json`)은 그대로다. 압축기가 바뀌었다고 하지 않는다.
+    let record = layout
+        .layer_dir(&made.diff_id)
+        .join(crate::export::EXPORT_RECORD);
+    assert!(record.is_file());
+    let disk = layer_disk(&m, &made);
+    let good = std::fs::read(&disk).unwrap();
+    std::fs::copy(layer_disk(&m, &other), &disk).unwrap();
+    let e = m.save(&id, None, &mut Vec::new()).unwrap_err().to_string();
+    assert!(
+        e.contains("a layer made by sbx build no longer matches"),
+        "{e}"
+    );
+    assert!(e.contains("sbx builder prune -a"), "{e}");
+    assert!(!e.contains("compressor"), "{e}");
+    assert!(record.is_file(), "a changed disk keeps the record");
+    std::fs::write(&disk, &good[..good.len() / 2]).unwrap();
+    let e = m.save(&id, None, &mut Vec::new()).unwrap_err().to_string();
+    assert!(!e.contains("compressor"), "{e}");
+    assert!(record.is_file(), "a truncated disk keeps the record");
+    std::fs::write(&disk, &good).unwrap();
+    let mut fixed = Vec::new();
+    m.save(&id, None, &mut fixed).unwrap();
+    assert_eq!(fixed, before);
+    drop(other_claim);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// tar 아카이브의 일반 파일들(경로 → 내용).
+fn archive_files(tar: &[u8]) -> std::collections::BTreeMap<String, Vec<u8>> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut a = tar::Archive::new(tar);
+    for e in a.entries().unwrap() {
+        let mut e = e.unwrap();
+        let path = e.path().unwrap().to_string_lossy().into_owned();
+        let mut b = Vec::new();
+        e.read_to_end(&mut b).unwrap();
+        out.insert(path, b);
+    }
+    out
+}
+
+/// `SOURCE_DATE_EPOCH`: 층의 시각을 누른다. 누른 층은 다른 층이고(diff_id가 다르다), 내보낸 tar의 시각도 눌려 있다.
+/// 같은 tar를 두 번 들이면 같은 층이다.
+#[test]
+fn a_clamp_presses_the_times_of_a_built_layer() {
+    let root = temp_root("clamp");
+    let m = Manager::new(
+        &root,
+        Arc::new(FakeSource::new(vec![])),
+        vec![Arc::new(sbx_rootfs::erofs::ErofsBuilder)],
+    )
+    .unwrap();
+    let path = root.join("l.tar");
+    let mut b = tar::Builder::new(Vec::new());
+    for (p, t) in [("app/", 2_000_000_000u64), ("app/x", 5)] {
+        let mut h = tar::Header::new_gnu();
+        h.set_mtime(t);
+        h.set_mode(0o755);
+        h.set_uid(0);
+        h.set_gid(0);
+        if p.ends_with('/') {
+            h.set_entry_type(tar::EntryType::Directory);
+            h.set_size(0);
+            b.append_data(&mut h, p, &[][..]).unwrap();
+        } else {
+            h.set_size(1);
+            b.append_data(&mut h, p, &b"x"[..]).unwrap();
+        }
+    }
+    std::fs::write(&path, b.into_inner().unwrap()).unwrap();
+    let (plain, _c1) = m.add_layer(&path, None).unwrap();
+    let (again, _c2) = m.add_layer(&path, None).unwrap();
+    assert_eq!(plain, again, "the same tar is the same layer");
+    let (pressed, _c3) = m.add_layer(&path, Some(1_000)).unwrap();
+    assert_ne!(plain.diff_id, pressed.diff_id);
+    let disk = m
+        .store()
+        .layout()
+        .layer_disk(&pressed.diff_id, RootfsFormat::Erofs);
+    let mut tar = Vec::new();
+    crate::export::disk_tar(&disk, &mut tar).unwrap();
+    assert_eq!(sha256(&tar), pressed.diff_id);
+    let times: Vec<(String, u64)> = tar::Archive::new(&tar[..])
+        .entries()
+        .unwrap()
+        .map(|e| {
+            let e = e.unwrap();
+            (
+                e.path().unwrap().to_string_lossy().into_owned(),
+                e.header().mtime().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(times, [("app/".to_owned(), 1_000), ("app/x".to_owned(), 5)]);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// 캐시 상한: 캐시 기록만 쥔 층의 합이 상한을 넘으면 마지막으로 쓴 때가 오래된 층부터 지운다. 쓰면(캐시 맞음)
+/// 새것이 된다. 이미지도 쓰는 층은 세지도 지우지도 않는다.
+#[test]
+fn the_build_cache_is_trimmed_oldest_first_below_the_cap() {
+    let root = temp_root("trim");
+    let m = Manager::new(
+        &root,
+        Arc::new(FakeSource::new(vec![])),
+        vec![Arc::new(sbx_rootfs::erofs::ErofsBuilder)],
+    )
+    .unwrap();
+    let layout = m.store().layout().clone();
+    let mut layers = Vec::new();
+    for (i, name) in ["a", "b", "c", "d"].iter().enumerate() {
+        let p = root.join(format!("{name}.tar"));
+        let body = name.repeat(1000 * (i + 1));
+        let file = format!("app/{name}");
+        std::fs::write(
+            &p,
+            layer_with(
+                Compression::None,
+                &[T::Dir("app"), T::File(&file, body.as_bytes())],
+            )
+            .0,
+        )
+        .unwrap();
+        let (l, c) = m.add_layer(&p, None).unwrap();
+        let key = format!("{i}").repeat(64);
+        m.put_build_cache(
+            &key,
+            &sbx_store::BuildCacheRecord {
+                layer: l.clone(),
+                created: "2026-01-01T00:00:00Z".into(),
+            },
+        )
+        .unwrap();
+        // 차례를 분명히: 기록의 수정 시각을 하나씩 늦춘다.
+        let f = File::options()
+            .append(true)
+            .open(layout.build_cache_record(&key).unwrap())
+            .unwrap();
+        f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1000 + i as u64))
+            .unwrap();
+        drop(c);
+        layers.push((key, l));
+    }
+    // d는 이미지도 쓴다: 세지 않는다.
+    m.commit_built(
+        b"{}",
+        ImageConfig::default(),
+        vec![layers[3].1.clone()],
+        Arch::X86_64,
+        &[],
+    )
+    .unwrap();
+    // a를 쓴다(캐시 맞음): 가장 새것이 된다.
+    assert!(m.build_cache(&layers[0].0).unwrap().is_some());
+    // 층마다 1로 센다: a, b, c가 3. 상한 1이면 오래된 b, c를 지운다.
+    let size = |p: &std::path::Path| u64::from(p.is_dir());
+    let t = m.trim_build_cache(1, &size).unwrap();
+    assert_eq!((t.records, t.before, t.after), (2, 3, 1));
+    let left = |l: &Layer| layout.layer_dir(&l.diff_id).exists();
+    assert!(left(&layers[0].1) && !left(&layers[1].1) && !left(&layers[2].1) && left(&layers[3].1));
+    // 상한 안이면 아무것도 하지 않는다.
+    let t = m.trim_build_cache(1, &size).unwrap();
+    assert_eq!((t.records, t.before, t.after), (0, 1, 1));
+    // 0이면 캐시만 쥔 것을 모두. 이미지가 쓰는 층의 기록은 남는다.
+    let t = m.trim_build_cache(0, &size).unwrap();
+    assert_eq!(t.records, 1);
+    assert!(m.build_cache(&layers[3].0).unwrap().is_some());
     std::fs::remove_dir_all(root).unwrap();
 }
