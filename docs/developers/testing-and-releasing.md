@@ -25,7 +25,7 @@ fake executor serves it over the same protocol. Real VMs are the last check, not
 | Default executor on first use | `the_default_executor_is_installed_on_first_use` in [`e2e.rs`](../../crates/app/cli/tests/e2e.rs) | Unix | with a local signed repository as `official`: the repository's `default`, one notice on stderr and none on stdout, both ways to turn it off, an unsigned or unreachable repository, two first runs at once |
 | Dependency rules | `cargo xtask check-deps` | nothing | layers, per-crate allow lists, forbidden features, module cycles, the map in `crates.md` |
 | Fuzzing | [`fuzz/`](../../fuzz), `cargo xtask fuzz` ([below](#fuzzing)) | nightly, `cargo-fuzz` | inputs no hand-written test thought of, in every parser that reads bytes from a guest, a registry, an image or an executor repository |
-| Real VMs | `cargo xtask smoke` | an installed executor | 17 checks: output and exit codes, stdin, no network device, fast DNS failure, writable root, detached `exec`/`cp`/`logs`/`stop`/`rm`, allow list |
+| Real VMs | `cargo xtask smoke` | an installed executor | output and exit codes, stdin, no network device, fast DNS failure, writable root, detached `exec`/`cp`/`logs`/`stop`/`rm`, `--connect`, allow list; live sharing (`-v` both ways, a host edit reaching the guest's `inotifyd`) only when the executor announces `live_share` |
 | Numbers | `cargo xtask bench [--docker]` | an installed executor (and Docker for `--docker`) | regressions on the hot path: `run`, `exec`, parallel runs |
 
 When you fix a bug, add the test at the lowest level that can see it. If it took a real VM to find, ask whether a

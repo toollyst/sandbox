@@ -250,6 +250,26 @@ the main process. Nothing the guest replies affects the host, and failures go to
 a guest init too old to know `ClockSync` is left alone. Rules: [`clock.rs`](../../crates/core/runtime/src/clock.rs)
 (host) and [`clock.rs`](../../crates/app/guest/src/clock.rs) (guest).
 
+## Host edits in a live share
+
+Virtio-fs has no way to tell the guest that the host changed a file, so inotify in the guest stays quiet and hot
+reload (vite, webpack, nodemon) misses edits made in a host editor. The owner (as for the clock) watches each writable
+live share on the host with the `notify` crate (FSEvents, inotify, ReadDirectoryChangesW). It gathers events until
+50 ms pass without one (at most 500 ms), reads what each path looks like now (exists, directory, size, modification
+time) and sends `ShareChanged{target, paths}` for the paths that look different from what it last sent, relative to
+the share. The guest re-reads each entry's modification time (`statx` with `AT_STATX_FORCE_SYNC`, so from the file
+server, not its cache) and writes the same value back with `utimensat`, access time omitted. The kernel reports a
+setattr of the modification time alone as `IN_MODIFY` to watchers of the entry and of its folder; contents and times
+don't change. A path that no longer exists sends the event on its nearest existing folder inside the share. That
+setattr changes only the host file's ctime, which looks the same to the owner, so nothing bounces back. A `:ro` share
+isn't watched (the guest can't setattr there). Rules: [`watch.rs`](../../crates/core/runtime/src/watch.rs) (host) and
+[`changes.rs`](../../crates/app/guest/src/changes.rs) (guest).
+
+The `firecracker` adapter finds out whether the VMM has virtio-fs with `firecracker --features` (a JSON answer that
+names the `fs` extension) and only then announces `live_share` and writes the shares into the config file's
+`extensions.fs` section; upstream Firecracker exits with an error on that option and gets the config it always got.
+Rules: [`features.rs`](../../crates/executor/firecracker/src/features.rs).
+
 ## Events, JSON output and the TUI
 
 There is no daemon to ask what changed, so the process that changes something writes it down.

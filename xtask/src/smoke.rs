@@ -10,7 +10,8 @@
 //! 확인하는 것: 출력과 종료 코드(0, 7, 127), 표준 입력, `/dev/fd`·`/dev/stdin` 링크, 네트워크 장치 없음, 이름 풀기가 곧바로 실패함(5초 시간
 //! 초과를 기다리지 않음), 쓰기 가능한 루트, detached 실행과
 //! `exec`/`cp`/`logs`/`stop`(SIGTERM으로 143)/`rm`, `--connect`(다른 샌드박스의 포트에 이름으로, 열지 않은 포트는 닫힘),
-//! 허용 목록(허용한 곳은 200, 나머지는 막힘).
+//! 허용 목록(허용한 곳은 200, 나머지는 막힘). 실행기가 실시간 공유(`live_share`)를 알리면 `-v`도: 양쪽이 서로의 쓰기를
+//! 보고, 호스트에서 고친 파일을 게스트의 inotify(busybox `inotifyd`)가 본다. 알리지 않으면 건너뛴다고 쓴다.
 //! 하나라도 다르면 무엇이 달랐는지 쓰고 실패한다.
 
 use std::io::Write;
@@ -77,6 +78,103 @@ fn expect(
     }
     eprintln!("smoke: ok   {what}");
     Ok(out)
+}
+
+/// 기본 실행기가 실시간 공유(`live_share`)를 알리는지(`sbx info --format json`).
+fn live_share(s: &Sbx) -> Result<bool, String> {
+    let o = s.out(&["info", "--format", "json"], None)?;
+    if !o.status.success() {
+        return Err(format!("sbx info: {}", text(&o.stderr).trim()));
+    }
+    let v: serde_json::Value =
+        serde_json::from_slice(&o.stdout).map_err(|e| format!("sbx info: {e}"))?;
+    Ok(v["executor"]["capabilities"]["live_share"] == true)
+}
+
+/// 실시간 공유(`-v`): 양쪽이 서로의 쓰기를 보고, 호스트에서 고친 파일을 게스트의 파일 감시(busybox `inotifyd`)가 본다.
+/// 실행기가 `live_share`를 알릴 때만 돈다. 확인한 수를 돌려준다.
+fn live_mount(s: &Sbx) -> Result<usize, String> {
+    let dir = std::env::temp_dir().join(format!("sbx-smoke-share-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let result = (|| {
+        std::fs::write(dir.join("in.txt"), "hello").map_err(|e| e.to_string())?;
+        let v = format!("{}:/src", dir.display());
+        expect(
+            s,
+            "live mount both ways",
+            &[
+                "run",
+                "--rm",
+                "-v",
+                &v,
+                IMAGE,
+                "sh",
+                "-c",
+                "cat /src/in.txt; echo back > /src/out.txt",
+            ],
+            None,
+            0,
+            Some("hello"),
+        )?;
+        let back = std::fs::read_to_string(dir.join("out.txt")).unwrap_or_default();
+        if back != "back\n" {
+            return Err(format!("live mount both ways: the host read {back:?}"));
+        }
+        let name = format!("sbx-smoke-watch-{}", std::process::id());
+        let watched = (|| {
+            expect(
+                s,
+                "live mount watcher",
+                &[
+                    "run",
+                    "-d",
+                    "--name",
+                    &name,
+                    "-v",
+                    &v,
+                    IMAGE,
+                    "sh",
+                    "-c",
+                    "inotifyd - /src > /tmp/events",
+                ],
+                None,
+                0,
+                None,
+            )?;
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            std::fs::write(dir.join("app.js"), "v2").map_err(|e| e.to_string())?;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                let o = s.out(&["exec", &name, "cat", "/tmp/events", "/src/app.js"], None)?;
+                let out = text(&o.stdout);
+                if out.contains("app.js") && out.ends_with("v2") {
+                    eprintln!("smoke: ok   live mount host edit reaches inotify");
+                    return Ok(());
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Err(format!(
+                        "live mount host edit: the guest's inotifyd saw no app.js within 10s: {out:?} {}",
+                        text(&o.stderr).trim()
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+        })();
+        let rm = expect(
+            s,
+            "live mount watcher rm",
+            &["rm", "-f", &name],
+            None,
+            0,
+            None,
+        );
+        watched?;
+        rm?;
+        Ok(4)
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    result
 }
 
 /// 확인하고 몇 개를 확인했는지 돌려준다.
@@ -360,6 +458,12 @@ pub fn run(root: &Path, args: &[String]) -> Result<usize, String> {
             return Err("blocked host: github.com was reachable".into());
         }
         eprintln!("smoke: ok   blocked host");
+    }
+
+    if live_share(&s)? {
+        n += live_mount(&s)?;
+    } else {
+        eprintln!("smoke: skip live mount (the executor does not announce live sharing)");
     }
     Ok(n)
 }
