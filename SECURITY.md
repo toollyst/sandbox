@@ -128,12 +128,12 @@ These are known gaps, in rough order of importance. Some are on the [roadmap](do
 - **Confining the VMM is the executor's job.** `sbx` talks to executors over the executor protocol and doesn't
   confine the VMM process itself. The `firecracker` adapter runs it as your user, with Firecracker's seccomp filters
   but without a jailer, so an escape from the VM lands as your user on the host.
-- **The official repository is not signed yet.** Signed repositories work (see above), but the official
-  repository's key hasn't been created, so `official` is still an unsigned repository: TLS is all that protects its
-  index, and whoever controls [toollyst/sandbox-executors](https://github.com/toollyst/sandbox-executors) (its
-  Pages and Releases) controls what `sbx executor install` gets from it. Until it is signed, `sbx` never installs
-  the default executor on its own (that needs a signed `official`); the installer's executor step does go through
-  `sbx executor install`, with the same TLS-only trust.
+- **The official repository is signed in CI.** `sbx` carries the official repository's public keys (one in use,
+  one spare for rotation), and its index is signed by a workflow in
+  [toollyst/sandbox-executors](https://github.com/toollyst/sandbox-executors) with a key kept as that repository's
+  secret. So whoever can change that repository's workflows or secrets can sign what `sbx executor install` and the
+  first run's automatic install get from it; its Pages and Releases alone can't, because `sbx` checks the signature,
+  `serial` and `expires` of the index and the SHA-256 of every package.
 - **A repository you add is trusted for the names it publishes first.** If you add a repository ahead of
   `official` in the list file, or install a name from it with `--repo` before anything else has it, that repository
   owns the name on your machine.

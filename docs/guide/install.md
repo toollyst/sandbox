@@ -84,11 +84,11 @@ before you run it.
 - It never happens when any executor is installed, when you give `--executor`, or with `SBX_NO_AUTO_EXECUTOR=1` or
   `SBX_EXECUTOR=none`. `sbx executor current` says whether it would.
 
-**In this release** neither happens yet: `sbx` doesn't carry the official repository's public key, so it treats
-`official` as unsigned and never installs from it on its own (`sbx executor current` and `sbx info` say so), and the
-installer version pins no executor. Install one yourself: `sbx executor search` lists what the configured
-repositories offer, `sbx executor install NAME` installs one (from an unsigned repository, with a warning that only
-TLS protects it), and `--from DIR` installs one you built ([Build from source](#build-from-source)).
+**In this release** `sbx` carries the official repository's public keys, but the installer version pins no executor,
+and the first run can install the default executor only after the official repository has published one. Until then
+it stops with the reason. Install one yourself: `sbx executor search` lists what the configured repositories offer,
+`sbx executor install NAME` installs one, and `--from DIR` installs one you built
+([Build from source](#build-from-source)).
 
 After that, executors are yours to manage: `sbx upgrade` upgrades only `sbx`, and `sbx executor install` the executor
 ([executors](executors.md)).

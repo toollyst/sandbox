@@ -114,7 +114,7 @@ read it afterwards: read **Upgrading from 0.2** first.
   as soon as the host's clock jumps, such as after the host wakes from sleep (until now the guest fell behind by the
   time the host slept). It needs nothing from the image or the executor and never delays the start. A clock set
   inside with `date -s` is put back at the next correction.
-- Install and run, nothing in between, once the official repository is signed (see **Notes**). With no executor
+- Install and run, nothing in between (see **Notes**). With no executor
   installed, `sbx run`, `create`, `start` and `build` install the default executor from the official repository first
   and carry on, saying on stderr what they install and from where (never on stdout, so `--format json` and `sbx mcp`
   stay clean). Which executor is the default is said by the repository's index (a new optional `default` field in
@@ -186,10 +186,10 @@ read it afterwards: read **Upgrading from 0.2** first.
 
 - The guest protocol gains messages for builds, transparent TCP, the clock and live-share changes; its version stays
   2, so a sandbox started by 0.2 keeps answering the requests it knows.
-- This `sbx` doesn't carry the official executor repository's public key yet, so it treats `official` as unsigned
-  and doesn't install the default executor on its own; `sbx info` and `sbx executor current` say so. Install an
-  executor with `sbx executor install` or from a directory (`--from`); see the
-  [install guide](docs/guide/install.md#the-executor).
+- This `sbx` carries the official executor repository's public keys, so `official` is a signed repository. The
+  first run installs the default executor from it once that repository publishes one; until then the command stops
+  with the reason and the manual ways. Install an executor with `sbx executor install` or from a directory
+  (`--from`); see the [install guide](docs/guide/install.md#the-executor).
 
 ## v0.2.2
 

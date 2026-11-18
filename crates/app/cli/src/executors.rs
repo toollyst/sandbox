@@ -87,7 +87,10 @@ pub const OFFICIAL_REPOSITORY: (&str, &str) =
     ("official", "https://toollyst.github.io/sandbox-executors/");
 
 /// 공식 저장소의 색인에 서명하는 minisign 공개키들. 비밀키는 toollyst/sandbox-executors만 쓴다(그 저장소의 비밀 값).
-pub const OFFICIAL_KEYS: &[&str] = &[];
+pub const OFFICIAL_KEYS: &[&str] = &[
+    "RWTzyzz14h6SLXI02Ojonl56/ItdL7VvWA/Pa7qFzRWFByBvPEr9si09",
+    "RWRqNFDwD2I8v05p3K8H8usHRJcS2PEHzABR+Y512mc/G7RlnE1SwBzf",
+];
 
 fn official() -> Repository {
     let (name, url) = OFFICIAL_REPOSITORY;
