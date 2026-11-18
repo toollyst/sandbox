@@ -68,7 +68,7 @@ builds (warm, default 10), the sbx/docker ratio of the p50s, and whether both im
 How it keeps the comparison fair:
 
 - The base image (`--image`, default `alpine:3.20`) is pulled on both sides before timing, and `sbx prepare`d; that
-  is not timed. Every `FROM` names a tag of it made for this run only (`sbx-bench-build/base:<nonce>`), so neither
+  is not timed. Every `FROM` names a tag of it made for this run only (`sbx-bench-build/base:<run-id>`), so neither
   builder asks a registry. Both build for the host's architecture; a Docker server for another platform is not
   compared.
 - Each time is the tool's process from start to exit, with `-q`. sbx and docker take turns going first, so load and
@@ -89,9 +89,9 @@ Docker is optional. When `docker` is not on PATH, its daemon is not reachable or
 report says why and shows sbx alone; `--no-docker` skips it. Nothing in CI needs Docker for this, and `cargo xtask
 bench` itself is unchanged.
 
-It removes only what it made, by name, also when a build fails: every tag (`sbx-bench-build/<case>:<nonce>-<n>`),
+It removes only what it made, by name, also when a build fails: every tag (`sbx-bench-build/<case>:<run-id>-<n>`),
 the base tag, the base image if this run pulled it, Docker's build records (`docker buildx history rm`) and its
-temporary directory (`sbx-bench-build-<nonce>` in the system temp directory). It never removes by image ID. Build
+temporary directory (`sbx-bench-build-<run-id>` in the system temp directory). It never removes by image ID. Build
 cache entries stay on both sides (`sbx builder prune`, `docker builder prune` reclaim them). If you interrupt it, those
 names are what is left: find them with `sbx images` and `docker images --filter reference='sbx-bench-build/*'`,
 `docker buildx history ls`, and remove them with `rmi`; check `sbx ps -a` for a build VM of a killed `sbx build`.
