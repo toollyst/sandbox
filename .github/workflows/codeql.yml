@@ -1,5 +1,6 @@
 # CodeQL 정적 분석(SAST): Rust 코드와 이 저장소의 GitHub Actions 워크플로. 결과는 Security 탭의 코드 스캔에 올라가고,
-# PR에서는 새로 생긴 경고가 검사에 보인다. 빌드 없이(build-mode none) 소스를 읽는다.
+# PR에서는 새로 생긴 경고가 검사에 보인다. 빌드 없이(build-mode none) 소스를 읽는다. 테스트 코드는 빼고 본다
+# (.github/codeql/codeql-config.yml).
 #
 #   push (main, release/**), main으로의 PR, 매주 월요일, 손으로.
 name: codeql
@@ -39,6 +40,7 @@ jobs:
           languages: ${{ matrix.language }}
           build-mode: none
           queries: security-extended
+          config-file: ./.github/codeql/codeql-config.yml
       - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           category: /language:${{ matrix.language }}

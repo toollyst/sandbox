@@ -28,13 +28,13 @@
 //! 공정하게 하려고 정한 것:
 //!
 //! - 바탕 이미지는 재기 전에 양쪽에 받아 둔다(sbx는 `prepare`까지). 재지 않는다. `FROM`은 양쪽 모두 그 바탕에 붙인
-//!   이 실행만의 로컬 태그(`sbx-bench-build/base:<nonce>`)라서 어느 빌더도 레지스트리에 묻지 않는다. 플랫폼은
+//!   이 실행만의 로컬 태그(`sbx-bench-build/base:<run_id>`)라서 어느 빌더도 레지스트리에 묻지 않는다. 플랫폼은
 //!   양쪽 모두 호스트 아키텍처(`linux/<arch>`)이고, Docker 서버가 다른 플랫폼이면 견주지 않는다.
 //! - 각 빌드는 그 도구 프로세스를 띄워 끝날 때까지의 벽시계 시간이다(`-q`). 재는 동안 다른 일은 하지 않는다.
 //! - 만든 이미지가 같은지: 경우마다 마지막 이미지를 양쪽에서 한 번씩 돌려(재지 않는다) 확인할 경로의 파일 목록(종류,
 //!   권한, 소유자, 크기, sha256)과 작업 디렉터리, 사용자, `ENV`를 비교한다. 시각과 층 digest는 비교하지 않는다.
 //!   다르면 표를 쓴 뒤 실패한다.
-//! - 이 실행이 만든 것만 지운다: 빌드마다 고유한 태그(`sbx-bench-build/<경우>:<nonce>-<i>`)와 바탕 태그, 이 실행이
+//! - 이 실행이 만든 것만 지운다: 빌드마다 고유한 태그(`sbx-bench-build/<경우>:<run_id>-<i>`)와 바탕 태그, 이 실행이
 //!   받은 바탕 이미지, Docker의 빌드 기록(`docker buildx history rm`), 임시 디렉터리. 태그로만 지우고 ID로는 지우지
 //!   않는다. 두 빌더의 빌드 캐시는 남는다(사용자의 것과 섞여 있어 이 실행의 것만 고를 수 없다).
 
@@ -49,7 +49,7 @@ use crate::bench::percentile;
 const DEFAULT_IMAGE: &str = "alpine:3.20";
 /// 이 벤치가 만드는 모든 태그의 저장소 접두사. 끊겼을 때 손으로 지울 때도 이것으로 찾는다.
 const REPO: &str = "sbx-bench-build";
-/// 만든 이미지에 붙이는 라벨(값은 그 실행의 nonce).
+/// 만든 이미지에 붙이는 라벨(값은 그 실행의 `run_id`).
 const LABEL: &str = "io.github.toollyst.sandbox.bench";
 /// `network` 경우가 받는 곳.
 const APK_MIRROR: &str = "dl-cdn.alpinelinux.org:443";
@@ -316,7 +316,7 @@ fn cases(network: bool) -> Vec<Case> {
     v
 }
 
-fn dockerfile(file: File, base: &str, nonce: &str) -> String {
+fn dockerfile(file: File, base: &str, run_id: &str) -> String {
     match file {
         File::App => format!(
             "FROM {base}\n\
@@ -326,7 +326,7 @@ fn dockerfile(file: File, base: &str, nonce: &str) -> String {
              COPY src/ ./src/\n\
              RUN cat src/*.txt deps.txt > bundle.txt && wc -l < bundle.txt > lines.txt\n\
              ENV APP_MODE=bench\n\
-             LABEL {LABEL}={nonce}\n\
+             LABEL {LABEL}={run_id}\n\
              CMD [\"cat\", \"/app/lines.txt\"]\n"
         ),
         File::MultiStage => format!(
@@ -341,24 +341,24 @@ fn dockerfile(file: File, base: &str, nonce: &str) -> String {
              COPY --from=gen /work/out/ ./out/\n\
              COPY --from=docs /docs/README ./\n\
              ENV APP_MODE=multi\n\
-             LABEL {LABEL}={nonce}\n\
+             LABEL {LABEL}={run_id}\n\
              CMD [\"ls\", \"/app\"]\n"
         ),
         File::Apk => format!(
             "FROM {base}\n\
              RUN apk add --no-cache jq\n\
-             LABEL {LABEL}={nonce}\n\
+             LABEL {LABEL}={run_id}\n\
              CMD [\"jq\", \"--version\"]\n"
         ),
     }
 }
 
-/// `one-file-changed`가 `i`번째 빌드 앞에 쓰는 내용. 실행마다(nonce), 빌드마다 다르다.
-fn changed(nonce: &str, i: usize) -> String {
-    format!("main {nonce} {i}\n")
+/// `one-file-changed`가 `i`번째 빌드 앞에 쓰는 내용. 실행마다(`run_id`), 빌드마다 다르다.
+fn changed(run_id: &str, i: usize) -> String {
+    format!("main {run_id} {i}\n")
 }
 
-fn write_context(dir: &Path, case: &Case, base: &str, nonce: &str) -> Result<(), String> {
+fn write_context(dir: &Path, case: &Case, base: &str, run_id: &str) -> Result<(), String> {
     let put = |name: &str, data: &str| {
         let p = dir.join(name);
         if let Some(parent) = p.parent() {
@@ -366,7 +366,7 @@ fn write_context(dir: &Path, case: &Case, base: &str, nonce: &str) -> Result<(),
         }
         std::fs::write(&p, data).map_err(|e| format!("{}: {e}", p.display()))
     };
-    put("Dockerfile", &dockerfile(case.file, base, nonce))?;
+    put("Dockerfile", &dockerfile(case.file, base, run_id))?;
     if case.file != File::Apk {
         let deps: String = (1..=50).map(|i| format!("dep-{i} 1.{i}.0\n")).collect();
         put("deps.txt", &deps)?;
@@ -714,8 +714,8 @@ struct CaseResult {
     same: Same,
 }
 
-fn tag_for(case: &Case, nonce: &str, i: usize) -> String {
-    format!("{REPO}/{}:{nonce}-{i}", case.name)
+fn tag_for(case: &Case, run_id: &str, i: usize) -> String {
+    format!("{REPO}/{}:{run_id}-{i}", case.name)
 }
 
 /// 이 실행의 이름과 횟수.
@@ -723,7 +723,7 @@ fn tag_for(case: &Case, nonce: &str, i: usize) -> String {
 struct Plan<'a> {
     /// 바탕에 붙인 태그(`FROM`).
     base_tag: &'a str,
-    nonce: &'a str,
+    run_id: &'a str,
     /// warm 빌드 수.
     runs: usize,
     /// 만든 이미지가 같은 파일인지 본다(`--dry-run`이면 보지 않는다).
@@ -740,22 +740,22 @@ fn measure_case(
 ) -> Result<CaseResult, String> {
     let Plan {
         base_tag,
-        nonce,
+        run_id,
         runs,
         check,
     } = *plan;
-    write_context(ctx, case, base_tag, nonce)?;
+    write_context(ctx, case, base_tag, run_id)?;
     let no_cache = case.kind == Kind::NoCache;
     if case.kind != Kind::NoCache {
         for t in tools.iter_mut() {
-            t.build(sh, ctx, &tag_for(case, nonce, 0), false, case.network)?;
+            t.build(sh, ctx, &tag_for(case, run_id, 0), false, case.network)?;
         }
     }
     let mut all: Vec<Vec<Duration>> = vec![Vec::new(); tools.len()];
     for i in 1..=runs + 1 {
         if case.kind == Kind::OneFileChanged {
             let p = ctx.join("src/main.txt");
-            std::fs::write(&p, changed(nonce, i)).map_err(|e| format!("{}: {e}", p.display()))?;
+            std::fs::write(&p, changed(run_id, i)).map_err(|e| format!("{}: {e}", p.display()))?;
         }
         // 번갈아 먼저: 머신의 부하와 캐시가 한쪽에만 몰리지 않게.
         let mut order: Vec<usize> = (0..tools.len()).collect();
@@ -763,13 +763,13 @@ fn measure_case(
             order.reverse();
         }
         for k in order {
-            let d = tools[k].build(sh, ctx, &tag_for(case, nonce, i), no_cache, case.network)?;
+            let d = tools[k].build(sh, ctx, &tag_for(case, run_id, i), no_cache, case.network)?;
             all[k].push(d);
         }
     }
     let same = if check && tools.len() >= 2 {
         let script = files_script(case.paths);
-        let last = tag_for(case, nonce, runs + 1);
+        let last = tag_for(case, run_id, runs + 1);
         let a = tools[0].files(sh, &last, &script)?;
         let b = tools[1].files(sh, &last, &script)?;
         if !a.contains("workdir ") {
@@ -1163,7 +1163,7 @@ fn render_json(r: &Report) -> String {
 // ── 들어가는 곳 ─────────────────────────────────────────────────────────
 
 /// 이 실행만의 짧은 이름 조각(태그에 쓴다).
-fn nonce() -> String {
+fn run_id() -> String {
     let t = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
@@ -1186,7 +1186,7 @@ pub fn run(root: &Path, args: &[String]) -> Result<(String, bool), String> {
         ));
     }
     let mut sh = Real;
-    let report = measure(&mut sh, &o, host(), nonce())?;
+    let report = measure(&mut sh, &o, host(), run_id())?;
     let all_same = !report.cases.iter().any(|c| matches!(c.same, Same::No(_)));
     let text = match o.format {
         Format::Markdown => render_markdown(&report),
@@ -1196,8 +1196,8 @@ pub fn run(root: &Path, args: &[String]) -> Result<(String, bool), String> {
 }
 
 fn dry_run(o: &Options) -> Result<String, String> {
-    let nonce = nonce();
-    let base_tag = format!("{REPO}/base:{nonce}");
+    let run_id = run_id();
+    let base_tag = format!("{REPO}/base:{run_id}");
     let mut out = String::from("dry run: nothing runs. The Dockerfiles:\n");
     let mut files: Vec<File> = Vec::new();
     for c in cases(o.network) {
@@ -1206,7 +1206,7 @@ fn dry_run(o: &Options) -> Result<String, String> {
             out.push_str(&format!(
                 "\n# {:?}\n{}",
                 c.file,
-                dockerfile(c.file, &base_tag, &nonce)
+                dockerfile(c.file, &base_tag, &run_id)
             ));
         }
     }
@@ -1217,7 +1217,7 @@ fn dry_run(o: &Options) -> Result<String, String> {
         o.runs
     ));
     let mut sh = Dry::default();
-    measure(&mut sh, o, "(dry run)".into(), nonce)?;
+    measure(&mut sh, o, "(dry run)".into(), run_id)?;
     for l in sh.lines {
         out.push_str(&l);
         out.push('\n');
@@ -1226,7 +1226,12 @@ fn dry_run(o: &Options) -> Result<String, String> {
 }
 
 /// 환경을 묻고, 재고, 이 실행이 만든 것을 지운다(실패해도).
-fn measure(sh: &mut dyn Shell, o: &Options, host: String, nonce: String) -> Result<Report, String> {
+fn measure(
+    sh: &mut dyn Shell,
+    o: &Options,
+    host: String,
+    run_id: String,
+) -> Result<Report, String> {
     let sbx = o.sbx.to_string_lossy().into_owned();
     let mut info = if o.dry_run {
         SbxInfo {
@@ -1265,17 +1270,17 @@ fn measure(sh: &mut dyn Shell, o: &Options, host: String, nonce: String) -> Resu
     if let Some(m) = &o.memory {
         s.build_extra.extend(["-m".to_owned(), m.clone()]);
     }
-    let dir = std::env::temp_dir().join(format!("sbx-bench-build-{nonce}"));
+    let dir = std::env::temp_dir().join(format!("sbx-bench-build-{run_id}"));
     let mut tools = vec![s];
     if docker.is_ok() {
         let mut d = Tool::new(Side::Docker, DOCKER);
         d.meta_dir = Some(dir.join("docker-metadata"));
         tools.push(d);
     }
-    let base_tag = format!("{REPO}/base:{nonce}");
+    let base_tag = format!("{REPO}/base:{run_id}");
     let plan = Plan {
         base_tag: &base_tag,
-        nonce: &nonce,
+        run_id: &run_id,
         runs: o.runs,
         check: !o.dry_run,
     };
