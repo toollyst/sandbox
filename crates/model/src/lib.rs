@@ -2,6 +2,8 @@
 //!
 //! 동작(파일, 프로세스, 네트워크)은 두지 않는다. 값과 값의 검증만 둔다.
 //!
+//! - 빌드 계획(스테이지와 단계, `sbx build`): [`build`]
+//!
 //! - 의존: 없음
 //! - 쓰지 않는 곳: `sbx-guest-proto`, `sbx-guest` (게스트 바이너리를 작게 유지하기 위해)
 
@@ -13,6 +15,8 @@ use std::pin::Pin;
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
+
+pub mod build;
 
 /// `Arc<dyn Trait>`으로 갈아 끼우는 인터페이스(실행기, 이미지 소스)에 쓰는 비동기 반환 타입.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -524,6 +528,28 @@ pub struct Mount {
     pub readonly: bool,
 }
 
+/// 이름 붙은 볼륨 하나를 붙이는 것(`-v NAME:/path`, `--mount type=volume`). 볼륨은 샌드박스를 지워도 남는 디스크다.
+/// 규칙(한 번에 쓰는 쪽 하나, 처음 붙일 때 이미지 내용으로 채우기)은 `sbx-runtime`의 `volume` 모듈에 있다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VolumeMount {
+    /// 볼륨 이름. 규칙은 [`check_volume_name`].
+    pub name: String,
+    /// 게스트 절대 경로.
+    pub destination: String,
+    /// 읽기 전용으로 붙인다. 쓰는 샌드박스가 없을 때 여럿이 함께 붙일 수 있다.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub readonly: bool,
+    /// 빈 볼륨을 이미지의 그 경로 내용으로 채우지 않는다(Docker `volume-nocopy`, `-v NAME:/path:nocopy`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_copy: bool,
+}
+
+/// 볼륨 이름 규칙(Docker와 같다): 영문자나 숫자로 시작하고, 영문자, 숫자, `_`, `.`, `-`로 이어지는 2자 이상
+/// 128자 이하. 그래서 이름은 경로 구분자나 `..`를 담지 못하고 호스트 디렉터리 이름으로 그대로 쓸 수 있다.
+pub fn check_volume_name(name: &str) -> Result<(), ParseError> {
+    check_sandbox_name(name).map_err(|_| ParseError::new("volume name", name))
+}
+
 /// 네트워크 정책.
 ///
 /// 무엇을 허용할지는 호출자가 정하고, 샌드박스는 강제만 한다. 어느 경우든 VM에는 네트워크 장치가 없다.
@@ -532,7 +558,8 @@ pub struct Mount {
 pub enum NetworkPolicy {
     /// 네트워크 없음.
     Disabled,
-    /// 허용 목록에 맞는 TCP 연결만 호스트가 대신 연다(게스트 안의 HTTP 프록시를 거친다).
+    /// 허용 목록에 맞는 TCP 연결만 호스트가 대신 연다. 게스트 안의 HTTP 프록시를 거치거나, 프록시를 모르는
+    /// 프로그램은 투명 TCP(게스트 DNS의 가짜 주소, [`AllowRule::reach`])를 거친다. 어느 쪽이든 같은 목록이다.
     /// 목록은 비어 있지 않다. 규칙은 [`AllowRule`].
     Allow(Vec<AllowRule>),
 }
@@ -561,9 +588,11 @@ impl AllowRule {
 
     /// 요청한 호스트(이름 또는 IP 문자열)와 포트가 이 규칙에 맞는지. 호스트는 대소문자를 무시한다.
     pub fn matches(&self, host: &str, port: u16) -> bool {
-        if self.port.is_some_and(|p| p != port) {
-            return false;
-        }
+        self.port.is_none_or(|p| p == port) && self.matches_host(host)
+    }
+
+    /// 포트는 보지 않고 호스트만 맞는지([`AllowRule::matches`]의 앞 절반). 투명 TCP의 이름 묻기가 쓴다.
+    pub fn matches_host(&self, host: &str) -> bool {
         let host = host.trim_end_matches('.').to_ascii_lowercase();
         if let Ok(ip) = self.host.parse::<std::net::IpAddr>() {
             return host.parse::<std::net::IpAddr>() == Ok(ip);
@@ -575,6 +604,94 @@ impl AllowRule {
             None => host == self.host,
         }
     }
+}
+
+/// 투명 TCP(프록시를 모르는 프로그램의 길)로 닿을 수 있는 규칙인지. 정본은 이 함수다.
+///
+/// 게스트는 듣는 소켓으로 연결을 받으므로 포트를 미리 알아야 하고, 그 주소를 게스트 안에서 local로 잡을 수 있어야
+/// 한다. 그렇지 않은 규칙은 HTTP 프록시(`HTTP_PROXY`)로만 닿는다. 어느 쪽이든 호스트의 확인은 같다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reach {
+    /// 이름 규칙: 게스트 DNS가 가짜 주소를 주고 그 주소의 이 포트에서 듣는다.
+    Name,
+    /// IPv4 주소 규칙: 게스트가 이 주소를 local로 잡고 듣는다.
+    Literal(std::net::SocketAddrV4),
+    /// 프록시로만 닿는다. 이유는 [`ProxyOnly::why`].
+    ProxyOnly(ProxyOnly),
+}
+
+/// 투명 TCP로 닿지 못하는 까닭.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProxyOnly {
+    /// 포트가 `*`다: 어느 포트로 올지 몰라 들을 수 없다.
+    AnyPort,
+    /// IPv6 주소: 게스트 커널에 바라는 것은 IPv4 루프백뿐이다(실행기 규약).
+    Ipv6,
+    /// `localhost`이거나 루프백·지정되지 않은 주소·멀티캐스트·브로드캐스트: 게스트 안에서는 게스트 자신을 가리킨다.
+    Local,
+    /// 가짜 주소 범위([`FAKE_RANGE`]) 안의 주소: 이름에 줄 주소와 겹친다.
+    FakeRange,
+}
+
+/// 투명 TCP가 이름에 주는 가짜 주소의 범위: `198.18.0.0/15`(RFC 2544, 장비 시험용이라 실제로 쓰이지 않는다).
+pub const FAKE_RANGE: (std::net::Ipv4Addr, u8) = (std::net::Ipv4Addr::new(198, 18, 0, 0), 15);
+
+/// `ip`가 [`FAKE_RANGE`] 안인지.
+pub fn in_fake_range(ip: std::net::Ipv4Addr) -> bool {
+    let (base, len) = FAKE_RANGE;
+    let mask = u32::MAX << (32 - len);
+    u32::from(ip) & mask == u32::from(base)
+}
+
+impl ProxyOnly {
+    /// 사용자에게 보이는 설명(경고와 이벤트).
+    pub fn why(self) -> &'static str {
+        match self {
+            ProxyOnly::AnyPort => {
+                "a rule for every port (*) cannot be listened for; programs that ignore HTTP_PROXY need a port (HOST:22)"
+            }
+            ProxyOnly::Ipv6 => {
+                "the sandbox has no IPv6; only programs that use HTTP_PROXY reach it"
+            }
+            ProxyOnly::Local => {
+                "inside the sandbox this address is the sandbox itself; only programs that use HTTP_PROXY reach the host's"
+            }
+            ProxyOnly::FakeRange => {
+                "the address is in 198.18.0.0/15, which sbx gives to allowed names"
+            }
+        }
+    }
+}
+
+impl AllowRule {
+    /// 투명 TCP로 닿는지. 규칙은 [`Reach`].
+    pub fn reach(&self) -> Reach {
+        use std::net::IpAddr;
+        let Some(port) = self.port else {
+            return Reach::ProxyOnly(ProxyOnly::AnyPort);
+        };
+        match self.host.parse::<IpAddr>() {
+            Ok(IpAddr::V6(_)) => Reach::ProxyOnly(ProxyOnly::Ipv6),
+            Ok(IpAddr::V4(v4)) => {
+                if v4.is_loopback() || v4.is_unspecified() || v4.is_multicast() || v4.is_broadcast()
+                {
+                    Reach::ProxyOnly(ProxyOnly::Local)
+                } else if in_fake_range(v4) {
+                    Reach::ProxyOnly(ProxyOnly::FakeRange)
+                } else {
+                    Reach::Literal(std::net::SocketAddrV4::new(v4, port))
+                }
+            }
+            Err(_) if is_localhost_name(&self.host) => Reach::ProxyOnly(ProxyOnly::Local),
+            Err(_) => Reach::Name,
+        }
+    }
+}
+
+/// `localhost`와 그 아래 이름(`*.localhost`). 게스트 DNS는 이 이름을 호스트에 묻지 않고 루프백으로 답한다(RFC 6761).
+pub fn is_localhost_name(name: &str) -> bool {
+    let n = name.trim_end_matches('.').to_ascii_lowercase();
+    n == "localhost" || n.ends_with(".localhost")
 }
 
 impl fmt::Display for AllowRule {
@@ -625,6 +742,133 @@ impl FromStr for AllowRule {
         };
         Ok(Self { host, port })
     }
+}
+
+/// 다른 샌드박스의 TCP 포트 하나에 닿는 길(`--connect`). 허용 목록과 같은 생각이다: 하나씩 연다.
+///
+/// - `name`: 샌드박스 안에서 쓰는 이름. 게스트 DNS가 이 이름에 가짜 주소를 주고 그 주소의 `port`에서 듣는다
+///   (투명 TCP, [`Reach::Name`]과 같은 길). 규칙은 [`check_connect_name`].
+/// - `target`: 대상 샌드박스의 이름이나 전체 ID. 연결마다 이것으로 대상을 새로 찾는다(정확한 ID, 그다음 이름.
+///   ID 앞부분으로는 찾지 않는다). 그래서 대상이 다시 시작하거나 같은 이름으로 다시 만들어져도 다음 연결은 된다.
+/// - `port`: 대상 게스트 안 `127.0.0.1`의 포트. 소유 프로세스가 대상의 게스트에 `-p`와 같은 길(`Forward`)로 잇는다.
+///
+/// 규칙 사이의 검사는 [`check_connect`]가 한다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectRule {
+    /// 안에서 쓰는 이름. 소문자이고 끝의 `.`이 없다.
+    pub name: String,
+    /// 대상 샌드박스: 이름이나 전체 ID.
+    pub target: String,
+    /// 대상 안의 포트(1 이상).
+    pub port: u16,
+}
+
+impl ConnectRule {
+    /// 게스트가 물은 이름(대소문자 무시, 끝의 `.` 무시)이 이 규칙의 이름인지.
+    pub fn matches_name(&self, name: &str) -> bool {
+        name.strip_suffix('.')
+            .unwrap_or(name)
+            .eq_ignore_ascii_case(&self.name)
+    }
+}
+
+impl fmt::Display for ConnectRule {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.name == self.target {
+            write!(f, "{}:{}", self.target, self.port)
+        } else {
+            write!(f, "{}={}:{}", self.name, self.target, self.port)
+        }
+    }
+}
+
+/// `--connect`의 이름 규칙. 받으면 소문자로 바꾸고 끝의 `.`을 뗀 이름을 돌려준다.
+///
+/// - DNS 이름이어야 한다: 조각마다 1..=63자, 영문자·숫자·`-`·`_`, 모두 253자 안. IP 주소 꼴은 안 된다.
+/// - `localhost`와 `*.localhost`는 안 된다: 게스트 DNS가 호스트에 묻지 않고 게스트 자신으로 답한다.
+/// - `arpa`와 `.arpa`로 끝나는 이름은 안 된다: 게스트 DNS가 역방향 이름으로만 답한다.
+pub fn check_connect_name(name: &str) -> Result<String, ParseError> {
+    let n = name.strip_suffix('.').unwrap_or(name).to_ascii_lowercase();
+    let ok = !n.is_empty()
+        && n.len() <= 253
+        && n.parse::<std::net::IpAddr>().is_err()
+        && n.split('.').all(|l| {
+            !l.is_empty()
+                && l.len() <= 63
+                && l.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        })
+        && !is_localhost_name(&n)
+        && n != "arpa"
+        && !n.ends_with(".arpa");
+    if ok {
+        Ok(n)
+    } else {
+        Err(ParseError::new(
+            "--connect name (a DNS name such as db, not localhost or an IP address)",
+            name,
+        ))
+    }
+}
+
+/// `--connect` 목록을 검사한다. `allow`는 같은 샌드박스의 허용 목록, `own_name`은 그 샌드박스의 이름이다.
+///
+/// | 경우 | 결과 |
+/// |---|---|
+/// | 이름이 [`check_connect_name`]에 맞지 않거나 저장된 꼴(소문자, 끝의 `.` 없음)이 아님 | 오류 |
+/// | 대상이 샌드박스 이름([`check_sandbox_name`])도 ID([`SandboxId::new`])도 아님 | 오류 |
+/// | 포트 0 | 오류 |
+/// | 같은 이름이 다른 대상을 가리킴 | 오류 (이름 하나는 샌드박스 하나다) |
+/// | 같은 규칙이 두 번 | 오류 |
+/// | 이름이 IP가 아닌 허용 규칙에 맞음(`*.접미사` 포함) | 오류 (그 이름의 연결이 갈 곳이 둘이 된다) |
+/// | 대상이 자기 이름 | 오류 (자신에게 잇지 않는다. 연결할 때는 ID로도 막는다) |
+pub fn check_connect(
+    rules: &[ConnectRule],
+    allow: &[AllowRule],
+    own_name: Option<&str>,
+) -> Result<(), String> {
+    for (i, r) in rules.iter().enumerate() {
+        let what = format!("--connect {r}");
+        if check_connect_name(&r.name).ok().as_deref() != Some(r.name.as_str()) {
+            return Err(format!(
+                "{what}: {:?} is not a name a sandbox can use (a DNS name such as db; not localhost or an IP address)",
+                r.name
+            ));
+        }
+        if check_sandbox_name(&r.target).is_err() && SandboxId::new(&r.target).is_err() {
+            return Err(format!(
+                "{what}: {:?} is not a sandbox name or ID",
+                r.target
+            ));
+        }
+        if r.port == 0 {
+            return Err(format!("{what}: the port must be 1 to 65535"));
+        }
+        let before = &rules[..i];
+        if before.contains(r) {
+            return Err(format!("{what} is given twice"));
+        }
+        if let Some(o) = before
+            .iter()
+            .find(|o| o.name == r.name && o.target != r.target)
+        {
+            return Err(format!(
+                "{what}: the name {} already reaches sandbox {} (--connect {o})",
+                r.name, o.target
+            ));
+        }
+        if let Some(a) = allow.iter().find(|a| !a.is_ip() && a.matches_host(&r.name)) {
+            return Err(format!(
+                "{what}: the name {} is also allowed by --allow {a}; give the connection another name \
+                 (--connect NAME=SANDBOX:PORT)",
+                r.name
+            ));
+        }
+        if own_name == Some(r.target.as_str()) {
+            return Err(format!("{what}: a sandbox cannot connect to itself"));
+        }
+    }
+    Ok(())
 }
 
 /// 시그널. 게스트가 Linux이므로 Linux 번호로 담는다(호스트 OS의 번호와 다를 수 있다).
@@ -794,6 +1038,9 @@ pub struct SandboxSpec {
     pub resources: Resources,
     /// 폴더 공유.
     pub mounts: Vec<Mount>,
+    /// 이름 붙은 볼륨. 이 필드가 없던 기록은 볼륨이 없다.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volumes: Vec<VolumeMount>,
     /// 네트워크 정책.
     pub network: NetworkPolicy,
     /// 게스트 hostname.
@@ -819,10 +1066,27 @@ pub struct SandboxSpec {
     /// 호스트 TCP 포트를 게스트의 포트로 잇는다(`-p`). VM을 소유한 프로세스가 듣는다.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ports: Vec<PortMapping>,
-    /// 시작할 때마다 나가는 연결(`NetworkPolicy::Allow`)로 주고받을 수 있는 바이트 합계(`--egress-limit`). 닿으면
+    /// 시작할 때마다 나가는 연결(`NetworkPolicy::Allow`와 `connect`)로 주고받을 수 있는 바이트 합계(`--egress-limit`). 닿으면
     /// 열린 연결을 끊고 새 연결을 거절한다. 없으면 끝없이.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub egress_limit_bytes: Option<u64>,
+    /// 기본 프로세스 대신 게스트가 프로그램 없이 자리를 채운다(빌드 VM). 이미지에 실행할 것이 없어도 되고
+    /// `process.args`는 쓰지 않는다. 멈추기(`stop`, 멈춤 시그널)는 보통의 샌드박스와 같다.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hold: bool,
+    /// 다른 샌드박스의 포트에 닿는 길(`--connect`). 있으면 네트워크가 `Disabled`여도 투명 TCP가 켜지지만 이 이름들
+    /// 말고는 아무것도 열지 않는다. 규칙은 [`ConnectRule`], [`check_connect`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connect: Vec<ConnectRule>,
+    /// `connect`의 대상이 모두 가져야 하는 라벨(키와 값). 만들 때와 연결마다 확인한다. 비면 같은 data_dir의 어느
+    /// 샌드박스든 된다. 정책은 부르는 쪽이 정한다(예: MCP 서버는 MCP로 만든 샌드박스로 좁힌다).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub connect_scope: BTreeMap<String, String>,
+    /// 네트워크가 `Disabled`이고 `connect`가 없어도 게스트의 이름 묻기를 호스트에 돌린다(투명 TCP를 규칙 없이 켠다).
+    /// 그래서 모든 이름이 거부되고 거부된 이름이 나가는 연결 기록(`refuse`, `via=dns`)에 남는다. 열리는 것은 없다.
+    /// 빌드가 닫힌 네트워크에서 실패한 `RUN`이 찾은 이름을 알리는 데 쓴다.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub record_names: bool,
 }
 
 /// `-p [IP:][HOST_PORT:]PORT[/tcp]`: 호스트의 `IP:HOST_PORT`에 온 TCP 연결을 게스트 `127.0.0.1:PORT`로 잇는다.
@@ -1181,6 +1445,77 @@ mod tests {
     }
 
     #[test]
+    fn volume_names_follow_docker_and_are_safe_directory_names() {
+        for ok in ["pgdata", "db.v2", "cache_1-x", "0a"] {
+            assert!(check_volume_name(ok).is_ok(), "{ok}");
+        }
+        for bad in ["", "p", ".", "..", "../x", "a/b", "-v", "a b", "a:b", "~x"] {
+            let e = check_volume_name(bad).unwrap_err().to_string();
+            assert!(e.contains("volume name"), "{bad}: {e}");
+        }
+        // 옛 기록(볼륨 필드 없음)도 읽힌다. 볼륨이 없으면 쓰지 않는다.
+        let v = VolumeMount {
+            name: "pg".into(),
+            destination: "/data".into(),
+            readonly: false,
+            no_copy: false,
+        };
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            r#"{"name":"pg","destination":"/data"}"#
+        );
+    }
+
+    #[test]
+    fn which_rules_transparent_tcp_can_reach() {
+        let r = |s: &str| s.parse::<AllowRule>().unwrap().reach();
+        assert_eq!(r("github.com:22"), Reach::Name);
+        assert_eq!(r("*.githubusercontent.com:443"), Reach::Name);
+        assert_eq!(
+            r("140.82.112.3:22"),
+            Reach::Literal("140.82.112.3:22".parse().unwrap())
+        );
+        assert_eq!(
+            r("10.0.0.5:5432"),
+            Reach::Literal("10.0.0.5:5432".parse().unwrap())
+        );
+        assert_eq!(r("github.com:*"), Reach::ProxyOnly(ProxyOnly::AnyPort));
+        assert_eq!(r("10.0.0.5:*"), Reach::ProxyOnly(ProxyOnly::AnyPort));
+        assert_eq!(r("[2001:db8::1]:443"), Reach::ProxyOnly(ProxyOnly::Ipv6));
+        for local in [
+            "localhost:8080",
+            "LocalHost.:8080",
+            "*.localhost:80",
+            "a.localhost:80",
+            "127.0.0.1:8080",
+            "127.9.9.9:1",
+            "0.0.0.0:80",
+            "255.255.255.255:9",
+            "224.0.0.1:9",
+        ] {
+            assert_eq!(r(local), Reach::ProxyOnly(ProxyOnly::Local), "{local}");
+        }
+        assert_eq!(r("198.18.0.1:80"), Reach::ProxyOnly(ProxyOnly::FakeRange));
+        assert_eq!(
+            r("198.19.255.255:80"),
+            Reach::ProxyOnly(ProxyOnly::FakeRange)
+        );
+        assert_eq!(
+            r("198.20.0.1:80"),
+            Reach::Literal("198.20.0.1:80".parse().unwrap())
+        );
+        assert_eq!(
+            r("198.17.255.255:80"),
+            Reach::Literal("198.17.255.255:80".parse().unwrap())
+        );
+        // 이름만 맞추기: 포트는 보지 않는다.
+        let w: AllowRule = "*.example.com:443".parse().unwrap();
+        assert!(w.matches_host("A.Example.com."));
+        assert!(!w.matches_host("example.com"));
+        assert!(!w.matches("a.example.com", 22));
+    }
+
+    #[test]
     fn allow_rules_parse_and_match() {
         let r = |s: &str| s.parse::<AllowRule>().unwrap();
         assert_eq!(
@@ -1309,5 +1644,87 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod connect_tests {
+    use super::*;
+
+    fn rule(name: &str, target: &str, port: u16) -> ConnectRule {
+        ConnectRule {
+            name: name.into(),
+            target: target.into(),
+            port,
+        }
+    }
+
+    #[test]
+    fn connect_names_are_dns_names_the_guest_asks_the_host_about() {
+        assert_eq!(check_connect_name("DB.").unwrap(), "db");
+        assert_eq!(check_connect_name("pg_1.local").unwrap(), "pg_1.local");
+        let long = "a".repeat(64);
+        for bad in [
+            "",
+            ".",
+            "a..b",
+            "10.0.0.1",
+            "::1",
+            "localhost",
+            "x.localhost",
+            "arpa",
+            "7.0.18.198.in-addr.arpa",
+            "my db",
+            long.as_str(),
+        ] {
+            assert!(check_connect_name(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn connect_lists_are_checked_against_each_other_the_allow_list_and_the_sandbox() {
+        let allow: Vec<AllowRule> = ["pypi.org:443", "*.corp.example:5432", "10.0.0.5:5432"]
+            .iter()
+            .map(|r| r.parse().unwrap())
+            .collect();
+        let ok = [
+            rule("db", "db", 5432),
+            rule("db", "db", 8080),
+            rule("cache", "redis-1", 6379),
+        ];
+        assert_eq!(check_connect(&ok, &allow, Some("app")), Ok(()));
+        let id = "ab".repeat(32);
+        assert_eq!(check_connect(&[rule("db", &id, 1)], &[], None), Ok(()));
+        let err = |rules: &[ConnectRule], own: Option<&str>| {
+            check_connect(rules, &allow, own).unwrap_err()
+        };
+        assert!(err(&[rule("DB", "db", 1)], None).contains("not a name"));
+        assert!(err(&[rule("localhost", "db", 1)], None).contains("not a name"));
+        assert!(err(&[rule("db", "my db", 1)], None).contains("not a sandbox name or ID"));
+        assert!(err(&[rule("db", "db", 0)], None).contains("1 to 65535"));
+        assert!(err(&[rule("db", "db", 1), rule("db", "db", 1)], None).contains("twice"));
+        assert!(
+            err(&[rule("db", "db", 1), rule("db", "other", 2)], None).contains("already reaches")
+        );
+        // 허용 목록의 이름과 겹치면 오류다(와일드카드 포함). IP 규칙은 이름에 맞지 않는다.
+        assert!(err(&[rule("pypi.org", "db", 1)], None).contains("--allow pypi.org:443"));
+        assert!(err(&[rule("pg.corp.example", "db", 1)], None).contains("*.corp.example"));
+        assert!(err(&[rule("db", "app", 1)], Some("app")).contains("itself"));
+        assert_eq!(rule("db", "db", 1).to_string(), "db:1");
+        assert_eq!(rule("pg", "db", 1).to_string(), "pg=db:1");
+        assert!(rule("db", "x", 1).matches_name("DB."));
+        assert!(!rule("db", "x", 1).matches_name("db.x"));
+    }
+
+    #[test]
+    fn old_specs_without_connect_still_read() {
+        let spec = r#"{"image":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","rootfs_format":"erofs",
+            "process":{"args":["sh"],"env":[],"cwd":"/","user":"0"},"resources":{"vcpus":1,"memory_mib":128,"scratch_disk_mib":4},
+            "mounts":[],"network":"disabled","hostname":null,"labels":{}}"#;
+        let s: SandboxSpec = serde_json::from_str(spec).unwrap();
+        assert!(s.connect.is_empty() && s.connect_scope.is_empty());
+        // 비었으면 쓰지 않는다(옛 sbx도 읽는다).
+        let back = serde_json::to_string(&s).unwrap();
+        assert!(!back.contains("connect"), "{back}");
     }
 }

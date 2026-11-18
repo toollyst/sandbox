@@ -1,4 +1,4 @@
-//! CLI 동작 규칙. Docker CLI를 기준으로 하고, 다른 점은 [`DOCKER_DIFFERENCES`]에 적는다.
+//! CLI 동작 규칙. Docker CLI를 기준으로 하고, 다른 점은 [`crate::compat`]의 표에 적는다.
 //!
 //! 여기 있는 함수는 입출력 없이 "무엇을 어떤 순서로 부를지"만 정한다. 테스트가 곧 규칙이다.
 
@@ -134,6 +134,14 @@ pub const DEFAULT_MEMORY_MIB: u32 = 512;
 
 /// 샌드박스별 쓰기 가능 디스크 크기(MiB).
 pub const DEFAULT_SCRATCH_MIB: u32 = 1024;
+/// 볼륨 디스크의 기본 크기(MiB). sparse라서 호스트에서는 쓴 만큼만 차지한다(`volume create --opt size=`로 바꾼다).
+pub const DEFAULT_VOLUME_MIB: u32 = 16 * 1024;
+
+/// 빌드 캐시의 상한 기본값(바이트): 캐시 기록만 쥔 층의 합. 환경 변수 [`BUILD_CACHE_MAX_ENV`]로 바꾼다.
+pub const DEFAULT_BUILD_CACHE_MAX: u64 = 10 << 30;
+
+/// 빌드 캐시 상한을 바꾸는 환경 변수: 크기(`20g`, `512m`) 또는 `none`(상한 없음).
+pub const BUILD_CACHE_MAX_ENV: &str = "SBX_BUILD_CACHE_MAX";
 
 /// 이미지 ID 앞부분으로 찾을 때 필요한 최소 길이. `images`의 IMAGE ID 열과 같은 12자리다.
 /// 짧은 문자열이 우연히 ID 앞부분과 맞아 엉뚱한 이미지를 지우는 일을 막는다.
@@ -203,6 +211,22 @@ pub fn stop_timeout(given: Option<u64>, recorded: Option<u32>) -> Duration {
     Duration::from_secs(given.or(recorded.map(u64::from)).unwrap_or(10))
 }
 
+/// 멈추기의 결과: 샌드박스가 실행 중이 아니어서 실패했으면 된 것으로 본다(Docker의 `stop`처럼). 상태를 읽은 뒤
+/// 멈추기 전에 샌드박스가 스스로 끝날 수 있다(기본 프로세스가 그 사이 끝났다). `stop`, `restart`, `rm -f`, MCP의
+/// `remove`가 쓴다. 다른 오류는 그대로다.
+pub fn stopped_anyway(
+    r: Result<(), sbx_runtime::RuntimeError>,
+) -> Result<(), sbx_runtime::RuntimeError> {
+    match r {
+        Err(sbx_runtime::RuntimeError::InvalidState { current, .. })
+            if current != sbx_model::State::Running =>
+        {
+            Ok(())
+        }
+        r => r,
+    }
+}
+
 /// `--network`와 `--allow`로 네트워크 정책을 정한다.
 ///
 /// | `--network` | `--allow` | 결과 |
@@ -226,6 +250,63 @@ pub fn network_policy(mode: &str, allow: &[String]) -> Result<NetworkPolicy, Str
             "--network {other} is not supported (none or allow)"
         )),
     }
+}
+
+/// 프록시를 모르는 프로그램(투명 TCP)이 닿지 못하는 규칙마다 경고 한 줄. 규칙은 [`AllowRule::reach`].
+/// 그 규칙도 `HTTP_PROXY`를 따르는 프로그램에는 그대로 열린다. 조용히 넘어가지 않으려고 만들 때 알린다.
+pub fn proxy_only_warnings(policy: &NetworkPolicy) -> Vec<String> {
+    let NetworkPolicy::Allow(rules) = policy else {
+        return Vec::new();
+    };
+    rules
+        .iter()
+        .filter_map(|r| match r.reach() {
+            sbx_model::Reach::ProxyOnly(why) => Some(format!("--allow {r}: {}", why.why())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `--connect` 항목 하나를 기록할 규칙으로 바꾼다. `id`와 `name`은 다른 명령과 같은 규칙(이름, ID, ID 앞부분,
+/// `Runtime::resolve`)으로 찾은 대상의 ID와 이름이다.
+///
+/// | 받은 대상 | 기록하는 대상 | 안의 이름(`NAME=`이 없을 때) |
+/// |---|---|---|
+/// | 그 샌드박스의 이름 | 그 이름(지우고 같은 이름으로 다시 만들어도 따라간다) | 그 이름 |
+/// | ID나 ID 앞부분 | 전체 ID(그 샌드박스만) | 그 샌드박스의 이름. 이름이 없으면 오류(`NAME=`을 주라) |
+///
+/// 안의 이름이 DNS 이름이 될 수 없으면(샌드박스 이름 `a..b`처럼) 오류다([`sbx_model::check_connect_name`]).
+pub fn connect_rule(
+    arg: &crate::parse::ConnectArg,
+    id: &SandboxId,
+    name: Option<&str>,
+) -> Result<sbx_model::ConnectRule, String> {
+    let by_name = name == Some(arg.target.as_str());
+    let target = if by_name {
+        arg.target.clone()
+    } else {
+        id.to_string()
+    };
+    let inside = match (&arg.name, name) {
+        (Some(n), _) => n.clone(),
+        (None, Some(n)) => sbx_model::check_connect_name(n).map_err(|_| {
+            format!(
+                "--connect {}: the sandbox name {n:?} cannot be used as a name inside; give one with NAME={}:{}",
+                arg.target, arg.target, arg.port
+            )
+        })?,
+        (None, None) => {
+            return Err(format!(
+                "--connect {}: that sandbox has no name; give one to use inside with NAME={}:{}",
+                arg.target, arg.target, arg.port
+            ));
+        }
+    };
+    Ok(sbx_model::ConnectRule {
+        name: inside,
+        target,
+        port: arg.port,
+    })
 }
 
 /// 이미지 이름이 무엇으로 맞았는지.
@@ -336,147 +417,6 @@ pub fn rmi_action(m: &ImageMatch, ref_count: usize, force: bool) -> RmiAction {
         ImageMatch::Id(id) => RmiAction::Delete(id.clone()),
     }
 }
-
-/// Docker와 다른 점: (항목, 이 프로젝트의 동작, 이유).
-pub const DOCKER_DIFFERENCES: &[(&str, &str, &str)] = &[
-    (
-        "-p, --publish",
-        "IP를 적지 않으면 127.0.0.1에서 듣는다 (Docker는 모든 주소). TCP만, 게스트 127.0.0.1:PORT로 잇는다. 듣는 것은 VM을 소유한 프로세스(sbx나 sbx-shim)다",
-        "기본 차단 원칙: 같은 기계 밖에 열려면 0.0.0.0:을 적는다. VM에는 네트워크 장치가 없어 게스트 안 루프백으로 잇는다",
-    ),
-    (
-        "--network",
-        "none(기본, Docker는 bridge)과 allow만 있다. allow는 --allow 목록의 HOST:PORT로 가는 TCP만 게스트 안 HTTP 프록시(HTTP_PROXY 등)를 거쳐 호스트가 연다. VM에는 네트워크 장치가 없다",
-        "기획서 원칙: 네트워크는 기본 차단, 허용한 것만 연다. 이름 단위 허용 목록을 실행기 기능 없이 모든 OS에서 강제한다",
-    ),
-    (
-        "--cpus, --memory 기본값",
-        "1 vCPU, 512 MiB (Docker는 제한 없음). --cpus는 정수만 받는다",
-        "VM은 크기를 정해서 띄워야 한다",
-    ),
-    (
-        "--name",
-        "주지 않으면 이름이 없다 (Docker는 이름을 지어 붙인다). 이름이 없는 샌드박스는 ID로 찾는다",
-        "지어 붙인 이름은 쓰지 않는 사람에게도 보이고 겹침만 늘린다. 필요하면 호출한 쪽이 짓는다",
-    ),
-    (
-        "이미지 ID 앞부분으로 찾기",
-        "12자리 이상만 받는다 (Docker는 더 짧아도 받는다)",
-        "짧은 문자열이 우연히 맞아 엉뚱한 이미지를 지우는 일을 막는다",
-    ),
-    (
-        "--format",
-        "text와 json만. Go 템플릿(--format '{{.ID}}')은 없고, 대신 --jq EXPR로 JSON 출력을 고른다(gh와 같다). \
-         json의 모양은 crate::output이 정본이다(docs/developers/cli-output.md)",
-        "Go 템플릿을 Rust로 똑같이 만들 수 없고, 반쯤 같은 것은 명시적 동작에 어긋난다. jq는 사실상 표준 언어다",
-    ),
-    (
-        "--filter",
-        "ps, images, events만. 키는 crate::filter의 표(PS, IMAGES, EVENTS)가 정본이다. name은 정규식이 아니라 부분 문자열, \
-         reference는 *와 ?만 있는 패턴. ps의 before/since/health 등, images의 before/since, events의 container/label은 없다. \
-         모르는 키와 값은 오류다(Docker는 일부를 무시한다)",
-        "명시적 동작: 받는 것을 표로 정하고, 정규식 엔진을 들이지 않는다",
-    ),
-    (
-        "sbx events",
-        "종류는 sandbox와 image, 동작은 create, start, stop, remove와 pull, prepare, untag, delete다 \
-         (Docker는 container의 die, destroy 등). 시각은 RFC 3339 나노초. --since/--until은 시간대 없는 날짜를 받지 않는다. \
-         기록은 1 MiB 두 세대까지 남는다(Docker는 최근 256개)",
-        "데몬이 없어서 상태를 바꾸는 프로세스가 data_dir과 cache_dir에 직접 남긴다(sbx-events). 그래서 소유 프로세스가 \
-         갑자기 죽어 아무도 stopped를 기록하지 못하면 stop 이벤트도 없다",
-    ),
-    (
-        "sbx completion",
-        "등록 스크립트를 찍는다. 탭마다 셸이 `COMPLETE=<셸> sbx -- <단어들>`로 sbx를 다시 불러 샌드박스 이름·ID, 이미지 참조, \
-         설치한 실행기를 후보로 받는다(crate::complete). 그래서 환경 변수 COMPLETE가 있으면(비어 있지 않고 0이 아니면) \
-         sbx는 명령을 실행하지 않고 자동완성만 한다. 샌드박스를 상태로 거르지 않는다(Docker는 stop에 실행 중인 것만 낸다)",
-        "데몬이 없어서 sbx가 data_dir과 cache_dir을 직접 읽는다. 상태를 알려면 소유 잠금을 건드려야 하는데, 자동완성은 \
-         아무것도 바꾸지 않는다",
-    ),
-    (
-        "sbx tui",
-        "Docker CLI에 없는 명령(Docker Desktop이나 lazydocker 같은 화면). 전체 화면에서 ps, images, events를 보고 \
-         키로 sbx 명령을 낸다. 코어를 직접 부르지 않고 같은 sbx를 자식으로 부른다(crate::tui)",
-        "CLI가 주인이고 화면은 그 위의 도구다. 화면이 하는 일은 모두 상태 줄에 보이는 sbx 명령 줄과 같다",
-    ),
-    (
-        "sbx prepare",
-        "Docker에 없는 명령",
-        "이미지를 VM용 rootfs 디스크로 만드는 단계가 따로 있다",
-    ),
-    (
-        "--rootfs-format",
-        "Docker에 없는 옵션. 생략하면 erofs ([`DEFAULT_ROOTFS_FORMAT`])",
-        "rootfs 형식을 여러 개 지원한다",
-    ),
-    (
-        "--mount type=copy",
-        "Docker에 없는 마운트 종류",
-        "시작할 때 복사해 넣고 결과는 cp로 꺼내는 공유 방식",
-    ),
-    (
-        "-v, --mount type=bind",
-        "실행기가 실시간 공유를 지원하지 않으면 오류",
-        "실행기마다 기능이 다르다. 다른 방식으로 바꾸지 않는다",
-    ),
-    (
-        "rmi의 정지 샌드박스 보호",
-        "같은 data_dir 안에서만",
-        "다른 data_dir은 알 수 없다",
-    ),
-    (
-        "stopped 상태",
-        "Docker처럼 다시 start할 수 있다 (OCI Runtime Spec과 다름)",
-        "CLI가 Docker를 기준으로 한다",
-    ),
-    (
-        "run -d, start",
-        "Docker와 같다. 붙지 않고 시작한 샌드박스는 데몬 대신 샌드박스마다 shim 프로세스(`sbx-shim`)가 소유한다",
-        "데몬이 없다. VM은 시작한 프로세스가 소유한다",
-    ),
-    (
-        "logs",
-        "붙지 않고(run -d, start) 시작했을 때만 남는다. 붙어서 실행한 출력은 sbx가 바로 보여주고 남기지 않는다. 샌드박스마다 256 MiB까지 남기고 그 뒤는 버린다(한 줄로 알린다. Docker json-file은 한도가 없다)",
-        "출력을 받아 적을 데몬이 없다. 적는 것은 shim이다",
-    ),
-    (
-        "logs -t, --since, --until",
-        "시각은 줄마다가 아니라 shim이 출력 조각을 받을 때마다 하나다(한 조각 안의 줄들은 같은 시각). \
-         시각을 남기기 전의 sbx가 쓴 로그(그 샌드박스를 다시 시작해도 그대로)에는 이 옵션들이 오류다. \
-         --since/--until은 시간대 없는 날짜를 받지 않는다",
-        "로그는 shim이 받은 조각 그대로 적는다(sbx_shim::log). 시각 없는 줄을 범위에 넣을지 뺄지 알 수 없으므로 조용히 틀리지 않는다",
-    ),
-    (
-        "attach",
-        "붙지 않고(run -d, start) 시작한 샌드박스에만 붙는다. 다른 sbx가 붙어서 실행 중인 샌드박스에는 붙지 않는다. Windows에서는 아직 없다",
-        "붙기는 기본 프로세스의 입출력을 쥔 shim이 받는다. 데몬이 없다",
-    ),
-    (
-        "cp",
-        "실행 중인 샌드박스에서만 된다",
-        "디스크를 읽고 쓰는 것이 게스트이기 때문이다",
-    ),
-    (
-        "stop, restart, rm -f",
-        "시그널은 Docker와 같다. -t가 지나면 SIGKILL 대신 게스트를 끈다 (sync 뒤 전원 끄기, 종료 코드 137). rm -f는 시그널 없이 끈다",
-        "샌드박스 하나가 VM 하나다. 정지 = VM 종료",
-    ),
-    (
-        "기본 프로세스와 시그널",
-        "기본 프로세스는 PID 1이 아니다(게스트 init이 PID 1). 그래서 핸들러가 없는 프로세스도 SIGTERM으로 끝난다",
-        "VM 안의 PID 1은 sbx의 게스트 init이다",
-    ),
-    (
-        "stop -t, --stop-timeout",
-        "음수(무한히 기다림)를 받지 않는다",
-        "기다림은 호출한 쪽이 끊을 수 있다(Ctrl+C 뒤 kill)",
-    ),
-    (
-        "다른 터미널에서 실행 중인 샌드박스의 stop, rm -f",
-        "게스트를 끄고 기다린다. 꺼지지 않으면 오류 (VM을 강제로 끝낼 수 있는 것은 VM을 띄운 프로세스뿐이다)",
-        "VM은 띄운 프로세스가 소유한다",
-    ),
-];
 
 /// 정규화된 참조를 Docker처럼 줄인다: `docker.io/library/alpine:3.20` → `alpine:3.20`,
 /// `docker.io/user/app:1` → `user/app:1`. 다른 레지스트리는 그대로.
@@ -629,6 +569,24 @@ mod tests {
     use super::{LogTimes, familiar, human_ago, human_size, last_lines, prefix_lines, rfc3339};
 
     #[test]
+    fn stopping_what_already_stopped_is_done() {
+        use sbx_model::State;
+        use sbx_runtime::RuntimeError;
+        let not = |current| {
+            super::stopped_anyway(Err(RuntimeError::InvalidState {
+                current,
+                action: "stop",
+            }))
+        };
+        assert!(not(State::Stopped).is_ok());
+        assert!(not(State::Created).is_ok());
+        // 실행 중인데 실패한 것과 다른 오류는 그대로다.
+        assert!(not(State::Running).is_err());
+        assert!(super::stopped_anyway(Err(RuntimeError::Invalid("x".into()))).is_err());
+        assert!(super::stopped_anyway(Ok(())).is_ok());
+    }
+
+    #[test]
     fn tail_counts_lines_across_records() {
         let r = |s: u8, t: u32, d: &str| (s, t, d.as_bytes().to_vec());
         let records = vec![
@@ -770,6 +728,71 @@ mod tests {
                 "*.b.org:*".parse().unwrap()
             ]))
         );
+    }
+
+    #[test]
+    fn rules_only_the_proxy_reaches_are_warned() {
+        let v = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let p = network_policy(
+            "allow",
+            &v(&[
+                "github.com:22",
+                "github.com:*",
+                "[::1]:80",
+                "10.0.0.5:5432",
+                "localhost:8080",
+            ]),
+        )
+        .unwrap();
+        let w = proxy_only_warnings(&p);
+        assert_eq!(w.len(), 3, "{w:?}");
+        assert!(
+            w[0].starts_with("--allow github.com:*: ") && w[0].contains("HOST:22"),
+            "{w:?}"
+        );
+        assert!(w[1].starts_with("--allow [::1]:80: "), "{w:?}");
+        assert!(w[2].starts_with("--allow localhost:8080: "), "{w:?}");
+        assert!(proxy_only_warnings(&NetworkPolicy::Disabled).is_empty());
+    }
+
+    #[test]
+    fn connect_targets_are_recorded_by_name_or_full_id() {
+        use crate::parse::ConnectArg;
+        let id = SandboxId::new(&"3f".repeat(32)).unwrap();
+        let arg = |name: Option<&str>, target: &str| ConnectArg {
+            name: name.map(Into::into),
+            target: target.into(),
+            port: 5432,
+        };
+        let r = |a: ConnectArg, n: Option<&str>| connect_rule(&a, &id, n);
+        // 이름으로 주면 이름으로 기록한다(다시 만든 같은 이름을 따라간다).
+        let by_name = r(arg(None, "db"), Some("db")).unwrap();
+        assert_eq!(
+            (by_name.name.as_str(), by_name.target.as_str()),
+            ("db", "db")
+        );
+        // ID 앞부분으로 주면 전체 ID로, 안의 이름은 대상의 이름.
+        let by_id = r(arg(None, "3f3f"), Some("db")).unwrap();
+        assert_eq!(
+            (by_id.name.as_str(), by_id.target.as_str()),
+            ("db", id.as_str())
+        );
+        let alias = r(arg(Some("pg"), "db"), Some("db")).unwrap();
+        assert_eq!((alias.name.as_str(), alias.target.as_str()), ("pg", "db"));
+        // 이름이 없거나 DNS 이름이 될 수 없으면 NAME=을 달라고 한다.
+        assert!(
+            r(arg(None, "3f3f"), None)
+                .unwrap_err()
+                .contains("NAME=3f3f:5432")
+        );
+        assert!(
+            r(arg(None, "a..b"), Some("a..b"))
+                .unwrap_err()
+                .contains("NAME=")
+        );
+        assert_eq!(r(arg(Some("x"), "3f3f"), None).unwrap().name, "x");
+        // 대상 이름이 대문자여도 안의 이름은 소문자다.
+        assert_eq!(r(arg(None, "DB"), Some("DB")).unwrap().name, "db");
     }
 
     #[test]

@@ -1,5 +1,6 @@
 # install.ps1의 확인 분기를 가짜 릴리스(로컬 디렉터리)와 가짜 cosign으로 돌려 본다. 네트워크도 진짜 cosign도
 # 쓰지 않는다. 묶음에는 진짜 sbx.exe와 sbx-shim.exe를 넣는다(설치 스크립트가 `sbx --version`을 돌린다).
+# 버전 표시(--version, 첫 줄)와, 서명이 고정한 sbx 버전의 태그에서 와야 하는 것도 본다.
 # ci.yml(test, Windows)이 `cargo build -p sbx-cli -p sbx-shim` 뒤에 돌린다. 저장소 루트에서:
 #
 #   pwsh .github/scripts/test-install.ps1 [-Bin target\debug] [-Shell powershell.exe]
@@ -17,6 +18,12 @@ New-Item -ItemType Directory -Path $work | Out-Null
 $name = 'sbx-windows-x86_64'
 $asset = "$name.zip"
 $rel = Join-Path $work 'rel'
+# 스크립트의 핀(installer.env에서 `cargo xtask installer`가 쓴 것).
+$text = Get-Content -Raw $installer
+$installerVersion = [regex]::Match($text, "\`$installerVersion = '([^']*)'").Groups[1].Value
+$pinSbx = [regex]::Match($text, "\`$pinSbx = '([^']*)'").Groups[1].Value
+if (-not $installerVersion -or -not $pinSbx) { Write-Host 'FAIL: no pins in install.ps1'; exit 1 }
+$firstLine = "sbx-install: installer ${installerVersion}: sbx $pinSbx"
 
 # 가짜 릴리스: sbx-windows-x86_64\{sbx.exe, sbx-shim.exe}.zip과 .sha256.
 function New-Release([switch]$NoShim) {
@@ -67,6 +74,10 @@ function Run([string]$Case, [string]$Want, [string]$Needle, [string]$Path, [hash
     if ($got -ne $Want -or -not $out.Contains($Needle)) {
         Write-Host "FAIL ${Case}: wanted $Want with '$Needle', got $got (exit $code):"; Write-Host $out; exit 1
     }
+    # 첫 줄은 설치 스크립트의 버전과 깔 것이다.
+    if (-not $out.TrimStart().StartsWith($firstLine)) {
+        Write-Host "FAIL ${Case}: first line is not the installer version:"; Write-Host $out; exit 1
+    }
     if ($Want -eq 'ok') {
         $v = & (Join-Path $dir 'sbx.exe') --version
         if ($LASTEXITCODE -ne 0 -or $v -notmatch '^sbx ') { Write-Host "FAIL ${Case}: sbx.exe not installed"; exit 1 }
@@ -81,6 +92,13 @@ function Run([string]$Case, [string]$Want, [string]$Needle, [string]$Path, [hash
 
 try {
     New-Release
+    # --version: 깔지 않고 보인다. 모르는 인자는 거부한다.
+    $v = (& $pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $installer --version | Out-String).Trim()
+    $wantV = "installer ${installerVersion}: sbx $pinSbx, no executor pinned (sbx installs the default one on first use)"
+    if ($v -ne $wantV) { Write-Host "FAIL --version: $v"; exit 1 }
+    & $pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $installer --bogus *> $null
+    if ($LASTEXITCODE -eq 0) { Write-Host 'FAIL: unknown argument accepted'; exit 1 }
+    $script:pass++; Write-Host 'ok   --version shows the pins and installs nothing'
     if ($noCosign) {
         Run 'no cosign, auto: checksum only' ok 'only the SHA-256 was checked' $plain
         Run 'no cosign, require: refused' fail 'needs cosign' $plain @{ SBX_VERIFY = 'require' }
@@ -96,13 +114,14 @@ try {
     Run 'auto, signature that does not verify: refused' fail 'does not verify' $with @{ FAKE_COSIGN_EXIT = '1' }
     Run 'require, signature that does not verify: refused' fail 'does not verify' $with @{ SBX_VERIFY = 'require'; FAKE_COSIGN_EXIT = '1' }
     Run 'auto, good signature' ok 'verified the Sigstore signature' $with
-    # cosign에 넘긴 신원: 이 저장소의 release.yml, v* 태그, GitHub Actions 발급자.
+    # cosign에 넘긴 신원: 이 저장소의 release.yml, 고정한 sbx 버전의 태그 그대로, GitHub Actions 발급자.
     $a = Get-Content $cosignArgs
-    if ($a -notcontains '^https://github[.]com/toollyst/sandbox/[.]github/workflows/release[.]yml@refs/tags/v') { Write-Host "FAIL: cosign identity regexp: $a"; exit 1 }
+    $tagRe = 'v' + ($pinSbx -replace '\.', '[.]' -replace '\+', '[+]') + '$'
+    if ($a -notcontains "^https://github[.]com/toollyst/sandbox/[.]github/workflows/release[.]yml@refs/tags/$tagRe") { Write-Host "FAIL: cosign identity regexp: $a"; exit 1 }
     if ($a -notcontains 'https://token.actions.githubusercontent.com') { Write-Host "FAIL: cosign issuer: $a"; exit 1 }
     if ($a -notcontains '--certificate-identity-regexp') { Write-Host "FAIL: cosign flags: $a"; exit 1 }
     Run 'require, good signature' ok 'verified the Sigstore signature' $with @{ SBX_VERIFY = 'require' }
-    # 버전을 고르면 그 태그에서 온 서명이어야 한다. 정규식의 . 과 +는 글자 그대로다.
+    # 다른 버전을 고르면 그 태그에서 온 서명이어야 한다. 정규식의 . 과 +는 글자 그대로다.
     Run 'by name: the exact tag' ok 'verified the Sigstore signature' $with @{ SBX_VERSION = 'v0.2.0+build.1' }
     $a = Get-Content $cosignArgs
     if ($a -notcontains '^https://github[.]com/toollyst/sandbox/[.]github/workflows/release[.]yml@refs/tags/v0[.]2[.]0[+]build[.]1$') { Write-Host "FAIL: exact tag regexp: $a"; exit 1 }

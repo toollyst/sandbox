@@ -8,7 +8,7 @@ With `--format json`, sbx prints only JSON on stdout. This is a public contract:
 - **lines**: one JSON object per line (JSON Lines), one per argument. If one argument fails, the others still run. Streams (`events`, `logs`) print one per item.
 - **empty**: nothing on success.
 - **not supported**: sbx refuses `--format json` and exits with an error.
-- `-q` (`ps`, `images`) wins over `--format`: one ID per line.
+- `-q` (`ps`, `images`, `push`) wins over `--format`: one ID (for `push`, the pushed reference) per line.
 - `--jq EXPR` (only with `--format json`, like gh) runs a jq expression on each value or line and prints each result on its own line, strings without quotes. A bad expression fails before the command does anything. jq is built in (jaq).
 - Errors go to stderr as one `ErrorLine` per line. Other stderr lines are for humans.
 - Field names are snake_case, times are RFC 3339 (UTC), missing values are `null`.
@@ -28,11 +28,20 @@ The JSON Schema (draft 2020-12) of every type is in [cli-output.schema.json](cli
 | `ps` | value: `[Sandbox]` |
 | `inspect` | value: `Sandbox` |
 | `stats` | value: `[Stats]` |
+| `volume create` | value: `Volume` |
+| `volume ls` | value: `[Volume]` |
+| `volume inspect` | lines: `Volume` |
+| `volume rm` | lines: `VolumeRef` |
+| `volume prune` | value: `VolumePrune` |
 | `exec` | not supported: its output is the process's own bytes |
 | `attach` | not supported: its output is the process's own bytes |
 | `logs` | lines: `LogLine` |
 | `cp` | empty |
+| `build` | lines: `BuildEvent` |
+| `builder prune` | value: `BuildCachePruned` |
 | `pull` | value: `Pulled` |
+| `push` | lines: `Pushed` |
+| `tag` | value: `Tagged` |
 | `prepare` | value: `Prepared` |
 | `images` | value: `[Image]` |
 | `rmi` | lines: `Removed` |

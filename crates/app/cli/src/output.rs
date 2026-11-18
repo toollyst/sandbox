@@ -8,7 +8,7 @@
 //!   - [`Form::Unsupported`]: 출력이 게스트 프로세스의 바이트 그대로이거나 다른 규약이다. `--format json`이면 아무것도
 //!     하지 않고 오류로 끝난다.
 //!   - [`Form::Detached`]: 붙지 않을 때(`run -d`, `start`)는 `Value`, 붙을 때(`run`, `start -a`)는 `Unsupported`.
-//! - `-q`가 있는 명령(`ps`, `images`)은 `-q`가 이긴다: 한 줄에 ID 하나.
+//! - `-q`가 있는 명령(`ps`, `images`, `push`)은 `-q`가 이긴다: 한 줄에 ID 하나(`push`는 올린 참조 하나).
 //! - stdout에는 JSON만 나온다. 진행 표시와 안내는 stderr로 간다.
 //! - 오류는 stderr에 [`ErrorLine`] 한 줄이다. 명령 전체가 실패하면 마지막 줄이고, 여러 대상 중 하나가 실패하면 그 대상의
 //!   줄(`target`이 있다)이다. stderr의 그 밖의 줄은 사람이 읽는 안내이고 모양을 약속하지 않는다.
@@ -62,11 +62,20 @@ pub const JSON_OUTPUT: &[(&str, Form)] = &[
     ("ps", Form::Value("[Sandbox]")),
     ("inspect", Form::Value("Sandbox")),
     ("stats", Form::Value("[Stats]")),
+    ("volume create", Form::Value("Volume")),
+    ("volume ls", Form::Value("[Volume]")),
+    ("volume inspect", Form::Lines("Volume")),
+    ("volume rm", Form::Lines("VolumeRef")),
+    ("volume prune", Form::Value("VolumePrune")),
     ("exec", Form::Unsupported(PROCESS_BYTES)),
     ("attach", Form::Unsupported(PROCESS_BYTES)),
     ("logs", Form::Lines("LogLine")),
     ("cp", Form::Empty),
+    ("build", Form::Lines("BuildEvent")),
+    ("builder prune", Form::Value("BuildCachePruned")),
     ("pull", Form::Value("Pulled")),
+    ("push", Form::Lines("Pushed")),
+    ("tag", Form::Value("Tagged")),
     ("prepare", Form::Value("Prepared")),
     ("images", Form::Value("[Image]")),
     ("rmi", Form::Lines("Removed")),
@@ -331,6 +340,48 @@ pub struct Pulled {
     pub arch: String,
 }
 
+/// An image pushed to a registry (`push`; one line per tag with `-a`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct Pushed {
+    /// Normalized reference it was pushed to, e.g. `ghcr.io/me/app:1`.
+    pub reference: String,
+    /// Image ID: the `sha256:…` of the manifest, the same as before the push (it is sent as it was pulled).
+    pub id: String,
+    /// Size of the manifest in bytes.
+    pub size: u64,
+    /// Layers (each once), then the image config.
+    pub blobs: Vec<PushedBlob>,
+}
+
+/// One blob of a pushed image.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct PushedBlob {
+    /// Digest (`sha256:…`).
+    pub digest: String,
+    /// Size in bytes.
+    pub size: u64,
+    /// `exists` (the registry had it, nothing sent), `mounted` (taken from another repository of the same
+    /// registry, nothing sent) or `uploaded`.
+    pub status: String,
+    /// For `mounted`: the repository it came from (`registry/repository`).
+    pub mounted_from: Option<String>,
+}
+
+/// A reference added to an image (`tag`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct Tagged {
+    /// Normalized new reference, e.g. `docker.io/library/app:1`.
+    pub reference: String,
+    /// Image ID it now points at.
+    pub id: String,
+}
+
 /// A root filesystem that is ready (`prepare`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
@@ -355,10 +406,20 @@ pub struct Image {
     pub references: Vec<String>,
     /// Architecture in OCI terms.
     pub arch: String,
-    /// Root filesystem formats that are prepared.
+    /// Root filesystem formats that are prepared (layer disks ready for some executor's disk count).
     pub prepared: Vec<String>,
     /// Sum of the compressed layer sizes, in bytes.
     pub compressed_size: u64,
+    /// Bytes this image takes on disk: its record, its compressed layers, its layer disks and any merged disk it
+    /// uses. Layers it shares with other images are counted in full here (like `SIZE` in `docker system df -v`).
+    #[serde(default)]
+    pub disk_size: u64,
+    /// The part of `disk_size` that other images also use (shared layers). Counted once in `system df`.
+    #[serde(default)]
+    pub shared_size: u64,
+    /// The part of `disk_size` only this image uses: what `rmi` frees.
+    #[serde(default)]
+    pub unique_size: u64,
     /// Image config fields sbx does not apply.
     pub ignored_fields: Vec<String>,
     /// Ports the image declares (`ExposedPorts`, e.g. `80/tcp`), for information: sbx opens no ports.
@@ -368,6 +429,25 @@ pub struct Image {
     /// sandbox's writable disk.
     #[serde(default)]
     pub volumes: Vec<String>,
+    /// For an image `sbx build` stored: where it was built, to build it again. Absent for pulled and loaded images,
+    /// and for images built before sbx recorded it. Kept only in the local image store: it never goes into the
+    /// image's config, history or labels, nor into anything `save`, `push` or `build --output` writes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<ImageBuild>,
+}
+
+/// Where a stored image was built (`images`): the last `sbx build` that stored this image ID. Build arguments,
+/// `--allow` rules and other flags are not recorded.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ImageBuild {
+    /// Absolute path of the build context directory.
+    pub context: String,
+    /// Absolute path of the Dockerfile; null when it was read from stdin (`-f -`).
+    pub file: Option<String>,
+    /// The `--target` stage; null when none was given.
+    pub target: Option<String>,
 }
 
 /// The result for one image given to `rmi`.
@@ -406,6 +486,10 @@ pub struct InstalledExecutor {
     pub yanked: bool,
     /// The repository's advisory for this version, one line, if any.
     pub advisory: Option<String>,
+    /// Running sandboxes started with it (name or short ID). `executor rm` refuses it while there are any, and
+    /// `executor prune` keeps it.
+    #[serde(default)]
+    pub running: Vec<String>,
 }
 
 /// An installed adapter (`executor adapter ls`).
@@ -428,6 +512,10 @@ pub struct InstalledAdapter {
     pub yanked: bool,
     /// The repository's advisory for this version, one line, if any.
     pub advisory: Option<String>,
+    /// Running sandboxes started with it (name or short ID). `executor adapter rm` refuses it while there are any,
+    /// and `executor prune` keeps it.
+    #[serde(default)]
+    pub running: Vec<String>,
 }
 
 /// The executor sbx would use (`executor current`, `which`).
@@ -469,16 +557,25 @@ pub struct Pruned {
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct DiskUsage {
-    /// `images`, `sandboxes` or `executors`.
+    /// `images`, `build cache`, `sandboxes`, `volumes` or `executors`.
     #[serde(rename = "type")]
     pub kind: String,
-    /// How many there are (executors count installed executors and adapters).
+    /// How many there are (executors count installed executors and adapters; the build cache counts cached
+    /// steps).
     pub total: u64,
-    /// Images some sandbox uses; sandboxes that are running. Always 0 for executors.
+    /// Images some sandbox uses; sandboxes that are running; volumes a running sandbox has attached; executors and
+    /// adapters a running sandbox was started with. Always 0 for the build cache.
     pub active: u64,
-    /// Bytes they take on disk (a sandbox's writable disk counts what it wrote, not its size).
+    /// Bytes they take on disk (a sandbox's writable disk counts what it wrote, not its size). A layer several images
+    /// share is counted once.
     pub size: u64,
-    /// Bytes `system prune -a` would free: unused images with the layers only they use, stopped sandboxes.
+    /// For images: the part of `size` that more than one image uses (shared layers). For the build cache: layers
+    /// that images use too (counted under images, not in `size`). Always 0 for the others.
+    #[serde(default)]
+    pub shared: u64,
+    /// Bytes `system prune -a` would free: unused images with the layers only they use, stopped sandboxes, the
+    /// layers only the build cache holds (`system prune` frees those too); for volumes, the ones no sandbox uses
+    /// (`system prune -a --volumes`).
     pub reclaimable: u64,
 }
 
@@ -531,6 +628,49 @@ pub struct Logout {
     pub removed: bool,
 }
 
+/// A named volume (`volume create`, `volume ls`, `volume inspect`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct Volume {
+    /// Name.
+    pub name: String,
+    /// When it was created (RFC 3339).
+    pub created: String,
+    /// Disk size in bytes: the most it can hold.
+    pub size: u64,
+    /// Bytes the disk takes on the host. The disk is sparse, so this grows with what sandboxes write.
+    pub disk_usage: u64,
+    /// The disk image on the host.
+    pub disk: String,
+    /// Labels (`--label`).
+    pub labels: BTreeMap<String, String>,
+    /// IDs of the sandboxes that attach it, running or not. `volume rm` refuses while there are any.
+    pub sandboxes: Vec<String>,
+    /// Whether a running sandbox has it attached now.
+    pub in_use: bool,
+}
+
+/// One volume `volume rm` removed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct VolumeRef {
+    /// Name.
+    pub name: String,
+}
+
+/// What `volume prune` removed.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct VolumePrune {
+    /// Names of removed volumes.
+    pub volumes: Vec<String>,
+    /// Bytes freed on disk.
+    pub reclaimed: u64,
+}
+
 /// What `system prune` removed.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
@@ -540,12 +680,154 @@ pub struct PruneReport {
     pub sandboxes: Vec<String>,
     /// IDs of removed images (`-a`).
     pub images: Vec<String>,
+    /// Names of removed volumes (`-a --volumes`).
+    #[serde(default)]
+    pub volumes: Vec<String>,
     /// Digests of removed layer blobs.
     pub layers: Vec<String>,
     /// Paths of removed leftovers (unfinished pulls and builds, half-removed sandboxes).
     pub leftovers: Vec<String>,
+    /// How many build cache entries (cached steps) were removed. Their layers are in `layers` when no image uses
+    /// them.
+    #[serde(default)]
+    pub build_cache: u64,
     /// Bytes freed on disk.
     pub reclaimed: u64,
+}
+
+/// What `builder prune` removed.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct BuildCachePruned {
+    /// How many build cache entries (cached steps) were removed.
+    pub build_cache: u64,
+    /// Bytes freed on disk.
+    pub reclaimed: u64,
+}
+
+/// One line of `build` (JSON Lines): a step's progress (`step`), a piece of `RUN` output (`output`), then the image
+/// (`built`), then one `exported` line for each output that is not sbx's image store (one per pushed name). A failed
+/// build ends with the error line instead.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct BuildEvent {
+    /// `step`, `output`, `built` or `exported`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// `step`: the stage's `AS` name, or `null`.
+    pub stage: Option<String>,
+    /// `step`: the stage's number (0 is the first stage in the Dockerfile that the build needs).
+    pub stage_index: Option<usize>,
+    /// `step`: the step's number in its stage (1 is `FROM`).
+    pub step: Option<usize>,
+    /// `step`: how many steps the stage has (with `FROM`).
+    pub steps: Option<usize>,
+    /// `step`: the Dockerfile line.
+    pub line: Option<usize>,
+    /// `step`: the instruction with its variables expanded.
+    pub text: Option<String>,
+    /// `step`: `started`, `cached` or `done`.
+    pub status: Option<String>,
+    /// `step` with `done`: how long it took (milliseconds).
+    pub millis: Option<u64>,
+    /// `output`: `stdout` or `stderr`.
+    pub stream: Option<String>,
+    /// `output`: the bytes as text (invalid UTF-8 replaced).
+    pub data: Option<String>,
+    /// `built`: the image ID (the config's digest, also when the image was not kept). `exported`: the manifest's
+    /// digest (the same each time the same image is exported).
+    pub id: Option<String>,
+    /// `built`: the references from `-t`, normalized.
+    pub tags: Option<Vec<String>>,
+    /// `built`: whether the image was kept in sbx's image store (`--output type=sbx`, the default).
+    pub stored: Option<bool>,
+    /// `exported`: the output's type: `docker`, `oci` or `registry`.
+    pub output: Option<String>,
+    /// `exported`: where it went: a file or directory path, `-` (stdout), `docker` (`docker load`), or the reference
+    /// that was pushed.
+    pub dest: Option<String>,
+}
+
+impl BuildEvent {
+    fn empty(kind: &str) -> Self {
+        Self {
+            kind: kind.into(),
+            stage: None,
+            stage_index: None,
+            step: None,
+            steps: None,
+            line: None,
+            text: None,
+            status: None,
+            millis: None,
+            stream: None,
+            data: None,
+            id: None,
+            tags: None,
+            stored: None,
+            output: None,
+            dest: None,
+        }
+    }
+
+    /// 단계의 진행.
+    pub fn step(
+        stage: Option<String>,
+        stage_index: usize,
+        step: usize,
+        steps: usize,
+        line: usize,
+        text: String,
+        status: &sbx_build::StepStatus,
+    ) -> Self {
+        let (status, millis) = match status {
+            sbx_build::StepStatus::Started => ("started", None),
+            sbx_build::StepStatus::Cached => ("cached", None),
+            sbx_build::StepStatus::Done { millis } => ("done", Some(*millis)),
+        };
+        Self {
+            stage,
+            stage_index: Some(stage_index),
+            step: Some(step),
+            steps: Some(steps),
+            line: Some(line),
+            text: Some(text),
+            status: Some(status.into()),
+            millis,
+            ..Self::empty("step")
+        }
+    }
+
+    /// `RUN`의 출력.
+    pub fn output(stream: &str, data: &[u8]) -> Self {
+        Self {
+            stream: Some(stream.into()),
+            data: Some(String::from_utf8_lossy(data).into_owned()),
+            ..Self::empty("output")
+        }
+    }
+
+    /// 만든 이미지.
+    pub fn built(id: &str, tags: &[String], stored: bool) -> Self {
+        Self {
+            id: Some(id.into()),
+            tags: Some(tags.to_vec()),
+            stored: Some(stored),
+            ..Self::empty("built")
+        }
+    }
+
+    /// 내보낸 것 하나(`--output`이 sbx 저장소가 아닐 때, 올린 참조마다).
+    pub fn exported(output: &str, dest: &str, id: &str) -> Self {
+        Self {
+            output: Some(output.into()),
+            dest: Some(dest.into()),
+            id: Some(id.into()),
+            ..Self::empty("exported")
+        }
+    }
 }
 
 /// An executor or adapter by name and version (`executor install`, `use`, `rm`, `adapter install`, `adapter rm`).
@@ -766,15 +1048,16 @@ pub struct Exited {
 pub struct Event {
     /// When it happened (RFC 3339, nanoseconds).
     pub time: String,
-    /// `sandbox` or `image`.
+    /// `sandbox`, `image`, `network` or `volume`.
     #[serde(rename = "type")]
     pub kind: String,
-    /// Sandbox: `create`, `start`, `stop`, `remove`. Image: `pull`, `prepare`, `untag`, `delete`.
+    /// Sandbox: `create`, `start`, `stop`, `remove`. Image: `pull`, `build`, `prepare`, `tag`, `untag`, `push`,
+    /// `delete`. Volume: `create`, `remove`.
     pub action: String,
-    /// Sandbox ID or image ID.
+    /// Sandbox ID, image ID or volume name.
     pub id: String,
     /// Details. Sandbox: `image`, `name`; on `stop` also `exit_code` and `error`. Image: `reference` (`pull`,
-    /// `untag`), `rootfs_format` (`prepare`).
+    /// `tag`, `untag`, `push`: the reference pushed to; `build`: the first `-t`), `rootfs_format` (`prepare`).
     pub attributes: BTreeMap<String, String>,
 }
 
@@ -861,6 +1144,9 @@ pub struct Sandbox {
     pub network: Network,
     /// Folders shared with the host.
     pub mounts: Vec<Mount>,
+    /// Named volumes attached (`-v NAME:/path`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volumes: Vec<SandboxVolume>,
     /// Guest hostname, if set.
     pub hostname: Option<String>,
     /// Labels (from the image, then `-l`).
@@ -946,6 +1232,23 @@ pub struct Network {
     pub mode: NetworkMode,
     /// `HOST:PORT` rules (`--allow`). Empty for `none`.
     pub allow: Vec<String>,
+    /// Ports of other sandboxes it reaches by name (`--connect`), with either mode. Absent when there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connect: Vec<Connect>,
+}
+
+/// One `--connect`: a port of another sandbox, reached by a name inside.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct Connect {
+    /// The name programs inside use (`db` in `db:5432`).
+    pub name: String,
+    /// The sandbox it reaches: a name (a sandbox recreated under that name is reached too) or a full ID. Looked up
+    /// again at each connection.
+    pub sandbox: String,
+    /// The TCP port inside that sandbox.
+    pub port: u16,
 }
 
 /// Network mode (`--network`).
@@ -972,6 +1275,22 @@ pub struct Mount {
     pub kind: MountType,
     /// Read-only in the guest.
     pub readonly: bool,
+}
+
+/// A named volume a sandbox attaches.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct SandboxVolume {
+    /// Volume name.
+    pub name: String,
+    /// Guest path.
+    pub destination: String,
+    /// Attached read-only.
+    pub readonly: bool,
+    /// An empty volume is not filled from the image (`nocopy`).
+    #[serde(default)]
+    pub no_copy: bool,
 }
 
 /// How a folder is shared.
@@ -1035,7 +1354,19 @@ impl Sandbox {
                 memory_mib: spec.resources.memory_mib,
                 scratch_disk_mib: spec.resources.scratch_disk_mib,
             },
-            network: Network { mode, allow },
+            network: Network {
+                mode,
+                allow,
+                connect: spec
+                    .connect
+                    .iter()
+                    .map(|c| Connect {
+                        name: c.name.clone(),
+                        sandbox: c.target.clone(),
+                        port: c.port,
+                    })
+                    .collect(),
+            },
             mounts: spec
                 .mounts
                 .iter()
@@ -1047,6 +1378,16 @@ impl Sandbox {
                         MountKind::Copy => MountType::Copy,
                     },
                     readonly: m.readonly,
+                })
+                .collect(),
+            volumes: spec
+                .volumes
+                .iter()
+                .map(|v| SandboxVolume {
+                    name: v.name.clone(),
+                    destination: v.destination.clone(),
+                    readonly: v.readonly,
+                    no_copy: v.no_copy,
                 })
                 .collect(),
             hostname: spec.hostname.clone(),
@@ -1169,6 +1510,8 @@ mod tests {
         let mut g = schemars::generate::SchemaSettings::draft2020_12().into_generator();
         g.subschema_for::<ErrorLine>();
         g.subschema_for::<Pulled>();
+        g.subschema_for::<Pushed>();
+        g.subschema_for::<Tagged>();
         g.subschema_for::<Prepared>();
         g.subschema_for::<Image>();
         g.subschema_for::<Removed>();
@@ -1182,6 +1525,10 @@ mod tests {
         g.subschema_for::<Info>();
         g.subschema_for::<DiskUsage>();
         g.subschema_for::<PruneReport>();
+        g.subschema_for::<BuildCachePruned>();
+        g.subschema_for::<Volume>();
+        g.subschema_for::<VolumeRef>();
+        g.subschema_for::<VolumePrune>();
         g.subschema_for::<Upgrade>();
         g.subschema_for::<Stats>();
         g.subschema_for::<Login>();
@@ -1192,6 +1539,7 @@ mod tests {
         g.subschema_for::<Sandbox>();
         g.subschema_for::<Event>();
         g.subschema_for::<LogLine>();
+        g.subschema_for::<BuildEvent>();
         g.take_definitions(true)
     }
 
@@ -1227,7 +1575,8 @@ mod tests {
              If one argument fails, the others still run. Streams (`events`, `logs`) print one per item.\n\
              - **empty**: nothing on success.\n\
              - **not supported**: sbx refuses `--format json` and exits with an error.\n\
-             - `-q` (`ps`, `images`) wins over `--format`: one ID per line.\n\
+             - `-q` (`ps`, `images`, `push`) wins over `--format`: one ID (for `push`, the pushed reference) \
+             per line.\n\
              - `--jq EXPR` (only with `--format json`, like gh) runs a jq expression on each value or line \
              and prints each result on its own line, strings without quotes. A bad expression fails before \
              the command does anything. jq is built in (jaq).\n\

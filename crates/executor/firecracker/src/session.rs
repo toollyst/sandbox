@@ -8,7 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use sbx_executor_proto::{
-    Arch, Capabilities, Event, Request, VERSION, VmSpec, read_line, write_line,
+    Arch, Capabilities, Event, MIN_VERSION, Request, VERSION, VmSpec, read_line, write_line,
 };
 
 use crate::config::firecracker_config;
@@ -27,7 +27,8 @@ const POLL: Duration = Duration::from_millis(2);
 pub fn capabilities_value() -> Capabilities {
     Capabilities {
         version: VERSION,
-        min_version: None,
+        // 규약 2를 말하는 sbx(볼륨 없음)도 쓸 수 있다.
+        min_version: Some(MIN_VERSION),
         name: "firecracker".into(),
         arch: if cfg!(target_arch = "aarch64") {
             Arch::Arm64
@@ -81,10 +82,20 @@ enum Stop {
 pub fn run() -> ExitCode {
     let mut input = io::BufReader::new(io::stdin());
     let vm: VmSpec = match read_line(&mut input) {
-        Ok(Some(Request::Launch { version, vm })) if version == VERSION => vm,
+        Ok(Some(Request::Launch { version, vm }))
+            if (MIN_VERSION..=VERSION).contains(&version) && vm.min_version() <= version =>
+        {
+            vm
+        }
+        Ok(Some(Request::Launch { version, vm })) if (MIN_VERSION..=VERSION).contains(&version) => {
+            return fail(format!(
+                "protocol version {version} has no volume disks; this VM needs {}",
+                vm.min_version()
+            ));
+        }
         Ok(Some(Request::Launch { version, .. })) => {
             return fail(format!(
-                "protocol version {version} is not supported (this executor speaks {VERSION})"
+                "protocol version {version} is not supported (this executor speaks {MIN_VERSION} to {VERSION})"
             ));
         }
         Ok(Some(other)) => return fail(format!("expected launch, got {other:?}")),
@@ -157,7 +168,7 @@ fn launch_and_watch(
         if vm.control_socket.exists() {
             break;
         }
-        if let Ok(Some(status)) = vmm.try_wait() {
+        if let Some(status) = vmm_exited(&mut vmm) {
             return fail(format!(
                 "firecracker exited before the VM started ({status}); see the executor log"
             ));
@@ -186,7 +197,7 @@ fn launch_and_watch(
         let _ = tx.send(stop);
     });
     loop {
-        if let Ok(Some(status)) = vmm.try_wait() {
+        if let Some(status) = vmm_exited(&mut vmm) {
             send(&Event::Exited {
                 reason: exit_reason(status),
             });
@@ -218,10 +229,13 @@ fn exit_reason(s: ExitStatus) -> String {
 }
 
 /// 감시 프로세스를 띄운다. 그 표준 입력을 쥐고 있는 동안만 VM이 산다.
+///
+/// Unix에서는 감시 프로세스를 새 프로세스 그룹의 우두머리로 띄운다. firecracker는 그 그룹을 물려받는다. 그래서 감시
+/// 프로세스만 강제로 죽어도(SIGKILL, OOM) 세션이 그 그룹을 죽여 firecracker가 고아로 남지 않는다([`vmm_exited`]).
 fn spawn_vmm(firecracker: &Path, config: &Path) -> Result<Child, String> {
     let me = std::env::current_exe().map_err(|e| format!("cannot find this executable: {e}"))?;
-    Command::new(me)
-        .arg(VMM)
+    let mut cmd = Command::new(me);
+    cmd.arg(VMM)
         .arg(firecracker)
         .arg("--no-api")
         .arg("--config-file")
@@ -229,9 +243,38 @@ fn spawn_vmm(firecracker: &Path, config: &Path) -> Result<Child, String> {
         .stdin(Stdio::piped())
         // firecracker의 출력(게스트 콘솔)은 실행기 로그로. 표준 출력은 규약 메시지만 쓴다.
         .stdout(Stdio::from(io::stderr()))
-        .stderr(Stdio::inherit())
-        .spawn()
+        .stderr(Stdio::inherit());
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    cmd.spawn()
         .map_err(|e| format!("cannot start {}: {e}", firecracker.display()))
+}
+
+/// 감시 프로세스가 끝났으면 그 상태. 끝났으면 거두기 전에 그 프로세스 그룹(firecracker 포함)을 SIGKILL로 끝낸다.
+///
+/// 보통은 firecracker가 먼저 끝나고 감시 프로세스가 따라 끝나므로 그룹은 비어 있다. 감시 프로세스만 죽었으면 남은
+/// firecracker가 여기서 죽는다. 거두기 전에 죽이므로(좀비가 그룹 번호를 쥐고 있다) 그 번호를 다시 받은 남의 그룹을
+/// 죽일 일이 없다.
+fn vmm_exited(vmm: &mut Child) -> Option<ExitStatus> {
+    #[cfg(unix)]
+    {
+        use rustix::process::{Pid, Signal, WaitId, WaitIdOptions};
+        let pid = Pid::from_raw(i32::try_from(vmm.id()).ok()?)?;
+        let opts = WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT;
+        match rustix::process::waitid(WaitId::Pid(pid), opts) {
+            Ok(Some(_)) => {
+                let _ = rustix::process::kill_process_group(pid, Signal::KILL);
+                vmm.wait().ok()
+            }
+            Ok(None) => None,
+            // 기다릴 수 없으면(이미 거뒀다) 표준 라이브러리에 맡긴다.
+            Err(_) => vmm.try_wait().ok().flatten(),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        vmm.try_wait().ok().flatten()
+    }
 }
 
 /// 감시 프로세스의 입력을 닫아 VM을 끝내고 기다린다.
@@ -313,5 +356,42 @@ mod tests {
             );
         }
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// 감시 프로세스만 SIGKILL로 죽어도 그 그룹의 자식(firecracker 자리)이 남지 않는다.
+    #[cfg(unix)]
+    #[test]
+    fn a_killed_monitor_takes_its_child_along() {
+        use rustix::process::{Pid, test_kill_process};
+        // 감시 프로세스 자리: 자식 하나를 띄우고 그 PID를 알린 뒤 기다린다. spawn_vmm처럼 새 그룹으로 띄운다.
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "sleep 30 & echo $!; wait"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped());
+        std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+        let mut monitor = cmd.spawn().unwrap();
+        let mut line = String::new();
+        io::BufReader::new(monitor.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let child = Pid::from_raw(line.trim().parse().unwrap()).unwrap();
+        assert!(test_kill_process(child).is_ok());
+        assert!(vmm_exited(&mut monitor).is_none(), "still running");
+        monitor.kill().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let status = loop {
+            if let Some(s) = vmm_exited(&mut monitor) {
+                break s;
+            }
+            assert!(Instant::now() < deadline, "the monitor did not end");
+            thread::sleep(POLL);
+        };
+        assert!(!status.success());
+        // 고아가 된 자식은 init(launchd)이 거둔다. 잠깐 걸릴 수 있다.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while test_kill_process(child).is_ok() {
+            assert!(Instant::now() < deadline, "the child outlived its monitor");
+            thread::sleep(Duration::from_millis(20));
+        }
     }
 }

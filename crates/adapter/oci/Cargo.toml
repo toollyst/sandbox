@@ -14,6 +14,9 @@ workspace = true
 sbx-model.workspace = true
 sbx-image.workspace = true
 reqwest.workspace = true
+# push 본문(읽는 대로 보낸다, 진행 표시).
+http-body.workspace = true
+bytes.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

@@ -10,7 +10,8 @@
 //! | 순서 | `[[registry.mirror]]`를 적힌 순서로, 마지막에 `location`. 앞의 것이 실패하면(없음, 연결 안 됨, 거부) 다음 것 |
 //! | 미러 거르기 | `mirror-by-digest-only`면 digest 참조에만 미러를, 미러의 `pull-from-mirror`는 `all`·`digest-only`·`tag-only` |
 //! | 바꾸기 | `location` + 참조에서 prefix 뒤 부분. 와일드카드 prefix에 `location`이 없으면 참조 그대로 |
-//! | `blocked` | 받지 않는다(오류) |
+//! | `blocked` | 받지 않는다(오류). 올리지도 않는다([`Registries::check_push`]) |
+//! | push | 이름이 가리키는 레지스트리로만 올린다. 미러와 `location` 바꾸기는 쓰지 않는다(containers/image와 같다) |
 //! | `insecure` | https로 연결할 수 없으면 http([`crate::registry::Registry::with_insecure`]). containers와 달리 인증서 검증은 그대로다(자체 서명 CA는 OS 신뢰 저장소에) |
 //!
 //! 읽지 않는 것: `unqualified-search-registries`, `[aliases]`, `short-name-mode`(sbx는 Docker처럼 짧은 이름을
@@ -316,6 +317,20 @@ impl Registries {
             .map(|(e, n, _)| (e, n))
     }
 
+    /// push: 이 참조로 올려도 되는가. containers/image와 같다: 이름이 가리키는 레지스트리로만 올리고(미러도
+    /// `location` 바꾸기도 쓰지 않는다), 맞는 항목이 `blocked`면 거부한다. `insecure`는 pull과 같은 호스트들
+    /// ([`Registries::insecure_hosts`])에 적용된다.
+    pub fn check_push(&self, r: &Reference) -> Result<(), ImageError> {
+        let full = r.to_string();
+        match self.entry_for(&full) {
+            Some((e, _)) if e.blocked => Err(ImageError::Unsupported(format!(
+                "{full}: blocked by registries.conf (prefix {}), so sbx won't push to it",
+                e.prefix
+            ))),
+            _ => Ok(()),
+        }
+    }
+
     /// 이 참조를 받을 곳들, 시도할 순서. 설정에 없으면 참조 그대로 하나.
     pub fn endpoints(&self, r: &Reference) -> Result<Vec<Endpoint>, ImageError> {
         let full = r.to_string();
@@ -472,6 +487,15 @@ blocked = true
             .endpoints(&Reference::parse("evil.example/x:1").unwrap())
             .unwrap_err();
         assert!(e.to_string().contains("blocked"), "{e}");
+        // push도 차단을 따른다. 미러와 location 바꾸기는 push와 상관없다.
+        let e = r
+            .check_push(&Reference::parse("evil.example/x:1").unwrap())
+            .unwrap_err();
+        assert!(e.to_string().contains("won't push"), "{e}");
+        assert!(
+            r.check_push(&Reference::parse("reg.eu.corp.example/a:1").unwrap())
+                .is_ok()
+        );
         // 와일드카드 항목의 location이 비어 있어 호스트는 모른다: 미러의 insecure만 모인다.
         assert!(r.insecure_hosts().is_empty());
         let r = conf(

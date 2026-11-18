@@ -23,6 +23,9 @@ Other clients take the same command in their configuration:
 | `write_file` / `read_file` | Move files in and out, as text or base64. Parent directories are created |
 | `list` / `remove` | See and clean up sandboxes |
 
+`run` and `create` take `volumes: [{name, path, readonly}]`: named volumes, disks that outlive the sandbox (a
+database's data, a cache the agent builds up). A name used for the first time creates the volume.
+
 ## What an agent can and can't do
 
 The MCP server adds no policy of its own. Tool arguments go through the same parser and rules as the CLI:
@@ -33,11 +36,26 @@ The MCP server adds no policy of its own. Tool arguments go through the same par
   that resolves to such an address is refused for everyone, CLI included.)
 - Host folders are never mounted, and tools only see sandboxes created through MCP, not the ones you started with
   the CLI (`sbx mcp --all-sandboxes` changes that).
+- Volumes take a name, never a host path. Tools only attach volumes created through MCP, so an agent can't read or
+  change a volume you made with the CLI (`--all-sandboxes` lifts that too). A server creates a volume only while
+  fewer than 8 MCP volumes exist on your data directory (`--max-volumes`), each the size of `--max-disk`; one sandbox
+  at a time attaches a volume read-write. Volumes stay after the server exits:
+  `sbx volume ls --filter label=io.github.toollyst.sandbox.owner=mcp` lists them, and `sbx volume rm` removes them.
+- `run` and `create` take `connect: ["db:5432", …]` (the CLI's `--connect`): programs in the new sandbox reach that
+  TCP port of another sandbox by its name, and nothing else opens. The target must be a sandbox created through MCP,
+  so an agent can't reach the database you started with the CLI. That is checked when the sandbox is created and
+  again at every connection: if the agent's `db` is removed and you later start a CLI sandbox named `db`, the agent's
+  connections to `db` are refused (the `refuse` event says why). With `--all-sandboxes` the agent may connect to any
+  sandbox the server sees. The other way round is not limited: a sandbox you start with the CLI may `--connect` to a
+  sandbox an agent made, because you own both and you are the one opening it.
 - Arguments can't be turned into other `sbx` options.
 - Tools don't publish ports (`-p`): nothing an agent starts listens on your machine.
 - Images are pulled with your registry credentials (see [Images](usage.md#images)), so an agent can run private
   images you can pull. It never sees the credentials.
 - `read_file` reads into memory and never follows a link on the host.
+- With no executor installed, the first `run` or `create` installs the default executor from the signed official
+  repository, as the CLI does (not yet in this release: [install guide](install.md#the-executor)); the line saying so goes to the server's
+  stderr, never into the protocol. Start the server with `SBX_NO_AUTO_EXECUTOR=1` to have those calls fail instead.
 - Agents get at most 8 sandboxes at once per MCP server, each with at most 4 vCPUs, 4 GiB of memory and a 16 GiB
   writable disk (`disk`, 1 GiB unless asked). MCP sandboxes that other servers on your data directory already made
   count too, but two servers creating at the same moment can each take the last place. Change these with
@@ -45,8 +63,8 @@ The MCP server adds no policy of its own. Tool arguments go through the same par
   `sbx mcp --max-sandboxes 2 --max-memory 1g --max-disk 4g`.
 - `create` takes `lifetime` (e.g. `30m`): the sandbox stops that long after it starts. `sbx mcp --max-lifetime 1h`
   caps it and gives the cap to sandboxes that don't ask, so a forgotten sandbox doesn't run for ever.
-- `sbx mcp --max-egress 1g` gives every MCP sandbox that has network access an egress limit (`--egress-limit`), so an
-  agent can't download or upload without bound. `sbx events --filter type=network` shows what each one connected to.
+- `sbx mcp --max-egress 1g` gives every MCP sandbox that has network access or a `connect` an egress limit
+  (`--egress-limit`), so an agent can't download or upload without bound. `sbx events --filter type=network` shows what each one connected to.
 - `sbx mcp --max-image-size 2g` refuses images whose layers add up to more than that (compressed), before any
   download, so an agent can't fill your image cache.
 - Every tool declares an `outputSchema` (its `structuredContent`) and annotations: `list` and `read_file` are

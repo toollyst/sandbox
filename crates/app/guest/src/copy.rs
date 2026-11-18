@@ -24,11 +24,9 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt, lchown, sym
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use sbx_guest_proto::{
-    CHUNK_LEN, Entry, Error, ErrorKind, FileKind, GuestMsg, HostMsg, check_relative_path,
-};
+use sbx_guest_proto::{Entry, Error, ErrorKind, FileKind, GuestMsg, HostMsg, check_relative_path};
 
-use crate::wire::{Out, io_error, protocol};
+use crate::wire::{Out, io_error, protocol, send_file_data};
 
 fn invalid(m: impl Into<String>) -> Error {
     Error::new(ErrorKind::InvalidArgument, m)
@@ -258,30 +256,7 @@ fn walk(p: &Path, rel: String, meta: &fs::Metadata, out: &Out) -> Result<(), Err
         }),
     )?;
     match kind {
-        FileKind::File { size } => {
-            let f = OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_NOFOLLOW)
-                .open(p)
-                .map_err(|e| io_error(&rel, &e))?;
-            let mut r = f.take(size);
-            let mut buf = vec![0; CHUNK_LEN];
-            let mut sent = 0u64;
-            loop {
-                let n = r.read(&mut buf).map_err(|e| io_error(&rel, &e))?;
-                if n == 0 {
-                    break;
-                }
-                send_msg(out, &GuestMsg::Data(buf[..n].to_vec()))?;
-                sent += n as u64;
-            }
-            if sent != size {
-                return Err(Error::new(
-                    ErrorKind::Io,
-                    format!("{rel:?} shrank while copying ({sent} of {size} bytes)"),
-                ));
-            }
-        }
+        FileKind::File { size } => send_file_data(out, p, &rel, size)?,
         FileKind::Dir => {
             let mut children: Vec<_> = fs::read_dir(p)
                 .map_err(|e| io_error(&rel, &e))?

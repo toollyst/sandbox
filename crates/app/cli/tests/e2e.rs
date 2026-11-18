@@ -33,6 +33,11 @@ fn main() -> ExitCode {
     if args.get(1).map(String::as_str) == Some(sbx_shim::config::START) {
         return sbx_shim::main();
     }
+    // 샌드박스 안에서 프록시를 모르는 프로그램 노릇(투명 TCP). `transparent_tcp_reaches_allowed_names`가 부른다.
+    #[cfg(unix)]
+    if args.get(1).map(String::as_str) == Some("net-probe") {
+        return unix::net_probe(&args[2..]);
+    }
     #[cfg(unix)]
     {
         unix::run_all(&args[1..])
@@ -58,6 +63,7 @@ mod unix {
     type Test = (&'static str, fn());
 
     const TESTS: &[Test] = &[
+        ("runs_with_a_1_mib_main_stack", runs_with_a_1_mib_main_stack),
         (
             "run_streams_output_and_returns_the_exit_code",
             run_streams_output_and_returns_the_exit_code,
@@ -73,6 +79,10 @@ mod unix {
         ),
         ("create_start_inspect_rm", create_start_inspect_rm),
         ("names_work_in_place_of_ids", names_work_in_place_of_ids),
+        (
+            "docker_options_reach_the_sandbox",
+            docker_options_reach_the_sandbox,
+        ),
         (
             "completion_offers_sandboxes_and_images",
             completion_offers_sandboxes_and_images,
@@ -124,9 +134,22 @@ mod unix {
             "login_and_logout_use_dockers_config",
             login_and_logout_use_dockers_config,
         ),
+        ("tag_and_push_to_a_registry", tag_and_push_to_a_registry),
         (
             "load_and_save_round_trip_an_oci_archive",
             load_and_save_round_trip_an_oci_archive,
+        ),
+        (
+            "images_on_one_base_store_it_once",
+            images_on_one_base_store_it_once,
+        ),
+        (
+            "more_layers_than_disks_run_through_a_merged_disk",
+            more_layers_than_disks_run_through_a_merged_disk,
+        ),
+        (
+            "a_layout_1_cache_is_migrated_on_first_use",
+            a_layout_1_cache_is_migrated_on_first_use,
         ),
         ("policy_json_is_followed", policy_json_is_followed),
         (
@@ -155,9 +178,14 @@ mod unix {
             "vmm_packages_pins_and_version_files",
             vmm_packages_pins_and_version_files,
         ),
+        ("executors_in_use_are_kept", executors_in_use_are_kept),
         (
             "signed_repositories_and_names_that_stay_put",
             signed_repositories_and_names_that_stay_put,
+        ),
+        (
+            "the_default_executor_is_installed_on_first_use",
+            the_default_executor_is_installed_on_first_use,
         ),
         (
             "image_kernel_is_given_to_the_executor",
@@ -177,7 +205,23 @@ mod unix {
         ),
         ("attach_tty_and_signal_proxy", attach_tty_and_signal_proxy),
         ("volume_is_shared_live", volume_is_shared_live),
+        (
+            "live_share_tells_the_guest_or_points_elsewhere",
+            live_share_tells_the_guest_or_points_elsewhere,
+        ),
         ("network_allow_list", network_allow_list),
+        (
+            "transparent_tcp_reaches_allowed_names",
+            transparent_tcp_reaches_allowed_names,
+        ),
+        (
+            "connect_reaches_another_sandbox_by_name",
+            connect_reaches_another_sandbox_by_name,
+        ),
+        (
+            "mcp_connect_stays_among_mcp_sandboxes",
+            mcp_connect_stays_among_mcp_sandboxes,
+        ),
         (
             "egress_limit_and_network_events",
             egress_limit_and_network_events,
@@ -190,6 +234,80 @@ mod unix {
             "embedded_guest_init_is_unpacked_into_the_cache",
             embedded_guest_init_is_unpacked_into_the_cache,
         ),
+        (
+            "build_runs_stages_and_caches_steps",
+            build_runs_stages_and_caches_steps,
+        ),
+        (
+            "build_copy_destinations_follow_docker",
+            build_copy_destinations_follow_docker,
+        ),
+        (
+            "build_failures_targets_and_build_args",
+            build_failures_targets_and_build_args,
+        ),
+        (
+            "build_scratch_without_a_vm_and_shared_base_layers",
+            build_scratch_without_a_vm_and_shared_base_layers,
+        ),
+        ("build_shows_blocked_names", build_shows_blocked_names),
+        (
+            "build_vm_takes_cpus_and_memory",
+            build_vm_takes_cpus_and_memory,
+        ),
+        (
+            "build_writes_the_image_config",
+            build_writes_the_image_config,
+        ),
+        (
+            "build_outputs_export_one_image_everywhere",
+            build_outputs_export_one_image_everywhere,
+        ),
+        (
+            "build_source_date_epoch_fixes_the_digest",
+            build_source_date_epoch_fixes_the_digest,
+        ),
+        (
+            "build_records_where_it_was_built",
+            build_records_where_it_was_built,
+        ),
+        (
+            "build_cache_stays_under_its_cap",
+            build_cache_stays_under_its_cap,
+        ),
+        (
+            "a_package_like_layer_reads_back_everywhere",
+            a_package_like_layer_reads_back_everywhere,
+        ),
+        (
+            "a_missing_layer_disk_stops_the_start",
+            a_missing_layer_disk_stops_the_start,
+        ),
+        (
+            "the_guest_clock_follows_the_host",
+            the_guest_clock_follows_the_host,
+        ),
+        (
+            "volume_data_outlives_the_sandbox",
+            volume_data_outlives_the_sandbox,
+        ),
+        (
+            "a_volume_has_one_writer_at_a_time",
+            a_volume_has_one_writer_at_a_time,
+        ),
+        (
+            "volume_disks_limits_and_old_executors",
+            volume_disks_limits_and_old_executors,
+        ),
+        (
+            "mcp_uses_only_its_own_volumes",
+            mcp_uses_only_its_own_volumes,
+        ),
+        (
+            "a_volume_waits_for_the_vm_of_a_dead_owner",
+            a_volume_waits_for_the_vm_of_a_dead_owner,
+        ),
+        ("volumes_and_connect_together", volumes_and_connect_together),
     ];
 
     /// 인자: 이름 일부(걸러 내기). `--`로 시작하는 인자(cargo test가 넘기는 것)는 무시한다.
@@ -215,6 +333,15 @@ mod unix {
             }
         }
         let passed = selected.len() - failed.len();
+        let leaked = LEAKED.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if !leaked.is_empty() {
+            println!(
+                "\ntest result: FAILED. processes outlived {} test environment(s): {}\n",
+                leaked.len(),
+                leaked.join("; ")
+            );
+            return ExitCode::FAILURE;
+        }
         if failed.is_empty() {
             println!("\ntest result: ok. {passed} passed; 0 failed\n");
             ExitCode::SUCCESS
@@ -229,6 +356,64 @@ mod unix {
     }
 
     const IMAGE: &str = "e2e-fake";
+
+    /// 층 없는 이미지의 rootfs(빈 rootfs 하나, `sbx_store::stack`). 관리 쪽이 prepare로 했을 일.
+    fn plant_empty_rootfs(layout: &CacheLayout) {
+        let path = layout.merged_disk(&sbx_store::stack::empty_chain(), RootfsFormat::Erofs);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"fs").unwrap();
+    }
+
+    /// `net-probe ROOT NAME PORT`: fake 실행기의 투명 TCP 흉내(`sbx_executor_fake::probe`)로 `NAME`의 A를 묻고,
+    /// 주소가 있으면 `PORT`로 붙어 한 줄 보내고 받은 것을 적는다. `net-probe ROOT --resolv`: 게스트가 쓴 `resolv.conf`.
+    /// `ROOT`는 데이터 디렉터리다(그 아래에서 흉내 디렉터리를 찾는다).
+    pub fn net_probe(args: &[String]) -> ExitCode {
+        use sbx_executor_fake::probe;
+        use std::io::Read;
+        let Some(dir) = args.first().and_then(|r| probe::find(Path::new(r))) else {
+            println!("no fake net directory");
+            return ExitCode::FAILURE;
+        };
+        if args.get(1).map(String::as_str) == Some("--resolv") {
+            match std::fs::read_to_string(dir.join("etc/resolv.conf")) {
+                Ok(t) => print!("{t}"),
+                Err(_) => println!("no resolv.conf"),
+            }
+            return ExitCode::SUCCESS;
+        }
+        let (Some(name), Some(port)) =
+            (args.get(1), args.get(2).and_then(|p| p.parse::<u16>().ok()))
+        else {
+            println!("usage: net-probe ROOT NAME PORT");
+            return ExitCode::FAILURE;
+        };
+        let r = match probe::lookup(&dir, name, 1) {
+            Ok(r) => r,
+            Err(e) => {
+                println!("{name}: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let addrs: Vec<String> = r.addrs.iter().map(|a| a.to_string()).collect();
+        print!("{name}: rcode {} [{}]", r.rcode, addrs.join(","));
+        if let Some(ip) = r.addrs.first() {
+            match probe::route(&dir, std::net::SocketAddrV4::new(*ip, port)) {
+                None => print!(" port {port}: nothing listens"),
+                Some(to) => {
+                    let mut c = std::net::TcpStream::connect(to).unwrap();
+                    let _ = c.write_all(b"hello\n");
+                    let _ = c.shutdown(std::net::Shutdown::Write);
+                    let mut got = String::new();
+                    match c.read_to_string(&mut got) {
+                        Ok(_) if !got.is_empty() => print!(" port {port}: got {got:?}"),
+                        _ => print!(" port {port}: closed"),
+                    }
+                }
+            }
+        }
+        println!();
+        ExitCode::SUCCESS
+    }
 
     fn id_output(flag: &str) -> String {
         let o = Command::new("id").arg(flag).output().unwrap();
@@ -272,10 +457,11 @@ mod unix {
                 },
                 layers: vec![],
                 ignored_fields: vec![],
+                build: None,
             };
             write::write_image_record(&layout, &record).unwrap();
             write::set_ref(&layout, &record.reference, &id).unwrap();
-            std::fs::write(layout.rootfs(&id, RootfsFormat::Erofs), b"fs").unwrap();
+            plant_empty_rootfs(&layout);
         }
 
         fn path(&self, name: &str) -> PathBuf {
@@ -291,18 +477,58 @@ mod unix {
                 .env("SBX_GUEST_INIT", self.root.join("initramfs"))
                 .env("SBX_EXECUTOR", std::env::current_exe().unwrap())
                 .env("SBX_SHIM", std::env::current_exe().unwrap())
+                // 실행기를 빼는 테스트도 진짜 공식 저장소에 닿지 않게. 자동 설치를 보는 테스트만 지우고 로컬 저장소를 준다.
+                .env("SBX_NO_AUTO_EXECUTOR", "1")
                 // 레지스트리 자격 증명은 테스트 안의 것만 본다.
                 .env("DOCKER_CONFIG", self.root.join("docker"))
                 .env("XDG_CONFIG_HOME", self.root.join("xdg-config"))
                 .env_remove("REGISTRY_AUTH_FILE")
+                // 빌드의 시각과 캐시 상한은 테스트가 정한다.
+                .env_remove("SOURCE_DATE_EPOCH")
+                .env_remove("SBX_BUILD_CACHE_MAX")
                 // registries.conf도(사용자 drop-in은 HOME 아래).
                 .env(
                     "CONTAINERS_REGISTRIES_CONF",
                     self.root.join("registries.conf"),
                 )
                 .env("HOME", self.root.join("home"))
+                // 가짜 실행기가 자기와 소유 프로세스, 샌드박스의 프로세스 그룹을 여기 적는다(끝날 때 남은 것을 본다).
+                .env("SBX_FAKE_PROCS", self.root.join("procs"))
+                // 이 테스트 프로세스가 kill -9로 죽어도 가짜 실행기가 VM을 끈다.
+                .env("SBX_FAKE_WATCH_PID", std::process::id().to_string())
                 .stdin(Stdio::null());
             c
+        }
+
+        /// 테스트가 남긴 샌드박스를 지우고(제품의 길), 가짜 실행기가 기록한 프로세스(실행기, 소유 프로세스,
+        /// 샌드박스의 프로세스 그룹)가 모두 사라졌는지 본다. 남은 것은 SIGKILL로 끝내고 돌려준다.
+        fn reap(&self) -> Vec<sbx_executor_fake::leftover::Left> {
+            use sbx_executor_fake::leftover;
+            if let Ok(o) = self.cmd(&["ps", "-aq"]).output() {
+                let ids: Vec<String> = text(&o.stdout)
+                    .split_whitespace()
+                    .map(str::to_owned)
+                    .collect();
+                if !ids.is_empty() {
+                    let mut args = vec!["rm", "-f"];
+                    args.extend(ids.iter().map(String::as_str));
+                    let _ = self.cmd(&args).output();
+                }
+            }
+            let record = self.root.join("procs");
+            let me = [std::process::id()];
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let left = leftover::alive(&record, &me);
+                if left.is_empty() {
+                    return left;
+                }
+                if Instant::now() >= deadline {
+                    leftover::kill(&left);
+                    return left;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
         }
 
         fn sbx(&self, args: &[&str]) -> Output {
@@ -351,8 +577,27 @@ mod unix {
         }
     }
 
+    /// 테스트가 끝난 뒤 프로세스가 남았다(새는 프로세스). 실행 전체를 실패로 끝낸다.
+    static LEAKED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
     impl Drop for Env {
         fn drop(&mut self) {
+            // 패닉 때도 이 테스트가 띄운 것을 거둔다. 남은 것은 조용히 지우지 않고 알린다.
+            let left = self.reap();
+            if !left.is_empty() {
+                let list: Vec<String> = left.iter().map(|l| l.to_string()).collect();
+                eprintln!(
+                    "e2e: processes outlived the test in {}: {}",
+                    self.root.display(),
+                    list.join(", ")
+                );
+                if !std::thread::panicking() {
+                    LEAKED
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push(format!("{} ({})", self.root.display(), list.join(", ")));
+                }
+            }
             let _ = std::fs::remove_dir_all(&self.root);
         }
     }
@@ -363,9 +608,13 @@ mod unix {
         let o = e.sbx(&["create", "--label", "keep=1", IMAGE, "true"]);
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
         let kept = text(&o.stdout).trim().to_owned();
-        let o = e.sbx(&["run", "-d", IMAGE, "sleep", "30"]);
+        // 볼륨 둘: 실행 중인 샌드박스가 쓰는 것과 아무도 쓰지 않는 것.
+        let busy = format!("busy:{}", e.path("busy").display());
+        let o = e.sbx(&["run", "-d", "-v", &busy, IMAGE, "sleep", "30"]);
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
         let running = text(&o.stdout).trim().to_owned();
+        let o = e.sbx(&["volume", "create", "loose"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
         let o = e.sbx(&["create", IMAGE, "true"]);
         let stopped = text(&o.stdout).trim().to_owned();
 
@@ -376,6 +625,8 @@ mod unix {
         assert_eq!((sb.total, sb.active), (3, 1));
         let im = rows.iter().find(|r| r.kind == "images").unwrap();
         assert_eq!((im.total, im.active), (1, 1));
+        let vol = rows.iter().find(|r| r.kind == "volumes").unwrap();
+        assert_eq!((vol.total, vol.active), (2, 1));
 
         // 터미널이 아니면 -f가 있어야 한다.
         let o = e.sbx(&["system", "prune"]);
@@ -414,6 +665,20 @@ mod unix {
             r.images.is_empty(),
             "the running sandbox uses the image: {r:?}"
         );
+        assert!(r.volumes.is_empty(), "volumes only with --volumes: {r:?}");
+        // --volumes: 어느 샌드박스도 쓰지 않는 볼륨도.
+        let o = e.sbx(&[
+            "--format",
+            "json",
+            "system",
+            "prune",
+            "-a",
+            "-f",
+            "--volumes",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let r: PruneReport = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(r.volumes, ["loose"], "{r:?}");
         let ids: Vec<String> = e
             .ps()
             .iter()
@@ -517,6 +782,94 @@ mod unix {
         assert!(found[0].to_string_lossy().contains("sha256-"));
     }
 
+    /// 게스트 시계(fake 실행기: 호스트 시계는 그대로 두고 scratch 옆 파일이 게스트 시계다)가 틀려 있으면 시작 직후 맞고,
+    /// 소유 프로세스가 멈췄다 풀리면(잠자기에서 깬 것처럼 타이머가 늦게 깬다) 1분 주기를 기다리지 않고 곧바로 맞는다.
+    /// attached(`start -a`, sbx가 소유)와 detached(`start`, shim이 소유) 둘 다.
+    fn the_guest_clock_follows_the_host() {
+        use sbx_executor_fake::clock;
+        let e = Env::new();
+        let sandbox_dir = |id: &str| e.path("data").join("sandboxes").join(id);
+        let clock_of =
+            |id: &str| sbx_executor_fake::clock_file(&sandbox_dir(id).join("scratch.img"));
+        let wait_right = |file: &Path, steps: u64| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let st = clock::read(file).unwrap();
+                if st.offset.unsigned_abs() < 50_000_000 && st.steps >= steps {
+                    return st;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "the guest clock is still off: {st:?}"
+                );
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        };
+        let signal = |sig: &str, pid: u32| {
+            let ok = Command::new("kill")
+                .args([sig, &pid.to_string()])
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "kill {sig} {pid}");
+        };
+        let create = || {
+            let o = e.sbx(&["create", IMAGE, "sleep", "60"]);
+            assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+            let id = text(&o.stdout).trim().to_owned();
+            // 부팅한 게스트 시계가 한 시간 늦다.
+            clock::skew(&clock_of(&id), -3_600_000_000_000).unwrap();
+            id
+        };
+        let check = |id: &str, owner: u32| {
+            let file = clock_of(id);
+            let st = wait_right(&file, 1);
+            assert_eq!(st.steps, 1, "{st:?}");
+            // 게스트 안에서 누가 시계를 10초 뒤로 돌렸다(`date -s`). 다음 주기 맞추기는 1분 뒤다.
+            clock::skew(&file, -10_000_000_000).unwrap();
+            let t = Instant::now();
+            signal("-STOP", owner);
+            std::thread::sleep(Duration::from_millis(2500));
+            signal("-CONT", owner);
+            let st = wait_right(&file, 2);
+            assert_eq!(st.steps, 2, "{st:?}");
+            assert!(t.elapsed() < Duration::from_secs(20), "{:?}", t.elapsed());
+            let log = std::fs::read_to_string(sandbox_dir(id).join("logs/executor.log"))
+                .unwrap_or_default();
+            assert!(!log.contains("guest clock"), "{log}");
+        };
+
+        // attached: sbx가 소유한다.
+        let id = create();
+        let child = e.spawn(&["start", "-a", &id]);
+        assert_eq!(e.wait_running(), id);
+        check(&id, child.id());
+        assert_eq!(e.sbx(&["stop", "-t", "0", &id]).status.code(), Some(0));
+        let out = wait_with_timeout(child, Duration::from_secs(20));
+        assert_eq!(text(&out.stdout), "", "{}", text(&out.stderr));
+        assert_eq!(e.sbx(&["rm", &id]).status.code(), Some(0));
+
+        // detached: shim이 소유한다. shim은 이 테스트 실행 파일이고 인자는 `start … <ID>`다.
+        let id = create();
+        let o = e.sbx(&["start", &id]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let me = std::env::current_exe().unwrap();
+        let o = Command::new("ps")
+            .args(["-ax", "-o", "pid=,command="])
+            .output()
+            .unwrap();
+        let ps = text(&o.stdout);
+        let shims: Vec<u32> = ps
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.contains(&format!("{} start ", me.display())) && l.ends_with(id.as_str()))
+            .filter_map(|l| l.split_whitespace().next()?.parse().ok())
+            .collect();
+        assert_eq!(shims.len(), 1, "{ps}");
+        check(&id, shims[0]);
+        assert_eq!(e.sbx(&["rm", "-f", &id]).status.code(), Some(0));
+    }
+
     fn network_allow_list() {
         use std::io::{BufRead, BufReader};
         // 목적지: 아무 요청에나 "hi"로 답하는 HTTP 서버.
@@ -581,6 +934,459 @@ mod unix {
             "printf %s \"$HTTP_PROXY\"",
         ]);
         assert_eq!(text(&o.stdout), "");
+    }
+
+    /// 투명 TCP: 프록시를 모르는 프로그램(`net-probe`)이 이름을 묻고 붙는다. 이름은 `.invalid`라 호스트가 풀 수 없다.
+    /// 그래서 허용된 이름의 연결은 호스트의 이름 확인에서 거부되고("cannot resolve"), 그 기록이 연결이 이름으로
+    /// 넘어갔다는 증거다(데이터가 오가는 것은 게스트 테스트와 같은 splice다). 허용하지 않은 이름은 DNS에서 거부되고
+    /// 호스트는 풀지 않는다(거부 이유가 이름 풀기가 아니라 목록이다. 풀지 않았다는 직접 증거는 실행 코어 테스트
+    /// `transparent_tcp_resolves_from_the_list_and_passes_names_to_the_host_check`).
+    fn transparent_tcp_reaches_allowed_names() {
+        let e = Env::new();
+        let me = std::env::current_exe().unwrap();
+        let data = e.path("data");
+        let probe = |name: &str, port: u16| {
+            format!(
+                "{} net-probe {} {name} {port}",
+                me.display(),
+                data.display()
+            )
+        };
+        let script = [
+            format!("{} net-probe {} --resolv", me.display(), data.display()),
+            probe("blocked.invalid", 22),
+            probe("ok.invalid", 5432),
+            probe("a.wild.invalid", 443),
+            probe("b.wild.invalid", 443),
+            probe("wild.invalid", 443),
+            probe("any.invalid", 80),
+            "curl -s -o /dev/null -w 'proxy %{http_code}' -x \"$HTTP_PROXY\" --noproxy '' http://any.invalid/"
+                .into(),
+        ]
+        .join("; ");
+        let o = e.sbx(&[
+            "run",
+            "--rm",
+            "--network",
+            "allow",
+            "--allow",
+            "ok.invalid:5432",
+            "--allow",
+            "*.wild.invalid:443",
+            "--allow",
+            "any.invalid:*",
+            IMAGE,
+            "sh",
+            "-c",
+            &script,
+        ]);
+        let out = text(&o.stdout);
+        let err = text(&o.stderr);
+        assert_eq!(o.status.code(), Some(0), "{out}\n{err}");
+        assert!(
+            err.contains(
+                "warning: --allow any.invalid:*: a rule for every port (*) cannot be listened for"
+            ),
+            "{err}"
+        );
+        assert!(!err.contains("ok.invalid:5432:"), "{err}");
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(
+            lines,
+            [
+                "# Written by sbx (--network allow or --connect): names are answered by the sandbox's loopback DNS.",
+                "nameserver 127.0.0.1",
+                "blocked.invalid: rcode 3 []",
+                "ok.invalid: rcode 0 [198.18.0.1] port 5432: closed",
+                "a.wild.invalid: rcode 0 [198.18.0.2] port 443: closed",
+                "b.wild.invalid: rcode 0 [198.18.0.3] port 443: closed",
+                "wild.invalid: rcode 3 []",
+                "any.invalid: rcode 0 [198.18.0.4] port 80: nothing listens",
+                "proxy 403",
+            ],
+            "{out}\n{err}"
+        );
+
+        let o = e.sbx(&[
+            "--format",
+            "json",
+            "events",
+            "--since",
+            "1h",
+            "--until",
+            "0s",
+            "--filter",
+            "type=network",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let events: Vec<serde_json::Value> = text(&o.stdout)
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let find = |action: &str, host: &str, port: Option<&str>| {
+            events
+                .iter()
+                .find(|ev| {
+                    let a = &ev["attributes"];
+                    ev["action"] == action
+                        && a["host"] == host
+                        && a.get("port").and_then(|p| p.as_str()) == port
+                })
+                .unwrap_or_else(|| panic!("no {action} {host} {port:?} in {events:?}"))
+        };
+        assert!(
+            find("proxy_only", "any.invalid", Some("*"))["attributes"]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("HTTP_PROXY")
+        );
+        let blocked = find("refuse", "blocked.invalid", None);
+        assert_eq!(blocked["attributes"]["via"], "dns");
+        assert!(
+            blocked["attributes"]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("not allowed by the network policy")
+        );
+        assert_eq!(
+            find("refuse", "wild.invalid", None)["attributes"]["via"],
+            "dns"
+        );
+        assert_eq!(
+            find("lookup", "ok.invalid", None)["attributes"]["ports"],
+            "5432"
+        );
+        assert_eq!(
+            find("lookup", "b.wild.invalid", None)["attributes"]["ports"],
+            "443"
+        );
+        assert_eq!(
+            find("lookup", "any.invalid", None)["attributes"]["any_port"],
+            "true"
+        );
+        // 가짜 주소로 온 연결은 이름으로 호스트 확인을 지났다.
+        for (host, port) in [
+            ("ok.invalid", "5432"),
+            ("a.wild.invalid", "443"),
+            ("any.invalid", "80"),
+        ] {
+            let r = find("refuse", host, Some(port));
+            assert!(
+                r["attributes"]["reason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("resolve"),
+                "{r}"
+            );
+        }
+        assert!(
+            !events.iter().any(|ev| ev["action"] == "notice"),
+            "{events:?}"
+        );
+        // 이름 묻기 기록은 동작으로도 고를 수 있다.
+        let o = e.sbx(&[
+            "events",
+            "--since",
+            "1h",
+            "--until",
+            "0s",
+            "--filter",
+            "event=lookup",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout).lines().count(), 4, "{}", text(&o.stdout));
+
+        // --network allow가 아니면 지금과 같다: DNS는 모두 NXDOMAIN이고 resolv.conf를 쓰지 않는다.
+        let script = format!(
+            "{} net-probe {} --resolv; {}",
+            me.display(),
+            data.display(),
+            probe("ok.invalid", 5432)
+        );
+        let o = e.sbx(&["run", "--rm", IMAGE, "sh", "-c", &script]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "no resolv.conf\nok.invalid: rcode 3 []\n");
+    }
+
+    /// 받은 것을 그대로 돌려주는 TCP 서비스를 호스트의 빈 포트에 띄운다(fake 게스트는 호스트에서 돌므로 대상 샌드박스
+    /// 안의 서비스 노릇이다). 그 포트.
+    fn echo_service() -> u16 {
+        use std::io::Read;
+        let service = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = service.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for c in service.incoming() {
+                let Ok(mut c) = c else { return };
+                std::thread::spawn(move || {
+                    let mut b = [0u8; 4096];
+                    while let Ok(n) = c.read(&mut b) {
+                        if n == 0 || c.write_all(&b[..n]).is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        port
+    }
+
+    /// `ROOT/names/NAME`이 가리키는 샌드박스 디렉터리에서 `net-probe`를 부르는 셸 줄들(샌드박스 안에서 돈다).
+    fn probe_script(data: &Path, me: &str, probes: &[(&str, u16)]) -> String {
+        let exe = std::env::current_exe().unwrap();
+        let mut lines = vec![format!(
+            "r={}/sandboxes/$(cat {}/names/{me})",
+            data.display(),
+            data.display()
+        )];
+        for (name, port) in probes {
+            lines.push(format!("{} net-probe \"$r\" {name} {port}", exe.display()));
+        }
+        lines.join("; ")
+    }
+
+    /// 네트워크 기록(JSON). `filters`는 `--filter`의 값들이다.
+    fn network_events(e: &Env, filters: &[&str]) -> Vec<serde_json::Value> {
+        let mut args = vec![
+            "--format",
+            "json",
+            "events",
+            "--since",
+            "1h",
+            "--until",
+            "0s",
+            "--filter",
+            "type=network",
+        ];
+        for f in filters {
+            args.extend(["--filter", f]);
+        }
+        let o = e.sbx(&args);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        text(&o.stdout)
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
+    /// `--connect`: 앱 샌드박스 안에서 프록시를 모르는 클라이언트(`net-probe`)가 `db`라는 이름으로 다른 샌드박스의
+    /// TCP 포트에 닿아 보낸 바이트를 돌려받는다. 열지 않은 포트, 다른 샌드박스, 바깥 이름은 닿지 않고, 프록시도 없다.
+    /// 대상이 멈추면 그 연결만 곧바로 끊겨 기록되고, 다시 시작하면 다음 연결은 된다. inspect, events --filter, 오류도 본다.
+    fn connect_reaches_another_sandbox_by_name() {
+        let e = Env::new();
+        let data = e.path("data");
+        let port = echo_service();
+        for name in ["db", "other"] {
+            let o = e.sbx(&["run", "-d", "--name", name, IMAGE, "sleep", "60"]);
+            assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        }
+        let script = format!(
+            "{}; printf 'proxy=[%s]\\n' \"$HTTP_PROXY\"",
+            probe_script(
+                &data,
+                "app",
+                &[
+                    ("db", port),
+                    ("db", port.wrapping_add(1)),
+                    ("other", port),
+                    ("app", port),
+                    ("example.invalid", 443),
+                ]
+            )
+        );
+        let connect = format!("db:{port}");
+        let o = e.sbx(&[
+            "create",
+            "--name",
+            "app",
+            "--connect",
+            &connect,
+            IMAGE,
+            "sh",
+            "-c",
+            &script,
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = e.sbx(&["start", "-a", "app"]);
+        let out = text(&o.stdout);
+        assert_eq!(o.status.code(), Some(0), "{out}\n{}", text(&o.stderr));
+        assert_eq!(
+            out.lines().collect::<Vec<_>>(),
+            [
+                format!("db: rcode 0 [198.18.0.1] port {port}: got \"hello\\n\""),
+                format!(
+                    "db: rcode 0 [198.18.0.1] port {}: nothing listens",
+                    port.wrapping_add(1)
+                ),
+                "other: rcode 3 []".into(),
+                "app: rcode 3 []".into(),
+                "example.invalid: rcode 3 []".into(),
+                "proxy=[]".into(),
+            ],
+            "{out}"
+        );
+
+        // inspect와 ps는 잇기 목록을 공개 자료형으로 보인다. 네트워크는 여전히 none이다.
+        let o = e.sbx(&["--format", "json", "inspect", "app"]);
+        let s: sbx_cli::output::Sandbox = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(s.network.mode, sbx_cli::output::NetworkMode::None);
+        assert_eq!(
+            s.network.connect,
+            [sbx_cli::output::Connect {
+                name: "db".into(),
+                sandbox: "db".into(),
+                port
+            }]
+        );
+        let ps = e.ps();
+        let app = ps.iter().find(|s| s["name"] == "app").unwrap();
+        assert_eq!(app["network"]["connect"][0]["port"], port);
+        assert!(
+            ps.iter().find(|s| s["name"] == "db").unwrap()["network"]
+                .get("connect")
+                .is_none()
+        );
+
+        // 대상이 멈추면 그 연결만 곧바로 끊기고 이유가 남는다.
+        assert_eq!(e.sbx(&["stop", "db"]).status.code(), Some(0));
+        let started = Instant::now();
+        let o = e.sbx(&["start", "-a", "app"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(
+            text(&o.stdout).lines().next(),
+            Some(format!("db: rcode 0 [198.18.0.1] port {port}: closed").as_str())
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(8),
+            "{:?}",
+            started.elapsed()
+        );
+        // 다시 시작하면 다음 연결은 된다.
+        assert_eq!(e.sbx(&["start", "db"]).status.code(), Some(0));
+        let o = e.sbx(&["start", "-a", "app"]);
+        assert_eq!(
+            text(&o.stdout).lines().next(),
+            Some(format!("db: rcode 0 [198.18.0.1] port {port}: got \"hello\\n\"").as_str()),
+            "{}",
+            text(&o.stderr)
+        );
+
+        // 기록: 잇는 쪽의 ID로 남고, 대상(이름이나 ID)으로도 고를 수 있다.
+        let db_id = e.ps().iter().find(|s| s["name"] == "db").unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let app_id = app["id"].as_str().unwrap().to_owned();
+        let events = network_events(&e, &["sandbox=db"]);
+        let actions: Vec<&str> = events
+            .iter()
+            .map(|ev| ev["action"].as_str().unwrap())
+            .collect();
+        for want in ["lookup", "connect", "close", "refuse"] {
+            assert!(actions.contains(&want), "{want}: {events:?}");
+        }
+        assert!(
+            events.iter().all(|ev| ev["id"] == app_id.as_str()),
+            "{events:?}"
+        );
+        let refused = events.iter().find(|ev| ev["action"] == "refuse").unwrap();
+        assert_eq!(refused["attributes"]["target"], "db");
+        assert_eq!(refused["attributes"]["target_id"], db_id.as_str());
+        assert_eq!(refused["attributes"]["port"], port.to_string());
+        assert!(
+            refused["attributes"]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("not running"),
+            "{refused}"
+        );
+        let closed = events.iter().find(|ev| ev["action"] == "close").unwrap();
+        assert_eq!(
+            (
+                closed["attributes"]["sent"].as_str(),
+                closed["attributes"]["received"].as_str()
+            ),
+            (Some("6"), Some("6"))
+        );
+        assert_eq!(
+            network_events(&e, &[&format!("sandbox={}", &db_id[..12]), "event=refuse"]).len(),
+            1
+        );
+        // 이름으로 고르면 잇는 쪽의 기록도 나온다(네트워크 기록에는 이름이 없다).
+        let mine = network_events(&e, &["sandbox=app"]);
+        assert!(
+            mine.len() > events.len() && mine.iter().all(|ev| ev["id"] == app_id.as_str()),
+            "{mine:?}"
+        );
+        assert!(network_events(&e, &["sandbox=other"]).is_empty());
+
+        // ID 앞부분으로 주면 전체 ID로 기록하고, 안의 이름은 대상의 이름이다.
+        let by_id = format!("{}:{port}", &db_id[..8]);
+        let o = e.sbx(&[
+            "create",
+            "--name",
+            "app2",
+            "--connect",
+            &by_id,
+            IMAGE,
+            "true",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = e.sbx(&["--format", "json", "inspect", "app2"]);
+        let s: sbx_cli::output::Sandbox = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(
+            (
+                s.network.connect[0].name.as_str(),
+                s.network.connect[0].sandbox.as_str()
+            ),
+            ("db", db_id.as_str())
+        );
+        // 잇기만으로도 전송량 상한을 받는다.
+        let o = e.sbx(&[
+            "create",
+            "--connect",
+            &connect,
+            "--egress-limit",
+            "1m",
+            IMAGE,
+            "true",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+
+        // 오류: 없는 대상, 허용 목록과 같은 이름, 꼴이 틀린 값, build에는 없다.
+        let o = e.sbx(&["create", "--connect", "nothing:80", IMAGE, "true"]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("--connect nothing:80"),
+            "{}",
+            text(&o.stderr)
+        );
+        let o = e.sbx(&[
+            "create",
+            "--network",
+            "allow",
+            "--allow",
+            "db:443",
+            "--connect",
+            &connect,
+            IMAGE,
+            "true",
+        ]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("also allowed by --allow db:443"),
+            "{}",
+            text(&o.stderr)
+        );
+        for bad in ["db", "db:0", "localhost=db:80"] {
+            let o = e.sbx(&["create", "--connect", bad, IMAGE, "true"]);
+            assert_eq!(o.status.code(), Some(2), "{bad}: {}", text(&o.stderr));
+        }
+        let o = e.sbx(&["build", "--connect", &connect, "."]);
+        assert_eq!(o.status.code(), Some(2), "{}", text(&o.stderr));
+        assert!(text(&o.stderr).contains("--connect"), "{}", text(&o.stderr));
+        for name in ["db", "other"] {
+            let _ = e.sbx(&["rm", "-f", name]);
+        }
     }
 
     /// 가짜 릴리스(시험용 키로 서명한 file:// 색인과 묶음)로 새 버전 알림과 `sbx upgrade`를 본다.
@@ -853,8 +1659,13 @@ mod unix {
             .iter()
             .map(|e| e["action"].as_str().unwrap())
             .collect();
-        assert_eq!(actions, ["connect", "close", "refuse"], "{events:?}");
-        let attrs = |i: usize| &events[i]["attributes"];
+        // 루프백 주소 규칙은 프록시로만 닿는다(시작할 때 한 번 기록한다).
+        assert_eq!(
+            actions,
+            ["proxy_only", "connect", "close", "refuse"],
+            "{events:?}"
+        );
+        let attrs = |i: usize| &events[i + 1]["attributes"];
         assert_eq!(attrs(0)["host"], "127.0.0.1");
         assert_eq!(attrs(0)["addr"], allow.as_str());
         assert_eq!(attrs(1)["limit"], "1024");
@@ -907,6 +1718,70 @@ mod unix {
         assert_eq!(std::fs::read(host.join("out.txt")).unwrap(), b"back\n");
     }
 
+    /// 실시간 공유가 없는 실행기에서는 `-v` 호스트 폴더만 오류이고 오류가 다른 길(그대로 붙여 쓸 수 있는 copy 마운트,
+    /// 실시간 공유가 있는 실행기)을 알린다. 있는 실행기에서는 호스트에서 고친 파일을 게스트에 알린다(detached: 소유
+    /// 프로세스는 shim). fake 게스트의 경로는 호스트 경로라 게스트의 알림 연산(수정 시각을 그대로 다시 쓴다)은 호스트
+    /// 파일의 ctime만 바꾼다. 그것으로 알림이 닿았는지, 되도는 고리가 없는지 본다.
+    fn live_share_tells_the_guest_or_points_elsewhere() {
+        use std::os::unix::fs::MetadataExt;
+        let e = Env::new();
+        let host = e.path("src");
+        std::fs::create_dir(&host).unwrap();
+        std::fs::write(host.join("in.txt"), b"hi").unwrap();
+        let guest = e.path("app");
+        let v = format!("{}:{}", host.display(), guest.display());
+        let without = |args: &[&str]| {
+            e.cmd(args)
+                .env("SBX_FAKE_LIVE_SHARE", "0")
+                .output()
+                .unwrap()
+        };
+        let o = without(&["run", "--rm", "-v", &v, IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(125), "{}", text(&o.stderr));
+        let copy = format!(
+            "--mount type=copy,source={},target={}",
+            host.display(),
+            guest.display()
+        );
+        let err = text(&o.stderr);
+        assert!(err.contains(&copy) && err.contains("live share"), "{err}");
+        assert!(e.ps().is_empty());
+        // 알린 길은 그대로 된다. 공유가 없는 다른 것도 그대로다.
+        let mut args: Vec<&str> = vec!["run", "--rm"];
+        args.extend(copy.split_once(' ').map(|(a, b)| [a, b]).unwrap());
+        let cat = format!("{}/in.txt", guest.display());
+        args.extend([IMAGE, "cat", &cat]);
+        let o = without(&args);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "hi");
+        std::fs::remove_dir_all(&guest).unwrap();
+
+        let o = e.sbx(&["run", "-d", "-v", &v, IMAGE, "sleep", "30"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let id = text(&o.stdout).trim().to_owned();
+        // 감시는 공유를 마운트한 뒤 열린다. FSEvents는 연 직후의 사건을 놓칠 수 있다.
+        std::thread::sleep(Duration::from_millis(500));
+        let f = host.join("main.js");
+        let ctime = || {
+            let m = std::fs::metadata(&f).unwrap();
+            (m.ctime(), m.ctime_nsec())
+        };
+        std::fs::write(&f, b"1").unwrap();
+        let written = ctime();
+        let modified = std::fs::metadata(&f).unwrap().modified().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while ctime() == written {
+            assert!(Instant::now() < deadline, "the guest was not told");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(std::fs::metadata(&f).unwrap().modified().unwrap(), modified);
+        std::thread::sleep(Duration::from_millis(1500));
+        let told = ctime();
+        std::thread::sleep(Duration::from_millis(1500));
+        assert_eq!(ctime(), told, "the change bounced back and forth");
+        assert_eq!(e.sbx(&["rm", "-f", &id]).status.code(), Some(0));
+    }
+
     fn run_i_forwards_stdin() {
         let e = Env::new();
         let o = e.sbx_with_stdin(&["run", "--rm", "-i", IMAGE, "cat"], b"hello\nworld\n");
@@ -923,6 +1798,10 @@ mod unix {
         let o = e.sbx(&["create", IMAGE, "sh", "-c", "echo started; exit 3"]);
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
         let id = text(&o.stdout).trim().to_owned();
+        assert_eq!(e.ps()[0]["state"], "created");
+        // 실행 중이 아닌 것을 멈추면 아무것도 하지 않고 성공한다(Docker와 같다).
+        let o = e.sbx(&["stop", &id]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
         assert_eq!(e.ps()[0]["state"], "created");
 
         // start는 붙어서 기본 프로세스가 끝날 때까지 기다린다.
@@ -943,6 +1822,9 @@ mod unix {
 
         // 다시 시작할 수 있다(Docker와 같다).
         assert_eq!(e.sbx(&["start", "-a", &id]).status.code(), Some(3));
+        let o = e.sbx(&["stop", &id]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout).trim(), id);
 
         let o = e.sbx(&["rm", &id]);
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
@@ -1416,9 +2298,11 @@ mod unix {
         assert!(!complete(&e, &["exec", "web", ""]).contains(&"web".to_owned()));
         assert_eq!(complete(&e, &["cp", "we"]), ["web:"]);
         // 이미지: 줄인 참조. run과 create는 첫 인자만.
-        for cmd in ["run", "create", "rmi", "prepare", "pull"] {
+        for cmd in ["run", "create", "rmi", "prepare", "pull", "push", "tag"] {
             has(&[cmd, ""], &image);
         }
+        // tag는 둘째 인자(새 이름)도 이미지 참조에서 고쳐 쓴다.
+        has(&["tag", &image, ""], &image);
         assert_eq!(complete(&e, &["run", "--rm", "e2e"]), [image.as_str()]);
         assert!(!complete(&e, &["run", &image, ""]).contains(&image));
         // 줄에 친 --data-dir이 SBX_DATA_DIR보다 앞선다. 없는 디렉터리는 후보가 없고, 만들지도 않는다.
@@ -1529,6 +2413,186 @@ mod unix {
             e.sbx(&["create", "--name", "web", IMAGE]).status.code(),
             Some(0)
         );
+    }
+
+    /// Docker 호환 표(`sbx_cli::compat`)가 되는 것이라고 적은 옵션 중 다른 테스트가 보지 않는 것들.
+    /// `run`·`create`의 프로세스·자원·파일 옵션, `start -i`, `exec`의 옵션, `attach --no-stdin`, `rmi -f`, `--version`.
+    fn docker_options_reach_the_sandbox() {
+        let e = Env::new();
+        let me = format!("{}:{}", id_output("-u"), id_output("-g"));
+        // 가짜 실행기의 게스트 경로는 호스트 경로다.
+        let work = e.path("work");
+        std::fs::create_dir(&work).unwrap();
+        let proj = e.path("proj");
+        std::fs::create_dir(&proj).unwrap();
+        std::fs::write(proj.join("in.txt"), b"copied in").unwrap();
+        let target = e.path("guest-proj");
+
+        // -w, -u, --entrypoint, --mount type=copy. 이미지에는 ENTRYPOINT가 없으므로 sh가 받는 -c는 --entrypoint 덕이다.
+        let o = e.sbx(&[
+            "run",
+            "--rm",
+            "-w",
+            work.to_str().unwrap(),
+            "-u",
+            &me,
+            "--entrypoint",
+            "sh",
+            "--mount",
+            &format!(
+                "type=copy,source={},target={}",
+                proj.display(),
+                target.display()
+            ),
+            IMAGE,
+            "-c",
+            &format!(
+                "id -u; cat {}/in.txt; echo here > rel.txt",
+                target.display()
+            ),
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), format!("{}\ncopied in", id_output("-u")));
+        assert_eq!(std::fs::read(work.join("rel.txt")).unwrap(), b"here\n");
+        // 빈 --entrypoint는 이미지의 것을 지운다(명령만 남는다).
+        let o = e.sbx(&["run", "--rm", "--entrypoint", "", IMAGE, "echo", "plain"]);
+        assert_eq!(text(&o.stdout), "plain\n", "{}", text(&o.stderr));
+
+        // --cpus, -m, --storage-opt, --hostname, -l는 샌드박스 설정에 남는다.
+        let o = e.sbx(&[
+            "create",
+            "--cpus",
+            "2",
+            "-m",
+            "1g",
+            "--storage-opt",
+            "size=2g",
+            "--hostname",
+            "box",
+            "-l",
+            "team=a",
+            IMAGE,
+            "cat",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let id = text(&o.stdout).trim().to_owned();
+        let o = e.sbx(&["--format", "json", "inspect", &id]);
+        let s: sbx_cli::output::Sandbox = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(
+            (
+                s.resources.vcpus,
+                s.resources.memory_mib,
+                s.resources.scratch_disk_mib
+            ),
+            (2, 1024, 2048)
+        );
+        assert_eq!(s.hostname.as_deref(), Some("box"));
+        assert_eq!(s.labels.get("team").map(String::as_str), Some("a"));
+        // start -i: create에 -i가 없어도 이번 시작에 입력을 보낸다.
+        let o = e.sbx_with_stdin(&["start", "-a", "-i", &id], b"typed");
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "typed");
+
+        // exec -e, --env-file, -w, -u.
+        let o = e.sbx(&["run", "-d", "--name", "ex", IMAGE, "sleep", "30"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let env_file = e.path("exec.env");
+        std::fs::write(&env_file, "B=from-file\n").unwrap();
+        let o = e.sbx(&[
+            "exec",
+            "-e",
+            "A=flag",
+            "--env-file",
+            env_file.to_str().unwrap(),
+            "-w",
+            work.to_str().unwrap(),
+            "-u",
+            &me,
+            "ex",
+            "sh",
+            "-c",
+            "echo $A $B; id -u; echo x > exec.txt",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(
+            text(&o.stdout),
+            format!("flag from-file\n{}\n", id_output("-u"))
+        );
+        assert!(work.join("exec.txt").exists());
+        assert_eq!(e.sbx(&["rm", "-f", "ex"]).status.code(), Some(0));
+
+        // attach --no-stdin: 그 쪽의 입력은 가지 않는다. 다른 쪽이 붙어 보낸 것만 간다.
+        let o = e.sbx(&[
+            "run",
+            "-d",
+            "-i",
+            "--name",
+            "at",
+            IMAGE,
+            "sh",
+            "-c",
+            "read a; echo got $a",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let mut quiet = e
+            .cmd(&["attach", "--no-stdin", "at"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        quiet.stdin.take().unwrap().write_all(b"ignored\n").unwrap();
+        let reader = Reader::start(&mut quiet);
+        // 먼저 붙은 쪽이 보냈다면 이미 끝났을 시간을 준다.
+        std::thread::sleep(Duration::from_millis(300));
+        let other = e.sbx_with_stdin(&["attach", "at"], b"sent\n");
+        assert_eq!(other.status.code(), Some(0), "{}", text(&other.stderr));
+        let quiet = wait_with_timeout(quiet, Duration::from_secs(20));
+        assert_eq!(quiet.status.code(), Some(0), "{}", text(&quiet.stderr));
+        assert_eq!(reader.text(), "got sent\n");
+        assert_eq!(e.sbx(&["rm", "at"]).status.code(), Some(0));
+
+        // rmi: 멈춘 샌드박스가 쓰는 이미지는 -f가 있어야 지운다.
+        let o = e.sbx(&["rmi", IMAGE]);
+        assert_ne!(o.status.code(), Some(0), "{}", text(&o.stdout));
+        let o = e.sbx(&["rmi", "-f", IMAGE]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&e.sbx(&["images", "-q"]).stdout), "");
+
+        // docker version 대신 sbx --version.
+        let o = e.sbx(&["--version"]);
+        assert_eq!(
+            text(&o.stdout),
+            format!("sbx {}\n", env!("CARGO_PKG_VERSION"))
+        );
+    }
+
+    /// Windows의 주 스레드 스택은 1 MiB다. 이 테스트는 Windows에서 돌지 않으므로 주 스레드 스택을 1 MiB로 줄여
+    /// 흉내 낸다: 디버그 빌드의 `sbx`도 돈다(`sbx`는 주 스레드가 아니라 `MAIN_STACK` 크기의 스레드에서 돈다).
+    fn runs_with_a_1_mib_main_stack() {
+        let e = Env::new();
+        for args in [&["--version"][..], &["--help"], &["ps"]] {
+            let c = e.cmd(args);
+            let mut sh = Command::new("sh");
+            sh.arg("-c")
+                .arg(r#"ulimit -s 1024 && exec "$0" "$@""#)
+                .arg(c.get_program())
+                .args(c.get_args())
+                .stdin(Stdio::null());
+            for (k, v) in c.get_envs() {
+                match v {
+                    Some(v) => sh.env(k, v),
+                    None => sh.env_remove(k),
+                };
+            }
+            let o = sh.output().unwrap();
+            assert_eq!(
+                o.status.code(),
+                Some(0),
+                "sbx {args:?}: {}",
+                text(&o.stderr)
+            );
+        }
     }
 
     fn exec_cp_stop_on_a_running_sandbox() {
@@ -1933,7 +2997,7 @@ mod unix {
             IMAGE,
             "sh",
             "-c",
-            "while :; do echo y; sleep 0.05; done",
+            "while kill -0 $PPID 2>/dev/null; do echo y; sleep 0.05; done",
         ]);
         let id = text(&o.stdout).trim().to_owned();
         let soon = std::time::SystemTime::now()
@@ -1957,12 +3021,15 @@ mod unix {
         assert_eq!(e.sbx(&["rm", "-f", &id]).status.code(), Some(0));
     }
 
+    /// 셸이 시그널을 기다리는 곳: 1초짜리 `sleep`을 기다린다(`wait`는 트랩한 시그널에 곧바로 돌아와 트랩을 돈다).
+    /// 바쁜 루프가 아니다(초당 fork 한 번). 부모(게스트 처리)가 사라지면 스스로 끝나므로 무엇이 새도 1초 뒤에는 없다.
+    const BLOCK: &str =
+        "while kill -0 $PPID 2>/dev/null; do sleep 1 >/dev/null 2>&1 & wait $!; done";
+
     /// 시그널 `sig`를 받으면 `code`로 끝나고 TERM은 무시하는 기본 프로세스를 detached로 시작한다.
     /// 트랩을 건 뒤("ready"가 로그에 나온 뒤) ID를 돌려준다.
     fn run_trapping(e: &Env, extra: &[&str], sig: &str, code: i32) -> String {
-        let script = format!(
-            "trap '' TERM; trap 'exit {code}' {sig}; echo ready; while :; do sleep 0.02; done"
-        );
+        let script = format!("trap '' TERM; trap 'exit {code}' {sig}; echo ready; {BLOCK}");
         let mut args = vec!["run", "-d"];
         args.extend_from_slice(extra);
         args.extend_from_slice(&[IMAGE, "sh", "-c", &script]);
@@ -2116,6 +3183,11 @@ mod unix {
 
     /// `docker save`(Docker 25 이후)가 만드는 모양의 OCI layout tar: 레이어 하나, 이름 하나.
     fn oci_archive(name: &str) -> (Vec<u8>, String) {
+        oci_archive_layers(name, &[&[("hello.txt", b"hello")]])
+    }
+
+    /// 층들(아래부터, 층마다 (경로, 내용) 파일들)로 만든 OCI layout tar와 이미지 ID.
+    fn oci_archive_layers(name: &str, layers: &[&[(&str, &[u8])]]) -> (Vec<u8>, String) {
         use sha2::Digest as _;
         let hex = |b: &[u8]| {
             sha2::Sha256::digest(b)
@@ -2123,29 +3195,52 @@ mod unix {
                 .map(|x| format!("{x:02x}"))
                 .collect::<String>()
         };
-        let mut layer_tar = tar::Builder::new(Vec::new());
-        let mut h = tar::Header::new_gnu();
-        h.set_size(5);
-        h.set_mode(0o644);
-        h.set_cksum();
-        layer_tar
-            .append_data(&mut h, "hello.txt", &b"hello"[..])
-            .unwrap();
-        let layer_tar = layer_tar.into_inner().unwrap();
-        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
-        gz.write_all(&layer_tar).unwrap();
-        let layer = gz.finish().unwrap();
+        let mut tars = Vec::new();
+        let mut blobs = Vec::new();
+        for files in layers {
+            let mut layer_tar = tar::Builder::new(Vec::new());
+            for (path, data) in files.iter() {
+                let mut h = tar::Header::new_gnu();
+                h.set_size(data.len() as u64);
+                h.set_mode(0o644);
+                h.set_uid(0);
+                h.set_gid(0);
+                h.set_mtime(0);
+                h.set_cksum();
+                layer_tar.append_data(&mut h, path, *data).unwrap();
+            }
+            let layer_tar = layer_tar.into_inner().unwrap();
+            let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            gz.write_all(&layer_tar).unwrap();
+            blobs.push(gz.finish().unwrap());
+            tars.push(layer_tar);
+        }
         let arch = Arch::host().unwrap().oci_name();
+        let diff_ids: Vec<String> = tars
+            .iter()
+            .map(|t| format!("\"sha256:{}\"", hex(t)))
+            .collect();
         let config = format!(
-            r#"{{"architecture":"{arch}","os":"linux","config":{{"Cmd":["sh"]}},"rootfs":{{"type":"layers","diff_ids":["sha256:{}"]}}}}"#,
-            hex(&layer_tar)
+            r#"{{"architecture":"{arch}","os":"linux","config":{{"Cmd":["sh"],"User":"{}:{}","Labels":{{"name":"{name}"}}}},"rootfs":{{"type":"layers","diff_ids":[{}]}}}}"#,
+            id_output("-u"),
+            id_output("-g"),
+            diff_ids.join(",")
         );
+        let descs: Vec<String> = blobs
+            .iter()
+            .map(|b| {
+                format!(
+                    r#"{{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest":"sha256:{}","size":{}}}"#,
+                    hex(b),
+                    b.len()
+                )
+            })
+            .collect();
         let manifest = format!(
-            r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:{}","size":{}}},"layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest":"sha256:{}","size":{}}}]}}"#,
+            r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:{}","size":{}}},"layers":[{}]}}"#,
             hex(config.as_bytes()),
             config.len(),
-            hex(&layer),
-            layer.len()
+            descs.join(",")
         );
         let index = format!(
             r#"{{"schemaVersion":2,"manifests":[{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:{}","size":{},"annotations":{{"io.containerd.image.name":"{name}","org.opencontainers.image.ref.name":"latest"}}}}]}}"#,
@@ -2164,13 +3259,186 @@ mod unix {
         add("manifest.json".into(), b"[]");
         add("oci-layout".into(), br#"{"imageLayoutVersion":"1.0.0"}"#);
         add("index.json".into(), index.as_bytes());
-        for b in [config.as_bytes(), manifest.as_bytes(), &layer[..]] {
+        for b in [config.as_bytes(), manifest.as_bytes()]
+            .into_iter()
+            .chain(blobs.iter().map(Vec::as_slice))
+        {
             add(format!("blobs/sha256/{}", hex(b)), b);
         }
         (
             t.into_inner().unwrap(),
             format!("sha256:{}", hex(manifest.as_bytes())),
         )
+    }
+
+    const BASE: &[(&str, &[u8])] = &[("base.bin", &[7u8; 64 * 1024])];
+
+    /// 아카이브를 들인다.
+    fn load(e: &Env, file: &str, archive: &[u8]) {
+        std::fs::write(e.path(file), archive).unwrap();
+        let o = e.sbx(&["load", "-i", e.path(file).to_str().unwrap()]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    }
+
+    /// `run --rm IMAGE true`를 하고 실행기가 받은 VM 설정을 돌려준다.
+    fn run_recorded(e: &Env, image: &str, max_disks: Option<&str>) -> serde_json::Value {
+        let rec = e.path("launch.json");
+        let _ = std::fs::remove_file(&rec);
+        let mut c = e.cmd(&["run", "--rm", image, "true"]);
+        c.env("SBX_FAKE_RECORD", &rec);
+        if let Some(n) = max_disks {
+            c.env("SBX_FAKE_MAX_DISKS", n);
+        }
+        let o = c.output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        serde_json::from_slice(&std::fs::read(&rec).unwrap()).unwrap()
+    }
+
+    fn entries(dir: &Path) -> usize {
+        std::fs::read_dir(dir).map_or(0, |d| d.count())
+    }
+
+    /// 같은 바탕 층을 쓰는 이미지 둘: 바탕 층 디스크는 하나이고(`system df`가 한 번 센다), 한 이미지를 지워도 남고, 둘을
+    /// 지우면 지워진다. VM에는 층마다 디스크 하나가 붙는다(맨 아래 층, scratch, 위 층).
+    fn images_on_one_base_store_it_once() {
+        use sbx_cli::output::{DiskUsage, Image};
+        let e = Env::new();
+        let (a, _) = oci_archive_layers("local/a:1", &[BASE, &[("a.txt", b"a")]]);
+        let (b, _) = oci_archive_layers("local/b:1", &[BASE, &[("b.txt", b"b")]]);
+        load(&e, "a.tar", &a);
+        load(&e, "b.tar", &b);
+        let vm = run_recorded(&e, "local/a:1", None);
+        let disks = vm["disks"].as_array().unwrap();
+        let roles: Vec<&str> = disks.iter().map(|d| d["role"].as_str().unwrap()).collect();
+        assert_eq!(roles, ["rootfs", "scratch", "rootfs"], "{vm}");
+        assert!(
+            disks[0]["path"].as_str().unwrap().contains("/layers/"),
+            "{vm}"
+        );
+        run_recorded(&e, "local/b:1", None);
+        let layers = e.path("cache/layers");
+        assert_eq!(entries(&layers), 3, "base, a, b");
+        // 합친 것은 층 없는 기본 이미지(`IMAGE`)의 빈 rootfs 하나뿐이다.
+        assert_eq!(entries(&e.path("cache/merged")), 1);
+
+        let o = e.sbx(&["--format", "json", "images"]);
+        let list: Vec<Image> = serde_json::from_slice(&o.stdout).unwrap();
+        let mine: Vec<&Image> = list
+            .iter()
+            .filter(|i| i.references.iter().any(|r| r.contains("local/")))
+            .collect();
+        assert_eq!(mine.len(), 2);
+        for i in &mine {
+            assert!(i.shared_size >= 64 * 1024, "{i:?}");
+            assert_eq!(i.disk_size, i.shared_size + i.unique_size, "{i:?}");
+        }
+        let o = e.sbx(&["--format", "json", "system", "df"]);
+        let rows: Vec<DiskUsage> = serde_json::from_slice(&o.stdout).unwrap();
+        let im = rows.iter().find(|r| r.kind == "images").unwrap();
+        // 바탕은 한 번: 전체는 두 이미지 크기의 합에서 함께 쓰는 것 하나를 뺀 것이다.
+        let sum: u64 = mine.iter().map(|i| i.disk_size).sum();
+        assert_eq!(
+            im.size + mine[0].shared_size,
+            sum + e2e_fake_size(&list),
+            "{rows:?} {mine:?}"
+        );
+        assert_eq!(im.shared, mine[0].shared_size, "{rows:?}");
+        let o = e.sbx(&["images"]);
+        assert!(text(&o.stdout).contains("SHARED"), "{}", text(&o.stdout));
+
+        let o = e.sbx(&["rmi", "local/a:1"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(entries(&layers), 2, "base and b stay");
+        let vm = run_recorded(&e, "local/b:1", None);
+        assert_eq!(vm["disks"].as_array().unwrap().len(), 3);
+        let o = e.sbx(&["rmi", "local/b:1"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(entries(&layers), 0);
+    }
+
+    /// 기본 이미지(`IMAGE`, 층 없음)가 차지하는 것.
+    fn e2e_fake_size(list: &[sbx_cli::output::Image]) -> u64 {
+        list.iter()
+            .filter(|i| !i.references.iter().any(|r| r.contains("local/")))
+            .map(|i| i.disk_size)
+            .sum()
+    }
+
+    /// 실행기가 붙일 수 있는 디스크보다 층이 많으면 아래 층들을 합친 디스크 하나로 띄운다. 디스크가 넉넉한 실행기로
+    /// 다시 띄우면 층마다 디스크를 만들어 쓴다.
+    fn more_layers_than_disks_run_through_a_merged_disk() {
+        let e = Env::new();
+        let (a, _) = oci_archive_layers(
+            "local/deep:1",
+            &[
+                &[("0", b"0")],
+                &[("1", b"1")],
+                &[("2", b"2")],
+                &[("3", b"3")],
+            ],
+        );
+        load(&e, "deep.tar", &a);
+        let vm = run_recorded(&e, "local/deep:1", Some("3"));
+        let disks = vm["disks"].as_array().unwrap();
+        assert_eq!(disks.len(), 3, "{vm}");
+        assert!(
+            disks[0]["path"].as_str().unwrap().contains("/merged/"),
+            "{vm}"
+        );
+        assert!(
+            disks[2]["path"].as_str().unwrap().contains("/layers/"),
+            "{vm}"
+        );
+        assert_eq!(entries(&e.path("cache/layers")), 1, "only the top layer");
+        // 디스크 둘이면(지금까지와 같이) 모두 합친 것 하나와 scratch.
+        let vm = run_recorded(&e, "local/deep:1", Some("2"));
+        let roles: Vec<&str> = vm["disks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["role"].as_str().unwrap())
+            .collect();
+        assert_eq!(roles, ["rootfs", "scratch"]);
+        let vm = run_recorded(&e, "local/deep:1", None);
+        assert_eq!(vm["disks"].as_array().unwrap().len(), 5, "{vm}");
+        // 합친 것은 캐시다. prune이 쓰지 않는 것을 지우지는 않지만 이미지를 지우면 함께 지워진다.
+        let o = e.sbx(&["rmi", "local/deep:1"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(
+            entries(&e.path("cache/merged")),
+            1,
+            "the empty rootfs of IMAGE"
+        );
+        assert_eq!(entries(&e.path("cache/layers")), 0);
+    }
+
+    /// 0.2(배치 1)가 쓴 cache_dir: 이미지별 rootfs를 지우고, 다음 `run`이 받아 둔 blob에서 층 디스크를 만든다.
+    /// 그 전에 만들어 둔 샌드박스도 `start`가 그렇게 띄운다.
+    fn a_layout_1_cache_is_migrated_on_first_use() {
+        let e = Env::new();
+        let (a, id) = oci_archive_layers("local/old:1", &[BASE, &[("x", b"x")]]);
+        load(&e, "old.tar", &a);
+        let o = e.sbx(&["create", "--name", "kept", "local/old:1", "true"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        // 0.2가 남겼을 모습으로 되돌린다.
+        let cache = e.path("cache");
+        std::fs::remove_dir_all(cache.join("layers")).unwrap();
+        let old = cache
+            .join("images")
+            .join(id.strip_prefix("sha256:").unwrap())
+            .join("rootfs.erofs");
+        std::fs::write(&old, b"merged by 0.2").unwrap();
+        std::fs::write(cache.join("layout-version"), "1\n").unwrap();
+
+        let o = e.sbx(&["start", "-a", "kept"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(!old.exists());
+        assert_eq!(
+            std::fs::read_to_string(cache.join("layout-version")).unwrap(),
+            "2\n"
+        );
+        assert_eq!(entries(&cache.join("layers")), 2);
+        run_recorded(&e, "local/old:1", None);
     }
 
     fn load_and_save_round_trip_an_oci_archive() {
@@ -2336,6 +3604,349 @@ mod unix {
         std::fs::write(e.path("in.tar"), &archive).unwrap();
         let o = e.sbx(&["load", "-i", e.path("in.tar").to_str().unwrap()]);
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    }
+
+    /// 인증 없는 OCI 레지스트리 흉내(메모리): blob `HEAD`·`GET`, 올리기(`POST`, mount, 한 번에 `PUT`), manifest
+    /// `PUT`·`GET`. 받은 요청을 `메서드 경로?쿼리`로 남긴다.
+    struct Registry {
+        port: u16,
+        log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        manifests: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>>,
+    }
+
+    fn registry() -> Registry {
+        use std::collections::HashMap;
+        use std::io::{BufRead, BufReader, Read};
+        use std::sync::{Arc, Mutex};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let log: Arc<Mutex<Vec<String>>> = Arc::default();
+        let manifests: Arc<Mutex<HashMap<String, Vec<u8>>>> = Arc::default();
+        // (저장소, digest) → 내용. 올리는 중인 것은 id → 저장소.
+        type Blobs = Mutex<HashMap<(String, String), Vec<u8>>>;
+        let blobs: Arc<Blobs> = Arc::default();
+        let uploads: Arc<Mutex<HashMap<String, String>>> = Arc::default();
+        let (log2, man2) = (log.clone(), manifests.clone());
+        std::thread::spawn(move || {
+            for (n, c) in l.incoming().enumerate() {
+                let Ok(mut c) = c else { return };
+                let mut r = BufReader::new(c.try_clone().unwrap());
+                let mut first = String::new();
+                if r.read_line(&mut first).is_err() {
+                    continue;
+                }
+                let mut len = 0usize;
+                let mut ctype = String::new();
+                loop {
+                    let mut h = String::new();
+                    if r.read_line(&mut h).is_err() || h == "\r\n" || h.is_empty() {
+                        break;
+                    }
+                    if let Some((k, v)) = h.split_once(':') {
+                        match k.trim().to_ascii_lowercase().as_str() {
+                            "content-length" => len = v.trim().parse().unwrap_or(0),
+                            "content-type" => ctype = v.trim().to_owned(),
+                            _ => {}
+                        }
+                    }
+                }
+                let mut body = vec![0; len];
+                if r.read_exact(&mut body).is_err() {
+                    continue;
+                }
+                let mut parts = first.split_whitespace();
+                let (method, target) = (
+                    parts.next().unwrap_or("").to_owned(),
+                    parts.next().unwrap_or("").to_owned(),
+                );
+                log2.lock().unwrap().push(format!("{method} {target}"));
+                let (path, query) = target.split_once('?').unwrap_or((&target, ""));
+                let q = |key: &str| {
+                    query.split('&').find_map(|kv| {
+                        let (k, v) = kv.split_once('=')?;
+                        (k == key).then(|| v.replace("%3A", ":").replace("%2F", "/"))
+                    })
+                };
+                let send = |c: &mut std::net::TcpStream,
+                            status: &str,
+                            headers: &str,
+                            body: &[u8]| {
+                    let head = format!(
+                        "HTTP/1.1 {status}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = c.write_all(head.as_bytes());
+                    if method != "HEAD" {
+                        let _ = c.write_all(body);
+                    }
+                };
+                let rest = path.strip_prefix("/v2/").unwrap_or("");
+                let hex = |b: &[u8]| {
+                    use sha2::Digest as _;
+                    sha2::Sha256::digest(b)
+                        .iter()
+                        .map(|x| format!("{x:02x}"))
+                        .collect::<String>()
+                };
+                if let Some((repo, id)) = rest.split_once("/blobs/uploads/") {
+                    if method == "POST" {
+                        if let (Some(d), Some(from)) = (q("mount"), q("from")) {
+                            let have = blobs.lock().unwrap().get(&(from, d.clone())).cloned();
+                            if let Some(b) = have {
+                                blobs.lock().unwrap().insert((repo.to_owned(), d), b);
+                                send(&mut c, "201 Created", "", b"");
+                                continue;
+                            }
+                        }
+                        uploads
+                            .lock()
+                            .unwrap()
+                            .insert(n.to_string(), repo.to_owned());
+                        let loc = format!("Location: /v2/{repo}/blobs/uploads/{n}?_state=x\r\n");
+                        send(&mut c, "202 Accepted", &loc, b"");
+                    } else if method == "PUT" {
+                        let d = q("digest").unwrap_or_default();
+                        if uploads.lock().unwrap().remove(id).is_none()
+                            || format!("sha256:{}", hex(&body)) != d
+                        {
+                            send(
+                                &mut c,
+                                "400 Bad Request",
+                                "",
+                                br#"{"errors":[{"code":"DIGEST_INVALID"}]}"#,
+                            );
+                            continue;
+                        }
+                        blobs.lock().unwrap().insert((repo.to_owned(), d), body);
+                        send(&mut c, "201 Created", "", b"");
+                    } else {
+                        uploads.lock().unwrap().remove(id);
+                        send(&mut c, "204 No Content", "", b"");
+                    }
+                } else if let Some((repo, d)) = rest.split_once("/blobs/") {
+                    match blobs.lock().unwrap().get(&(repo.to_owned(), d.to_owned())) {
+                        Some(b) => send(&mut c, "200 OK", "", b),
+                        None => send(&mut c, "404 Not Found", "", b""),
+                    }
+                } else if let Some((repo, tag)) = rest.split_once("/manifests/") {
+                    let key = format!("{repo}:{tag}");
+                    if method == "PUT" {
+                        let d = format!("sha256:{}", hex(&body));
+                        let mut m = man2.lock().unwrap();
+                        m.insert(format!("{repo}:{d}"), body.clone());
+                        m.insert(key, body);
+                        let _ = ctype;
+                        send(
+                            &mut c,
+                            "201 Created",
+                            &format!("Docker-Content-Digest: {d}\r\n"),
+                            b"",
+                        );
+                    } else {
+                        match man2.lock().unwrap().get(&key) {
+                            Some(b) => send(
+                                &mut c,
+                                "200 OK",
+                                "Content-Type: application/vnd.oci.image.manifest.v1+json\r\n",
+                                b,
+                            ),
+                            None => send(&mut c, "404 Not Found", "", b""),
+                        }
+                    }
+                } else {
+                    send(&mut c, "404 Not Found", "", b"");
+                }
+            }
+        });
+        Registry {
+            port,
+            log,
+            manifests,
+        }
+    }
+
+    fn tag_and_push_to_a_registry() {
+        let e = Env::new();
+        let reg = registry();
+        let host = format!("127.0.0.1:{}", reg.port);
+        let (archive, id) = oci_archive("example.com/team/tool:1");
+        std::fs::write(e.path("in.tar"), &archive).unwrap();
+        let o = e.sbx(&["load", "-i", e.path("in.tar").to_str().unwrap()]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+
+        // tag: 출력 없음(Docker와 같다). 참조는 정규화한다. JSON이면 Tagged.
+        let target = format!("{host}/team/tool:2");
+        let o = e.sbx(&["tag", "example.com/team/tool:1", &target]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(o.stdout.is_empty(), "{}", text(&o.stdout));
+        let o = e.sbx(&["--format", "json", "tag", &id[7..19], "tool:copy"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let t: sbx_cli::output::Tagged = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(
+            (t.reference.as_str(), t.id.as_str()),
+            ("docker.io/library/tool:copy", id.as_str())
+        );
+        let o = e.sbx(&["--format", "json", "images"]);
+        let images: Vec<sbx_cli::output::Image> = serde_json::from_slice(&o.stdout).unwrap();
+        let img = images.iter().find(|i| i.id == id).unwrap();
+        assert!(img.references.contains(&target), "{img:?}");
+        // 없는 원본, digest 대상은 거부한다.
+        let o = e.sbx(&["tag", "nope:1", "x:1"]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("no such image"),
+            "{}",
+            text(&o.stderr)
+        );
+        let o = e.sbx(&["tag", "tool:copy", &format!("x@sha256:{}", "a".repeat(64))]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(text(&o.stderr).contains("digest"), "{}", text(&o.stderr));
+
+        // push: Docker 같은 줄. 받은 manifest 그대로라 레지스트리의 digest가 이미지 ID다.
+        let o = e.sbx(&["push", &target]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let out = text(&o.stdout);
+        assert!(
+            out.starts_with(&format!(
+                "The push refers to repository [{host}/team/tool]\n"
+            )),
+            "{out}"
+        );
+        assert!(out.contains(": Pushed\n"), "{out}");
+        assert!(out.contains(&format!("2: digest: {id} size: ")), "{out}");
+        let stored = reg
+            .manifests
+            .lock()
+            .unwrap()
+            .get("team/tool:2")
+            .cloned()
+            .unwrap();
+        {
+            use sha2::Digest as _;
+            let hex: String = sha2::Sha256::digest(&stored)
+                .iter()
+                .map(|x| format!("{x:02x}"))
+                .collect();
+            assert_eq!(format!("sha256:{hex}"), id);
+        }
+        // 다시 올리면 보내지 않는다.
+        let o = e.sbx(&["push", &target]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(
+            text(&o.stdout).contains(": Layer already exists\n"),
+            "{}",
+            text(&o.stdout)
+        );
+        // -q는 참조만, JSON은 Pushed 한 줄.
+        let o = e.sbx(&["push", "-q", &target]);
+        assert_eq!(text(&o.stdout), format!("{target}\n"));
+        let o = e.sbx(&["--format", "json", "push", "-q", &target]);
+        assert_eq!(text(&o.stdout), format!("{target}\n"));
+        let o = e.sbx(&["--format", "json", "push", &target]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let p: sbx_cli::output::Pushed = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(
+            (p.reference.as_str(), p.id.as_str()),
+            (target.as_str(), id.as_str())
+        );
+        assert_eq!(p.blobs.len(), 2, "{p:?}");
+        assert!(p.blobs.iter().all(|b| b.status == "exists"), "{p:?}");
+
+        // 다른 sbx(다른 캐시)가 그 레지스트리에서 받으면 같은 ID다.
+        let other = Env::new();
+        let o = other.sbx(&["--format", "json", "pull", &target]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let pulled: sbx_cli::output::Pulled = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(pulled.id, id);
+        // 같은 레지스트리의 다른 저장소로는 받아 온 저장소에서 끌어온다(mount).
+        let copy = format!("{host}/copies/tool:1");
+        assert_eq!(other.sbx(&["tag", &target, &copy]).status.code(), Some(0));
+        let o = other.sbx(&["push", &copy]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(
+            text(&o.stdout).contains(": Mounted from team/tool\n"),
+            "{}",
+            text(&o.stdout)
+        );
+        assert!(
+            reg.log
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|l| l.contains("from=team")),
+            "{:?}",
+            reg.log.lock().unwrap()
+        );
+
+        // -a: 그 저장소의 로컬 태그를 모두. 태그를 함께 주면 거부한다.
+        let three = format!("{host}/team/tool:3");
+        assert_eq!(e.sbx(&["tag", &target, &three]).status.code(), Some(0));
+        let o = e.sbx(&["push", "-a", "-q", &format!("{host}/team/tool")]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), format!("{target}\n{three}\n"));
+        assert!(reg.manifests.lock().unwrap().contains_key("team/tool:3"));
+        let o = e.sbx(&["push", "-a", &target]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("--all-tags"),
+            "{}",
+            text(&o.stderr)
+        );
+        // 로컬에 없는 태그, ID로는 올리지 않는다.
+        let o = e.sbx(&["push", &format!("{host}/team/tool:9")]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(text(&o.stderr).contains("sbx tag"), "{}", text(&o.stderr));
+
+        // registries.conf의 차단: 레지스트리에 가지 않는다. 미러는 push에 쓰지 않는다.
+        std::fs::write(
+            e.path("registries.conf"),
+            format!(
+                "[[registry]]\nprefix = \"{host}/blocked\"\nlocation = \"{host}/blocked\"\nblocked = true\n\
+                 [[registry]]\nprefix = \"{host}/team\"\nlocation = \"{host}/team\"\n\
+                 [[registry.mirror]]\nlocation = \"127.0.0.1:9/mirror\"\n"
+            ),
+        )
+        .unwrap();
+        let blocked = format!("{host}/blocked/tool:1");
+        assert_eq!(e.sbx(&["tag", &target, &blocked]).status.code(), Some(0));
+        let before = reg.log.lock().unwrap().len();
+        let o = e.sbx(&["--format", "json", "push", &blocked]);
+        assert_eq!(o.status.code(), Some(1));
+        assert!(
+            text(&o.stderr).contains("blocked by registries.conf"),
+            "{}",
+            text(&o.stderr)
+        );
+        assert_eq!(reg.log.lock().unwrap().len(), before);
+        let o = e.sbx(&["push", "-q", &target]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+
+        // 이벤트: tag와 push.
+        let o = e.sbx(&[
+            "events", "--since", "1h", "--until", "0s", "--format", "json",
+        ]);
+        let actions: Vec<(String, String)> = text(&o.stdout)
+            .lines()
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+            .filter(|v| v["type"] == "image")
+            .map(|v| {
+                (
+                    v["action"].as_str().unwrap().to_owned(),
+                    v["attributes"]["reference"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_owned(),
+                )
+            })
+            .collect();
+        assert!(
+            actions.contains(&("tag".into(), target.clone())),
+            "{actions:?}"
+        );
+        assert!(
+            actions.contains(&("push".into(), target.clone())),
+            "{actions:?}"
+        );
     }
 
     fn login_and_logout_use_dockers_config() {
@@ -2565,7 +4176,7 @@ mod unix {
             IMAGE,
             "sh",
             "-c",
-            "while :; do test -t 1 && echo tty; sleep 0.05; done",
+            "while kill -0 $PPID 2>/dev/null; do test -t 1 && echo tty; sleep 0.05; done",
         ]);
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
         let id = text(&o.stdout).trim().to_owned();
@@ -2585,7 +4196,7 @@ mod unix {
             IMAGE,
             "sh",
             "-c",
-            "trap 'echo term; exit 7' TERM; while :; do echo tick; sleep 0.05; done",
+            "trap 'echo term; exit 7' TERM; while kill -0 $PPID 2>/dev/null; do echo tick; sleep 0.05; done",
         ]);
         let id = text(&o.stdout).trim().to_owned();
         let mut client = e.spawn(&["attach", &id]);
@@ -2630,6 +4241,21 @@ mod unix {
         let o = without(&["run", "--rm", IMAGE, "echo", "via", "installed"]);
         assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
         assert_eq!(text(&o.stdout), "via installed\n");
+        // system df: 실행 중인 샌드박스가 쓰는 실행기는 active다. 멈추면 아니다.
+        let executors_row = || {
+            let o = without(&["--format", "json", "system", "df"]);
+            assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+            let rows: Vec<sbx_cli::output::DiskUsage> = serde_json::from_slice(&o.stdout).unwrap();
+            let r = rows.into_iter().find(|r| r.kind == "executors").unwrap();
+            (r.total, r.active)
+        };
+        assert_eq!(executors_row(), (1, 0));
+        let o = without(&["run", "-d", "--name", "busy", IMAGE, "sleep", "30"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        wait_named(&e, "busy");
+        assert_eq!(executors_row(), (1, 1));
+        assert_eq!(without(&["rm", "-f", "busy"]).status.code(), Some(0));
+        assert_eq!(executors_row(), (1, 0));
         // 규약을 말하지 않는 것은 설치하지 않는다.
         let bad = e.path("not-an-executor");
         std::fs::write(&bad, "#!/bin/sh\nexit 3\n").unwrap();
@@ -2744,6 +4370,16 @@ mod unix {
         let o = without(&["run", "--rm", IMAGE, "echo", "via", "wick"]);
         ok(&o);
         assert_eq!(text(&o.stdout), "via wick\n");
+        // system df: 실행 중인 샌드박스가 쓰는 VMM 묶음과 그 어댑터는 둘 다 active다(shim이 띄운 것도).
+        let o = without(&["run", "-d", "--name", "via-shim", IMAGE, "sleep", "30"]);
+        ok(&o);
+        wait_named(&e, "via-shim");
+        let o = without(&["--format", "json", "system", "df"]);
+        ok(&o);
+        let rows: Vec<sbx_cli::output::DiskUsage> = serde_json::from_slice(&o.stdout).unwrap();
+        let r = rows.iter().find(|r| r.kind == "executors").unwrap();
+        assert_eq!((r.total, r.active), (2, 2), "{rows:?}");
+        ok(&without(&["rm", "-f", "via-shim"]));
 
         // 만든 샌드박스는 그 실행기에 고정된다. 기본을 바꿔도 그것으로 시작한다.
         let o = without(&["create", "--name", "pinned", IMAGE, "echo", "pinned"]);
@@ -2977,6 +4613,159 @@ mod unix {
         std::fs::write(dir.join("v2/index.json.minisig"), sig.into_string()).unwrap();
         let o = sbx(&["executor", "search"]);
         assert!(text(&o.stderr).contains("expired"), "{}", text(&o.stderr));
+    }
+
+    /// 실행기가 없으면 VM을 띄우는 명령이 공식 저장소(여기서는 로컬 서명 저장소를 `official`로 둔다)의 기본
+    /// 실행기를 받아 깔고 이어서 한다. 끄는 길, 서명되지 않은 저장소, 닿지 않는 저장소, 동시에 두 번.
+    fn the_default_executor_is_installed_on_first_use() {
+        let e = Env::new();
+        let sbx = |args: &[&str], extra: &[(&str, &str)]| {
+            let mut c = e.cmd(args);
+            c.env_remove("SBX_EXECUTOR")
+                .env_remove("SBX_NO_AUTO_EXECUTOR");
+            for (k, v) in extra {
+                c.env(k, v);
+            }
+            c.output().unwrap()
+        };
+        let ok = |o: &Output| assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let nothing_installed = || {
+            let o = sbx(&["executor", "ls", "--format", "json"], &[]);
+            assert_eq!(text(&o.stdout).trim(), "[]", "{}", text(&o.stderr));
+        };
+        let (bytes, sha) = bundle_of_me();
+        let host = sbx_executor_repo::Platform::host();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // 실행기가 둘이다: 어느 것이 기본인지는 색인의 `default`가 말한다.
+        let dir = e.path("official");
+        std::fs::create_dir_all(dir.join("v2")).unwrap();
+        std::fs::write(dir.join("v2/fake.tar.gz"), &bytes).unwrap();
+        let art = serde_json::json!([{"os": host.os, "architecture": host.architecture,
+            "url": "fake.tar.gz", "sha256": sha, "size": bytes.len()}]);
+        let entry = |v: &str| serde_json::json!({"versions": {v: {"protocol": sbx_executor_proto::VERSION, "artifacts": art}}});
+        let index =
+            serde_json::json!({"schema": 2, "serial": 1, "expires": now + 3600, "default": "fake",
+            "executors": {"fake": entry("1.0"), "zzz": entry("9.0")}})
+            .to_string();
+        std::fs::write(dir.join("v2/index.json"), &index).unwrap();
+        let kp = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let sig = minisign::sign(None, &kp.sk, index.as_bytes(), None, None).unwrap();
+        std::fs::write(dir.join("v2/index.json.minisig"), sig.into_string()).unwrap();
+        let url = format!("file://{}", dir.display());
+        let key = kp.pk.to_base64();
+        let set_official = |url: &str, key: Option<&str>| {
+            ok(&sbx(&["executor", "repo", "rm", "official"], &[]));
+            let mut args = vec!["executor", "repo", "add", "official", url];
+            match key {
+                Some(k) => args.extend(["--key", k]),
+                None => args.push("--unsigned"),
+            }
+            ok(&sbx(&args, &[]));
+        };
+        let run = ["run", "--rm", IMAGE, "echo", "hi"];
+
+        // 이 sbx에 공식 키가 없으면(지금의 빌드) 받지 않는다. 표준 출력은 비어 있다.
+        set_official(&url, None);
+        let o = sbx(&run, &[]);
+        assert_eq!(o.status.code(), Some(125), "{}", text(&o.stderr));
+        assert!(
+            text(&o.stderr).contains("is not signed"),
+            "{}",
+            text(&o.stderr)
+        );
+        nothing_installed();
+
+        set_official(&url, Some(&key));
+        // 받기 전의 안내: 첫 run이 받는다.
+        let o = sbx(&["executor", "current"], &[]);
+        assert!(
+            text(&o.stderr).contains("the first `sbx run`"),
+            "{}",
+            text(&o.stderr)
+        );
+        // 끄는 길 둘.
+        for (k, v, why) in [
+            ("SBX_NO_AUTO_EXECUTOR", "1", "SBX_NO_AUTO_EXECUTOR is set"),
+            ("SBX_EXECUTOR", "none", "SBX_EXECUTOR=none"),
+        ] {
+            let o = sbx(&run, &[(k, v)]);
+            assert_eq!(o.status.code(), Some(125), "{}", text(&o.stderr));
+            assert!(text(&o.stderr).contains(why), "{k}: {}", text(&o.stderr));
+            nothing_installed();
+        }
+        // `SBX_NO_AUTO_EXECUTOR=0`은 끄지 않는다(아래에서 받는다).
+
+        // 닿지 않으면 까닭과 손으로 하는 길을 알리고 아무것도 깔지 않는다.
+        set_official(&format!("file://{}", e.path("gone").display()), Some(&key));
+        let o = sbx(&run, &[]);
+        assert_eq!(o.status.code(), Some(125), "{}", text(&o.stderr));
+        let err = text(&o.stderr);
+        assert!(
+            err.contains("could not be read") && err.contains("sbx executor install --from DIR"),
+            "{err}"
+        );
+        nothing_installed();
+
+        // 두 명령이 함께 처음 돈다: 하나만 받고 알리며, 둘 다 돈다. 받은 것의 알림은 표준 오류에만.
+        set_official(&url, Some(&key));
+        let spawn = || {
+            let mut c = e.cmd(&run);
+            c.env_remove("SBX_EXECUTOR")
+                .env("SBX_NO_AUTO_EXECUTOR", "0")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            c.spawn().unwrap()
+        };
+        let (a, b) = (spawn(), spawn());
+        let outs = [
+            wait_with_timeout(a, Duration::from_secs(60)),
+            wait_with_timeout(b, Duration::from_secs(60)),
+        ];
+        let mut notices = 0;
+        for o in &outs {
+            assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+            assert_eq!(text(&o.stdout), "hi\n");
+            if text(&o.stderr).contains(&format!(
+                "installing the default executor fake@1.0 from official ({url}/)"
+            )) {
+                notices += 1;
+            }
+        }
+        assert_eq!(
+            notices,
+            1,
+            "{}\n---\n{}",
+            text(&outs[0].stderr),
+            text(&outs[1].stderr)
+        );
+        let o = sbx(&["executor", "ls"], &[]);
+        assert!(
+            text(&o.stdout).contains("* fake") && text(&o.stdout).contains("official"),
+            "{}",
+            text(&o.stdout)
+        );
+        // 이제 있으니 다시 받지 않는다.
+        let o = sbx(&run, &[]);
+        ok(&o);
+        assert!(
+            !text(&o.stderr).contains("installing"),
+            "{}",
+            text(&o.stderr)
+        );
+        // 설치한 것이 있는데 기본이 없으면 받지 않고 고르라고 한다.
+        let o = sbx(&["executor", "repo", "ls"], &[]);
+        ok(&o);
+        std::fs::remove_file(e.path("data/executors/default")).unwrap();
+        let o = sbx(&run, &[]);
+        assert_eq!(o.status.code(), Some(125), "{}", text(&o.stderr));
+        assert!(
+            text(&o.stderr).contains("sbx executor use NAME"),
+            "{}",
+            text(&o.stderr)
+        );
     }
 
     fn a_repository_that_vanishes_or_turns_hostile_breaks_nothing_installed() {
@@ -3272,10 +5061,11 @@ mod unix {
             config,
             layers: vec![],
             ignored_fields: vec![],
+            build: None,
         };
         write::write_image_record(&layout, &record).unwrap();
         write::set_ref(&layout, &record.reference, &id).unwrap();
-        std::fs::write(layout.rootfs(&id, RootfsFormat::Erofs), b"fs").unwrap();
+        plant_empty_rootfs(&layout);
         std::fs::write(layout.kernel(&id), b"kernel").unwrap();
 
         let run = |image: &str| {
@@ -3498,6 +5288,106 @@ mod unix {
             m.call("create", serde_json::json!({"image": IMAGE}))
                 .is_err()
         );
+    }
+
+    /// MCP의 잇기: MCP로 만든 샌드박스는 MCP로 만든 샌드박스에만 잇는다. 만들 때도, 연결마다도(이름이 나중에 CLI로
+    /// 만든 샌드박스를 가리켜도 닿지 않는다). CLI로 만든 샌드박스는 MCP로 만든 샌드박스에 이을 수 있다.
+    fn mcp_connect_stays_among_mcp_sandboxes() {
+        use sbx_executor_fake::probe;
+        use std::io::Read;
+        let e = Env::new();
+        let data = e.path("data");
+        let port = echo_service();
+        // 프록시를 모르는 클라이언트 노릇: 샌드박스 `me` 안에서 `name:port`에 붙어 "hi"를 보내고 받은 것.
+        let echo = |me: &str, name: &str| -> String {
+            let id = std::fs::read_to_string(data.join("names").join(me)).unwrap();
+            let dir = probe::find(&data.join("sandboxes").join(id.trim())).unwrap();
+            let mut c = match probe::connect(&dir, name, port) {
+                Ok(c) => c,
+                Err(e) => return format!("unreachable: {e}"),
+            };
+            c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let _ = c.write_all(b"hi");
+            let _ = c.shutdown(std::net::Shutdown::Write);
+            let mut got = String::new();
+            let _ = c.read_to_string(&mut got);
+            got
+        };
+        let o = e.sbx(&["run", "-d", "--name", "userdb", IMAGE, "sleep", "60"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let mut child = e
+            .cmd(&["mcp"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let out = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut m = Mcp {
+            child,
+            out,
+            next: 0,
+        };
+        m.request("initialize", serde_json::json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "e2e", "version": "0"}}));
+        m.call(
+            "create",
+            serde_json::json!({"image": IMAGE, "name": "mdb", "command": ["sleep", "60"]}),
+        )
+        .unwrap();
+        // 사용자의 샌드박스에는 잇지 못한다(MCP에는 없는 것과 같다).
+        let err = m
+            .call(
+                "create",
+                serde_json::json!({"image": IMAGE, "name": "agent0", "connect": [format!("userdb:{port}")]}),
+            )
+            .unwrap_err();
+        assert!(err.contains("created through MCP"), "{err}");
+        // MCP로 만든 것에는 잇는다.
+        m.call(
+            "create",
+            serde_json::json!({"image": IMAGE, "name": "agent", "command": ["sleep", "60"], "connect": [format!("mdb:{port}")]}),
+        )
+        .unwrap();
+        assert_eq!(
+            echo("agent", "mdb"),
+            "hi",
+            "{:?}",
+            network_events(&e, &["sandbox=agent"])
+        );
+        assert!(echo("agent", "userdb").starts_with("unreachable: userdb: rcode 3"));
+        // 그 이름이 나중에 사용자의 샌드박스를 가리켜도 연결마다 다시 보므로 닿지 않는다.
+        m.call("remove", serde_json::json!({"id": "mdb"})).unwrap();
+        let o = e.sbx(&["run", "-d", "--name", "mdb", IMAGE, "sleep", "60"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(echo("agent", "mdb"), "");
+        let refused = network_events(&e, &["sandbox=agent", "event=refuse"]);
+        assert!(
+            refused.iter().any(|ev| ev["attributes"]["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("lacks the label io.github.toollyst.sandbox.owner=mcp")),
+            "{refused:?}"
+        );
+        // 사용자(CLI)의 샌드박스는 MCP로 만든 샌드박스에 잇는다.
+        let to_agent = format!("agent:{port}");
+        let o = e.sbx(&[
+            "run",
+            "-d",
+            "--name",
+            "user",
+            "--connect",
+            &to_agent,
+            IMAGE,
+            "sleep",
+            "60",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(echo("user", "agent"), "hi");
+        m.call("remove", serde_json::json!({"id": "agent"}))
+            .unwrap();
+        for name in ["userdb", "mdb", "user"] {
+            let _ = e.sbx(&["rm", "-f", name]);
+        }
     }
 
     fn mcp_serves_sandboxes_to_agents() {
@@ -3760,5 +5650,2016 @@ mod unix {
         drop(m.child.stdin.take());
         let out = wait_with_timeout(m.child, Duration::from_secs(10));
         assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    }
+
+    // ── build ────────────────────────────────────────────────────────────
+    //
+    // 가짜 실행기의 빌드 VM은 층 디스크를 디렉터리로 펼치고, 작업 디렉터리와 COPY 대상을 그 아래로 옮긴다. 명령은
+    // 호스트에서 돌므로 RUN은 작업 디렉터리 기준 상대 경로를 쓴다.
+
+    /// 바탕 이미지(`local/base:1`, 층 하나)를 들이고 빌드 컨텍스트 디렉터리를 돌려준다.
+    fn build_env() -> (Env, PathBuf) {
+        let e = Env::new();
+        let (base, _) = oci_archive_layers("local/base:1", &[BASE]);
+        load(&e, "base.tar", &base);
+        let ctx = e.path("ctx");
+        std::fs::create_dir_all(ctx.join("src")).unwrap();
+        (e, ctx)
+    }
+
+    fn write(dir: &Path, name: &str, data: &str) {
+        let p = dir.join(name);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, data).unwrap();
+    }
+
+    /// `build`을 돌린다. `record`면 실행기가 받은 VM 설정을 그 파일에 적게 한다(VM을 띄웠는지 본다).
+    fn build(e: &Env, ctx: &Path, args: &[&str], record: Option<&Path>) -> Output {
+        let mut all = vec!["build"];
+        all.extend_from_slice(args);
+        all.push(ctx.to_str().unwrap());
+        let mut c = e.cmd(&all);
+        if let Some(r) = record {
+            let _ = std::fs::remove_file(r);
+            c.env("SBX_FAKE_RECORD", r);
+        }
+        c.output().unwrap()
+    }
+
+    const MULTI_STAGE: &str = "\
+FROM local/base:1 AS build
+WORKDIR /src
+COPY src/ ./
+RUN test ! -e secret.txt && cat a.txt > out.txt && echo built >> out.txt
+FROM local/base:1
+COPY --from=build /src/out.txt /app/out.txt
+ENV GREETING=hi
+CMD [\"cat\", \"/app/out.txt\"]
+";
+
+    /// 여러 스테이지를 만들고, 만든 이미지가 목록에 있고 돌고, 그 층을 다음 빌드가 본다. 두 번째 빌드는 모두 캐시에서
+    /// 와 VM을 띄우지 않는다. COPY한 파일 하나를 바꾸면 그 단계부터 다시 만들고, `--no-cache`는 캐시를 쓰지 않는다.
+    fn build_runs_stages_and_caches_steps() {
+        let (e, ctx) = build_env();
+        write(&ctx, "Dockerfile", MULTI_STAGE);
+        write(&ctx, ".dockerignore", "src/secret.txt\n");
+        write(&ctx, "src/a.txt", "from the context\n");
+        write(&ctx, "src/secret.txt", "no\n");
+        let rec = e.path("vm.json");
+        let o = build(&e, &ctx, &["-t", "local/app:1"], Some(&rec));
+        let err = text(&o.stderr);
+        assert_eq!(o.status.code(), Some(0), "{err}");
+        assert!(rec.is_file(), "the RUN step needs a VM");
+        assert!(
+            err.contains("[build 4/4] RUN test ! -e secret.txt"),
+            "{err}"
+        );
+        assert!(err.contains("[stage-1 2/4] COPY --from=build"), "{err}");
+        assert!(text(&o.stdout).contains("Successfully tagged local/app:1"));
+        let o = e.sbx(&["--format", "json", "images"]);
+        let list: Vec<sbx_cli::output::Image> = serde_json::from_slice(&o.stdout).unwrap();
+        let app = list
+            .iter()
+            .find(|i| i.references.iter().any(|r| r.contains("local/app:1")))
+            .expect("the built image is listed");
+        // 바탕 층 + COPY 층.
+        let o = e.sbx(&["run", "--rm", "local/app:1", "true"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        // 빌드 VM과 그 뿌리 기록은 남지 않는다.
+        assert!(e.ps().is_empty());
+        assert_eq!(list.len(), 3, "e2e-fake, base, app: {list:?}");
+
+        // 만든 이미지 위에서 그 층을 본다.
+        let check = e.path("check");
+        std::fs::create_dir_all(&check).unwrap();
+        write(
+            &check,
+            "Dockerfile",
+            "FROM local/app:1\nWORKDIR /app\nRUN cat out.txt && echo \"GREETING=$GREETING\"\n",
+        );
+        let o = build(&e, &check, &["--progress", "plain"], None);
+        let err = text(&o.stderr);
+        assert_eq!(o.status.code(), Some(0), "{err}");
+        assert!(
+            err.contains("from the context\nbuilt\nGREETING=hi\n"),
+            "{err}"
+        );
+
+        // 두 번째: 모두 캐시, VM 없음, 같은 이미지 ID.
+        let o = build(&e, &ctx, &["-q", "-t", "local/app:1"], Some(&rec));
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(!rec.exists(), "a fully cached build launches no VM");
+        assert_eq!(text(&o.stdout).trim(), app.id);
+        let o = build(&e, &ctx, &[], Some(&rec));
+        let err = text(&o.stderr);
+        assert!(err.contains("[build 4/4] CACHED"), "{err}");
+
+        // 원본 하나를 바꾸면 그 단계부터 다시 만든다(앞 단계는 캐시).
+        write(&ctx, "src/a.txt", "changed\n");
+        let o = build(&e, &ctx, &[], Some(&rec));
+        let err = text(&o.stderr);
+        assert_eq!(o.status.code(), Some(0), "{err}");
+        assert!(err.contains("[build 2/4] CACHED"), "{err}");
+        assert!(!err.contains("[build 3/4] CACHED"), "{err}");
+        assert!(!err.contains("[build 4/4] CACHED"), "{err}");
+        assert!(rec.is_file());
+        // --no-cache: 캐시를 읽지 않는다.
+        let o = build(&e, &ctx, &["--no-cache"], Some(&rec));
+        let err = text(&o.stderr);
+        assert_eq!(o.status.code(), Some(0), "{err}");
+        assert!(!err.contains("CACHED"), "{err}");
+        assert!(rec.is_file());
+        // 만든 이미지도 save한다(층 디스크에서 내보낸다). 다른 sbx가 들여 돌린다.
+        let o = e.sbx(&[
+            "save",
+            "-o",
+            e.path("app.tar").to_str().unwrap(),
+            "local/app:1",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let other = Env::new();
+        load(
+            &other,
+            "app.tar",
+            &std::fs::read(e.path("app.tar")).unwrap(),
+        );
+        let o = other.sbx(&["run", "--rm", "local/app:1", "true"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    }
+
+    /// 만든 이미지(`save`)의 층을 차례로 합친 일반 파일 경로들(whiteout은 이 테스트에 없다).
+    fn image_files(e: &Env, image: &str) -> std::collections::BTreeSet<String> {
+        use std::io::Read;
+        let out = e.path("image-files.tar");
+        let o = e.sbx(&["save", "-o", out.to_str().unwrap(), image]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let files = tar_files(&std::fs::read(&out).unwrap());
+        let blob = |d: &str| files[&format!("blobs/sha256/{}", &d[7..])].clone();
+        let index: serde_json::Value = serde_json::from_slice(&files["index.json"]).unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&blob(index["manifests"][0]["digest"].as_str().unwrap()))
+                .unwrap();
+        let mut paths = std::collections::BTreeSet::new();
+        for l in manifest["layers"].as_array().unwrap() {
+            let mut tar = Vec::new();
+            flate2::read::GzDecoder::new(&blob(l["digest"].as_str().unwrap())[..])
+                .read_to_end(&mut tar)
+                .unwrap();
+            for entry in tar::Archive::new(&tar[..]).entries().unwrap() {
+                let entry = entry.unwrap();
+                if entry.header().entry_type().is_file() {
+                    paths.insert(entry.path().unwrap().to_string_lossy().into_owned());
+                }
+            }
+        }
+        paths
+    }
+
+    /// 사람들이 쓰는 `COPY` 대상의 꼴(`./`, `.`, `./sub/`, 여러 원본, `dir/`, `. .`, 가운데의 `.`·`..`, `/` 위로
+    /// 오르기, 끝의 `/.`)과 이어지는 상대 `WORKDIR`. `RUN`이 먼저 VM을 띄우므로 뒤의 `COPY`는 모두 실행 중인 VM에도
+    /// 놓인다(sbx-runtime과 가짜 실행기의 게스트가 경로를 확인한다). 놓인 자리는 Docker 29.9.3으로 같은 Dockerfile을
+    /// 빌드해 본 것과 같다.
+    fn build_copy_destinations_follow_docker() {
+        let (e, ctx) = build_env();
+        let mut ctx_files = vec!["Dockerfile".to_owned(), "d/inner".to_owned()];
+        for i in [1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14] {
+            write(&ctx, &format!("a{i}"), "x\n");
+            ctx_files.push(format!("a{i}"));
+        }
+        write(&ctx, "d/inner", "in\n");
+        // build_env가 만든 빈 src/는 파일이 없어 놓이지 않는다.
+        write(
+            &ctx,
+            "Dockerfile",
+            "FROM local/base:1
+WORKDIR /w
+RUN true
+COPY a1 ./
+COPY a2 .
+COPY a3 ./s3/
+COPY a4 s4/name
+COPY a5 a6 ./m5/
+COPY a7 a8 .
+COPY a5 a6 m6/.
+WORKDIR /w6
+COPY d/ ./
+WORKDIR /w7
+COPY d .
+WORKDIR /w8
+COPY . .
+COPY . /abs9/
+WORKDIR /w10/sub
+COPY a10 ./x/./y/../z
+COPY a11 ../up11
+COPY a12 ../../../../../top12
+COPY a13 t13/.
+COPY a14 ..
+RUN test -f x/z && test -f t13/a13 && test -f ../up11 && test -f ../a14
+WORKDIR /r
+WORKDIR a
+WORKDIR ./b/../c/.
+COPY a1 ./
+",
+        );
+        let o = build(&e, &ctx, &["-q", "-t", "local/dest:1"], None);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let id = text(&o.stdout).trim().to_owned();
+        let mut want: std::collections::BTreeSet<String> = [
+            "w/a1",
+            "w/a2",
+            "w/a7",
+            "w/a8",
+            "w/m5/a5",
+            "w/m5/a6",
+            "w/m6/a5",
+            "w/m6/a6",
+            "w/s3/a3",
+            "w/s4/name",
+            "w6/inner",
+            "w7/inner",
+            "w10/a14",
+            "w10/sub/t13/a13",
+            "w10/sub/x/z",
+            "w10/up11",
+            "top12",
+            "r/a/c/a1",
+        ]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+        for root in ["w8", "abs9"] {
+            want.extend(ctx_files.iter().map(|f| format!("{root}/{f}")));
+        }
+        let got: std::collections::BTreeSet<String> = image_files(&e, "local/dest:1")
+            .into_iter()
+            .filter(|p| p != "base.bin" && !p.starts_with("src/"))
+            .collect();
+        assert_eq!(got, want);
+        let hex = id.strip_prefix("sha256:").unwrap();
+        let doc: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(e.path(&format!("cache/images/{hex}/config.json"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(doc["config"]["WorkingDir"], "/r/a/c");
+    }
+
+    /// 실패한 RUN은 그 출력과 코드를 보인다. 백그라운드로 남긴 프로세스는 단계를 붙잡지 않는다. `--target`은 그
+    /// 스테이지까지만 만든다. 빌드 인자는 캐시 키다. 받지 않는 명령은 줄 번호와 함께 오류다.
+    fn build_failures_targets_and_build_args() {
+        let (e, ctx) = build_env();
+        write(
+            &ctx,
+            "Dockerfile",
+            "FROM local/base:1\nRUN echo something went wrong && exit 3\n",
+        );
+        let o = build(&e, &ctx, &[], None);
+        let err = text(&o.stderr);
+        assert_eq!(o.status.code(), Some(1), "{err}");
+        assert!(err.contains("something went wrong"), "{err}");
+        assert!(err.contains("line 2: RUN echo something went wrong && exit 3: the command returned a non-zero code: 3"), "{err}");
+        assert!(e.ps().is_empty(), "the build VM is removed");
+
+        write(
+            &ctx,
+            "Dockerfile",
+            "FROM local/base:1\nRUN sleep 60 & echo left running\n",
+        );
+        let t = Instant::now();
+        let o = build(&e, &ctx, &[], None);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(t.elapsed() < Duration::from_secs(30), "{:?}", t.elapsed());
+
+        write(
+            &ctx,
+            "Dockerfile",
+            "FROM local/base:1 AS first\nARG V=1\nRUN echo $V > v.txt\nFROM first\nRUN false\n",
+        );
+        let rec = e.path("vm.json");
+        let o = build(
+            &e,
+            &ctx,
+            &["--target", "first", "-t", "local/first:1"],
+            Some(&rec),
+        );
+        let err = text(&o.stderr);
+        assert_eq!(o.status.code(), Some(0), "{err}");
+        assert!(err.contains("[2/2] RUN echo $V > v.txt"), "{err}");
+        assert!(!err.contains("RUN false"), "{err}");
+        let o = build(&e, &ctx, &["--target", "first"], Some(&rec));
+        assert!(
+            text(&o.stderr).contains("[2/2] CACHED"),
+            "{}",
+            text(&o.stderr)
+        );
+        assert!(!rec.exists());
+        let o = build(
+            &e,
+            &ctx,
+            &["--target", "first", "--build-arg", "V=2"],
+            Some(&rec),
+        );
+        let err = text(&o.stderr);
+        assert_eq!(o.status.code(), Some(0), "{err}");
+        assert!(!err.contains("[2/2] CACHED"), "{err}");
+        assert!(
+            rec.is_file(),
+            "another build argument value is another step"
+        );
+
+        write(&ctx, "Dockerfile", "FROM local/base:1\nONBUILD RUN make\n");
+        let o = build(&e, &ctx, &[], None);
+        assert_eq!(o.status.code(), Some(1));
+        assert!(text(&o.stderr).contains("line 2"), "{}", text(&o.stderr));
+        // JSON: 단계마다 한 줄, 끝에 만든 이미지.
+        write(&ctx, "Dockerfile", "FROM local/base:1\nENV A=1\n");
+        let o = build(&e, &ctx, &["--format", "json"], None);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let lines: Vec<sbx_cli::output::BuildEvent> = text(&o.stdout)
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.first().unwrap().status.as_deref(), Some("started"));
+        let last = lines.last().unwrap();
+        assert_eq!(last.kind, "built");
+        assert!(last.id.as_deref().unwrap().starts_with("sha256:"));
+    }
+
+    /// `FROM scratch`와 COPY뿐인 빌드는 VM 없이 만든다. 같은 바탕의 두 빌드는 바탕 층을 함께 쓰고 `system df`는 그것을
+    /// 한 번 센다. 빌드 캐시도 한 줄이고, `system prune`이 비운다.
+    fn build_scratch_without_a_vm_and_shared_base_layers() {
+        use sbx_cli::output::{DiskUsage, PruneReport};
+        let (e, ctx) = build_env();
+        write(
+            &ctx,
+            "Dockerfile",
+            "FROM scratch\nCOPY src/ /\nCMD [\"/tool\"]\n",
+        );
+        write(&ctx, "src/tool", "#!/bin/sh\n");
+        let rec = e.path("vm.json");
+        let o = build(&e, &ctx, &["-t", "local/scratch:1"], Some(&rec));
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(!rec.exists(), "FROM scratch with COPY needs no VM");
+
+        for (n, word) in [("one", "1"), ("two", "2")] {
+            let dir = e.path(n);
+            std::fs::create_dir_all(&dir).unwrap();
+            write(
+                &dir,
+                "Dockerfile",
+                &format!("FROM local/base:1\nRUN echo {word} > f\n"),
+            );
+            let o = build(&e, &dir, &["-t", &format!("local/{n}:1")], None);
+            assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        }
+        let o = e.sbx(&["--format", "json", "system", "df"]);
+        let rows: Vec<DiskUsage> = serde_json::from_slice(&o.stdout).unwrap();
+        let im = rows.iter().find(|r| r.kind == "images").unwrap();
+        // 바탕 층(64 KiB)은 바탕 이미지와 두 빌드가 함께 쓰고 한 번만 센다. 크기는 할당된 블록이라 파일 시스템마다
+        // 다르므로(ext4는 디렉터리도 4 KiB, APFS는 0) 정한 수가 아니라 `images`의 크기와 견준다: 전체는 한 이미지만
+        // 쓰는 것과 함께 쓰는 것(한 번)의 합이고, 이미지마다의 합보다 바탕 두 번 이상만큼 작다.
+        let o = e.sbx(&["--format", "json", "images"]);
+        let list: Vec<sbx_cli::output::Image> = serde_json::from_slice(&o.stdout).unwrap();
+        let unique: u64 = list.iter().map(|i| i.unique_size).sum();
+        let each: u64 = list.iter().map(|i| i.disk_size).sum();
+        assert!(im.shared >= 64 * 1024, "{rows:?}");
+        assert_eq!(im.size, unique + im.shared, "{rows:?} {list:?}");
+        assert!(each >= im.size + 2 * 64 * 1024, "{rows:?} {list:?}");
+        let cache = rows.iter().find(|r| r.kind == "build cache").unwrap();
+        assert!(cache.total >= 3, "{rows:?}");
+        // 이미지를 지워도 캐시는 남는다. prune이 캐시를 비우면 그 층도 간다.
+        let o = e.sbx(&["rmi", "local/one:1", "local/two:1", "local/scratch:1"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = build(&e, &e.path("one"), &[], Some(&rec));
+        assert!(
+            text(&o.stderr).contains("[2/2] CACHED"),
+            "{}",
+            text(&o.stderr)
+        );
+        let o = e.sbx(&["--format", "json", "system", "prune", "-f"]);
+        let r: PruneReport = serde_json::from_slice(&o.stdout).unwrap();
+        assert!(r.build_cache >= 3, "{r:?}");
+        let o = build(&e, &e.path("one"), &[], None);
+        assert!(!text(&o.stderr).contains("CACHED"), "{}", text(&o.stderr));
+    }
+
+    /// `--cpus`와 `-m`은 스테이지의 빌드 VM 크기다(실행기가 받은 VM 설정에 그대로 간다). 없으면 1 vCPU, 512 MiB.
+    fn build_vm_takes_cpus_and_memory() {
+        let (e, ctx) = build_env();
+        write(&ctx, "Dockerfile", "FROM local/base:1\nRUN true\n");
+        let rec = e.path("vm.json");
+        let vm = |args: &[&str]| {
+            let o = build(&e, &ctx, args, Some(&rec));
+            assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+            let vm: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&rec).expect("the RUN step needs a VM"))
+                    .unwrap();
+            (vm["vcpus"].as_u64(), vm["memory_mib"].as_u64())
+        };
+        assert_eq!(vm(&["--no-cache"]), (Some(1), Some(512)));
+        assert_eq!(
+            vm(&["--no-cache", "--cpus", "2", "-m", "1g"]),
+            (Some(2), Some(1024))
+        );
+        assert_eq!(
+            vm(&["--no-cache", "--memory", "768m"]),
+            (Some(1), Some(768))
+        );
+    }
+
+    /// 실패한 단계가 막힌 이름을 썼으면 그것을 열 `--allow`를 보인다(포트는 짐작하지 않는다).
+    fn build_shows_blocked_names() {
+        let (e, ctx) = build_env();
+        let me = std::env::current_exe().unwrap();
+        write(
+            &ctx,
+            "Dockerfile",
+            &format!(
+                "FROM local/base:1\nRUN {} net-probe {} blocked.invalid 443; exit 1\n",
+                me.display(),
+                e.path("data").display()
+            ),
+        );
+        let o = build(
+            &e,
+            &ctx,
+            &["--network", "allow", "--allow", "ok.invalid:443"],
+            None,
+        );
+        let err = text(&o.stderr);
+        assert_eq!(o.status.code(), Some(1), "{err}");
+        assert!(
+            err.contains("blocked: blocked.invalid — add --allow blocked.invalid:PORT"),
+            "{err}"
+        );
+        assert!(!err.contains("network is closed"), "{err}");
+        // 닫힌 네트워크(기본)에서도 물은 이름을 알고, 네트워크가 닫혀 있다고 말한다.
+        let o = build(&e, &ctx, &[], None);
+        let err = text(&o.stderr);
+        assert_eq!(o.status.code(), Some(1), "{err}");
+        assert!(err.contains("blocked.invalid: rcode 3 []"), "{err}");
+        assert!(
+            err.contains(
+                "blocked: blocked.invalid — add --network allow --allow blocked.invalid:PORT"
+            ),
+            "{err}"
+        );
+        assert!(err.contains("the build network is closed"), "{err}");
+    }
+
+    /// `sha256:<16진수>`.
+    fn sha256_id(b: &[u8]) -> String {
+        use sha2::Digest as _;
+        let hex: String = sha2::Sha256::digest(b)
+            .iter()
+            .map(|x| format!("{x:02x}"))
+            .collect();
+        format!("sha256:{hex}")
+    }
+
+    /// tar의 일반 파일들(경로 → 내용).
+    fn tar_files(tar: &[u8]) -> std::collections::BTreeMap<String, Vec<u8>> {
+        use std::io::Read;
+        let mut out = std::collections::BTreeMap::new();
+        for entry in tar::Archive::new(tar).entries().unwrap() {
+            let mut entry = entry.unwrap();
+            if !entry.header().entry_type().is_file() {
+                continue;
+            }
+            let path = entry.path().unwrap().to_string_lossy().into_owned();
+            let mut b = Vec::new();
+            entry.read_to_end(&mut b).unwrap();
+            out.insert(path, b);
+        }
+        out
+    }
+
+    /// `--format json build`의 줄들.
+    fn build_events(o: &Output) -> Vec<sbx_cli::output::BuildEvent> {
+        text(&o.stdout)
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{e}: {l}")))
+            .collect()
+    }
+
+    /// 만든 이미지 하나를 sbx 저장소, `save`, OCI tar와 layout, `docker load`, 레지스트리로 내보낸다. 어디로 가든
+    /// manifest digest가 같다: 다른 sbx가 들인 이미지 ID, 레지스트리의 digest, 두 번 올린 digest가 모두 같다.
+    /// `type=docker`만 주면 sbx 저장소에 남지 않고(층 캐시는 남는다), docker가 없으면 빌드 전에 멈춘다.
+    fn build_outputs_export_one_image_everywhere() {
+        let (e, ctx) = build_env();
+        write(
+            &ctx,
+            "Dockerfile",
+            "FROM local/base:1\nRUN echo out > f.txt\nCMD [\"cat\", \"f.txt\"]\n",
+        );
+        let o = build(&e, &ctx, &["-t", "local/out:1"], None);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        // save를 두 번 해도 같은 바이트다.
+        let (a, b) = (e.path("a.tar"), e.path("b.tar"));
+        for p in [&a, &b] {
+            let o = e.sbx(&["save", "-o", p.to_str().unwrap(), "local/out:1"]);
+            assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        }
+        let saved = std::fs::read(&a).unwrap();
+        assert_eq!(
+            saved,
+            std::fs::read(&b).unwrap(),
+            "save writes the same bytes"
+        );
+        // 다른 sbx가 들이면 그 manifest digest가 이미지 ID다.
+        let other = Env::new();
+        std::fs::write(other.path("a.tar"), &saved).unwrap();
+        let o = other.sbx(&[
+            "--format",
+            "json",
+            "load",
+            "-i",
+            other.path("a.tar").to_str().unwrap(),
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let loaded: Vec<sbx_cli::output::Pulled> = serde_json::from_slice(&o.stdout).unwrap();
+        let id = loaded[0].id.clone();
+
+        // 저장하지 않는 같은 빌드(모두 캐시)를 OCI tar로: save와 같은 파일이다.
+        let oci = e.path("oci.tar");
+        let dest = format!("type=oci,dest={}", oci.display());
+        let o = build(
+            &e,
+            &ctx,
+            &["--format", "json", "-t", "local/out:1", "-o", &dest],
+            None,
+        );
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let ev = build_events(&o);
+        let built = ev.iter().find(|x| x.kind == "built").unwrap();
+        assert_eq!(built.stored, Some(false));
+        let exported = ev.iter().find(|x| x.kind == "exported").unwrap();
+        assert_eq!(
+            (exported.output.as_deref(), exported.id.as_deref()),
+            (Some("oci"), Some(id.as_str()))
+        );
+        assert_eq!(std::fs::read(&oci).unwrap(), saved);
+        // layout 디렉터리.
+        let layout = e.path("layout");
+        let dest = format!("type=oci,dest={}/", layout.display());
+        let o = build(&e, &ctx, &["-o", &dest], None);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let index: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(layout.join("index.json")).unwrap()).unwrap();
+        assert_eq!(index["manifests"][0]["digest"], id.as_str());
+        assert!(layout.join("oci-layout").is_file());
+        assert!(layout.join("blobs/sha256").join(&id[7..]).is_file());
+        assert!(!layout.join("manifest.json").exists());
+
+        // type=docker: docker load에 흘린다(가짜 docker가 받은 것을 적는다). sbx 저장소에는 남지 않는다.
+        let bin = e.path("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let got = e.path("docker-in.tar");
+        std::fs::write(
+            bin.join("docker"),
+            format!(
+                "#!/bin/sh\n[ \"$1\" = load ] || exit 2\ncat > {}\necho 'Loaded image: local/dk:1'\n",
+                got.display()
+            ),
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(bin.join("docker"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        let path = format!(
+            "{}:{}",
+            bin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let dk = e.path("dk");
+        write(
+            &dk,
+            "Dockerfile",
+            "FROM local/base:1\nRUN echo docker > d.txt\n",
+        );
+        let rec = e.path("vm.json");
+        let run_dk = |extra: &[&str], path: &str| {
+            let mut all = vec!["build", "-t", "local/dk:1"];
+            all.extend_from_slice(extra);
+            all.push(dk.to_str().unwrap());
+            let _ = std::fs::remove_file(&rec);
+            e.cmd(&all)
+                .env("PATH", path)
+                .env("SBX_FAKE_RECORD", &rec)
+                .output()
+                .unwrap()
+        };
+        let o = run_dk(&["--load"], &path);
+        let err = text(&o.stderr);
+        assert_eq!(o.status.code(), Some(0), "{err}");
+        assert!(err.contains("Loaded image: local/dk:1"), "{err}");
+        let files = tar_files(&std::fs::read(&got).unwrap());
+        let manifest = String::from_utf8(files["manifest.json"].clone()).unwrap();
+        assert!(manifest.contains("local/dk:1"), "{manifest}");
+        let o = e.sbx(&["--format", "json", "images"]);
+        let list: Vec<sbx_cli::output::Image> = serde_json::from_slice(&o.stdout).unwrap();
+        assert!(
+            !list
+                .iter()
+                .any(|i| i.references.iter().any(|r| r.contains("local/dk"))),
+            "{list:?}"
+        );
+        // 층 캐시는 남는다: 다시 하면 VM 없이.
+        let o = run_dk(&["-o", "type=docker"], &path);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(!rec.exists(), "the layer cache is still used");
+        // docker가 없으면 빌드 전에 멈춘다.
+        let empty = e.path("empty-path");
+        std::fs::create_dir_all(&empty).unwrap();
+        let o = run_dk(&["--load"], empty.to_str().unwrap());
+        let err = text(&o.stderr);
+        assert_ne!(o.status.code(), Some(0), "{err}");
+        assert!(err.contains("docker is not on PATH"), "{err}");
+        assert!(err.contains("type=docker,dest=FILE"), "{err}");
+        assert!(!rec.exists());
+
+        // 레지스트리: 올린 manifest의 digest가 같은 ID다. 두 번째는 보내지 않는다.
+        let reg = registry();
+        let host = format!("127.0.0.1:{}", reg.port);
+        let one = format!("{host}/team/built:1");
+        let o = build(&e, &ctx, &["--push", "-t", &one], None);
+        let out = text(&o.stdout);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(
+            out.contains(&format!(
+                "The push refers to repository [{host}/team/built]"
+            )),
+            "{out}"
+        );
+        assert!(out.contains(&format!("1: digest: {id} size: ")), "{out}");
+        let stored = |tag: &str| {
+            reg.manifests
+                .lock()
+                .unwrap()
+                .get(tag)
+                .cloned()
+                .unwrap_or_else(|| panic!("no {tag}"))
+        };
+        assert_eq!(sha256_id(&stored("team/built:1")), id);
+        let two = format!("type=registry,name={host}/team/built:2");
+        let o = build(&e, &ctx, &["-o", &two], None);
+        let out = text(&o.stdout);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(out.contains(": Layer already exists"), "{out}");
+        assert_eq!(stored("team/built:2"), stored("team/built:1"));
+        // 저장해 둔 이미지를 sbx push로 올려도 같다.
+        let three = format!("{host}/team/built:3");
+        assert_eq!(
+            e.sbx(&["tag", "local/out:1", &three]).status.code(),
+            Some(0)
+        );
+        let o = e.sbx(&["push", &three]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(stored("team/built:3"), stored("team/built:1"));
+        // 이름이 없으면 올릴 곳이 없다.
+        let o = build(&e, &ctx, &["--push"], None);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("needs a name"),
+            "{}",
+            text(&o.stderr)
+        );
+        // 바탕 이미지를 지우고 정리해도 만든 이미지는 같은 바이트로 save되고 같은 digest로 올라간다(만든 이미지의
+        // 기록이 바탕 층의 blob을 쥔다).
+        assert_eq!(e.sbx(&["rmi", "local/base:1"]).status.code(), Some(0));
+        let o = e.sbx(&["system", "prune", "-f"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let c = e.path("c.tar");
+        let o = e.sbx(&["save", "-o", c.to_str().unwrap(), "local/out:1"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(std::fs::read(&c).unwrap(), saved);
+        let four = format!("{host}/team/built:4");
+        assert_eq!(e.sbx(&["tag", "local/out:1", &four]).status.code(), Some(0));
+        let o = e.sbx(&["push", &four]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(stored("team/built:4"), stored("team/built:1"));
+    }
+
+    /// 저장한 빌드는 어디서 만들었는지를 이미지 기록에 남기고 `images --format json`이 `build`로 낸다: 컨텍스트와
+    /// Dockerfile의 절대 경로(준 그대로, 상대 경로는 작업 디렉터리에서), `--target`. `-f -`면 `file`이 없다. 받은
+    /// 이미지에는 없다. 저장하지 않는 빌드(`-o type=oci`)는 기록을 바꾸지 않고, 같은 이미지를 다른 디렉터리에서 다시
+    /// 저장하면 그 디렉터리가 남는다(마지막 것). 내보낸 것(`save`)에는 경로가 없다.
+    fn build_records_where_it_was_built() {
+        let (e, ctx) = build_env();
+        write(&ctx, "src/a.txt", "a\n");
+        write(
+            &ctx,
+            "ci/Dockerfile.dev",
+            "FROM local/base:1 AS app\nCOPY src/ /app/\nFROM app\nRUN echo not built\n",
+        );
+        write(&ctx, "Dockerfile", "FROM local/base:1\nCOPY src/ /plain/\n");
+        let images = |e: &Env| -> Vec<sbx_cli::output::Image> {
+            let o = e.sbx(&["--format", "json", "images"]);
+            assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+            serde_json::from_slice(&o.stdout).unwrap()
+        };
+        let find = |list: &[sbx_cli::output::Image], name: &str| {
+            list.iter()
+                .find(|i| i.references.iter().any(|r| r.ends_with(name)))
+                .cloned()
+                .unwrap_or_else(|| panic!("{name}: {list:?}"))
+        };
+        let s = |p: &Path| p.to_str().unwrap().to_owned();
+
+        // 상대 경로: 작업 디렉터리(그 실제 경로)에서 절대 경로로.
+        let o = e
+            .cmd(&[
+                "build",
+                "-t",
+                "local/rec:1",
+                "-f",
+                "ci/Dockerfile.dev",
+                "--target",
+                "app",
+                ".",
+            ])
+            .current_dir(&ctx)
+            .output()
+            .unwrap();
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let real = ctx.canonicalize().unwrap();
+        let rec = find(&images(&e), "local/rec:1");
+        assert_eq!(
+            rec.build,
+            Some(sbx_cli::output::ImageBuild {
+                context: s(&real),
+                file: Some(s(&real.join("ci/Dockerfile.dev"))),
+                target: Some("app".into()),
+            })
+        );
+        // 기본 Dockerfile, 절대 경로는 준 그대로.
+        let o = build(&e, &ctx, &["-t", "local/plain:1"], None);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let plain = find(&images(&e), "local/plain:1");
+        assert_eq!(
+            plain.build,
+            Some(sbx_cli::output::ImageBuild {
+                context: s(&ctx),
+                file: Some(s(&ctx.join("Dockerfile"))),
+                target: None,
+            })
+        );
+        // JSON에서: 표준 입력이면 file은 null, target이 없으면 null. 받은 이미지는 build가 없다.
+        let o = build_stdin(
+            &e,
+            &ctx,
+            "FROM local/base:1\nCOPY src/ /stdin/\n",
+            &["-t", "local/stdin:1"],
+            None,
+        );
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = e.sbx(&["--format", "json", "images"]);
+        let raw: Vec<serde_json::Value> = serde_json::from_slice(&o.stdout).unwrap();
+        let by = |name: &str| {
+            raw.iter()
+                .find(|i| {
+                    i["references"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|r| r.as_str().unwrap().ends_with(name))
+                })
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(
+            by("local/stdin:1")["build"],
+            serde_json::json!({"context": s(&ctx), "file": null, "target": null})
+        );
+        assert!(by("local/base:1").get("build").is_none(), "{raw:?}");
+
+        // 같은 이미지를 다른 디렉터리에서: 저장하지 않으면 기록은 그대로, 저장하면 그 디렉터리가 남는다.
+        let other = e.path("other");
+        write(&other, "src/a.txt", "a\n");
+        write(
+            &other,
+            "Dockerfile",
+            "FROM local/base:1\nCOPY src/ /plain/\n",
+        );
+        let oci = e.path("plain.tar");
+        let dest = format!("type=oci,dest={}", oci.display());
+        let o = build(&e, &other, &["-t", "local/plain:1", "-o", &dest], None);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let again = find(&images(&e), "local/plain:1");
+        assert_eq!(
+            again.build, plain.build,
+            "an output-only build records nothing"
+        );
+        let o = build(&e, &other, &["-t", "local/plain:2"], None);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let list = images(&e);
+        let (one, two) = (find(&list, "local/plain:1"), find(&list, "local/plain:2"));
+        assert_eq!(one.id, two.id, "the same image");
+        assert_eq!(one.build.unwrap().context, s(&other), "the last build wins");
+
+        // 내보낸 것에는 호스트 경로가 없다(save, 저장하지 않은 출력). 층 tar도 풀어 본다.
+        let saved = e.path("rec.tar");
+        let o = e.sbx(&["save", "-o", saved.to_str().unwrap(), "local/rec:1"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        for archive in [saved, oci] {
+            let bytes = std::fs::read(&archive).unwrap();
+            let mut all = vec![bytes.clone()];
+            for f in tar_files(&bytes).into_values() {
+                let mut out = Vec::new();
+                if std::io::Read::read_to_end(&mut flate2::read::GzDecoder::new(&f[..]), &mut out)
+                    .is_ok()
+                {
+                    all.push(out);
+                }
+                all.push(f);
+            }
+            for b in &all {
+                for path in [s(&ctx), s(&real), s(&other)] {
+                    assert!(
+                        !b.windows(path.len()).any(|w| w == path.as_bytes()),
+                        "{path} leaked into {}",
+                        archive.display()
+                    );
+                }
+            }
+        }
+    }
+
+    /// `build -f -`로 Dockerfile을 표준 입력에서 읽는 `build`.
+    fn build_stdin(
+        e: &Env,
+        ctx: &Path,
+        dockerfile: &str,
+        args: &[&str],
+        epoch: Option<&str>,
+    ) -> Output {
+        let mut all = vec!["build", "-f", "-"];
+        all.extend_from_slice(args);
+        all.push(ctx.to_str().unwrap());
+        let mut c = e.cmd(&all);
+        c.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(v) = epoch {
+            c.env("SOURCE_DATE_EPOCH", v);
+        }
+        let mut child = c.spawn().unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(dockerfile.as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    }
+
+    /// `SOURCE_DATE_EPOCH`: config와 history의 시각이 그것이고, 빌드가 만든 층의 파일 시각이 그보다 늦지 않다. 같은
+    /// 입력이면 캐시 없이 다시 만들어도 같은 바이트다(가짜 실행기에서; 문서는 같은 캐시까지만 약속한다).
+    /// `--build-arg`가 환경 변수를 이긴다.
+    fn build_source_date_epoch_fixes_the_digest() {
+        use std::io::Read;
+        let (e, ctx) = build_env();
+        let df = "FROM local/base:1\nRUN echo x > made.txt\n";
+        let tars: Vec<PathBuf> = (0..3).map(|i| e.path(&format!("e{i}.tar"))).collect();
+        let dest = |p: &Path| format!("type=oci,dest={}", p.display());
+        let o = build_stdin(
+            &e,
+            &ctx,
+            df,
+            &["--no-cache", "-o", &dest(&tars[0])],
+            Some("1000000000"),
+        );
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(!text(&o.stderr).contains("not used"), "{}", text(&o.stderr));
+        let o = build_stdin(
+            &e,
+            &ctx,
+            df,
+            &["--no-cache", "-o", &dest(&tars[1])],
+            Some("1000000000"),
+        );
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let first = std::fs::read(&tars[0]).unwrap();
+        assert_eq!(first, std::fs::read(&tars[1]).unwrap());
+        // --build-arg로 줘도 같다.
+        let o = build_stdin(
+            &e,
+            &ctx,
+            df,
+            &[
+                "--no-cache",
+                "--build-arg",
+                "SOURCE_DATE_EPOCH=1000000000",
+                "-o",
+                &dest(&tars[2]),
+            ],
+            None,
+        );
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(first, std::fs::read(&tars[2]).unwrap());
+        // config와 history의 시각, 맨 위 층(RUN)의 파일 시각.
+        let files = tar_files(&first);
+        let index: serde_json::Value = serde_json::from_slice(&files["index.json"]).unwrap();
+        let blob = |d: &str| files[&format!("blobs/sha256/{}", &d[7..])].clone();
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&blob(index["manifests"][0]["digest"].as_str().unwrap()))
+                .unwrap();
+        let config: serde_json::Value =
+            serde_json::from_slice(&blob(manifest["config"]["digest"].as_str().unwrap())).unwrap();
+        assert_eq!(config["created"], "2001-09-09T01:46:40Z");
+        let history = config["history"].as_array().unwrap();
+        assert_eq!(
+            history.last().unwrap()["created"],
+            "2001-09-09T01:46:40Z",
+            "{history:?}"
+        );
+        let top = manifest["layers"].as_array().unwrap().last().unwrap()["digest"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let mut tar = Vec::new();
+        flate2::read::GzDecoder::new(&blob(&top)[..])
+            .read_to_end(&mut tar)
+            .unwrap();
+        let mut names = Vec::new();
+        for entry in tar::Archive::new(&tar[..]).entries().unwrap() {
+            let entry = entry.unwrap();
+            let name = entry.path().unwrap().to_string_lossy().into_owned();
+            assert!(
+                entry.header().mtime().unwrap() <= 1_000_000_000,
+                "{name}: {}",
+                entry.header().mtime().unwrap()
+            );
+            names.push(name);
+        }
+        assert!(names.iter().any(|n| n.ends_with("made.txt")), "{names:?}");
+        // --build-arg가 환경 변수를 이긴다. 틀린 값은 빌드 전에 거부한다.
+        let o = build_stdin(
+            &e,
+            &ctx,
+            df,
+            &["--build-arg", "SOURCE_DATE_EPOCH=soon"],
+            Some("1000000000"),
+        );
+        assert_ne!(o.status.code(), Some(0));
+        assert!(text(&o.stderr).contains("Unix time"), "{}", text(&o.stderr));
+    }
+
+    /// 빌드 캐시 상한(`SBX_BUILD_CACHE_MAX`): 빌드가 끝나면 이미지가 쓰지 않는 캐시를 상한 밑으로 줄인다. 이미지가
+    /// 쓰는 층의 캐시는 남는다. `builder prune`은 이미지가 쓰지 않는 캐시를, `-a`는 모두 지운다.
+    fn build_cache_stays_under_its_cap() {
+        use sbx_cli::output::BuildCachePruned;
+        let (e, ctx) = build_env();
+        write(
+            &ctx,
+            "Dockerfile",
+            "FROM local/base:1\nRUN echo cap > c.txt\n",
+        );
+        let rec = e.path("vm.json");
+        let tar = format!("type=oci,dest={}", e.path("c.tar").display());
+        let run = |args: &[&str], max: &str| {
+            let mut all = vec!["build"];
+            all.extend_from_slice(args);
+            all.push(ctx.to_str().unwrap());
+            let _ = std::fs::remove_file(&rec);
+            e.cmd(&all)
+                .env("SBX_BUILD_CACHE_MAX", max)
+                .env("SBX_FAKE_RECORD", &rec)
+                .output()
+                .unwrap()
+        };
+        // 저장하지 않는 빌드(층은 캐시만 쥔다), 상한 1바이트: 끝나면 지운다. 다음 빌드는 다시 만든다.
+        let o = run(&["-o", &tar], "1");
+        let err = text(&o.stderr);
+        assert_eq!(o.status.code(), Some(0), "{err}");
+        assert!(err.contains("build cache: removed 1 old step(s)"), "{err}");
+        let o = run(&["-o", &tar], "none");
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(rec.is_file(), "the step was trimmed, so it runs again");
+        let o = run(&["-o", &tar], "none");
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(!rec.exists(), "no cap: the step stays cached");
+        // 틀린 상한은 경고만 한다.
+        let o = run(&["-o", &tar], "lots");
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(
+            text(&o.stderr).contains("SBX_BUILD_CACHE_MAX=lots"),
+            "{}",
+            text(&o.stderr)
+        );
+        // 이미지가 쓰는 층의 캐시는 상한이 1이어도 남는다.
+        let o = run(&["-t", "local/cap:1"], "1");
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = run(&["-t", "local/cap:1"], "1");
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(!rec.exists(), "a layer an image uses is not trimmed");
+        // builder prune: 이미지가 쓰는 층의 캐시는 기본으로 남고, -a면 지운다.
+        let o = e.sbx(&["--format", "json", "builder", "prune", "-f"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let p: BuildCachePruned = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(p.build_cache, 0, "{p:?}");
+        let o = e.sbx(&["builder", "prune"]);
+        assert_ne!(o.status.code(), Some(0), "asks first; no terminal means -f");
+        assert!(text(&o.stderr).contains("-f"), "{}", text(&o.stderr));
+        let o = e.sbx(&["--format", "json", "builder", "prune", "-a", "-f"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let p: BuildCachePruned = serde_json::from_slice(&o.stdout).unwrap();
+        assert!(p.build_cache >= 1, "{p:?}");
+        // 그 이미지도 지운다(기록이 없으니 층도 함께 간다). 다음 빌드가 만드는 층을 쥔 이미지가 따로 남지 않게:
+        // 같은 초에 다시 만든 층은 같은 층이라, 이름만 옮겨 간 앞 이미지가 그 층을 쥐고 있을 수 있다(아래).
+        assert_eq!(e.sbx(&["rmi", "local/cap:1"]).status.code(), Some(0));
+        let prune0 = || {
+            let o = e.sbx(&[
+                "--format",
+                "json",
+                "builder",
+                "prune",
+                "-f",
+                "--keep-storage",
+                "0",
+            ]);
+            assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+            serde_json::from_slice::<BuildCachePruned>(&o.stdout).unwrap()
+        };
+        let o = run(&["-q", "-t", "local/cap:1"], "none");
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(rec.is_file(), "the cache is gone, so the step runs again");
+        let first = text(&o.stdout).trim().to_owned();
+        // 이름을 잃은 이미지도 층을 쥔다: LABEL만 더한 Dockerfile은 RUN이 캐시라 같은 층이고, 이름이 새 이미지로
+        // 옮겨 가 앞 이미지는 이름 없이 남는다. 이름 붙은 이미지를 지워도 그 층은 앞 이미지가 쓰므로 빌드 캐시가 아니다.
+        write(
+            &ctx,
+            "Dockerfile",
+            "FROM local/base:1\nRUN echo cap > c.txt\nLABEL v=2\n",
+        );
+        let o = run(&["-q", "-t", "local/cap:1"], "none");
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(!rec.exists(), "RUN came from the cache: the same layer");
+        assert_ne!(text(&o.stdout).trim(), first);
+        assert_eq!(e.sbx(&["rmi", "local/cap:1"]).status.code(), Some(0));
+        let p = prune0();
+        assert_eq!(p, BuildCachePruned::default(), "the untagged image uses it");
+        // 그 이미지까지 지우면 층은 캐시만 쥔다: --keep-storage 0이면 지운다.
+        assert_eq!(e.sbx(&["rmi", &first]).status.code(), Some(0));
+        let p = prune0();
+        assert!(p.build_cache >= 1 && p.reclaimed > 0, "{p:?}");
+        let o = e.sbx(&["builder", "prune", "-a", "-f", "--keep-storage", "1g"]);
+        assert_ne!(o.status.code(), Some(0));
+    }
+
+    /// 패키지 설치 같은 층(크기 0인 파일, 블록 경계와 몇 MiB의 파일, 심볼릭 링크, 하드 링크, 깊은 디렉터리, 여러 블록에
+    /// 걸친 디렉터리)과 크기 0인 파일이 있는 바탕 층. 층 디스크를 다시 읽는 곳을 모두 지난다: 실행기가 층 디스크를 펼칠
+    /// 때, 빌드가 층을 둘 때(디스크에서 다시 만든 tar의 digest), 다음 스테이지의 `COPY --from`, 만든 이미지 위의 빌드,
+    /// 층이 디스크 수를 넘어 합칠 때, `save`, `-o type=oci`, 다른 sbx에서 `load`해 그 위에 빌드. 실제 VM에서 `apk add`의 빈
+    /// `lib/apk/db/lock` 때문에 층을 두지 못하던 것(읽는 쪽이 크기 0인 inode의 `NULL_ADDR`을 데이터 자리로 보았다).
+    fn a_package_like_layer_reads_back_everywhere() {
+        let e = Env::new();
+        let (base, _) = oci_archive_layers(
+            "local/pkgbase:1",
+            &[
+                &[("etc/os", b"base\n"), ("etc/empty", b"")],
+                &[("lib/apk/db/installed", b"")],
+            ],
+        );
+        load(&e, "base.tar", &base);
+        let ctx = e.path("ctx");
+        std::fs::create_dir_all(&ctx).unwrap();
+        write(
+            &ctx,
+            "Dockerfile",
+            "FROM local/pkgbase:1 AS pkg\n\
+             RUN mkdir -p lib/apk/db usr/lib/many usr/share/a/b/c/d/e/f/g/h && : > lib/apk/db/lock \
+             && ln lib/apk/db/lock lib/apk/db/lock.hard \
+             && for n in 1 4095 4096 4097 12305 3145733; do yes abcdefg | head -c $n > usr/lib/f$n; done \
+             && ln usr/lib/f3145733 usr/lib/libbig.so.5.0 && ln -s libbig.so.5.0 usr/lib/libbig.so.5 \
+             && ln -s /usr/lib/libbig.so.5 usr/share/a/b/c/d/e/f/g/h/abs \
+             && i=0 && while [ $i -lt 600 ]; do : > usr/lib/many/libmany-entry-$i.so; i=$((i+1)); done\n\
+             FROM local/pkgbase:1\n\
+             COPY --from=pkg /usr/ /usr/\n\
+             COPY --from=pkg /lib/apk/db/ /lib/apk/db/\n",
+        );
+        let o = build(&e, &ctx, &["-t", "local/pkg:1"], None);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let check = "n=$(wc -c < usr/lib/libbig.so.5.0); echo $((n)); \
+                     n=$(cat etc/empty lib/apk/db/lock lib/apk/db/lock.hard | wc -c); echo $((n)); \
+                     readlink usr/lib/libbig.so.5; readlink usr/share/a/b/c/d/e/f/g/h/abs; \
+                     n=$(ls usr/lib/many | wc -l); echo $((n)); \
+                     for n in 1 4095 4096 4097 12305; do m=$(wc -c < usr/lib/f$n); printf '%s ' $((m)); done; echo";
+        let want =
+            "3145733\n0\nlibbig.so.5.0\n/usr/lib/libbig.so.5\n600\n1 4095 4096 4097 12305 \n";
+        // 가짜 실행기는 빌드 VM에서만 층 디스크를 펼친다: 만든 이미지 위의 RUN이 내용을 본다.
+        let run = |e: &Env, max: Option<&str>| {
+            let dir = e.path("check");
+            std::fs::create_dir_all(&dir).unwrap();
+            write(
+                &dir,
+                "Dockerfile",
+                &format!("FROM local/pkg:1\nRUN {check}\n"),
+            );
+            let mut c = e.cmd(&[
+                "build",
+                "--no-cache",
+                "--progress",
+                "plain",
+                dir.to_str().unwrap(),
+            ]);
+            let rec = e.path("check-vm.json");
+            let _ = std::fs::remove_file(&rec);
+            c.env("SBX_FAKE_RECORD", &rec);
+            if let Some(n) = max {
+                c.env("SBX_FAKE_MAX_DISKS", n);
+            }
+            let o = c.output().unwrap();
+            let err = text(&o.stderr);
+            assert_eq!(o.status.code(), Some(0), "{err}");
+            assert!(err.contains(want), "{err}");
+            let vm: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&rec).unwrap()).unwrap();
+            let first = vm["disks"][0]["path"].as_str().unwrap().to_owned();
+            if max.is_some() {
+                assert!(first.contains("/merged/"), "{vm}");
+            }
+        };
+        run(&e, None);
+        // 디스크가 모자라면 아래 층들을 합친 디스크로(만든 층은 디스크에서 다시 읽는다).
+        run(&e, Some("2"));
+        // save와 -o type=oci는 같은 바이트이고, 다른 sbx가 들여 돌린다.
+        let saved = e.path("pkg.tar");
+        let o = e.sbx(&["save", "-o", saved.to_str().unwrap(), "local/pkg:1"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let oci = e.path("pkg-oci.tar");
+        let dest = format!("type=oci,dest={}", oci.display());
+        let o = build(&e, &ctx, &["-t", "local/pkg:1", "-o", &dest], None);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(std::fs::read(&oci).unwrap(), std::fs::read(&saved).unwrap());
+        let other = Env::new();
+        load(&other, "pkg.tar", &std::fs::read(&saved).unwrap());
+        run(&other, None);
+    }
+
+    /// 실행기가 층 디스크를 빠뜨리면 게스트가 센 수가 달라 시작하지 않는다(보통의 run).
+    fn a_missing_layer_disk_stops_the_start() {
+        let e = Env::new();
+        let (a, _) = oci_archive_layers("local/a:1", &[BASE, &[("a.txt", b"a")]]);
+        load(&e, "a.tar", &a);
+        let o = e
+            .cmd(&["run", "--rm", "local/a:1", "true"])
+            .env("SBX_FAKE_DROP_LAYER_DISK", "1")
+            .output()
+            .unwrap();
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("layer disks"),
+            "{}",
+            text(&o.stderr)
+        );
+    }
+
+    /// config만 바꾸는 명령은 이미지 config에 쓰인다. `COPY --chown --chmod`는 층의 소유자와 권한이다. 파서 지시어
+    /// `escape`를 따른다.
+    fn build_writes_the_image_config() {
+        let (e, ctx) = build_env();
+        write(
+            &ctx,
+            "Dockerfile",
+            "# escape=`\n\
+             FROM local/base:1\n\
+             SHELL [\"/bin/sh\", \"-ec\"]\n\
+             LABEL a=b `\n      c=d\n\
+             EXPOSE 80 53/udp\n\
+             VOLUME /data\n\
+             STOPSIGNAL SIGINT\n\
+             HEALTHCHECK --interval=5s CMD true\n\
+             MAINTAINER someone\n\
+             COPY --chown=7:8 --chmod=600 src/a.txt /a.txt\n\
+             ENTRYPOINT [\"/e\"]\n\
+             USER 1:2\n",
+        );
+        write(&ctx, "src/a.txt", "a");
+        let o = build(&e, &ctx, &["-q", "-t", "local/cfg:1"], None);
+        let err = text(&o.stderr);
+        assert_eq!(o.status.code(), Some(0), "{err}");
+        let id = text(&o.stdout).trim().to_owned();
+        let hex = id.strip_prefix("sha256:").unwrap();
+        let doc: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(e.path(&format!("cache/images/{hex}/config.json"))).unwrap(),
+        )
+        .unwrap();
+        let c = &doc["config"];
+        assert_eq!(c["Shell"], serde_json::json!(["/bin/sh", "-ec"]));
+        assert_eq!(c["Labels"]["a"], "b");
+        assert_eq!(c["Labels"]["c"], "d");
+        assert_eq!(
+            c["ExposedPorts"],
+            serde_json::json!({"53/udp": {}, "80/tcp": {}})
+        );
+        assert_eq!(c["Volumes"], serde_json::json!({"/data": {}}));
+        assert_eq!(c["StopSignal"], "SIGINT");
+        assert_eq!(
+            c["Healthcheck"]["Test"],
+            serde_json::json!(["CMD-SHELL", "true"])
+        );
+        assert_eq!(c["Healthcheck"]["Interval"], 5_000_000_000u64);
+        assert_eq!(c["Entrypoint"], serde_json::json!(["/e"]));
+        assert_eq!(
+            c["Cmd"],
+            serde_json::Value::Null,
+            "ENTRYPOINT clears the base's Cmd"
+        );
+        assert_eq!(c["User"], "1:2");
+        assert_eq!(doc["author"], "someone");
+        // HEALTHCHECK는 쓰지만 돌리지 않는다고 알린다.
+        let o = build(&e, &ctx, &[], None);
+        assert!(
+            text(&o.stderr).contains("HEALTHCHECK"),
+            "{}",
+            text(&o.stderr)
+        );
+        // COPY 층: 소유자와 권한.
+        let ids = doc["rootfs"]["diff_ids"].as_array().unwrap();
+        let top = ids
+            .last()
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .strip_prefix("sha256:")
+            .unwrap();
+        let disk = e.path(&format!("cache/layers/{top}/layer.erofs"));
+        let read = sbx_rootfs::erofs::read::read_layer(&mut std::fs::File::open(&disk).unwrap(), 0)
+            .unwrap();
+        let a = read.entries.iter().find(|x| x.path == "a.txt").unwrap();
+        assert_eq!((a.meta.uid, a.meta.gid, a.meta.mode), (7, 8, 0o600));
+        // 만든 이미지의 기본값으로 돈다.
+        let o = e.sbx(&["--format", "json", "images"]);
+        let list: Vec<sbx_cli::output::Image> = serde_json::from_slice(&o.stdout).unwrap();
+        let img = list.iter().find(|i| i.id == id).unwrap();
+        assert_eq!(img.exposed_ports, ["53/udp", "80/tcp"]);
+    }
+
+    /// 그 이름의 샌드박스가 실행 중일 때까지 기다린다.
+    fn wait_named(e: &Env, name: &str) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !e
+            .ps()
+            .iter()
+            .any(|s| s["name"] == name && s["state"] == "running")
+        {
+            assert!(Instant::now() < deadline, "{name} is not running");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// `--format json volume inspect NAME`의 한 줄.
+    fn volume_info(e: &Env, name: &str) -> sbx_cli::output::Volume {
+        let o = e.sbx(&["--format", "json", "volume", "inspect", name]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        serde_json::from_slice(&o.stdout)
+            .unwrap_or_else(|err| panic!("volume inspect: {err}: {}", text(&o.stdout)))
+    }
+
+    /// 볼륨이 샌드박스를 지워도 남고, 처음 붙을 때 이미지의 내용(가짜 실행기에서는 대상 경로의 지금 내용)으로 채워진다.
+    /// `volume create|ls|inspect|rm|prune`도 본다.
+    fn volume_data_outlives_the_sandbox() {
+        let e = Env::new();
+        let data = e.path("data-dir");
+        // 만들기: 이름, 라벨, 크기. 같은 이름을 같은 옵션으로 다시 만들면 있는 것이다.
+        let o = e.sbx(&[
+            "volume", "create", "--opt", "size=1g", "--label", "app=db", "pgdata",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "pgdata\n");
+        let o = e.sbx(&["volume", "create", "pgdata"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = e.sbx(&["volume", "create", "--opt", "size=2g", "pgdata"]);
+        assert_eq!(
+            o.status.code(),
+            Some(1),
+            "other options for an existing volume"
+        );
+        let o = e.sbx(&["volume", "create", "--opt", "type=tmpfs", "x"]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("unknown volume option"),
+            "{}",
+            text(&o.stderr)
+        );
+        let v = volume_info(&e, "pgdata");
+        assert_eq!((v.size, v.labels["app"].as_str()), (1 << 30, "db"));
+        assert!(v.sandboxes.is_empty() && !v.in_use);
+        // 쓰고, 샌드박스를 지우고, 새 샌드박스에서 읽는다.
+        let o = e.sbx(&[
+            "run",
+            "--name",
+            "db",
+            "-v",
+            &format!("pgdata:{}", data.display()),
+            IMAGE,
+            "sh",
+            "-c",
+            &format!("echo kept > {}/table", data.display()),
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        // 멈춘 샌드박스가 가리키는 볼륨은 지우지 않는다. 샌드박스를 지워도 볼륨은 남는다.
+        let o = e.sbx(&["volume", "rm", "pgdata"]);
+        assert_eq!(o.status.code(), Some(1));
+        assert!(
+            text(&o.stderr).contains("in use by sandbox db"),
+            "{}",
+            text(&o.stderr)
+        );
+        assert_eq!(volume_info(&e, "pgdata").sandboxes.len(), 1);
+        let o = e.sbx(&["rm", "db"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = e.sbx(&[
+            "run",
+            "--rm",
+            "-v",
+            &format!("pgdata:{}:ro", data.display()),
+            IMAGE,
+            "cat",
+            &format!("{}/table", data.display()),
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "kept\n");
+
+        // 처음 쓰는 이름은 만들고, 이미지의 내용을 옮겨 담는다(주인과 권한째). 다음부터는 볼륨의 내용이다.
+        let seeded = e.path("seeded");
+        std::fs::create_dir(&seeded).unwrap();
+        std::fs::write(seeded.join("from-image"), b"seed").unwrap();
+        let o = e.sbx(&[
+            "run",
+            "--rm",
+            "--mount",
+            &format!("type=volume,source=fresh,target={}", seeded.display()),
+            IMAGE,
+            "sh",
+            "-c",
+            &format!(
+                "cat {s}/from-image; echo new > {s}/written",
+                s = seeded.display()
+            ),
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "seed");
+        let v = volume_info(&e, "fresh");
+        assert_eq!(v.size, 16 << 30, "the default size");
+        // nocopy: 이미지의 내용을 옮기지 않는다.
+        let empty = e.path("nocopy");
+        std::fs::create_dir(&empty).unwrap();
+        std::fs::write(empty.join("from-image"), b"seed").unwrap();
+        let o = e.sbx(&[
+            "run",
+            "--rm",
+            "-v",
+            &format!("blank:{}:nocopy", empty.display()),
+            IMAGE,
+            "ls",
+            "-A",
+            &empty.display().to_string(),
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "");
+        // 이름 없는 볼륨(`-v /path`)은 만들지 않는다.
+        let o = e.sbx(&["run", "--rm", "-v", "/data", IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(125));
+        assert!(text(&o.stderr).contains("anonymous"), "{}", text(&o.stderr));
+
+        // ls: 이름, -q, 필터, JSON.
+        let o = e.sbx(&["volume", "ls", "-q"]);
+        assert_eq!(text(&o.stdout), "blank\nfresh\npgdata\n");
+        let o = e.sbx(&["volume", "ls", "-q", "--filter", "label=app=db"]);
+        assert_eq!(text(&o.stdout), "pgdata\n");
+        let o = e.sbx(&["volume", "ls", "--filter", "colour=red"]);
+        assert_eq!(o.status.code(), Some(1));
+        let o = e.sbx(&["--format", "json", "volume", "ls"]);
+        let list: Vec<sbx_cli::output::Volume> = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(list.len(), 3);
+        // prune: -a 없이는 지우는 것이 없다(이름 없는 볼륨이 없다). -a는 어느 샌드박스도 쓰지 않는 것을 지운다.
+        let o = e.sbx(&["volume", "prune", "-f"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "Total reclaimed space: 0B\n");
+        let o = e.sbx(&["volume", "prune", "-a"]);
+        assert_ne!(
+            o.status.code(),
+            Some(0),
+            "asks first, and stdin is not a terminal"
+        );
+        let o = e.sbx(&[
+            "create",
+            "-v",
+            &format!("blank:{}", e.path("b").display()),
+            IMAGE,
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = e.sbx(&["volume", "prune", "-a", "-f", "--filter", "label=app=db"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(
+            text(&o.stdout).starts_with("Deleted Volumes:\npgdata\n"),
+            "{}",
+            text(&o.stdout)
+        );
+        let o = e.sbx(&["volume", "prune", "-a", "-f"]);
+        assert!(
+            text(&o.stdout).starts_with("Deleted Volumes:\nfresh\n"),
+            "{}",
+            text(&o.stdout)
+        );
+        let o = e.sbx(&["volume", "ls", "-q"]);
+        assert_eq!(
+            text(&o.stdout),
+            "blank\n",
+            "a created sandbox still points at blank"
+        );
+        // rm -f: 없는 이름은 오류가 아니다.
+        let o = e.sbx(&["volume", "rm", "-f", "nothing"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = e.sbx(&["volume", "rm", "nothing"]);
+        assert_eq!(o.status.code(), Some(1));
+        // 볼륨 이벤트.
+        let o = e.sbx(&[
+            "events",
+            "--since",
+            "1h",
+            "--until",
+            "0s",
+            "--filter",
+            "type=volume",
+            "--format",
+            "json",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let events = text(&o.stdout);
+        assert!(
+            events.contains("\"create\"") && events.contains("\"remove\""),
+            "{events}"
+        );
+    }
+
+    /// 볼륨을 쓰기로 붙이는 샌드박스는 한 번에 하나다. 둘째는 잡고 있는 샌드박스를 말하며 거부되고, 첫째가 멈추거나
+    /// 죽으면 풀린다. 읽기 전용끼리는 함께 붙는다. 실행 중인 샌드박스의 볼륨은 지우지 않는다.
+    fn a_volume_has_one_writer_at_a_time() {
+        let e = Env::new();
+        let p = e.path("shared");
+        let rw = format!("shared-vol:{}", p.display());
+        let ro = format!("shared-vol:{}:ro", p.display());
+        let o = e.sbx(&[
+            "run", "-d", "--name", "first", "-v", &rw, IMAGE, "sleep", "30",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        wait_named(&e, "first");
+        for spec in [&rw, &ro] {
+            let o = e.sbx(&["run", "--rm", "-v", spec, IMAGE, "true"]);
+            assert_eq!(o.status.code(), Some(125), "{spec}");
+            assert!(
+                text(&o.stderr).contains("volume shared-vol is in use by sandbox first"),
+                "{}",
+                text(&o.stderr)
+            );
+        }
+        let o = e.sbx(&["volume", "rm", "shared-vol"]);
+        assert_eq!(o.status.code(), Some(1));
+        assert!(text(&o.stderr).contains("first"), "{}", text(&o.stderr));
+        assert!(volume_info(&e, "shared-vol").in_use);
+        // 멈추면 풀린다.
+        let o = e.sbx(&["stop", "-t", "0", "first"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = e.sbx(&["run", "--rm", "-v", &rw, IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        // 읽기 전용끼리는 함께. 그동안 쓰기는 거부된다.
+        let o = e.sbx(&[
+            "run", "-d", "--name", "reader", "-v", &ro, IMAGE, "sleep", "30",
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        wait_named(&e, "reader");
+        let o = e.sbx(&["run", "--rm", "-v", &ro, IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = e.sbx(&["run", "--rm", "-v", &rw, IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(125));
+        assert!(
+            text(&o.stderr).contains("in use by sandbox reader"),
+            "{}",
+            text(&o.stderr)
+        );
+        let o = e.sbx(&["rm", "-f", "reader"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        // 붙인 프로세스가 갑자기 죽어도 잠금이 함께 사라진다(kill -9).
+        let mut child = e.spawn(&["run", "--name", "holder", "-v", &rw, IMAGE, "sleep", "30"]);
+        wait_named(&e, "holder");
+        let o = e.sbx(&["run", "--rm", "-v", &rw, IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(125), "{}", text(&o.stderr));
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let o = e.sbx(&["run", "--rm", "-v", &rw, IMAGE, "true"]);
+            if o.status.code() == Some(0) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "{}", text(&o.stderr));
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let o = e.sbx(&["rm", "-f", "holder", "first"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = e.sbx(&["volume", "rm", "shared-vol"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    }
+
+    /// 볼륨 디스크는 층 디스크와 scratch 뒤에 역할 `volume`으로 붙는다. 층 디스크가 그만큼 줄어도(아래 층을 합친다)
+    /// 게스트의 층 수 확인(`CheckLayers`)은 통과한다. 디스크가 모자라거나 실행기가 옛 규약(2)만 말하면 거부한다.
+    fn volume_disks_limits_and_old_executors() {
+        let e = Env::new();
+        let (a, _) = oci_archive_layers(
+            "local/deep:1",
+            &[
+                &[("0", b"0")],
+                &[("1", b"1")],
+                &[("2", b"2")],
+                &[("3", b"3")],
+            ],
+        );
+        load(&e, "deep.tar", &a);
+        // 가짜 실행기의 게스트 경로는 호스트 경로다.
+        let (a, b) = (e.path("a"), e.path("b"));
+        let va = &*format!("vol-a:{}", a.display());
+        let vb = &*format!("vol-b:{}", b.display());
+        let vb_ro = &*format!("{vb}:ro");
+        let rec = e.path("launch.json");
+        let run = |volumes: &[&str], max_disks: Option<&str>, protocol: Option<&str>| {
+            let _ = std::fs::remove_file(&rec);
+            let mut args = vec!["run", "--rm"];
+            for v in volumes {
+                args.extend(["-v", v]);
+            }
+            args.extend(["local/deep:1", "true"]);
+            let mut c = e.cmd(&args);
+            c.env("SBX_FAKE_RECORD", &rec);
+            if let Some(n) = max_disks {
+                c.env("SBX_FAKE_MAX_DISKS", n);
+            }
+            if let Some(v) = protocol {
+                c.env("SBX_FAKE_PROTOCOL", v);
+            }
+            c.output().unwrap()
+        };
+        let roles = |vm: &serde_json::Value| -> Vec<String> {
+            vm["disks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|d| d["role"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        // 디스크 다섯: 층 둘(아래 셋을 합친 것과 맨 위), scratch, 볼륨 둘.
+        let o = run(&[va, vb_ro], Some("5"), None);
+        // 처음 쓰는 볼륨은 읽기 전용으로 붙지 않는다(읽을 것이 없다).
+        assert_eq!(o.status.code(), Some(125), "{}", text(&o.stderr));
+        assert!(
+            text(&o.stderr).contains("never been used"),
+            "{}",
+            text(&o.stderr)
+        );
+        let o = run(&[va, vb], Some("5"), None);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let vm: serde_json::Value = serde_json::from_slice(&std::fs::read(&rec).unwrap()).unwrap();
+        assert_eq!(
+            roles(&vm),
+            ["rootfs", "scratch", "rootfs", "volume", "volume"],
+            "{vm}"
+        );
+        let disks = vm["disks"].as_array().unwrap();
+        assert!(
+            disks[0]["path"].as_str().unwrap().contains("/merged/"),
+            "{vm}"
+        );
+        assert!(
+            disks[3]["path"]
+                .as_str()
+                .unwrap()
+                .ends_with("volumes/vol-a/disk.img"),
+            "{vm}"
+        );
+        assert_eq!(disks[3]["readonly"], false);
+        let o = run(&[va, vb_ro], Some("5"), None);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let vm: serde_json::Value = serde_json::from_slice(&std::fs::read(&rec).unwrap()).unwrap();
+        assert_eq!(
+            vm["disks"][4]["readonly"], true,
+            "read-only on the host too"
+        );
+        // 루트 파일 시스템 하나와 scratch를 빼고 남는 만큼만.
+        let o = run(&[va, vb], Some("3"), None);
+        assert_eq!(o.status.code(), Some(125));
+        assert!(text(&o.stderr).contains("2 volumes"), "{}", text(&o.stderr));
+        let o = run(&[va], Some("3"), None);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let vm: serde_json::Value = serde_json::from_slice(&std::fs::read(&rec).unwrap()).unwrap();
+        assert_eq!(roles(&vm), ["rootfs", "scratch", "volume"], "{vm}");
+        // 옛 규약만 말하는 실행기: 볼륨은 거부하고, 볼륨 없는 샌드박스는 그대로 돈다.
+        let o = run(&[va], None, Some("2"));
+        assert_eq!(o.status.code(), Some(125));
+        assert!(
+            text(&o.stderr).contains("older than 3"),
+            "{}",
+            text(&o.stderr)
+        );
+        let o = run(&[], None, Some("2"));
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let o = e.sbx(&["volume", "ls", "-q"]);
+        assert_eq!(text(&o.stdout), "vol-a\nvol-b\n");
+    }
+
+    /// `sbx mcp`는 MCP로 만든 볼륨만 쓴다. 사용자가 CLI로 만든 볼륨은 붙이지 못하고, 수는 `--max-volumes`까지다.
+    fn mcp_uses_only_its_own_volumes() {
+        let e = Env::new();
+        let o = e.sbx(&["volume", "create", "mine"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let mut child = e
+            .cmd(&["mcp", "--max-volumes", "1", "--max-disk", "2g"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let out = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut m = Mcp {
+            child,
+            out,
+            next: 0,
+        };
+        m.request("initialize", serde_json::json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "e2e", "version": "0"}}));
+        let p = e.path("agent-data");
+        let path = p.display().to_string();
+        let err = m
+            .call(
+                "run",
+                serde_json::json!({"image": IMAGE, "command": ["true"], "volumes": [{"name": "mine", "path": path}]}),
+            )
+            .unwrap_err();
+        assert!(err.contains("not created through MCP"), "{err}");
+        // 호스트 경로는 받지 않는다.
+        let err = m
+            .call(
+                "run",
+                serde_json::json!({"image": IMAGE, "command": ["true"], "volumes": [{"name": "/etc", "path": path}]}),
+            )
+            .unwrap_err();
+        assert!(err.contains("volume name"), "{err}");
+        let r = m
+            .call(
+                "run",
+                serde_json::json!({"image": IMAGE, "command": ["sh", "-c", format!("echo hi > {path}/f")],
+                    "volumes": [{"name": "work", "path": path}]}),
+            )
+            .unwrap();
+        assert_eq!(r["exit_code"], 0, "{r}");
+        let r = m
+            .call(
+                "run",
+                serde_json::json!({"image": IMAGE, "command": ["cat", format!("{path}/f")],
+                    "volumes": [{"name": "work", "path": path, "readonly": true}]}),
+            )
+            .unwrap();
+        assert_eq!(r["stdout"], "hi\n", "{r}");
+        let err = m
+            .call(
+                "run",
+                serde_json::json!({"image": IMAGE, "command": ["true"], "volumes": [{"name": "more", "path": path}]}),
+            )
+            .unwrap_err();
+        assert!(err.contains("--max-volumes"), "{err}");
+        drop(m);
+        let v = volume_info(&e, "work");
+        assert_eq!(v.labels["io.github.toollyst.sandbox.owner"], "mcp");
+        assert_eq!(v.size, 2 << 30, "--max-disk");
+        // 사용자의 볼륨은 그대로다.
+        assert!(volume_info(&e, "mine").labels.is_empty());
+    }
+
+    /// 소유 프로세스가 죽으면 볼륨 잠금은 곧바로 풀리지만 VM은 실행기가 끌 때까지 조금 더 산다(`SBX_FAKE_LINGER_MS`가
+    /// 그 틈을 흉내 낸다). 그사이 쓰기로 붙이려는 샌드박스는 그 VM이 꺼지기를 기다리고, 기다리는 시간(3초) 안에 꺼지지
+    /// 않으면 그 샌드박스를 말하며 거부된다. 꺼지면 붙는다.
+    fn a_volume_waits_for_the_vm_of_a_dead_owner() {
+        let e = Env::new();
+        let rw = format!("gap-vol:{}", e.path("gap").display());
+        let mut child = e
+            .cmd(&["run", "--name", "holder", "-v", &rw, IMAGE, "sleep", "60"])
+            .env("SBX_FAKE_LINGER_MS", "5000")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        wait_named(&e, "holder");
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let killed = Instant::now();
+        // 기다려도 VM이 남아 있다: 거부.
+        let o = e.sbx(&["run", "--rm", "-v", &rw, IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(125), "{}", text(&o.stderr));
+        assert!(
+            text(&o.stderr).contains("still attached to sandbox holder"),
+            "{}",
+            text(&o.stderr)
+        );
+        assert!(killed.elapsed() >= Duration::from_secs(3), "it waited");
+        // 다시 하면 그 VM이 꺼지기를 기다렸다가 붙는다.
+        let o = e.sbx(&["run", "--rm", "-v", &rw, IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(
+            killed.elapsed() >= Duration::from_secs(5),
+            "after the VM went"
+        );
+        // 읽기 전용끼리는 겹치지 않으므로 기다리지 않는다.
+        let ro = format!("{rw}:ro");
+        let mut child = e
+            .cmd(&["run", "--name", "reader", "-v", &ro, IMAGE, "sleep", "60"])
+            .env("SBX_FAKE_LINGER_MS", "5000")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        wait_named(&e, "reader");
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let started = Instant::now();
+        let o = e.sbx(&["run", "--rm", "-v", &ro, IMAGE, "true"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert!(started.elapsed() < Duration::from_secs(3), "no wait");
+        let o = e.sbx(&["rm", "-f", "holder", "reader"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    }
+
+    /// 볼륨과 `--connect`를 함께: 볼륨을 쓰기로 붙인 `db`에 다른 샌드박스가 이름으로 닿고, 그 샌드박스도 제 볼륨을
+    /// 붙인다. `db`의 볼륨은 그동안 다른 쪽이 붙이지 못한다. MCP에서는 볼륨 범위와 잇기 범위가 함께 걸린다.
+    fn volumes_and_connect_together() {
+        let e = Env::new();
+        let data = e.path("data");
+        let port = echo_service();
+        let db_path = e.path("dbdata");
+        let app_path = e.path("appdata");
+        let db_vol = format!("dbdata:{}", db_path.display());
+        let o = e.sbx(&[
+            "run",
+            "-d",
+            "--name",
+            "db",
+            "-v",
+            &db_vol,
+            IMAGE,
+            "sh",
+            "-c",
+            &format!("echo row > {}/t; sleep 60", db_path.display()),
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        wait_named(&e, "db");
+        let connect = format!("db:{port}");
+        let script = format!(
+            "{}; echo seen > {}/f",
+            probe_script(&data, "app", &[("db", port)]),
+            app_path.display()
+        );
+        let app_vol = format!("appdata:{}", app_path.display());
+        let o = e.sbx(&[
+            "run",
+            "--rm",
+            "--name",
+            "app",
+            "--connect",
+            &connect,
+            "-v",
+            &app_vol,
+            IMAGE,
+            "sh",
+            "-c",
+            &script,
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(
+            text(&o.stdout),
+            format!("db: rcode 0 [198.18.0.1] port {port}: got \"hello\\n\"\n")
+        );
+        // 잇는 쪽이 대상의 볼륨까지 붙일 수는 없다(쓰는 쪽이 있다).
+        let o = e.sbx(&[
+            "run",
+            "--rm",
+            "--connect",
+            &connect,
+            "-v",
+            &format!("{db_vol}:ro"),
+            IMAGE,
+            "true",
+        ]);
+        assert_eq!(o.status.code(), Some(125));
+        assert!(
+            text(&o.stderr).contains("in use by sandbox db"),
+            "{}",
+            text(&o.stderr)
+        );
+        let o = e.sbx(&["rm", "-f", "db"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        // 두 볼륨 모두 남는다.
+        let o = e.sbx(&[
+            "run",
+            "--rm",
+            "-v",
+            &format!("{db_vol}:ro"),
+            "-v",
+            &format!("{app_vol}:ro"),
+            IMAGE,
+            "cat",
+            &format!("{}/t", db_path.display()),
+            &format!("{}/f", app_path.display()),
+        ]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        assert_eq!(text(&o.stdout), "row\nseen\n");
+
+        // MCP: 사용자의 볼륨도 사용자의 샌드박스도 쓰지 못하고, MCP로 만든 것끼리는 둘 다 된다.
+        let o = e.sbx(&["run", "-d", "--name", "userdb", IMAGE, "sleep", "60"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let mut child = e
+            .cmd(&["mcp"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let out = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut m = Mcp {
+            child,
+            out,
+            next: 0,
+        };
+        m.request("initialize", serde_json::json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "e2e", "version": "0"}}));
+        let mpath = e.path("mcp-data").display().to_string();
+        let err = m
+            .call(
+                "create",
+                serde_json::json!({"image": IMAGE, "connect": [format!("userdb:{port}")],
+                    "volumes": [{"name": "agentvol", "path": mpath}]}),
+            )
+            .unwrap_err();
+        assert!(err.contains("created through MCP"), "{err}");
+        let err = m
+            .call(
+                "run",
+                serde_json::json!({"image": IMAGE, "command": ["true"], "volumes": [{"name": "dbdata", "path": mpath}]}),
+            )
+            .unwrap_err();
+        assert!(err.contains("not created through MCP"), "{err}");
+        m.call(
+            "create",
+            serde_json::json!({"image": IMAGE, "name": "mdb", "command": ["sleep", "60"],
+                "volumes": [{"name": "mdbdata", "path": e.path("mdb").display().to_string()}]}),
+        )
+        .unwrap();
+        let r = m
+            .call(
+                "run",
+                serde_json::json!({"image": IMAGE, "connect": [format!("mdb:{port}")],
+                    "command": ["sh", "-c", format!("echo ok > {mpath}/f")],
+                    "volumes": [{"name": "agentvol", "path": mpath}]}),
+            )
+            .unwrap();
+        assert_eq!(r["exit_code"], 0, "{r}");
+        drop(m);
+        let v = volume_info(&e, "agentvol");
+        assert_eq!(v.labels["io.github.toollyst.sandbox.owner"], "mcp");
+        let o = e.sbx(&["rm", "-f", "userdb", "mdb"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    }
+
+    /// 실행 중인 샌드박스가 쓰는 실행기·어댑터는 `executor prune`이 남기고(알린다) `rm`이 거부한다(그 샌드박스를 댄다).
+    /// 새 버전을 깔고 `executor use`로 바꿔도(설치 스크립트가 하는 길) 옛 버전으로 도는 VM은 그대로다. `rm -f`는 경고하고
+    /// 지우며, 도는 VM은 멈추기 전까지 계속 쓸 수 있다.
+    fn executors_in_use_are_kept() {
+        let e = Env::new();
+        let me = std::env::current_exe().unwrap();
+        let me = me.to_str().unwrap();
+        let without = |args: &[&str]| {
+            let mut c = e.cmd(args);
+            c.env_remove("SBX_EXECUTOR");
+            c.output().unwrap()
+        };
+        let ok = |o: &Output| assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        ok(&without(&["executor", "install", "--from", me, "fake@1.0"]));
+        let o = without(&["run", "-d", "--name", "old", IMAGE, "sleep", "60"]);
+        ok(&o);
+        wait_named(&e, "old");
+        // 새 버전으로 바꾼다. 옛 버전으로 도는 샌드박스는 그대로 돈다.
+        ok(&without(&["executor", "install", "--from", me, "fake@2.0"]));
+        ok(&without(&["executor", "use", "fake@2.0"]));
+        let o = without(&["executor", "ls", "--format", "json"]);
+        ok(&o);
+        let list: Vec<sbx_cli::output::InstalledExecutor> =
+            serde_json::from_slice(&o.stdout).unwrap();
+        let running: Vec<(&str, Vec<String>)> = list
+            .iter()
+            .map(|i| (i.version.as_str(), i.running.clone()))
+            .collect();
+        assert_eq!(running, [("1.0", vec!["old".to_owned()]), ("2.0", vec![])]);
+        // prune은 남긴다(샌드박스가 고정한 버전이기도 하다).
+        let o = without(&["executor", "prune"]);
+        ok(&o);
+        assert!(!text(&o.stdout).contains("fake@1.0"), "{}", text(&o.stdout));
+        // rm은 거부한다.
+        let o = without(&["executor", "rm", "fake@1.0"]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("executor fake@1.0 is in use by running sandbox old"),
+            "{}",
+            text(&o.stderr)
+        );
+        ok(&without(&["exec", "old", "true"]));
+        // -f는 경고하고 지운다. 도는 VM은 멈추기 전까지 그대로 쓴다.
+        let o = without(&["executor", "rm", "-f", "fake@1.0"]);
+        ok(&o);
+        assert!(
+            text(&o.stderr).contains("can't be started with it again"),
+            "{}",
+            text(&o.stderr)
+        );
+        let o = without(&["exec", "old", "echo", "still"]);
+        ok(&o);
+        assert_eq!(text(&o.stdout), "still\n");
+        ok(&without(&["stop", "-t", "0", "old"]));
+        // 그 버전으로는 다시 시작하지 못한다(고정한 실행기가 없다).
+        let o = without(&["start", "old"]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(text(&o.stderr).contains("fake@1.0"), "{}", text(&o.stderr));
+        ok(&without(&["rm", "-f", "old"]));
+        ok(&without(&["executor", "rm", "fake@2.0"]));
+
+        // 어댑터: 실행 중인 샌드박스가 쓰는 어댑터 버전은 다른 버전이 있어도 지우지 않는다.
+        let vmm = e.path("wick-src");
+        std::fs::create_dir_all(&vmm).unwrap();
+        std::fs::write(vmm.join("vmm"), "x").unwrap();
+        let vmm = vmm.to_str().unwrap();
+        ok(&without(&[
+            "executor",
+            "adapter",
+            "install",
+            "--from",
+            me,
+            "fakead@0.1",
+        ]));
+        ok(&without(&[
+            "executor",
+            "install",
+            "--from",
+            vmm,
+            "--adapter",
+            "fakead",
+            "wick@1.0",
+        ]));
+        ok(&without(&[
+            "run", "-d", "--name", "vm", IMAGE, "sleep", "60",
+        ]));
+        wait_named(&e, "vm");
+        ok(&without(&[
+            "executor",
+            "adapter",
+            "install",
+            "--from",
+            me,
+            "fakead@0.2",
+        ]));
+        let o = without(&["executor", "adapter", "ls", "--format", "json"]);
+        ok(&o);
+        let list: Vec<sbx_cli::output::InstalledAdapter> =
+            serde_json::from_slice(&o.stdout).unwrap();
+        let running: Vec<(&str, Vec<String>)> = list
+            .iter()
+            .map(|i| (i.version.as_str(), i.running.clone()))
+            .collect();
+        assert_eq!(running, [("0.1", vec!["vm".to_owned()]), ("0.2", vec![])]);
+        let o = without(&["executor", "adapter", "rm", "fakead@0.1"]);
+        assert_ne!(o.status.code(), Some(0));
+        assert!(
+            text(&o.stderr).contains("adapter fakead@0.1 is in use by running sandbox vm"),
+            "{}",
+            text(&o.stderr)
+        );
+        let o = without(&["executor", "prune"]);
+        ok(&o);
+        assert!(
+            text(&o.stderr).contains("kept adapter fakead@0.1: in use by running sandbox vm"),
+            "{}",
+            text(&o.stderr)
+        );
+        // 실행기 쪽에서도 VMM 묶음은 쓰는 중이다.
+        let o = without(&["executor", "rm", "wick@1.0"]);
+        assert!(
+            text(&o.stderr).contains("in use by running sandbox vm"),
+            "{}",
+            text(&o.stderr)
+        );
+        ok(&without(&["rm", "-f", "vm"]));
+        let o = without(&["executor", "prune"]);
+        ok(&o);
+        assert!(
+            text(&o.stdout).contains("adapter fakead@0.1"),
+            "{}",
+            text(&o.stdout)
+        );
     }
 }

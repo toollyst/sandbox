@@ -1,0 +1,9 @@
+# codeql.yml이 읽는 CodeQL 설정. 쿼리 묶음(security-extended)은 codeql.yml에 둔다.
+#
+# 테스트 코드는 분석에서 뺀다. 테스트는 배포되지 않고, 테스트 픽스처(고정 문자열)와 테스트 출력(assert 메시지,
+# print!)이 오탐(hard-coded-cryptographic-value, log-injection)을 낸다. 빼는 것은 `#[cfg(test)] mod tests;`가
+# 읽는 `tests.rs`와 그 아래 `tests/` 모듈, 크레이트의 통합 테스트 `tests/`(픽스처 포함)뿐이다. 배포되는 src는 남는다.
+# Rust의 build-mode none에서 paths-ignore가 적용된다(GitHub 문서 "Specifying directories to scan").
+paths-ignore:
+  - '**/tests.rs'
+  - '**/tests/**'

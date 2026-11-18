@@ -13,9 +13,11 @@ members = [
     "crates/port/store",
     "crates/port/events",
     "crates/adapter/oci",
+    "crates/adapter/dockerfile",
     "crates/adapter/executor-process",
     "crates/core/runtime",
     "crates/core/manage",
+    "crates/core/build",
     "crates/app/cli",
     "crates/app/shim",
     "crates/app/guest",
@@ -25,7 +27,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.2"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.89"
 publish = false
@@ -61,6 +63,9 @@ aws-lc-rs = { version = "1.19", default-features = false, features = ["aws-lc-sy
 toml = { version = "0.9", default-features = false, features = ["std", "parse", "serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 reqwest = "0.13"
+# push: 파일에서 읽는 대로 보내는 요청 본문(reqwest::Body::wrap). reqwest가 이미 쓰는 것이다.
+http-body = "1"
+bytes = "1"
 # wrap_help: 도움말을 터미널 너비에 맞춰 접는다(긴 설명이 한 줄로 늘어지지 않게).
 clap = { version = "4", features = ["derive", "env", "wrap_help"] }
 # 셸 자동완성: 셸이 `COMPLETE=<셸> sbx -- <단어들>`로 sbx를 불러 후보(샌드박스 이름·ID, 이미지 참조)를 받는다.
@@ -71,6 +76,8 @@ clap_complete = { version = "=4.6.11", features = ["unstable-dynamic"] }
 crossterm = { version = "0.29", default-features = false, features = ["windows"] }
 # `sbx tui` 화면(전체 화면, crossterm 위). 달력 위젯(time 크레이트)과 매크로는 쓰지 않는다.
 ratatui = { version = "0.30", default-features = false, features = ["crossterm", "underline-color"] }
+# 실시간 공유 폴더의 호스트 쪽 변경 감시(FSEvents, inotify, ReadDirectoryChangesW). 라이선스 CC0-1.0(deny.toml).
+notify = "8"
 
 # workspace
 sbx-model = { path = "crates/model" }
@@ -83,7 +90,9 @@ sbx-store = { path = "crates/port/store" }
 sbx-events = { path = "crates/port/events" }
 sbx-runtime = { path = "crates/core/runtime" }
 sbx-manage = { path = "crates/core/manage" }
+sbx-build = { path = "crates/core/build" }
 sbx-oci = { path = "crates/adapter/oci" }
+sbx-dockerfile = { path = "crates/adapter/dockerfile" }
 sbx-executor-fake = { path = "crates/executor/fake" }
 sbx-executor-proto = { path = "crates/spec/executor-proto" }
 sbx-executor-process = { path = "crates/adapter/executor-process" }

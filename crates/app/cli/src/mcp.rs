@@ -6,10 +6,19 @@
 //!   - 네트워크는 CLI처럼 기본으로 없고, 도구 인자 `allow`(`host:port` 목록)로 연다.
 //!   - 호스트 폴더 마운트(`-v`, `--mount`)는 내보내지 않는다. 에이전트가 호스트의 어떤 파일을 보게 할지는
 //!     서버를 띄우는 쪽이 정할 일이다. 파일은 `write_file`과 `read_file`로 옮긴다.
+//!   - 이름 붙은 볼륨은 도구 인자 `volumes`(`[{name, path, readonly}]`)로 붙인다. 이름만 받고(`--mount type=volume`
+//!     으로 넘긴다) 호스트 경로는 받지 않는다. 샌드박스처럼 MCP로 만든 볼륨(라벨 [`OWNER_LABEL`])만 쓰고, 없으면
+//!     그 라벨로 만든다(크기는 `--max-disk`, 수는 `--max-volumes`까지). 사용자가 CLI로 만든 볼륨은 쓰지 못한다.
+//!     `--all-sandboxes`면 어느 볼륨이든 쓴다.
 //!   - 인자는 언제나 `--이름=값`으로 넘기고, `-`로 시작하는 이미지 이름은 거부한다. 그래서 도구 인자가
 //!     다른 플래그(예: `-v`)로 읽히지 않는다.
 //! - 도구는 MCP로 만든 샌드박스만 본다(라벨 [`OWNER_LABEL`]). CLI로 만든 샌드박스는 호스트 폴더를 붙였을 수
 //!   있으므로 `exec`, 파일 도구, `list`, `remove`에 없는 것과 같다. `sbx mcp --all-sandboxes`로 넓힌다.
+//! - **잇기**(`connect`, CLI `--connect`)도 같은 선이다. MCP로 만든 샌드박스는 MCP로 만든 샌드박스에만 잇는다.
+//!   만들 때 대상을 이 서버의 찾기로 찾고(없는 것과 같으면 오류), 샌드박스에 `connect_scope`(라벨 [`OWNER_LABEL`])를
+//!   기록해 실행 코어가 연결마다 다시 본다. 그래서 그 이름이 나중에 CLI로 만든 샌드박스를 가리켜도 닿지 않는다.
+//!   그러지 않으면 에이전트가 사용자의 DB에 닿는다. `--all-sandboxes`면 넓힌 범위 그대로(범위를 기록하지 않는다).
+//!   반대쪽(CLI로 만든 샌드박스가 MCP로 만든 샌드박스에 잇기)은 막지 않는다: 둘 다 사용자의 것이고, 여는 쪽이 사용자다.
 //! - 도구([`tools`]): `run`(새 샌드박스에서 명령 하나, 끝나면 지운다), `create`(오래 사는 샌드박스, 이 서버가
 //!   끝나도 남는다), `exec`, `write_file`, `read_file`, `list`, `remove`.
 //! - 시간 제한: `run`은 넘으면 VM을 끄고 지운다. `exec`은 넘으면 그 프로세스에 SIGKILL을 보낸다.
@@ -142,7 +151,7 @@ impl Server {
                 None => spec.timeout = Some(max),
             }
         }
-        if !spec.allow.is_empty() && spec.egress_limit.is_none() {
+        if (!spec.allow.is_empty() || !spec.connect.is_empty()) && spec.egress_limit.is_none() {
             spec.egress_limit = l.egress_bytes;
         }
         if !l.private_network
@@ -187,6 +196,7 @@ impl Server {
             )
             .into());
         }
+        self.scope_connect(spec).await?;
         // 기다리기(목록 읽기) 전에 자리를 잡는다. 호출은 동시에 돌므로, 읽은 뒤에 잡으면 동시에 온 호출들이 모두
         // 같은 빈자리를 보고 통과한다. 실패하면 자리는 놓인다(Drop).
         self.reserved.set(self.reserved.get() + 1);
@@ -208,6 +218,27 @@ impl Server {
             .into());
         }
         Ok(seat)
+    }
+
+    /// `connect`의 대상을 이 서버의 찾기([`Server::find`])로 확인하고, 실행 코어가 연결마다 볼 범위를 기록한다.
+    /// 규칙은 모듈 문서에 있다.
+    async fn scope_connect(&self, spec: &mut RunArgs) -> AppResult<()> {
+        if spec.connect.is_empty() {
+            return Ok(());
+        }
+        let rt = self.runtime()?;
+        for v in &spec.connect {
+            for c in crate::parse::connect(v)? {
+                self.find(&rt, &c.target)
+                    .await
+                    .map_err(|e| format!("`connect` {v:?}: {e}"))?;
+            }
+        }
+        if !self.all_sandboxes {
+            spec.connect_scope =
+                std::collections::BTreeMap::from([(OWNER_LABEL.to_owned(), OWNER_MCP.to_owned())]);
+        }
+        Ok(())
     }
 
     /// `query`(이름, ID, ID 앞부분)로 찾는다. 이 서버가 다룰 수 없는 샌드박스는 없는 것과 같다.
@@ -239,6 +270,7 @@ pub async fn serve(cli: &Cli) -> AppResult<u8> {
         max_cpus,
         max_memory,
         max_disk,
+        max_volumes,
         max_lifetime,
         max_egress,
         max_image_size,
@@ -251,6 +283,14 @@ pub async fn serve(cli: &Cli) -> AppResult<u8> {
         ctx: {
             let mut c = Ctx::new(cli)?;
             c.max_image_bytes = max_image_size;
+            if !all_sandboxes {
+                c.volume_scope = crate::app::VolumeScope::Labeled {
+                    key: OWNER_LABEL,
+                    value: OWNER_MCP,
+                    max: max_volumes,
+                    size_mib: max_disk,
+                };
+            }
             c
         },
         all_sandboxes,
@@ -534,6 +574,7 @@ pub fn tools() -> Value {
     let workdir =
         json!({ "type": "string", "description": "Working directory inside the sandbox." });
     let allow = json!({ "type": "array", "items": { "type": "string" }, "description": "Outbound network allow list, host:port each (e.g. pypi.org:443, *.github.com:443). Without it the sandbox has no network." });
+    let connect = json!({ "type": "array", "items": { "type": "string" }, "description": "Other sandboxes created through this server (with create) that this one may reach, SANDBOX:PORT each (e.g. db:5432; pg=db:5432 to use the name pg inside). Programs inside connect to SANDBOX:PORT by name, with any TCP protocol; nothing else opens. Sandboxes made outside this server cannot be reached." });
     let stdin =
         json!({ "type": "string", "description": "Text written to the command's standard input." });
     let timeout = json!({ "type": "integer", "minimum": 1, "maximum": MAX_TIMEOUT_SECS, "description": format!("Seconds before the command is killed (default {DEFAULT_TIMEOUT_SECS}).") });
@@ -542,6 +583,11 @@ pub fn tools() -> Value {
         json!({ "type": "string", "description": "Memory, e.g. 512m or 2g (default 512m)." });
     let disk = json!({ "type": "string", "description": "Writable disk size, e.g. 4g or 20g (default 1g). Sparse: only what is written uses host disk." });
     let lifetime = json!({ "type": "string", "description": "Stop the sandbox this long after it starts, e.g. 30m or 2h (seconds if a plain number). Without it, it runs until stopped or removed, unless the server sets --max-lifetime." });
+    let volumes = json!({ "type": "array", "description": "Named volumes to attach: disks that outlive the sandbox (e.g. a database's data). A name used for the first time creates the volume. Only volumes created through this server can be used; one sandbox at a time may attach a volume writable.",
+        "items": { "type": "object", "required": ["name", "path"], "properties": {
+            "name": { "type": "string", "description": "Volume name (letters, digits, _ . -)." },
+            "path": { "type": "string", "description": "Absolute path inside the sandbox." },
+            "readonly": { "type": "boolean", "description": "Attach read-only (default false)." } } } });
     let id = json!({ "type": "string", "description": "Sandbox ID (or a unique prefix), or the name given to create." });
     let name = json!({ "type": "string", "description": "Optional unique name (letters, digits, _ . -) to use in place of the ID." });
     let path = json!({ "type": "string", "description": "Absolute path inside the sandbox." });
@@ -560,7 +606,8 @@ pub fn tools() -> Value {
             "description": "Start a fresh microVM from an image, run one command, return its exit code and output, then delete the sandbox.",
             "inputSchema": { "type": "object", "required": ["image"], "properties": {
                 "image": image, "command": command, "env": env, "workdir": workdir, "allow": allow,
-                "stdin": stdin, "timeout_secs": timeout, "cpus": cpus, "memory": memory, "disk": disk } },
+                "connect": connect, "stdin": stdin, "timeout_secs": timeout, "cpus": cpus, "memory": memory,
+                "disk": disk, "volumes": volumes } },
             "outputSchema": output,
             "annotations": annotations(false, false, false, true),
         },
@@ -570,7 +617,8 @@ pub fn tools() -> Value {
             "description": "Start a microVM that keeps running (by default its main process is `sleep infinity`) for exec, write_file and read_file. It stays until remove, even after this server exits.",
             "inputSchema": { "type": "object", "required": ["image"], "properties": {
                 "image": image, "name": name, "command": command, "env": env, "workdir": workdir, "allow": allow,
-                "cpus": cpus, "memory": memory, "disk": disk, "lifetime": lifetime } },
+                "connect": connect, "cpus": cpus, "memory": memory, "disk": disk, "lifetime": lifetime,
+                "volumes": volumes } },
             "outputSchema": id_out,
             "annotations": annotations(false, false, false, true),
         },
@@ -747,6 +795,45 @@ impl Args<'_> {
         }
     }
 
+    /// `volumes`: `[{name, path, readonly}]`를 `--mount type=volume,…` 값으로. 이름은 볼륨 이름 규칙, 경로는 절대
+    /// 경로이고 둘 다 쉼표가 없어야 한다(다른 마운트 옵션으로 읽히지 않게).
+    fn volumes(&self) -> AppResult<Vec<String>> {
+        let Some(v) = self.get("volumes") else {
+            return Ok(Vec::new());
+        };
+        let bad = || "`volumes` must be a list of {name, path, readonly}".to_owned();
+        let list = v.as_array().ok_or_else(bad)?;
+        list.iter()
+            .map(|item| {
+                let o = item.as_object().ok_or_else(bad)?;
+                if let Some(k) = o
+                    .keys()
+                    .find(|k| !matches!(k.as_str(), "name" | "path" | "readonly"))
+                {
+                    return Err(format!("unknown volume field `{k}`").into());
+                }
+                let name = o.get("name").and_then(Value::as_str).ok_or_else(bad)?;
+                let path = o.get("path").and_then(Value::as_str).ok_or_else(bad)?;
+                let readonly = match o.get("readonly") {
+                    None | Some(Value::Null) => false,
+                    Some(Value::Bool(b)) => *b,
+                    Some(_) => return Err("volume `readonly` must be true or false".into()),
+                };
+                sbx_model::check_volume_name(name).map_err(|e| e.to_string())?;
+                if !path.starts_with('/') || path.contains(',') {
+                    return Err(format!(
+                        "volume path must be an absolute path without commas: {path:?}"
+                    )
+                    .into());
+                }
+                let ro = if readonly { ",readonly" } else { "" };
+                Ok(format!(
+                    "--mount=type=volume,source={name},target={path}{ro}"
+                ))
+            })
+            .collect()
+    }
+
     fn timeout(&self) -> AppResult<Duration> {
         let secs = match self.get("timeout_secs") {
             None => DEFAULT_TIMEOUT_SECS,
@@ -775,6 +862,11 @@ fn run_args(a: &Args, stdin: bool, default_command: &[&str]) -> AppResult<RunArg
         argv.push("--network=allow".into());
         argv.extend(allow.iter().map(|r| format!("--allow={r}")));
     }
+    argv.extend(
+        a.strings("connect")?
+            .iter()
+            .map(|c| format!("--connect={c}")),
+    );
     argv.extend(a.env()?.iter().map(|(k, v)| format!("--env={k}={v}")));
     if let Some(w) = a.str("workdir")? {
         argv.push(format!("--workdir={w}"));
@@ -802,6 +894,7 @@ fn run_args(a: &Args, stdin: bool, default_command: &[&str]) -> AppResult<RunArg
     if let Some(n) = a.str("name")? {
         argv.push(format!("--name={n}"));
     }
+    argv.extend(a.volumes()?);
     if stdin {
         argv.push("--interactive".into());
     }
@@ -913,7 +1006,8 @@ async fn run(ctx: &Server, a: &Args<'_>, progress: &Progress, cancel: &Cancel) -
         let done = wait_for(&mut p, &mut c, timeout, cancel).await == Ended::Done;
         if !done {
             let sandbox = rt.get(&id).await?;
-            sandbox.stop(None, Duration::ZERO).await?;
+            // 시간이 넘은 바로 그때 끝났을 수 있다.
+            crate::behavior::stopped_anyway(sandbox.stop(None, Duration::ZERO).await)?;
         }
         Ok(output(p.exit_code().filter(|_| done), c, !done))
     }
@@ -1119,7 +1213,8 @@ async fn remove(ctx: &Server, a: &Args<'_>) -> AppResult<Value> {
     let sandbox = ctx.find(&rt, &wanted).await?;
     let id = sandbox.id().clone();
     if sandbox.state() == sbx_model::State::Running {
-        sandbox.stop(None, Duration::ZERO).await?;
+        // 그 사이 스스로 끝났으면(명령이 끝났다) 그대로 지운다.
+        crate::behavior::stopped_anyway(sandbox.stop(None, Duration::ZERO).await)?;
         let stopped = rt.get(&id).await?;
         stopped.delete().await?;
     } else {
@@ -1249,6 +1344,29 @@ mod tests {
             parse(json!({ "image": "alpine" }), false).unwrap().network,
             "none"
         );
+        // connect는 --connect가 된다. 범위는 서버가 정하므로 인자로 받지 않는다(도구 인자에 없다).
+        let r = parse(
+            json!({ "image": "alpine", "connect": ["db:5432", "pg=db2:5433,5434"] }),
+            false,
+        )
+        .unwrap();
+        assert_eq!(r.connect, ["db:5432", "pg=db2:5433,5434"]);
+        assert_eq!(r.network, "none");
+        assert!(r.connect_scope.is_empty());
+        assert!(parse(json!({ "image": "alpine", "connect": ["db"] }), false).is_err());
+        let schema = tools();
+        for tool in ["run", "create"] {
+            let t = schema
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["name"] == tool)
+                .unwrap();
+            let d = t["inputSchema"]["properties"]["connect"]["description"]
+                .as_str()
+                .unwrap();
+            assert!(d.contains("created through this server"), "{d}");
+        }
     }
 
     #[test]
@@ -1308,6 +1426,34 @@ mod tests {
             arg_error("error: invalid value 'x' for '--stop-timeout <SECS>': bad\n\nUsage: sbx"),
             "invalid value 'x' for `stop_timeout`: bad"
         );
+    }
+
+    #[test]
+    fn volumes_take_names_never_host_paths() {
+        let v = |v: Value| Args(&v).volumes();
+        assert!(v(json!({})).unwrap().is_empty());
+        assert_eq!(
+            v(
+                json!({ "volumes": [{ "name": "pgdata", "path": "/var/lib/db" },
+                                  { "name": "seed", "path": "/seed", "readonly": true }] })
+            )
+            .unwrap(),
+            [
+                "--mount=type=volume,source=pgdata,target=/var/lib/db",
+                "--mount=type=volume,source=seed,target=/seed,readonly"
+            ]
+        );
+        for bad in [
+            json!({ "volumes": [{ "name": "/etc", "path": "/x" }] }),
+            json!({ "volumes": [{ "name": "../up", "path": "/x" }] }),
+            json!({ "volumes": [{ "name": "data", "path": "relative" }] }),
+            json!({ "volumes": [{ "name": "data", "path": "/x,source=other" }] }),
+            json!({ "volumes": [{ "name": "data", "path": "/x", "readonly": "yes" }] }),
+            json!({ "volumes": [{ "name": "data", "path": "/x", "type": "bind" }] }),
+            json!({ "volumes": "data:/x" }),
+        ] {
+            assert!(v(bad.clone()).is_err(), "{bad}");
+        }
     }
 
     #[test]

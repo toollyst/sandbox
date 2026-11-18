@@ -20,7 +20,7 @@ const fn k(keys: &'static str, tabs: &'static str, does: &'static str) -> KeyHel
 
 /// 키 목록. 정본이다.
 pub const KEYS: &[KeyHelp] = &[
-    k("Tab, 1 2 3 4", "all", "switch tab"),
+    k("Tab, 1 2 3 4 5", "all", "switch tab"),
     k("↑↓ j k  PgUp PgDn  g G", "all", "move"),
     k("Enter", "all", "details of the selected row"),
     k("/", "all", "filter rows by text (Esc clears)"),
@@ -51,12 +51,27 @@ pub const KEYS: &[KeyHelp] = &[
         "sandboxes",
         "logs -f (takes the terminal; Ctrl+C stops following)",
     ),
+    k(
+        "b",
+        "images",
+        "build: type a name and the context dir (fills in)",
+    ),
+    k(
+        "R",
+        "images",
+        "rebuild from where it was built (fills in; images marked *)",
+    ),
     k("D", "images", "rmi (asks first)"),
     k("U", "images", "system df: disk usage (takes the terminal)"),
     k(
         "P",
         "images",
         "system prune -a: unused sandboxes, images, layers (asks first)",
+    ),
+    k(
+        "B",
+        "images",
+        "builder prune: build cache no image uses (asks first)",
     ),
     k(
         "L",
@@ -72,6 +87,27 @@ pub const KEYS: &[KeyHelp] = &[
         "O",
         "images",
         "save -o: write the image as an OCI archive (fills in)",
+    ),
+    k(
+        "t",
+        "images",
+        "tag: add a reference, e.g. a registry name (fills in)",
+    ),
+    k(
+        "p",
+        "images",
+        "push to its registry (fills in; takes the terminal)",
+    ),
+    k("D", "volumes", "volume rm (asks first)"),
+    k(
+        "c",
+        "volumes",
+        "volume create (fills in the command: name, --opt size=)",
+    ),
+    k(
+        "P",
+        "volumes",
+        "volume prune -a: volumes no sandbox uses (asks first)",
     ),
     k(
         "u",
@@ -100,10 +136,11 @@ pub const KEYS: &[KeyHelp] = &[
 ];
 
 /// 키 목록을 묶는 순서와 제목: `tabs`가 같은 키끼리.
-pub const GROUPS: [(&str, &str); 4] = [
+pub const GROUPS: [(&str, &str); 5] = [
     ("all", "Everywhere"),
     ("sandboxes", "Sandboxes"),
     ("images", "Images"),
+    ("volumes", "Volumes"),
     ("executors", "Executors"),
 ];
 
@@ -127,7 +164,8 @@ pub fn keys_width() -> usize {
 pub fn help_text() -> String {
     let mut s = String::from(
         "Every action runs an sbx command and shows its command line. Commands that need the terminal\n\
-         (exec, attach, logs -f, executor install and search, `:`) take it over and give it back when they exit.\n",
+         (exec, attach, logs -f, build, push, executor install and search, `:`) take it over and give it back when\n\
+         they exit.\n",
     );
     let w = keys_width();
     for (title, keys) in grouped() {

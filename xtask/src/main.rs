@@ -5,6 +5,7 @@
 //!   - 계층 폴더(`crates/<계층>/<이름>`)와 계층 사이 방향, `docs/developers/crates.md`의 의존 표: [`layout`].
 //!   - 크레이트 안 모듈 사이: 순환 금지. 규칙은 [`modules`]에 있다.
 //! - `deps-doc`: `docs/developers/crates.md`의 의존 표와 그림을 지금 크레이트로 다시 쓴다. [`layout`]에 있다.
+//! - `check-links`: Markdown 문서의 상대 링크와 앵커가 가리키는 곳이 있는지 본다. [`links`]에 있다.
 //! - `guest-initramfs --arch <x86_64|aarch64> [--binary <파일>] [--out <파일>]`: 게스트 init initramfs를 만든다.
 //!   내용과 규칙은 [`initramfs`]에 있다.
 //! - `dist`: 게스트 init을 내장한 배포용 `sbx`, `sbx-shim`을 만든다. 규칙은 [`dist`]에 있다.
@@ -15,10 +16,14 @@
 //!   더한다. [`repo`]에 있다.
 //! - `repo-keygen --out <접두사>`, `repo-sign --repo <디렉터리> --key <파일>`: 저장소 색인 서명 키를 만들고, 색인에
 //!   서명한다(minisign, `serial`·`expires`). [`sign`]에 있다.
+//! - `installer [--check | --check-published <디렉터리> | --publish <디렉터리>]`: 설치 스크립트의 버전과 그것이 까는
+//!   것(`installer.env`)을 스크립트에 쓰고, gh-pages에 버전마다 한 번 올린다. [`installer`]에 있다.
 //! - `release-index`, `release-yank`, `release-sign`, `sign-files`: sbx 릴리스 색인(`releases.json`)과 릴리스 묶음의
 //!   minisign 서명. [`release`]에 있다.
 //! - `demo [--sbx <파일>] [--out <SVG>]`: README의 데모를 실제로 돌려 만든다. [`demo`]에 있다.
 //! - `bench [--sbx <파일>] [--image <참조>] [--runs <N>] [--parallel <K>]`: `sbx`로 시간을 잰다. [`bench`](mod@bench)에 있다.
+//! - `bench build [--runs <N>] [--no-docker] [--network] [--format markdown|json] [--dry-run] ...`: 같은 Dockerfile을
+//!   `sbx build`와 `docker build`로 만들어 나란히 잰다. [`build_bench`]에 있다.
 //! - `fuzz [--time <초>] [대상...] [-- <libFuzzer 옵션>]`, `fuzz --seeds`: `fuzz/`의 퍼징 대상을 돌린다
 //!   (nightly와 cargo-fuzz가 필요하다). [`fuzz`](mod@fuzz)에 있다.
 
@@ -27,12 +32,15 @@ use std::path::Path;
 use std::process::{Command, ExitCode};
 
 mod bench;
+mod build_bench;
 mod demo;
 mod dist;
 mod fuzz;
 mod initramfs;
+mod installer;
 mod kernel;
 mod layout;
+mod links;
 mod modules;
 mod paths;
 mod release;
@@ -85,12 +93,22 @@ const RULES: &[(&str, Allowed)] = &[
             "sbx-events",
         ]),
     ),
+    // 빌드 코어: 빌드 계획 실행, 캐시 키, 이미지 config 조립. VM(실행 쪽)과 저장소(관리 쪽)는 이 크레이트의 trait
+    // 뒤에 있고 바이너리가 잇는다. 그래서 실행과 관리를 모두 모르고, Dockerfile 문법(sbx-dockerfile)도 모른다.
+    (
+        "sbx-build",
+        Allowed::Workspace(&["sbx-model", "sbx-rootfs"]),
+    ),
     ("sbx-oci", Allowed::Workspace(&["sbx-model", "sbx-image"])),
+    // Dockerfile 해석(손으로 쓴 해석기, 직접 쓰는 외부 크레이트가 없다). 밖으로는 sbx-model의 빌드 계획만 나간다.
+    ("sbx-dockerfile", Allowed::Workspace(&["sbx-model"])),
     (
         "sbx-executor-fake",
-        // 게스트 쪽 연결 처리를 호스트에서 그대로 돌리고, 실행기 규약을 말한다.
+        // 게스트 쪽 연결 처리를 호스트에서 그대로 돌리고, 실행기 규약을 말한다. 층 디스크(EROFS)를 읽어 빌드 VM의
+        // 뿌리를 디렉터리로 펼친다(sbx-rootfs).
         Allowed::Workspace(&[
             "sbx-model",
+            "sbx-rootfs",
             "sbx-executor",
             "sbx-executor-proto",
             "sbx-guest-proto",
@@ -164,6 +182,23 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Some("check-links") => {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("xtask lives inside the workspace");
+            match links::check(root) {
+                Ok(n) => {
+                    println!("check-links: {n} links ok");
+                    ExitCode::SUCCESS
+                }
+                Err(problems) => {
+                    for p in problems {
+                        eprintln!("check-links: {p}");
+                    }
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Some("deps-doc") => {
             let root = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .parent()
@@ -288,6 +323,23 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Some("installer") => {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("xtask lives inside the workspace");
+            match installer::run(root, &args[1..]) {
+                Ok(lines) => {
+                    for l in lines {
+                        println!("{l}");
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("installer: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Some("repo-sign") => match sign::sign(&args[1..]) {
             Ok(file) => {
                 println!("{}", file.display());
@@ -356,6 +408,26 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("bench") if args.get(1).is_some_and(|a| a == "build") => {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("xtask lives inside the workspace");
+            match build_bench::run(root, &args[2..]) {
+                Ok((report, all_same)) => {
+                    print!("{report}");
+                    if all_same {
+                        ExitCode::SUCCESS
+                    } else {
+                        eprintln!("bench build: FAILED: the images differ (see the report)");
+                        ExitCode::FAILURE
+                    }
+                }
+                Err(e) => {
+                    eprintln!("bench build: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Some("bench") => {
             let root = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .parent()
@@ -373,7 +445,7 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "usage: cargo xtask check-deps\n       cargo xtask guest-initramfs --arch <x86_64|aarch64> [--binary <file>] [--out <file>]\n       cargo xtask dist [--target <triple>] [--auditable]\n       cargo xtask install [--dir <dir>]\n       cargo xtask kernel --arch <x86_64|aarch64> [--out <file>]\n       cargo xtask smoke [--sbx <file>] [--no-internet]\n       cargo xtask repo-add --repo <dir> --bundle <dir> --name <name> --version <version> [--os <os>] [--capabilities <file>] [--url <prefix>] [--description <text>] [--schema 1|2] [--adapter-package | --vmm-for <adapter> --arch <amd64|arm64>]\n       cargo xtask repo-yank --repo <dir> --name <name> --version <version> [--schema 1|2] [--adapter] [--advisory <text>] [--undo]\n       cargo xtask repo-keygen --out <prefix>\n       cargo xtask repo-sign --repo <dir> (--key <file> | --key-env <var>) [--serial <n>] [--expires-days <d>]\n       cargo xtask release-index --index <file> --version <version> --assets <dir> --base-url <url> [--security]\n       cargo xtask release-yank --index <file> --version <version> [--advisory <text>] [--undo]\n       cargo xtask release-sign --index <file> (--key <file> | --key-env <var>) [--expires-days <d>]\n       cargo xtask sign-files (--key <file> | --key-env <var>) <file>...\n       cargo xtask demo [--sbx <file>] [--out <svg>]\n       cargo xtask bench [--sbx <file>] [--image <ref>] [--runs <n>] [--parallel <k>] [--docker]\n       cargo xtask fuzz [--time <secs>] [<target>...] [-- <libFuzzer args>] | --seeds"
+                "usage: cargo xtask check-deps\n       cargo xtask check-links\n       cargo xtask guest-initramfs --arch <x86_64|aarch64> [--binary <file>] [--out <file>]\n       cargo xtask dist [--target <triple>] [--auditable]\n       cargo xtask install [--dir <dir>]\n       cargo xtask kernel --arch <x86_64|aarch64> [--out <file>]\n       cargo xtask smoke [--sbx <file>] [--no-internet]\n       cargo xtask repo-add --repo <dir> --bundle <dir> --name <name> --version <version> [--os <os>] [--capabilities <file>] [--url <prefix>] [--description <text>] [--schema 1|2] [--adapter-package | --vmm-for <adapter> --arch <amd64|arm64>] [--default]\n       cargo xtask repo-yank --repo <dir> --name <name> --version <version> [--schema 1|2] [--adapter] [--advisory <text>] [--undo]\n       cargo xtask repo-keygen --out <prefix>\n       cargo xtask repo-sign --repo <dir> (--key <file> | --key-env <var>) [--serial <n>] [--expires-days <d>]\n       cargo xtask installer [--check | --check-published <dir> | --publish <dir>]\n       cargo xtask release-index --index <file> --version <version> --assets <dir> --base-url <url> [--security]\n       cargo xtask release-yank --index <file> --version <version> [--advisory <text>] [--undo]\n       cargo xtask release-sign --index <file> (--key <file> | --key-env <var>) [--expires-days <d>]\n       cargo xtask sign-files (--key <file> | --key-env <var>) <file>...\n       cargo xtask demo [--sbx <file>] [--out <svg>]\n       cargo xtask bench [--sbx <file>] [--image <ref>] [--runs <n>] [--parallel <k>] [--docker]\n       cargo xtask bench build [--sbx <file>] [--image <ref>] [--runs <n>] [--no-docker] [--network] [--cpus <n>] [--memory <size>] [--format markdown|json] [--dry-run]\n       cargo xtask fuzz [--time <secs>] [<target>...] [-- <libFuzzer args>] | --seeds"
             );
             ExitCode::from(2)
         }

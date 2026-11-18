@@ -16,7 +16,9 @@ The rules themselves live in code (doc comments, types, tests and `cargo xtask c
 pages explain the shape and point to the code. When the two disagree, the code is right, and the page is a bug. The
 dependency map in [crates.md](crates.md) is generated, and CI fails when it is stale. So are
 [cli-output.md](cli-output.md) and its JSON Schema: `cargo test` fails when they differ from the output types in
-`crates/app/cli/src/output.rs`, and `SBX_BLESS=1 cargo test -p sbx-cli --lib output` rewrites them.
+`crates/app/cli/src/output.rs`, and `SBX_BLESS=1 cargo test -p sbx-cli --lib output` rewrites them. The same goes
+for [tool-compatibility.md](../guide/tool-compatibility.md) and the percentage line in the README, generated
+from `crates/app/cli/src/compat.rs` (`SBX_BLESS=1 cargo test -p sbx-cli --lib compat`).
 
 Doc comments and the design notes in [`docs/plan/`](../plan/) are written in Korean. The developer guide, the user guide, the README
 and everything a user sees (CLI help, errors) are in English.
@@ -41,9 +43,10 @@ docs/
   plan/              design notes (Korean)
   roadmap.md         what is done and what is next (Korean)
 assets/demo.svg      the README recording, made by cargo xtask demo
-install.sh           the macOS and Linux installer served from GitHub Pages
+install.sh           the macOS and Linux installer served from GitHub Pages (each version also as install-<version>.sh)
 install.ps1          the Windows installer served from GitHub Pages
-.github/workflows/   ci.yml and fuzz.yml (every push), release.yml (tags v*). The official executor repository is published from toollyst/sandbox-executors
+installer.env        the installers' own version and the sbx and executor versions they install (cargo xtask installer)
+.github/workflows/   ci.yml and fuzz.yml (every push), release.yml (tags v*), installer.yml (publishes an installer version, by hand). The official executor repository is published from toollyst/sandbox-executors
 .github/scripts/     shell steps the workflows share (upstream VMM package, kernel notice, local-repository smoke, installer tests)
 ```
 
@@ -85,19 +88,22 @@ cargo xtask check-deps                     # layers, crate rules, module cycles,
 
 cargo xtask dist                           # release sbx + sbx-shim, guest init embedded
 cargo xtask install                        # dist, then install them where the installers do
-cargo xtask smoke                          # 17 checks on real VMs with the installed executor
+cargo xtask smoke                          # 27 checks on real VMs with the installed executor (4 more with live sharing)
 cargo xtask bench                          # timings (add --docker to compare with docker run)
+cargo xtask bench build                    # sbx build next to docker build on the same Dockerfiles
 ```
 
 | `cargo xtask …` | What it does | Source |
 | --- | --- | --- |
 | `check-deps` | Every rule about who may depend on whom, and that `crates.md` is current | [`main.rs`](../../xtask/src/main.rs), [`layout.rs`](../../xtask/src/layout.rs), [`modules.rs`](../../xtask/src/modules.rs) |
 | `deps-doc` | Regenerates the dependency map in `crates.md` | [`layout.rs`](../../xtask/src/layout.rs) |
+| `check-links` | Every relative link and anchor in the Markdown files resolves (also run by `cargo test`) | [`links.rs`](../../xtask/src/links.rs) |
 | `dist [--target T]` | Builds the guest initramfs and a release `sbx` that embeds it, plus `sbx-shim` | [`dist.rs`](../../xtask/src/dist.rs) |
 | `guest-initramfs --arch A` | Only the initramfs (for a development build that doesn't embed it) | [`initramfs.rs`](../../xtask/src/initramfs.rs) |
 | `kernel --arch A` | The default guest kernel, built in Docker | [`kernel.rs`](../../xtask/src/kernel.rs) |
 | `smoke [--sbx F]` | Real-VM checks: pull, exec, cp, logs, stop, egress… | [`smoke.rs`](../../xtask/src/smoke.rs) |
 | `bench [--docker]` | p50/p90 of `run`, `exec` and parallel runs | [`bench.rs`](../../xtask/src/bench.rs) |
+| `bench build` | `sbx build` and `docker build` on the same Dockerfiles: uncached, cached, one file changed, multi-stage ([Comparing builds](testing-and-releasing.md#comparing-sbx-build-with-docker-build)) | [`build_bench.rs`](../../xtask/src/build_bench.rs) |
 | `demo` | Re-records `assets/demo.svg` from real commands | [`demo.rs`](../../xtask/src/demo.rs) |
 | `repo-add` | Adds an executor, adapter or VMM package to a static executor repository | [`repo.rs`](../../xtask/src/repo.rs) |
 | `fuzz [--time S] [T…]`, `fuzz --seeds` | Runs the cargo-fuzz targets in `fuzz/` (nightly, `cargo-fuzz`), or regenerates their seeds ([Fuzzing](testing-and-releasing.md#fuzzing)) | [`fuzz.rs`](../../xtask/src/fuzz.rs) |
@@ -121,8 +127,13 @@ Two principles shape most review comments:
 - **Cores are mechanism, not policy.** `sbx-runtime` and `sbx-manage` do exactly what they're asked, and fail
   clearly when they can't. They never fall back to something else, never pick an implementation, and never clean
   up on their own schedule. Decisions belong to the caller (the CLI, the MCP server, or an embedding app).
-- **Docker is the reference for the CLI.** A user should be able to guess flags and exit codes. Every deliberate
-  difference is listed in [`behavior.rs`](../../crates/app/cli/src/behavior.rs) (`DOCKER_DIFFERENCES`).
+- **Docker is the reference for the CLI.** A user should be able to guess flags and exit codes. Every command and
+  flag of Docker, Podman and nerdctl, every Dockerfile instruction and Compose key, and the main features of Docker
+  Desktop and its alternatives have a row in
+  [`compat.rs`](../../crates/app/cli/src/compat.rs): same, different (and why), not yet (and which step), or not
+  doing (and why). Tests check each row against the clap definition and the test it names, and write the user page
+  [tool-compatibility.md](../guide/tool-compatibility.md) from it. Adding or removing a flag fails CI until its
+  row says what it is.
 
 ## Where the rules live
 
@@ -141,6 +152,7 @@ Two principles shape most review comments:
 | What an executor must support for a given request | [`crates/core/runtime/src/validate.rs`](../../crates/core/runtime/src/validate.rs) |
 | Sandbox records in `data_dir` | [`crates/core/runtime/src/records.rs`](../../crates/core/runtime/src/records.rs) |
 | Egress allow list | `AllowRule` in `sbx-model`, enforced in [`crates/core/runtime/src/egress.rs`](../../crates/core/runtime/src/egress.rs) |
+| Connecting sandboxes (`--connect`) | `ConnectRule` and `check_connect` in `sbx-model`, enforced in [`crates/core/runtime/src/connect.rs`](../../crates/core/runtime/src/connect.rs) |
 | Cache layout, locks, in-use protection | [`sbx-store`](../../crates/port/store/src/lib.rs) |
 | Layer merge rules (whiteouts, opaque dirs, hard links) | [`sbx-rootfs`](../../crates/port/rootfs/src/lib.rs) |
 | Image references and the OCI scope | [`reference.rs`](../../crates/adapter/oci/src/reference.rs), [`scope.rs`](../../crates/adapter/oci/src/scope.rs) |

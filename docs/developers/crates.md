@@ -42,10 +42,12 @@ flowchart BT
     sbx_store[sbx-store]
   end
   subgraph adapter
+    sbx_dockerfile[sbx-dockerfile]
     sbx_executor_process[sbx-executor-process]
     sbx_oci[sbx-oci]
   end
   subgraph core
+    sbx_build[sbx-build]
     sbx_manage[sbx-manage]
     sbx_runtime[sbx-runtime]
   end
@@ -64,11 +66,14 @@ flowchart BT
   sbx_image --> sbx_model
   sbx_rootfs --> sbx_model
   sbx_store --> sbx_model
+  sbx_dockerfile --> sbx_model
   sbx_executor_process --> sbx_executor
   sbx_executor_process --> sbx_executor_proto
   sbx_executor_process --> sbx_model
   sbx_oci --> sbx_image
   sbx_oci --> sbx_model
+  sbx_build --> sbx_model
+  sbx_build --> sbx_rootfs
   sbx_manage --> sbx_events
   sbx_manage --> sbx_image
   sbx_manage --> sbx_model
@@ -79,6 +84,8 @@ flowchart BT
   sbx_runtime --> sbx_guest_proto
   sbx_runtime --> sbx_model
   sbx_runtime --> sbx_store
+  sbx_cli --> sbx_build
+  sbx_cli --> sbx_dockerfile
   sbx_cli --> sbx_events
   sbx_cli --> sbx_executor
   sbx_cli --> sbx_executor_install
@@ -105,12 +112,13 @@ flowchart BT
   sbx_executor_fake --> sbx_guest
   sbx_executor_fake --> sbx_guest_proto
   sbx_executor_fake --> sbx_model
+  sbx_executor_fake --> sbx_rootfs
   sbx_executor_firecracker --> sbx_executor_proto
 ```
 
 | Layer | Folder | Crate | Depends on | Used by |
 | --- | --- | --- | --- | --- |
-| model | [`model`](../../crates/model) | `sbx-model` | – | `sbx-executor`, `sbx-image`, `sbx-rootfs`, `sbx-store`, `sbx-executor-process`, `sbx-oci`, `sbx-manage`, `sbx-runtime`, `sbx-cli`, `sbx-shim`, `sbx-executor-fake` |
+| model | [`model`](../../crates/model) | `sbx-model` | – | `sbx-executor`, `sbx-image`, `sbx-rootfs`, `sbx-store`, `sbx-dockerfile`, `sbx-executor-process`, `sbx-oci`, `sbx-build`, `sbx-manage`, `sbx-runtime`, `sbx-cli`, `sbx-shim`, `sbx-executor-fake` |
 | spec | [`spec/executor-install`](../../crates/spec/executor-install) | `sbx-executor-install` | – | `sbx-executor-repo`, `sbx-cli` |
 | spec | [`spec/executor-proto`](../../crates/spec/executor-proto) | `sbx-executor-proto` | – | `sbx-executor-process`, `sbx-cli`, `sbx-shim`, `sbx-executor-fake`, `sbx-executor-firecracker` |
 | spec | [`spec/executor-repo`](../../crates/spec/executor-repo) | `sbx-executor-repo` | `sbx-executor-install` | `sbx-release-index`, `sbx-cli` |
@@ -119,24 +127,27 @@ flowchart BT
 | port | [`port/events`](../../crates/port/events) | `sbx-events` | – | `sbx-manage`, `sbx-runtime`, `sbx-cli` |
 | port | [`port/executor`](../../crates/port/executor) | `sbx-executor` | `sbx-model` | `sbx-executor-process`, `sbx-runtime`, `sbx-cli`, `sbx-executor-fake` |
 | port | [`port/image`](../../crates/port/image) | `sbx-image` | `sbx-model` | `sbx-oci`, `sbx-manage`, `sbx-cli` |
-| port | [`port/rootfs`](../../crates/port/rootfs) | `sbx-rootfs` | `sbx-model` | `sbx-manage`, `sbx-cli` |
+| port | [`port/rootfs`](../../crates/port/rootfs) | `sbx-rootfs` | `sbx-model` | `sbx-build`, `sbx-manage`, `sbx-cli`, `sbx-executor-fake` |
 | port | [`port/store`](../../crates/port/store) | `sbx-store` | `sbx-model` | `sbx-manage`, `sbx-runtime`, `sbx-cli` |
+| adapter | [`adapter/dockerfile`](../../crates/adapter/dockerfile) | `sbx-dockerfile` | `sbx-model` | `sbx-cli` |
 | adapter | [`adapter/executor-process`](../../crates/adapter/executor-process) | `sbx-executor-process` | `sbx-executor`, `sbx-executor-proto`, `sbx-model` | `sbx-cli`, `sbx-shim` |
 | adapter | [`adapter/oci`](../../crates/adapter/oci) | `sbx-oci` | `sbx-image`, `sbx-model` | `sbx-cli` |
+| core | [`core/build`](../../crates/core/build) | `sbx-build` | `sbx-model`, `sbx-rootfs` | `sbx-cli` |
 | core | [`core/manage`](../../crates/core/manage) | `sbx-manage` | `sbx-events`, `sbx-image`, `sbx-model`, `sbx-rootfs`, `sbx-store` | `sbx-cli` |
 | core | [`core/runtime`](../../crates/core/runtime) | `sbx-runtime` | `sbx-events`, `sbx-executor`, `sbx-guest-proto`, `sbx-model`, `sbx-store` | `sbx-cli`, `sbx-shim` |
-| app | [`app/cli`](../../crates/app/cli) | `sbx-cli` (bin `sbx`) | `sbx-events`, `sbx-executor`, `sbx-executor-install`, `sbx-executor-process`, `sbx-executor-proto`, `sbx-executor-repo`, `sbx-guest-proto`, `sbx-image`, `sbx-manage`, `sbx-model`, `sbx-oci`, `sbx-release-index`, `sbx-rootfs`, `sbx-runtime`, `sbx-shim`, `sbx-store` | – |
+| app | [`app/cli`](../../crates/app/cli) | `sbx-cli` (bin `sbx`) | `sbx-build`, `sbx-dockerfile`, `sbx-events`, `sbx-executor`, `sbx-executor-install`, `sbx-executor-process`, `sbx-executor-proto`, `sbx-executor-repo`, `sbx-guest-proto`, `sbx-image`, `sbx-manage`, `sbx-model`, `sbx-oci`, `sbx-release-index`, `sbx-rootfs`, `sbx-runtime`, `sbx-shim`, `sbx-store` | – |
 | app | [`app/guest`](../../crates/app/guest) | `sbx-guest` (bin `sbx-guest`) | `sbx-guest-proto` | `sbx-executor-fake` |
 | app | [`app/shim`](../../crates/app/shim) | `sbx-shim` (bin `sbx-shim`) | `sbx-executor-process`, `sbx-executor-proto`, `sbx-model`, `sbx-runtime` | `sbx-cli` |
-| executor | [`executor/fake`](../../crates/executor/fake) | `sbx-executor-fake` (bin `sbx-executor-fake`) | `sbx-executor`, `sbx-executor-proto`, `sbx-guest`, `sbx-guest-proto`, `sbx-model` | – |
+| executor | [`executor/fake`](../../crates/executor/fake) | `sbx-executor-fake` (bin `sbx-executor-fake`) | `sbx-executor`, `sbx-executor-proto`, `sbx-guest`, `sbx-guest-proto`, `sbx-model`, `sbx-rootfs` | – |
 | executor | [`executor/firecracker`](../../crates/executor/firecracker) | `sbx-executor-firecracker` (bin `sbx-executor-firecracker`) | `sbx-executor-proto` | – |
 
 <!-- END GENERATED -->
 
 ### Rules the map doesn't show
 
-- **The two cores don't know each other.** `sbx-runtime` never pulls an image, and `sbx-manage` never starts a
-  sandbox. `sbx run` is the CLI calling `manage` first and `runtime` second.
+- **The cores don't know each other.** `sbx-runtime` never pulls an image, and `sbx-manage` never starts a
+  sandbox. `sbx run` is the CLI calling `manage` first and `runtime` second. `sbx-build` knows neither: it sees
+  them through its own `Store` and `Machines` traits, which the CLI implements with the two.
 - **Only `sbx-manage` writes to the cache.** `sbx-store` keeps its write API behind the `write` feature, and
   `check-deps` fails if `sbx-runtime` or `sbx-shim` turns it on (`FORBIDDEN_FEATURES`).
 - **Cores never pick implementations.** `sbx-runtime` knows the `Executor` trait, not Firecracker. `sbx-manage`
@@ -169,8 +180,12 @@ has never seen the rest of the code.
 The messages between the host and the guest init, over vsock port `GUEST_PORT` (1024).
 
 - **One connection per operation.** One `exec`, one file copy or one shutdown request opens its own connection,
-  so there is no multiplexing. Each connection starts with `Hello`/`HelloAck` (versions must match before 1.0),
-  then one request: `Exec`, `CopyIn`, `CopyOut`, `Stat`, `Share`, `EgressListen`, `EgressSlot` or `Shutdown`.
+  so there is no multiplexing. Each connection starts with `Hello`/`HelloAck` (the versions must match), then one
+  request: running commands (`Exec`, `ExecDetached`), files (`CopyIn`, `CopyOut`, `Stat`), mounts (`Share`,
+  `Volume`), the network (`EgressListen`, `EgressSlot`, `Transparent`, and `Forward` for `-p` and `--connect`),
+  build layers (`OpenLayer`, `ExecStep`, `ExportLayer`, `CheckLayers`), the clock (`ClockSync`), host edits in a
+  live share (`ShareChanged`), `Usage` for `stats`, or `Shutdown`. Adding a message doesn't change the version (2), so
+  a guest started by an older `sbx` answers the requests it knows and refuses the others.
 - **Binary encoding** (`codec`, `frame`): one message per length-prefixed frame. Big-endian integers,
   length-prefixed strings and lists.
 - **The guest is untrusted.** The host rejects oversized frames before reading them, never preallocates from a length
@@ -189,10 +204,13 @@ guest. **This is what a new VMM integration implements.**
   `OK …\n`, and the socket becomes a byte stream to that guest vsock port. This is the Firecracker and Cloud Hypervisor
   convention.
 - **Promises to the guest:** the guest init boots as the initrd (`/init`, no `root=`), disks attach in order (`vda`
-  rootfs read-only, `vdb` scratch), the kernel command line carries `sbx.hostname=` and `sbx.halt=`, the kernel has
-  the listed features (erofs, overlay, vsock, …), and there is no network device.
-- `VERSION` changes are incompatible. Readers check `CapabilitiesHeader` first. The version history table is in the
-  doc comment.
+  rootfs read-only, `vdb` scratch, then upper layers, then volumes), the kernel command line carries `sbx.hostname=`
+  and `sbx.halt=`, the kernel has the listed features (erofs, overlay, vsock, …), and there is no network device.
+  A disk with the role `volume` (version 3) is writable unless marked read-only, and the guest's flushes reach the
+  host file before they complete.
+- Each side speaks a range of versions and they use the highest common one; `sbx` speaks 2 and 3. A `Launch` that
+  needs a newer version than the session's (`VmSpec::min_version`: volumes need 3) is refused on both sides. Readers
+  check `CapabilitiesHeader` first. The version history table is in the doc comment.
 - Depends only on `serde` and `serde_json`, so another repository can take just this crate.
 
 ### `sbx-executor-install` · [`crates/spec/executor-install`](../../crates/spec/executor-install)
@@ -277,15 +295,21 @@ The cache directory: layout, locks and reads. Writes are behind the `write` feat
 
 ```text
 <cache_dir>/
-  blobs/sha256/<hex>              layers, stored only after their digest is checked
-  images/<hex>/image.json         image record
-  images/<hex>/rootfs.erofs       prepared root filesystem
+  layout-version                  the on-disk layout (2 from 0.3)
+  blobs/sha256/<hex>              pulled layers, stored only after their digest is checked
+  layers/<diff_id>/layer.erofs    one layer as a disk, shared by every image that has it
+  layers/<diff_id>/export.json    a built layer's compressed digest and size, recorded on its first export
+  merged/<chain_id>/rootfs.erofs  the lower layers merged into one disk when an executor has too few disks
+  images/<hex>/image.json         image record: its layers (for a built image, also where it was built; never exported)
   images/<hex>/kernel             the image's own kernel, if it has one
   images/<hex>/.lock              in-use lock (a running sandbox holds it shared)
+  build/<key>.json                build cache record: a step's key → its layer
   guest/<version>/<arch>/initramfs
   refs.json                       reference → image ID
   events/images/                  image events (sbx-events), appended by sbx-manage
 ```
+
+The full list, with the lock files, is in the crate's doc comment.
 
 - Every write goes to a temporary file and is renamed into place, and each image has its own lock file. Several
   processes can therefore share one cache.
@@ -305,6 +329,18 @@ The cache directory: layout, locks and reads. Writes are behind the `write` feat
 - `scope`: exactly which fields are applied, and which are ignored on purpose.
 
 OCI types never leave this crate. They become `ImageConfig` and a layer list.
+
+### `sbx-dockerfile` · [`crates/adapter/dockerfile`](../../crates/adapter/dockerfile)
+
+Dockerfile in, `BuildPlan` (`sbx_model::build`) out, plus `.dockerignore` matching (`DockerIgnore`).
+
+- Dockerfile types (instructions, flags, words) never leave this crate. Only the plan, its errors and its warnings
+  do, so widening Dockerfile support only touches this crate.
+- No file system, registry or VM: the caller passes the base images' `Env` and reads the context itself.
+- Anything it doesn't support is an error with the line number, never ignored. `# syntax=`, `HEALTHCHECK` and
+  `MAINTAINER` build with a warning.
+- Modules: `lines` (lines, comments, continuations, directives), `syntax` and `instruction` (one instruction's
+  grammar), `shell` (variable expansion), `plan` (stages, `ARG` scope, `--target`, checks), `ignore`.
 
 ### `sbx-executor-process` · [`crates/adapter/executor-process`](../../crates/adapter/executor-process)
 
@@ -339,9 +375,20 @@ The sandbox lifecycle: `Runtime::create`, `resolve` (ID, name or ID prefix) and 
   claimed with a hard link so two processes can't take the same name.
 - **Events:** every time it records a sandbox as created, running, stopped or removed, it appends an event to
   `<data_dir>/events/sandboxes`. A failed append never fails the operation.
+- **Volumes** (`volume`): `<data_dir>/volumes/<name>/` holds `volume.json`, a sparse `disk.img` and `use.lock`.
+  `start` holds the lock for the VM's life (exclusive to write, shared for read-only), so one sandbox writes a
+  volume at a time and a dead owner releases it. Volume disks go after the layer disks; `remove_volume` refuses a
+  volume a sandbox record names. Volume `create` and `remove` events go to `<data_dir>/events/volumes`.
 - **Egress** (`egress`): runs in the VM's owner. It checks each connection the guest proxy asks for against the
   allow list, refuses names that resolve to private addresses, and relays bytes.
-- Modules: `lib` → `egress` → `client` → `hostfs`, `records` → `process`, `validate`, `cpplan`, `chan` → `error`.
+- **Connecting sandboxes** (`connect`): also in the VM's owner. For a `--connect` name it looks the target up at
+  each connection (same data directory, exact ID or name), checks it, and joins the connection to the target's
+  guest through `Forward`, the `-p` path.
+- **Live share changes** (`watch`): also in the VM's owner. It watches each writable live share on the host
+  (`notify`) and sends the guest the paths whose type, size or modification time changed (`ShareChanged`), so file
+  watchers in the guest see host edits.
+- Modules: `lib` → `egress`, `watch` → `clock` → `connect` → `client` → `hostfs`, `layer`, `volume` → `records` →
+  `process`, `validate`, `cpplan`, `chan` → `error`.
 
 ### `sbx-manage` · [`crates/core/manage`](../../crates/core/manage)
 
@@ -356,7 +403,30 @@ Images and the cache: `pull` (with `pull_with` for progress), `prepare`, `images
   Whether a *stopped* sandbox's image may go is the caller's decision, because this crate doesn't know `data_dir`.
 - After a pull, a prepare that built something, an untag or a delete, it appends an event to
   `<cache_dir>/events/images`.
-- It never cleans up on its own.
+- For `sbx build` (`build`): `add_layer` turns a layer tar into a layer disk with no compressed blob (its diff_id is
+  the hash of the canonical tar read back from the disk, `canon`), `commit_built` records the image
+  (`source = "sbx build"`), and build cache records keep their layers alive until `prune_build_cache` or
+  `trim_build_cache` (least recently used first, under a size the caller gives) removes them.
+- `export` makes one `Export` for `save`, `push` and `build --output`: a pulled image as pulled, a built one from its
+  layer disks, gzipped with fixed settings, its blob digests fixed by the first export (`layers/<diff_id>/export.json`)
+  and never stored as blobs.
+- It never cleans up on its own: `trim_build_cache` runs only when the caller asks (the CLI does after a build).
+
+### `sbx-build` · [`crates/core/build`](../../crates/core/build)
+
+The builder: `build(Request, &dyn Store, &dyn Machines, Events)` runs a `BuildPlan` and returns the built image's ID.
+
+- **Ports, not implementations** (`ports`): `Store` (find or pull a base image, cache records, add and read layers,
+  commit), `Machines` and `Vm` (a build VM: open a layer, run, export, put entries, refused names). The CLI fills
+  them with `sbx-manage` and `sbx-runtime`; the unit tests with an in-memory store and a fake VM.
+- One VM per stage at most, started at the first uncached `RUN`; stages run one after another. `COPY`, `ADD` and
+  `WORKDIR` layers are tars made on the host (`source` finds sources, `copy` places them by Docker's rules, `tarw`
+  writes), so a fully cached build or a scratch stage of copies starts no VM.
+- `key`: cache keys (`sha256` over a version tag and length-prefixed parts). `config`: the OCI image config and
+  BuildKit-style history; the image ID is the config's `sha256`.
+- Progress is `Event`s (`Step` with `Started`, `Cached`, `Done`; `Output` chunks). A failed `RUN` is
+  `BuildError::RunFailed` with the last 16 KiB of output and the names the VM refused.
+- No registry, compression, cache layout or VM mechanics: those are behind the ports.
 
 ## app
 
@@ -378,7 +448,8 @@ cores in order, and prints.
 | `tui` | `sbx tui`: `keys` (the key list), `model` (keys to `sbx` command lines, no I/O), `view` (drawing), `detail` (a row as readable `name  value` lines), and `mod` (runs `sbx` children, hands over the terminal) |
 | `mcp` | `sbx mcp`: the same operations as MCP tools over stdio, with progress notifications |
 | `complete` | `sbx completion` and `COMPLETE=<shell> sbx`: sandbox names and IDs, image references and installed executors as tab candidates, read-only |
-| `behavior` | exit codes, `--pull`, `rmi` protection, time formatting, and `DOCKER_DIFFERENCES` |
+| `behavior` | exit codes, `--pull`, `rmi` protection, time formatting |
+| `compat` | the compatibility table (every command and flag of Docker, Podman and nerdctl, every Dockerfile instruction and Compose key, and product features of Docker Desktop and its alternatives), checked against clap, and the generated [tool-compatibility.md](../guide/tool-compatibility.md) |
 | `dirs` | default `data_dir`, `cache_dir` and `socket_dir` per OS |
 | `guest` | the embedded guest initramfs (empty in a plain `cargo build`) |
 | `host`, `progress` | `sbx info` host checks, and the pull progress line |
@@ -407,13 +478,20 @@ but everything it runs is untrusted user code, so the host never trusts what it 
 ```text
 boot                         PID 1 and the connection-handling process (Linux)
 server                       one connection: version check, dispatch
-exec   copy   egress  dns    one request each (egress: HTTP proxy; dns: instant NXDOMAIN)
-wire   passwd  mkfs  cmdline messages, user lookup, formatting scratch, kernel command line
+exec   copy   egress  clock  changes  one request each (egress: HTTP proxy and the connections lent by the host, clock: setting the guest clock, changes: raising inotify events for host edits in a live share)
+transparent                  transparent TCP: stand-in addresses for allowed names, listeners (egress owns it)
+volume                       attaching a volume: format on first use (ext4 with a journal), fill from the image, mount
+wire   passwd  mkfs  cmdline  dns   messages, user lookup, formatting scratch and volumes, kernel command line, loopback DNS
 sys                          system calls (the only place with unsafe)
 ```
 
 Everything below `boot` works on plain streams and files, so it's unit-tested on the host. The tests that need real
-mounts run as root in a privileged container in CI (`SANDBOX_PRIVILEGED_TESTS=1`).
+mounts or routes run as root in a privileged container in CI (`SANDBOX_PRIVILEGED_TESTS=1`). The kernel side of
+transparent TCP (the netlink route, listening on stand-in addresses) is behind the `Net` trait; the fake executor
+implements it on the host's loopback and writes where it listens next to the scratch disk
+(`sbx_executor_fake::net_dir`, read by `sbx_executor_fake::probe` in tests). The guest clock is behind the `Clock`
+trait; the fake executor keeps it in a file next to the scratch disk (`sbx_executor_fake::clock_file`) and never
+touches the host's clock.
 
 ## executor
 
@@ -428,7 +506,8 @@ The `firecracker` adapter. It is shipped as an adapter package: `sbx-executor` n
 - `settings` finds `firecracker` (`SBX_FIRECRACKER`, then the VMM package directory, then next to itself, then
   `PATH`) and the kernel (`SBX_FIRECRACKER_KERNEL`, then next to itself). `config` writes the VM config (initrd,
   disks, vsock, kernel command line). `session` runs the protocol session and writes the config file next to the
-  control socket as a new `0600` file.
+  control socket as a new `0600` file. It writes only keys upstream reads and passes only arguments upstream knows,
+  and announces no `live_share` (upstream has no virtio-fs; wick's is designed but its interface isn't fixed).
 - It knows nothing about `sbx` except the executor protocol (`sbx-executor-proto` is its only workspace dependency).
 
 ### `sbx-executor-fake` · [`crates/executor/fake`](../../crates/executor/fake) · bin `sbx-executor-fake`
@@ -443,6 +522,8 @@ so the runtime exchanges the real messages.
   testing a new executor against the protocol.
 - It differs from a VM in the obvious ways: processes run on the host as you, paths are host paths, and shares are
   symlinks. The list is in its `lib.rs`.
+- For build VMs, the first `OpenLayer` unpacks the EROFS layer disks into a host directory, and every guest path
+  after that is moved under it, so `sbx build` runs end to end in the CLI tests.
 
 ## Adding a crate
 

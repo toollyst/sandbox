@@ -6,6 +6,26 @@ use std::time::{Duration, Instant};
 use sbx_executor::{ExecutorError, VmHandle};
 use sbx_model::BoxFuture;
 
+/// VM 하나가 호스트에 띄운 프로세스 그룹들. 전원 끄기 흉내가 모두 끝낸다(`sbx_guest::exec::Procs`).
+#[cfg(unix)]
+pub(crate) type Procs = sbx_guest::exec::Procs;
+
+/// Unix가 아니면 VM을 띄우지 않으므로 프로세스도 없다.
+#[cfg(not(unix))]
+#[derive(Debug, Default)]
+pub(crate) struct Procs;
+
+#[cfg(not(unix))]
+impl Procs {
+    pub(crate) fn alive(&self) -> Vec<u32> {
+        Vec::new()
+    }
+
+    pub(crate) fn kill_all(&self) -> Vec<u32> {
+        Vec::new()
+    }
+}
+
 /// VM 하나의 상태. 끝났는지와 그 이유를 여러 스레드가 본다.
 #[derive(Debug, Default)]
 pub(crate) struct Life {
@@ -110,4 +130,20 @@ impl Drop for FakeVm {
     fn drop(&mut self) {
         (self.stop)(REASON_KILLED);
     }
+}
+
+/// 받은 디스크 하나(받은 차례). 볼륨 흉내에 쓴다. 게스트 흉내가 Unix에만 있으므로 Unix에만 있다.
+#[cfg(unix)]
+#[derive(Debug, Clone)]
+pub(crate) struct FakeDisk {
+    pub(crate) path: std::path::PathBuf,
+    pub(crate) volume: bool,
+    pub(crate) readonly: bool,
+}
+
+/// 볼륨 디스크 흉내의 내용 디렉터리: 디스크 파일 이름 뒤에 `.content`. 없으면 포맷하지 않은(처음 쓰는) 볼륨이다.
+pub fn volume_content(disk: &std::path::Path) -> std::path::PathBuf {
+    let mut s = disk.as_os_str().to_owned();
+    s.push(".content");
+    s.into()
 }

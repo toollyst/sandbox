@@ -60,6 +60,41 @@ impl Out {
     }
 }
 
+/// 일반 파일 `path`의 내용을 `size` 바이트까지 [`GuestMsg::Data`]로 보낸다. 링크를 따라가지 않는다.
+/// 그 사이에 줄었으면 오류다. 늘었으면 처음 크기만큼만 보낸다. `rel`은 오류에 쓰는 이름이다.
+pub fn send_file_data(
+    out: &Out,
+    path: &std::path::Path,
+    rel: &str,
+    size: u64,
+) -> Result<(), Error> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|e| io_error(rel, &e))?;
+    let mut r = f.take(size);
+    let mut buf = vec![0; sbx_guest_proto::CHUNK_LEN];
+    let mut sent = 0u64;
+    loop {
+        let n = r.read(&mut buf).map_err(|e| io_error(rel, &e))?;
+        if n == 0 {
+            break;
+        }
+        out.send(&GuestMsg::Data(buf[..n].to_vec()))
+            .map_err(|e| io_error("send", &e))?;
+        sent += n as u64;
+    }
+    if sent != size {
+        return Err(Error::new(
+            ErrorKind::Io,
+            format!("{rel:?} shrank while copying ({sent} of {size} bytes)"),
+        ));
+    }
+    Ok(())
+}
+
 /// 입출력 오류를 프로토콜 오류로.
 pub fn io_error(context: &str, e: &io::Error) -> Error {
     Error::new(ErrorKind::from_io(e.kind()), format!("{context}: {e}"))

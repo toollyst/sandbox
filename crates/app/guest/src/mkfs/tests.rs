@@ -50,7 +50,7 @@ fn superblock_fields() {
 #[test]
 fn group_layout_and_backups() {
     // 3 그룹을 넘게: 그룹 0, 1에는 superblock 사본이 있고 2에는 없다.
-    let l = Layout::plan(400 << 20).unwrap();
+    let l = Layout::plan(400 << 20, Journal::None).unwrap();
     assert_eq!(l.groups.len(), 4);
     let sup: Vec<bool> = l.groups.iter().map(|g| g.has_super).collect();
     assert_eq!(sup, vec![true, true, false, true]);
@@ -67,14 +67,50 @@ fn group_layout_and_backups() {
 #[test]
 fn tiny_trailing_group_is_dropped() {
     // 그룹 하나 + 4블록: 마지막 그룹은 메타데이터도 담지 못한다.
-    let l = Layout::plan((BLOCKS_PER_GROUP + 4) * BLOCK).unwrap();
+    let l = Layout::plan((BLOCKS_PER_GROUP + 4) * BLOCK, Journal::None).unwrap();
     assert_eq!(l.groups.len(), 1);
     assert_eq!(l.blocks, BLOCKS_PER_GROUP);
 }
 
 #[test]
 fn too_small_is_an_error() {
-    assert!(Layout::plan(MIN_BYTES - 1).is_err());
+    assert!(Layout::plan(MIN_BYTES - 1, Journal::None).is_err());
+}
+
+fn volume_image(bytes: u64) -> Vec<u8> {
+    let mut c = Cursor::new(vec![0xA5u8; bytes as usize]);
+    format_with(&mut c, bytes, UUID, Disk::Unknown, Journal::Internal).unwrap();
+    c.into_inner()
+}
+
+#[test]
+fn volumes_get_a_journal_in_group_zero() {
+    let bytes = 64 << 20;
+    let img = volume_image(bytes);
+    let sb = &img[1024..2048];
+    assert_eq!(le32(sb, 92) & COMPAT_HAS_JOURNAL, COMPAT_HAS_JOURNAL);
+    assert_eq!(le32(sb, 96) & INCOMPAT_EXTENTS, INCOMPAT_EXTENTS);
+    assert_eq!(le32(sb, 224), JOURNAL_INO);
+    let l = Layout::plan(bytes, Journal::Internal).unwrap();
+    assert_eq!(l.journal_blocks, 1024);
+    assert_eq!(l.journal_block, l.lost_found_block + 1);
+    let j = (l.journal_block * BLOCK) as usize;
+    assert_eq!(&img[j..j + 4], &JBD2_MAGIC.to_be_bytes());
+    // 저널 블록은 쓰는 중으로 센다.
+    let free_before = Layout::plan(bytes, Journal::None).unwrap().free_blocks();
+    assert_eq!(l.free_blocks() + 1024, free_before);
+    // 0으로 채운 디스크에도 같은 바이트가 나온다.
+    let mut z = Cursor::new(vec![0u8; bytes as usize]);
+    format_with(&mut z, bytes, UUID, Disk::Zeroed, Journal::Internal).unwrap();
+    let mut u = Cursor::new(vec![0u8; bytes as usize]);
+    format_with(&mut u, bytes, UUID, Disk::Unknown, Journal::Internal).unwrap();
+    assert!(z.into_inner() == u.into_inner());
+    // 크기는 mke2fs의 표를 따르되 64MiB까지.
+    assert_eq!(journal_blocks(2047), None);
+    assert_eq!(journal_blocks(16384), Some(1024));
+    assert_eq!(journal_blocks(1 << 22), Some(MAX_JOURNAL_BLOCKS));
+    // 저널을 둘 수 없을 만큼 작으면 오류다.
+    assert!(Layout::plan(4 << 20, Journal::Internal).is_err());
 }
 
 #[test]
@@ -118,6 +154,22 @@ fn e2fsck_accepts_image() {
         );
         std::fs::remove_file(&path).unwrap();
     }
+    for size in [64 << 20, (1 << 30) + (5 << 20)] {
+        let path = dir.join(format!("volume-{size}.img"));
+        std::fs::write(&path, volume_image(size)).unwrap();
+        let out = Command::new("e2fsck")
+            .args(["-f", "-n"])
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "e2fsck failed for a {size}-byte volume:\n{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        std::fs::remove_file(&path).unwrap();
+    }
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -151,7 +203,9 @@ fn privileged_kernel_mounts_scratch_as_overlay_upper() {
         mkdir -p {d}/s {d}/lower/keep {d}/lower/opaque {d}/merged
         echo base > {d}/lower/keep/f
         echo old > {d}/lower/opaque/old
-        mount -t ext4 -o loop {d}/scratch.img {d}/s
+        dev=$(losetup -f --show {d}/scratch.img)
+        blockdev --setrw $dev
+        mount -w -t ext4 $dev {d}/s
         mkdir {d}/s/upper {d}/s/work
         mount -t overlay overlay -o lowerdir={d}/lower,upperdir={d}/s/upper,workdir={d}/s/work {d}/merged
         echo new > {d}/merged/keep/g
@@ -160,6 +214,7 @@ fn privileged_kernel_mounts_scratch_as_overlay_upper() {
         ls -A {d}/merged/keep {d}/merged/opaque
         umount {d}/merged
         umount {d}/s
+        losetup -d $dev
         "#
     ));
     assert_eq!(out, format!("{d}/merged/keep:\ng\n\n{d}/merged/opaque:\n"));

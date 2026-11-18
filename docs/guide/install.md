@@ -1,12 +1,17 @@
 # Install
 
-`sbx` is two files, `sbx` and `sbx-shim`. They run nothing by themselves: sandboxes boot through an **executor**, which
-you install next. Nothing runs as root and nothing runs in the background.
+`sbx` is two files, `sbx` and `sbx-shim`. They run nothing by themselves: sandboxes boot through an **executor**, a
+separate program that speaks the open [executor protocol](executors.md). The installer installs both: `sbx`, then the
+executor its version pins. Installed `sbx` some other way? The first command that needs a VM fetches the default
+executor from the signed official repository itself ([not yet in this release](#the-executor)). Nothing runs as root
+and nothing runs in the background.
 
 - [macOS](#macos)
 - [Linux](#linux)
 - [Windows](#windows)
+- [The executor](#the-executor)
 - [Installer options](#installer-options)
+- [Installer versions](#installer-versions)
 - [Build from source](#build-from-source)
 - [Upgrade and uninstall](#upgrade-and-uninstall)
 
@@ -16,12 +21,12 @@ You need macOS 15 or later on Apple Silicon. Nothing else: no admin rights, no k
 
 ```sh
 curl -fsSL https://toollyst.github.io/sandbox/install.sh | sh
-sbx executor install wick        # the Firecracker VMM for macOS, with its adapter and guest kernel
 sbx info                         # host, virtualization (Hypervisor.framework), executor
 sbx run --rm alpine echo hello
 ```
 
-`wick` is a Firecracker build that runs on Hypervisor.framework ([toollyst/wick](https://github.com/toollyst/wick)).
+The default executor today is `wick`, a Firecracker build that also runs on Hypervisor.framework
+([toollyst/wick](https://github.com/toollyst/wick)), with its `firecracker` adapter and guest kernel.
 How wick confines itself on macOS is wick's part; [SECURITY.md](../../SECURITY.md) says what that means for you.
 Intel Macs aren't supported.
 
@@ -39,7 +44,6 @@ Then:
 
 ```sh
 curl -fsSL https://toollyst.github.io/sandbox/install.sh | sh
-sbx executor install wick        # Firecracker for KVM, with the firecracker adapter and guest kernel
 sbx info                         # says what's missing if /dev/kvm isn't usable
 sbx run --rm alpine echo hello
 ```
@@ -63,18 +67,46 @@ to your user `PATH`; it doesn't change `PATH` itself. On Windows, `sbx` can `pul
 there is no tested executor for Windows yet, so it can't run sandboxes. [Read the installer](../../install.ps1)
 before you run it.
 
+## The executor
+
+`sbx` needs one executor installed; which one is up to you. When it has none:
+
+- **The installer** installs the executor its version pins (below), from the official repository, with
+  `sbx executor install`. It leaves alone an executor you already use (a different default, or `SBX_EXECUTOR`), and
+  `SBX_EXECUTOR=none` skips this step. If the step fails (offline, say), `sbx` is still installed and the next item
+  takes over.
+- **The first `sbx run`, `create`, `start` or `build`** installs the newest default executor from the official
+  repository and carries on. It prints one line on stderr saying what it installs and from where, and asks nothing,
+  so it works the same in scripts, CI and `sbx mcp`: it only takes a package the repository signed for, checked the
+  same way as `sbx executor install`. Which executor is the default is said by the repository's index, not built into
+  `sbx`. Two commands starting at once install it once. When the repository can't be reached, the command fails with
+  the reason and the manual ways (`sbx executor install`, `--from DIR`).
+- It never happens when any executor is installed, when you give `--executor`, or with `SBX_NO_AUTO_EXECUTOR=1` or
+  `SBX_EXECUTOR=none`. `sbx executor current` says whether it would.
+
+**In this release** `sbx` carries the official repository's public keys, but the installer version pins no executor,
+and the first run can install the default executor only after the official repository has published one. Until then
+it stops with the reason. Install one yourself: `sbx executor search` lists what the configured repositories offer,
+`sbx executor install NAME` installs one, and `--from DIR` installs one you built
+([Build from source](#build-from-source)).
+
+After that, executors are yours to manage: `sbx upgrade` upgrades only `sbx`, and `sbx executor install` the executor
+([executors](executors.md)).
+
 ## Installer options
 
 Both installers ([`install.sh`](../../install.sh) for macOS and Linux, [`install.ps1`](../../install.ps1) for Windows)
 do the same: download the release archive for your OS and architecture, check its SHA-256, check its Sigstore
 signature when `cosign` is installed, and copy `sbx` and `sbx-shim` into your OS's place for user programs. They
-never write to the directory you run them from or anywhere else, and don't install an executor.
+never write to the directory you run them from. `install.sh` then installs the executor (above); Windows has no
+executor yet.
 
 | Variable | Default | What it does |
 | --- | --- | --- |
-| `SBX_VERSION` | the latest release | Install this tag, e.g. `v0.2.0`. The signature must then come from exactly that tag |
+| `SBX_VERSION` | the release this installer pins | Install this tag instead, e.g. `v0.2.0`. The signature must come from exactly the tag installed |
 | `SBX_INSTALL_DIR` | `~/.local/bin`; Windows: `%LOCALAPPDATA%\Programs\sbx` | Where `sbx` and `sbx-shim` go |
 | `SBX_VERIFY` | `auto` | `auto` checks the signature when `cosign` is on `PATH`, and then a missing signature is an error; `require` also fails without `cosign`; `off` checks only the SHA-256 |
+| `SBX_EXECUTOR` | unset | `none`: install no executor (and `sbx` won't fetch one by itself while it is set). Any other value is an executor you chose, so none is installed |
 
 ```sh
 curl -fsSL https://toollyst.github.io/sandbox/install.sh | SBX_VERSION=v0.2.0 SBX_VERIFY=require sh
@@ -86,6 +118,22 @@ $env:SBX_VERSION = 'v0.2.0'; $env:SBX_VERIFY = 'require'; irm https://toollyst.g
 
 To check a release by hand instead, see [SECURITY.md](../../SECURITY.md#verifying-what-you-install).
 
+## Installer versions
+
+The installer has its own version number, separate from `sbx`'s and the executor's; the three move independently.
+Each installer version names the `sbx` release and the executor (and adapter) version it installs, tested together
+before it was published. Every version stays published, unchanged, as `install-<version>.sh` and
+`install-<version>.ps1`, and `install.sh` and `install.ps1` are copies of the newest. So a pinned installer always
+installs the same things:
+
+```sh
+curl -fsSL https://toollyst.github.io/sandbox/install.sh | sh -s -- --version   # what the newest one installs
+curl -fsSL https://toollyst.github.io/sandbox/install-0.0.1.sh | sh             # exactly that version
+```
+
+The first line it prints when it runs says the same. The pairing is a recommendation, not a lock: once installed,
+nothing checks that `sbx` and the executor still match.
+
 ## Build from source
 
 You need Rust (stable) and the `*-unknown-linux-musl` target for your machine's architecture: the guest init is
@@ -95,7 +143,7 @@ built for it and embedded in `sbx`.
 git clone https://github.com/toollyst/sandbox && cd sandbox
 rustup target add "$(uname -m | sed s/arm64/aarch64/)-unknown-linux-musl"   # Windows: x86_64-unknown-linux-musl
 cargo xtask install               # builds sbx and sbx-shim and installs them where the installers do
-sbx executor install wick
+sbx run --rm alpine echo hello    # needs an executor (see "The executor" above)
 ```
 
 `cargo xtask install` puts them in the same place as the installers (`~/.local/bin`, or `%LOCALAPPDATA%\Programs\sbx`

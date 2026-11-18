@@ -3,7 +3,14 @@
 `sbx` doesn't hard-code a VMM. It hands each sandbox to an **executor**: a program that speaks the small, documented
 [executor protocol](../../crates/spec/executor-proto/src/lib.rs) and starts the VM. Executors come from
 [repositories](#repositories) or from a directory of your own, and install and switch the way Node or Go versions do
-with nvm or gvm. `sbx` alone has none; the first one you install becomes the default.
+with nvm or gvm. The first one installed becomes the default.
+
+`sbx` comes without one. The installer installs the executor its version pins, and the first `run`, `create`,
+`start` or `build` installs the **default executor** from the signed official repository when there is none
+([install guide](install.md#the-executor), which says what this release does not do yet). Which executor that is,
+the official repository's index says (its `default`); `sbx` itself names none. The official repository's default is
+`wick`. It is a default, not a requirement: install any other executor, make it the default with
+`sbx executor use`, and `sbx` never fetches one again.
 
 - [Kinds of executor](#kinds-of-executor)
 - [Install and switch versions](#install-and-switch-versions)
@@ -41,14 +48,23 @@ echo wick@1.18.0 > .sbx-executor           # this folder and everything below it
 sbx executor current                       # what a new sandbox would use here, and why
 sbx executor which wick                    # the program that runs it (for a VMM package, its adapter)
 sbx run --executor wick@1.18.0+wick.2 --rm alpine true   # just this once (or SBX_EXECUTOR)
-sbx executor rm wick@1.18.0+wick.1         # refused while a sandbox is pinned to it, unless -f
-sbx executor prune -n                      # what prune would remove: old versions nothing uses
+sbx executor rm wick@1.18.0+wick.1         # refused while a sandbox is pinned to it or runs on it, unless -f
+sbx executor prune -n                      # what prune would remove: old versions nothing uses or runs on
 ```
 
 A new sandbox uses the first of: `--executor` (an installed `NAME[@VERSION]` or a path to a program),
-`.sbx-executor` in the current folder or the nearest one above it, the default, and `sbx-executor` on `PATH`. A
+`.sbx-executor` in the current folder or the nearest one above it, the default, and `sbx-executor` on `PATH`. When
+none applies and no executor is installed at all, the default executor is installed first (`--executor none` or
+`SBX_NO_AUTO_EXECUTOR=1` turns that off). A
 sandbox remembers the installed executor it was created with, so changing the default never changes what `start` or
 `restart` boots. The rules are in [`choose.rs`](../../crates/app/cli/src/choose.rs).
+
+Installing a newer version and switching to it (`executor use`, or the installer doing so) leaves the older one in
+place, so sandboxes running on it keep running. `executor ls` and `executor adapter ls` show which running
+sandboxes use each version (`running` in JSON, a column in `sbx tui`). `executor rm` and `executor adapter rm`
+refuse a version a running sandbox uses and name the sandbox, and `executor prune` keeps it and says so. With `-f`
+the files go anyway: on macOS and Linux the running VM is not affected (stopping it, `exec` and `cp` don't need the
+executor's files), but it can't be started with that version again.
 
 A version has a **main version** and a **patch**, like Python's 3.12 and 3.12.4: the main version is everything
 before the first `-` or `+`. Name the main version and you get its newest patch; name the full version to pin one
@@ -77,6 +93,18 @@ sbx executor install --from ./my-executor myvmm@0.1.0                           
 What the protocol asks of an executor (`capabilities` prints one JSON line within 30 seconds; `run` reads a `Launch`
 request on stdin and reports `Started` and `Exited`), and how to test one, is in the
 [developer docs](../developers/how-it-works.md).
+
+### Live sharing
+
+Live sharing (`-v ./dir:/path`) works with any executor that announces `live_share` in its `capabilities`: it
+attaches one virtio-fs device per share, with the tag `sbx` gives, and the guest mounts it. `sbx` itself passes host
+edits on to file watchers in the guest, so the executor only has to share the folder. `sbx info` shows whether the
+executor you use announces it (`live share yes`).
+
+The `firecracker` adapter (in this repository; `wick` runs under it) doesn't announce it yet: upstream Firecracker has no virtio-fs, and wick's is
+designed but not built, so there is no interface for the adapter to drive. With it, `-v` with a host folder is an
+error that names the alternatives, and everything else works. The adapter writes only the config keys upstream
+Firecracker reads and passes it only the arguments upstream knows.
 
 ## Repositories
 
@@ -136,6 +164,10 @@ cargo xtask repo-sign --repo ./executors --key ./mine.key     # again after ever
 cargo xtask repo-yank --repo ./executors --schema 2 --name myvmm --version 0.1.0 \
     --advisory "CVE-2026-0001: upgrade to 0.1.1"                # then repo-sign again; --undo takes it back
 ```
+
+`--default` on `repo-add` names that executor as the repository's default (the `default` field of the index):
+what `sbx` installs from the official repository when it has no executor. Without it, a repository with a single
+executor has that one as its default.
 
 Then upload the directory as is. The official repository is built exactly this way; its workflow in
 [toollyst/sandbox-executors](https://github.com/toollyst/sandbox-executors) is a complete example.

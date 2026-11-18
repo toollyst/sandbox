@@ -21,6 +21,14 @@ pub enum Format {
     Json,
 }
 
+/// `sbx`가 명령을 돌리는 스레드의 스택 크기(8 MiB, Linux와 macOS의 주 스레드와 같다). 주 스레드의 스택은 OS가
+/// 정해서 Windows는 1 MiB뿐이라, `sbx`는 주 스레드 대신 이 크기의 스레드에서 돈다.
+///
+/// 디버그 빌드는 명령 트리([`Cli::command`](clap::CommandFactory::command))를 만드는 데만 1 MiB 가까이 쓴다.
+/// 배포 빌드는 200 KiB 아래다(macOS arm64에서 잰 값). 테스트가 명령 트리와 인자 읽기가 이것의 4분의 1에 드는지
+/// 본다.
+pub const MAIN_STACK: usize = 8 * 1024 * 1024;
+
 /// `sbx`.
 #[derive(Debug, Parser)]
 #[command(
@@ -46,7 +54,8 @@ pub struct Cli {
     #[arg(long, global = true, env = "SBX_GUEST_INIT", hide_env_values = true)]
     pub guest_init: Option<PathBuf>,
     /// Executor to use: an installed `NAME[@VERSION]`, or a program that speaks the executor protocol (a path, or a
-    /// name on PATH). Without it, `sbx executor current` shows which one is used and why.
+    /// name on PATH). `none` chooses as if it were not given and never installs the default executor. Without it,
+    /// `sbx executor current` shows which one is used and why.
     //
     // 문단을 하나로 둔다: 긴 도움말이 하나라도 있으면 clap이 모든 명령의 `--help`를 두 줄씩 띄워 찍는다.
     // 고르는 순서(샌드박스의 것, `.sbx-executor`, 기본, PATH)는 `executor current`와 사용자 안내서에 있다.
@@ -150,6 +159,11 @@ pub enum Command {
         #[arg(add = complete::sandbox())]
         ids: Vec<String>,
     },
+    #[command(about = about("volume"))]
+    Volume {
+        #[command(subcommand)]
+        command: VolumeCommand,
+    },
     #[command(about = about("exec"), override_usage = "sbx exec [OPTIONS] SANDBOX COMMAND [ARG...]")]
     Exec(ExecArgs),
     #[command(about = about("attach"))]
@@ -178,6 +192,13 @@ pub enum Command {
         #[arg(add = complete::cp_endpoint_arg())]
         dst: String,
     },
+    #[command(about = about("build"), override_usage = "sbx build [OPTIONS] PATH")]
+    Build(BuildArgs),
+    #[command(about = about("builder"))]
+    Builder {
+        #[command(subcommand)]
+        command: BuilderCommand,
+    },
     #[command(about = about("pull"))]
     Pull {
         /// linux/amd64 or linux/arm64. Defaults to the host architecture.
@@ -186,6 +207,27 @@ pub enum Command {
         /// Image reference.
         #[arg(add = complete::image())]
         image: String,
+    },
+    #[command(about = about("push"))]
+    Push {
+        /// Push every local tag of the repository NAME (give it without a tag).
+        #[arg(short, long)]
+        all_tags: bool,
+        /// Only print the pushed reference(s), no progress or layer lines.
+        #[arg(short, long)]
+        quiet: bool,
+        /// Image reference to push, e.g. ghcr.io/me/app:1. It must exist locally (`sbx tag` names it).
+        #[arg(add = complete::image())]
+        name: String,
+    },
+    #[command(about = about("tag"))]
+    Tag {
+        /// Image reference or ID.
+        #[arg(add = complete::image())]
+        source: String,
+        /// New reference, e.g. ghcr.io/me/app:1 (a tag, not a digest).
+        #[arg(add = complete::image())]
+        target: String,
     },
     #[command(about = about("prepare"))]
     Prepare {
@@ -263,7 +305,7 @@ pub enum Command {
         /// Stop at this time (same forms as --since). Without it, keep streaming.
         #[arg(long)]
         until: Option<String>,
-        /// Filter: type=sandbox|image|network, event=ACTION, sandbox=ID-PREFIX|NAME, image=IMAGE.
+        /// Filter: type=sandbox|image|network|volume, event=ACTION, sandbox=ID-PREFIX|NAME, image=IMAGE.
         /// Different keys must all match, a repeated key any of its values.
         #[arg(short = 'f', long = "filter", value_name = "KEY=VALUE")]
         filter: Vec<String>,
@@ -282,9 +324,12 @@ pub enum Command {
         /// The most memory one tool call may ask for (e.g. 2g).
         #[arg(long, default_value = "4g", value_parser = crate::parse::memory_mib)]
         max_memory: u32,
-        /// The largest writable disk one tool call may ask for (e.g. 20g).
+        /// The largest writable disk one tool call may ask for (e.g. 20g). Volumes agents create get this size too.
         #[arg(long, default_value = "16g", value_parser = crate::parse::disk_mib)]
         max_disk: u32,
+        /// At most this many volumes created through MCP may exist at once (they stay until you remove them).
+        #[arg(long, default_value_t = 8)]
+        max_volumes: u32,
         /// Stop every sandbox created through MCP at most this long after it starts (e.g. 1h); agents may ask for
         /// less with `lifetime`. By default they run until stopped or removed.
         #[arg(long, value_name = "DURATION", value_parser = crate::parse::lifetime_secs)]
@@ -339,6 +384,23 @@ so it always matches the installed sbx.",
     },
 }
 
+/// `builder` 아래 명령.
+#[derive(Debug, Subcommand)]
+pub enum BuilderCommand {
+    /// Remove build cache that no image uses (cached steps whose layers only the cache holds).
+    Prune {
+        /// Remove all build cache: also cached steps whose layers images use (their layers stay with the images).
+        #[arg(short = 'a', long)]
+        all: bool,
+        /// Don't ask for confirmation.
+        #[arg(short = 'f', long)]
+        force: bool,
+        /// Keep the most recently used cache up to this size (e.g. 5g); remove the rest, oldest first.
+        #[arg(long, value_name = "SIZE")]
+        keep_storage: Option<String>,
+    },
+}
+
 /// `system` 아래 명령.
 #[derive(Debug, Subcommand)]
 pub enum SystemCommand {
@@ -346,13 +408,71 @@ pub enum SystemCommand {
     Df,
     /// Remove stopped sandboxes, unused layers and leftovers (-a: also images no sandbox uses).
     Prune {
-        /// Also remove every image no remaining sandbox uses.
+        /// Also remove every image no remaining sandbox uses (with --volumes, also every unused volume).
+        #[arg(short = 'a', long)]
+        all: bool,
+        /// Also prune volumes, as `volume prune` does (with -a, every volume no remaining sandbox uses).
+        #[arg(long)]
+        volumes: bool,
+        /// Don't ask for confirmation.
+        #[arg(short = 'f', long)]
+        force: bool,
+        /// Only sandboxes matching: until=TIME (created before), label=KEY[=VALUE].
+        #[arg(long = "filter", value_name = "KEY=VALUE")]
+        filter: Vec<String>,
+    },
+}
+
+/// `volume` 아래 명령.
+#[derive(Debug, Subcommand)]
+pub enum VolumeCommand {
+    /// Create a volume (a disk that outlives sandboxes; `run -v NAME:/path` also creates it on first use)
+    Create {
+        /// Volume option: size=SIZE (e.g. size=50g; default 16g, at least 64m). Sparse, so the host only spends what
+        /// is written.
+        #[arg(short = 'o', long = "opt", value_name = "KEY=VALUE")]
+        opt: Vec<String>,
+        /// Label k=v.
+        #[arg(long = "label")]
+        labels: Vec<String>,
+        /// Name (letters, digits, _ . -). Without it, a random one.
+        name: Option<String>,
+    },
+    /// List volumes
+    #[command(visible_alias = "list")]
+    Ls {
+        /// Only show volume names.
+        #[arg(short, long)]
+        quiet: bool,
+        /// Filter: name=TEXT, label=KEY[=VALUE], dangling=true|false (true: no sandbox uses it).
+        #[arg(short = 'f', long = "filter", value_name = "KEY=VALUE")]
+        filter: Vec<String>,
+    },
+    /// Show volumes' size, labels, disk and the sandboxes that use them
+    Inspect {
+        /// Volume names.
+        #[arg(required = true, add = complete::volume())]
+        names: Vec<String>,
+    },
+    /// Remove volumes (refused while a sandbox uses one, even a stopped one)
+    #[command(visible_alias = "remove")]
+    Rm {
+        /// Don't fail when a volume doesn't exist.
+        #[arg(short, long)]
+        force: bool,
+        /// Volume names.
+        #[arg(required = true, add = complete::volume())]
+        names: Vec<String>,
+    },
+    /// Remove volumes no sandbox uses (-a; without it there is nothing to remove, as sbx has no anonymous volumes)
+    Prune {
+        /// Remove every volume no sandbox uses (Docker's default since 23.0 removes only anonymous volumes).
         #[arg(short = 'a', long)]
         all: bool,
         /// Don't ask for confirmation.
         #[arg(short = 'f', long)]
         force: bool,
-        /// Only sandboxes matching: until=TIME (created before), label=KEY[=VALUE].
+        /// Only volumes matching: label=KEY[=VALUE].
         #[arg(long = "filter", value_name = "KEY=VALUE")]
         filter: Vec<String>,
     },
@@ -406,7 +526,9 @@ pub enum ExecutorCommand {
     ///
     /// The first that applies: --executor (or SBX_EXECUTOR), the executor a sandbox was created with (for start and
     /// restart), `.sbx-executor` in this folder or the nearest one above, the default (`sbx executor use`), then
-    /// `sbx-executor` on PATH.
+    /// `sbx-executor` on PATH. When no executor is installed at all, run, create, start and build install the
+    /// default executor from the official repository first (SBX_NO_AUTO_EXECUTOR=1 or --executor none turns that
+    /// off).
     Current,
     /// Print the program that runs an installed executor (for a VMM package, its adapter)
     Which {
@@ -581,6 +703,71 @@ pub struct AttachArgs {
     pub detach: bool,
 }
 
+/// `build --progress`의 값. 값마다 문서 주석을 달지 않는다([`Format`]과 같은 까닭).
+#[allow(missing_docs)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum BuildProgress {
+    Auto,
+    Plain,
+}
+
+/// `build`의 옵션.
+#[derive(Debug, Args)]
+pub struct BuildArgs {
+    /// Name the image `NAME[:TAG]` (repeatable).
+    #[arg(short = 't', long = "tag", value_name = "NAME[:TAG]")]
+    pub tags: Vec<String>,
+    /// Dockerfile (default: PATH/Dockerfile).
+    #[arg(short = 'f', long = "file", value_name = "FILE")]
+    pub file: Option<PathBuf>,
+    /// Build argument `KEY=VALUE`, or `KEY` to take the value from the environment (repeatable).
+    #[arg(long = "build-arg", value_name = "KEY=VALUE")]
+    pub build_args: Vec<String>,
+    /// Build only up to this stage (`AS` name).
+    #[arg(long)]
+    pub target: Option<String>,
+    /// Do not use cached steps (the new layers are still cached).
+    #[arg(long)]
+    pub no_cache: bool,
+    /// Progress: auto (one line per step; RUN output only when a step fails) or plain (RUN output too).
+    #[arg(long, value_enum, default_value_t = BuildProgress::Auto, hide_possible_values = true)]
+    pub progress: BuildProgress,
+    /// Only print the image ID.
+    #[arg(short, long)]
+    pub quiet: bool,
+    /// Where the image goes (repeatable; given outputs replace the default): type=sbx (sbx's image store, the
+    /// default), type=docker (into `docker load`; dest=FILE writes a tar instead), type=oci,dest=FILE|DIR/|- (an
+    /// OCI archive, an OCI layout directory, or stdout), type=registry (push). name=NAME:TAG names it instead of -t.
+    #[arg(
+        short = 'o',
+        long = "output",
+        value_name = "type=TYPE[,KEY=VALUE…]",
+        help_heading = "Output"
+    )]
+    pub outputs: Vec<String>,
+    /// Shorthand for --output type=docker.
+    #[arg(long, help_heading = "Output")]
+    pub load: bool,
+    /// Shorthand for --output type=registry: push each -t name.
+    #[arg(long, help_heading = "Output")]
+    pub push: bool,
+    /// Network for RUN steps: none (no access) or allow (only --allow destinations, checked on the host).
+    #[arg(long, default_value = "none", help_heading = "Network")]
+    pub network: String,
+    /// Destination RUN steps may reach with --network allow: `HOST:PORT` (`*.npmjs.org:443`). Repeatable.
+    #[arg(long = "allow", help_heading = "Network")]
+    pub allow: Vec<String>,
+    /// Number of vCPUs of the build VM (default 1).
+    #[arg(long, help_heading = "Resources")]
+    pub cpus: Option<String>,
+    /// Memory of the build VM (e.g. 2g; default 512m).
+    #[arg(short = 'm', long, help_heading = "Resources")]
+    pub memory: Option<String>,
+    /// Build context: a local directory.
+    #[arg(value_hint = clap::ValueHint::DirPath)]
+    pub path: PathBuf,
+}
+
 /// `run`과 `create`의 옵션. 이미지 이름 뒤의 인자는 모두 명령으로 넘어간다(Docker와 같다).
 #[derive(Debug, Args)]
 pub struct RunArgs {
@@ -633,13 +820,14 @@ pub struct RunArgs {
     /// Label k=v.
     #[arg(short = 'l', long = "label")]
     pub labels: Vec<String>,
-    /// Live-share a host directory: `SRC:DST[:ro]` (short for --mount type=bind; needs executor support).
-    #[arg(short = 'v', long = "volume", help_heading = "Files")]
+    /// Attach a named volume `NAME:DST[:ro]` (created on first use; one writer at a time), or live-share a host
+    /// directory `/SRC:DST[:ro]` (needs executor support).
+    #[arg(short = 'v', long = "volume", help_heading = "Files", add = complete::volume_source())]
     pub volumes: Vec<String>,
-    /// `type=bind|copy,source=...,target=...[,readonly]` (copy: copied in at start).
+    /// `type=bind|copy|volume,source=...,target=...[,readonly]` (copy: copied in at start; volume: source is a name).
     #[arg(long = "mount", help_heading = "Files")]
     pub mounts: Vec<String>,
-    /// Network: none (no access) or allow (only --allow destinations, through a proxy).
+    /// Network: none (no access) or allow (only --allow destinations, checked on the host).
     #[arg(long, default_value = "none", help_heading = "Network")]
     pub network: String,
     /// Signal sent to the main process on stop. Defaults to the image's StopSignal, then SIGTERM.
@@ -659,6 +847,13 @@ pub struct RunArgs {
     /// (e.g. 500m, 2g). Reaching it closes them and refuses new ones.
     #[arg(long = "egress-limit", value_name = "SIZE", value_parser = crate::parse::transfer_bytes, help_heading = "Network")]
     pub egress_limit: Option<u64>,
+    /// Reach TCP PORT of another running sandbox by its name (`db:5432`; `pg=db:5432` to use another name inside;
+    /// `db:5432,8080` for more ports). Nothing else opens, and the other sandbox needs no option. Repeatable.
+    #[arg(long = "connect", value_name = "[NAME=]SANDBOX:PORT", value_parser = crate::parse::connect_value, help_heading = "Network", add = complete::connect_targets_arg())]
+    pub connect: Vec<String>,
+    /// Labels every `--connect` target must have (set by `sbx mcp`, not an option).
+    #[arg(skip)]
+    pub connect_scope: std::collections::BTreeMap<String, String>,
     /// Publish a sandbox TCP port on the host: PORT, HOST_PORT:PORT or IP:HOST_PORT:PORT (e.g. 8080:80). IP defaults
     /// to 127.0.0.1, so only this machine can connect (Docker's default is every address; write 0.0.0.0: for that).
     /// Without HOST_PORT a free port is picked; `sbx inspect` shows it.
@@ -797,6 +992,25 @@ mod tests {
     fn definition_is_consistent() {
         // 인자 이름 충돌 같은 정의 오류를 실행하기 전에 잡는다.
         <Cli as clap::CommandFactory>::command().debug_assert();
+    }
+
+    #[test]
+    fn the_command_tree_fits_in_a_quarter_of_the_main_stack() {
+        // 명령이 늘어 MAIN_STACK에 가까워지면 여기서 먼저 넘친다(테스트 실행 파일은 디버그 빌드다).
+        let parse = std::thread::Builder::new()
+            .stack_size(MAIN_STACK / 4)
+            .spawn(|| {
+                let version = <Cli as clap::CommandFactory>::command()
+                    .version("0.0.0")
+                    .try_get_matches_from(["sbx", "--version"]);
+                assert_eq!(
+                    version.unwrap_err().kind(),
+                    clap::error::ErrorKind::DisplayVersion
+                );
+                assert!(Cli::try_parse_from(["sbx", "ps"]).is_ok());
+            })
+            .unwrap();
+        parse.join().unwrap();
     }
 
     #[test]

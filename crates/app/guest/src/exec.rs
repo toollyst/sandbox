@@ -18,6 +18,18 @@
 //!   크기는 `size`(없으면 24x80)로 시작하고 `Resize`로 바꾼다. `stdin`이 아니면 받은 입력을 버린다.
 //!   `StdinClose`는 터미널에 EOF 문자(^D)를 쓴다(터미널에는 닫을 입력 파이프가 없다).
 //!   tty가 아니면 `Resize`는 무시한다.
+//!
+//! **빌드 단계** (`HostMsg::ExecStep`, [`run_step`]): `Exec`와 같고 끝이 다르다. 프로세스는 자기 프로세스 그룹에서
+//! 시작한다. 프로세스가 끝나면 그 단계가 남긴 프로세스를 SIGKILL로 끝내고([`Sweep`]), 모두 사라진 뒤에 남은 출력을
+//! 보내고 `Exited`를 보낸다. 남은 프로세스가 죽었으므로 출력 파이프도 닫혀 기다림이 끝난다. [`SWEEP_TIMEOUT`] 안에
+//! 사라지지 않으면 오류로 끝난다. 남은 프로세스가 층을 쥐면 다음 층을 열 수 없기 때문이다(`overlay` 모듈).
+//!
+//! **호스트에서 돌 때** ([`Procs`]): fake 실행기와 테스트처럼 이 처리가 호스트에서 돌면 띄우는 프로세스마다 자기
+//! 프로세스 그룹을 주고(터미널이면 새 세션이 곧 그룹이다) [`Procs`]에 적는다. VM의 전원 끄기 흉내가 그 그룹들을
+//! 모두 SIGKILL로 끝낸다. 실제 VM에서는 전원이 꺼지면 모든 프로세스가 사라지므로 쓰지 않는다(`None`).
+//!
+//! **기본 프로세스 자리** (`HostMsg::Hold`, [`hold`]): 프로세스 없이 [`Main`]에 등록하고 `Started { pid: 0 }`을 보낸다.
+//! `SignalMain`이나 그 연결의 `Signal`을 받으면 그 시그널로 끝난 것으로 `Exited`를 보낸다. 연결이 닫혀도 끝난다.
 
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -40,6 +52,20 @@ pub const DRAIN_IDLE: Duration = Duration::from_millis(50);
 
 /// `main`일 때: 프로세스가 끝난 뒤 남은 자식이 계속 써도 이만큼 지나면 그만 읽는다.
 pub const DRAIN_MAX: Duration = Duration::from_secs(1);
+
+/// 빌드 단계가 남긴 프로세스가 사라지기를 기다리는 시간.
+pub const SWEEP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// 빌드 단계(`ExecStep`)가 끝난 뒤 남은 프로세스를 끝내는 방법.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sweep {
+    /// VM 안의 모든 프로세스(PID 1과 연결 처리 프로세스 빼고, 커널 스레드는 시그널을 받지 않는다). 단계가 새 세션이나
+    /// 그룹으로 떼어 낸 데몬도 끝난다. 빌드 VM에는 단계의 프로세스밖에 없다. 게스트(PID 1의 자식)에서만 쓴다.
+    Everything,
+    /// 단계의 프로세스 그룹만. 호스트에서 도는 fake 실행기와 테스트가 쓴다(호스트의 다른 프로세스를 건드리지 않는다).
+    /// 그룹을 떠난 프로세스(`setsid`)는 남는다.
+    Group,
+}
 
 /// 끝을 알리는 표시. 프로세스가 끝난 시각을 한 번 남긴다.
 #[derive(Default)]
@@ -68,6 +94,8 @@ impl Ended {
 struct Proc {
     pid: u32,
     alive: Mutex<bool>,
+    /// 기본 프로세스 자리([`hold`])면 시그널(Linux 번호)을 보낼 곳.
+    hold: Option<Mutex<std::sync::mpsc::Sender<Option<i32>>>>,
 }
 
 impl Proc {
@@ -81,6 +109,83 @@ impl Proc {
     }
 }
 
+/// 호스트에서 도는 게스트 처리가 띄운 프로세스 그룹들(모듈 문서). VM 하나에 하나다.
+///
+/// 적을 때 이미 빈 그룹은 지운다(그 번호가 다른 프로세스에게 다시 쓰이기 전에). `record`가 있으면 그룹 번호를 그 파일에
+/// `group <번호>` 줄로 덧붙인다(테스트가 남은 프로세스를 찾는다).
+#[derive(Debug, Default)]
+pub struct Procs {
+    groups: Mutex<Vec<u32>>,
+    record: Option<std::path::PathBuf>,
+}
+
+impl Procs {
+    /// 빈 것. `record`는 위의 파일이다.
+    pub fn new(record: Option<std::path::PathBuf>) -> Self {
+        Self {
+            groups: Mutex::new(Vec::new()),
+            record,
+        }
+    }
+
+    fn add(&self, pgid: u32) {
+        let mut g = self.groups.lock().unwrap_or_else(|e| e.into_inner());
+        g.retain(|p| crate::sys::group_alive(*p));
+        g.push(pgid);
+        if let Some(path) = &self.record {
+            let line = format!("group {pgid}\n");
+            let _ = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .and_then(|mut f| f.write_all(line.as_bytes()));
+        }
+    }
+
+    /// 아직 프로세스가 있는 그룹들(좀비 포함).
+    pub fn alive(&self) -> Vec<u32> {
+        let g = self.groups.lock().unwrap_or_else(|e| e.into_inner());
+        g.iter()
+            .copied()
+            .filter(|p| crate::sys::group_alive(*p))
+            .collect()
+    }
+
+    /// 모든 그룹에 SIGKILL을 보낸다(전원 끄기). 그때 프로세스가 있던 그룹들을 돌려준다. 시그널을 보낸 뒤에 돌아오므로
+    /// 부르는 쪽이 곧바로 끝나도 그 프로세스들은 죽는다.
+    pub fn kill_all(&self) -> Vec<u32> {
+        let g = self.groups.lock().unwrap_or_else(|e| e.into_inner());
+        g.iter()
+            .copied()
+            .filter(|p| crate::sys::kill_group(*p, libc::SIGKILL).is_ok())
+            .collect()
+    }
+}
+
+/// 프로세스가 있는지(좀비 포함, 권한이 없어도 있는 것). 시그널 0으로 본다. 호스트에서 도는 fake 실행기와 테스트가
+/// 쓴다.
+pub fn process_alive(pid: u32) -> bool {
+    match crate::sys::kill(pid, 0) {
+        Ok(()) => true,
+        Err(e) => e.raw_os_error() == Some(libc::EPERM),
+    }
+}
+
+/// 프로세스 그룹에 프로세스가 있는지(좀비 포함). 호스트에서 도는 fake 실행기와 테스트가 쓴다.
+pub fn group_alive(pgid: u32) -> bool {
+    crate::sys::group_alive(pgid)
+}
+
+/// 프로세스 하나(`group`이 거짓)나 그룹 전체에 SIGKILL을 보낸다. 0과 1은 받지 않는다. 호스트에서 도는 테스트가
+/// 남은 것을 치울 때 쓴다.
+pub fn kill_hard(id: u32, group: bool) -> io::Result<()> {
+    if group {
+        crate::sys::kill_group(id, libc::SIGKILL)
+    } else {
+        crate::sys::kill(id, libc::SIGKILL)
+    }
+}
+
 /// 실행 중인 기본 프로세스. 게스트 안에서 하나를 함께 쓴다.
 #[derive(Default)]
 pub struct Main(Mutex<Option<Arc<Proc>>>);
@@ -89,7 +194,14 @@ impl Main {
     /// Linux 번호의 시그널을 보낸다. 실행 중인 기본 프로세스가 없으면 `false`.
     pub fn signal(&self, linux: i32) -> bool {
         let current = self.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        current.is_some_and(|p| p.signal(crate::sys::from_linux_signal(linux)))
+        current.is_some_and(|p| match &p.hold {
+            Some(tx) => tx
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .send(Some(linux))
+                .is_ok(),
+            None => p.signal(crate::sys::from_linux_signal(linux)),
+        })
     }
 
     fn set(&self, p: &Arc<Proc>) {
@@ -104,16 +216,151 @@ impl Main {
     }
 }
 
-/// 실행하고 끝날 때까지 처리한다.
-pub fn run(x: Exec, root: &Path, input: impl Read + Send + 'static, out: Out, main: &Main) {
-    if let Err(e) = run_inner(x, root, input, &out, main) {
+/// 실행하고 끝날 때까지 처리한다. `procs`는 호스트에서 돌 때만 있다(모듈 문서).
+pub fn run(
+    x: Exec,
+    root: &Path,
+    input: impl Read + Send + 'static,
+    out: Out,
+    main: &Main,
+    procs: Option<&Procs>,
+) {
+    if let Err(e) = run_inner(x, root, input, &out, main, None, procs) {
         out.error(e);
     }
 }
 
+/// 빌드 단계 하나를 실행한다(`HostMsg::ExecStep`). 끝나면 단계가 남긴 프로세스를 `sweep`대로 끝낸다(모듈 문서).
+pub fn run_step(
+    x: Exec,
+    root: &Path,
+    input: impl Read + Send + 'static,
+    out: Out,
+    main: &Main,
+    sweep: Sweep,
+    procs: Option<&Procs>,
+) {
+    if x.main {
+        return out.error(Error::new(
+            ErrorKind::InvalidArgument,
+            "a build step is not the main process",
+        ));
+    }
+    if let Err(e) = run_inner(x, root, input, &out, main, Some(sweep), procs) {
+        out.error(e);
+    }
+}
+
+/// 기본 프로세스 자리를 채운다(`HostMsg::Hold`, 모듈 문서).
+pub fn hold(mut input: impl Read + Send + 'static, out: Out, main: &Main) {
+    let (tx, rx) = std::sync::mpsc::channel::<Option<i32>>();
+    let proc = Arc::new(Proc {
+        pid: 0,
+        alive: Mutex::new(true),
+        hold: Some(Mutex::new(tx.clone())),
+    });
+    main.set(&proc);
+    if out.send(&GuestMsg::Started { pid: 0 }).is_err() {
+        main.clear(&proc);
+        return;
+    }
+    thread::spawn(move || {
+        loop {
+            match HostMsg::read_from(&mut input) {
+                Ok(HostMsg::Signal(n)) => {
+                    let _ = tx.send(Some(n));
+                }
+                Ok(_) => {}
+                Err(_) => {
+                    let _ = tx.send(None);
+                    return;
+                }
+            }
+        }
+    });
+    let got = rx.recv().ok().flatten();
+    main.clear(&proc);
+    if let Some(n) = got {
+        let _ = out.send(&GuestMsg::Exited(ExitStatus::Signal(n)));
+    }
+}
+
+/// 단계가 남긴 프로세스를 끝내고 사라지기를 기다린다. `pgid`는 단계 프로세스(이미 끝나 거둔 것)의 그룹이다.
+fn sweep(how: Sweep, pgid: u32) -> Result<(), Error> {
+    let deadline = Instant::now() + SWEEP_TIMEOUT;
+    loop {
+        let left = match how {
+            Sweep::Group => {
+                let _ = crate::sys::kill_group(pgid, libc::SIGKILL);
+                crate::sys::group_alive(pgid)
+            }
+            Sweep::Everything => sweep_everything()?,
+        };
+        if !left {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(Error::new(
+                ErrorKind::Io,
+                format!(
+                    "processes left by the build step did not end within {}s",
+                    SWEEP_TIMEOUT.as_secs()
+                ),
+            ));
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// 모두에게 SIGKILL을 보내고, 아직 살아 있는 프로세스(좀비가 아닌 사용자 프로세스)가 있는지.
+#[cfg(target_os = "linux")]
+fn sweep_everything() -> Result<bool, Error> {
+    crate::sys::linux::kill_everyone_else(libc::SIGKILL).map_err(|e| io_error("kill", &e))?;
+    let me = std::process::id();
+    let dir = std::fs::read_dir("/proc").map_err(|e| io_error("/proc", &e))?;
+    for entry in dir.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|n| n.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if let Ok(stat) = std::fs::read_to_string(entry.path().join("stat"))
+            && is_live_user_process(pid, &stat, me)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn sweep_everything() -> Result<bool, Error> {
+    Err(Error::new(
+        ErrorKind::InvalidArgument,
+        "ending every process is only done inside the VM",
+    ))
+}
+
+/// `/proc/<pid>/stat` 한 줄로 본다: PID 1, `me`, 커널 스레드(PID 2와 그 자식), 좀비(`Z`)와 죽은 것(`X`)이 아니면 참.
+/// 이름(`comm`)에 괄호와 공백이 있을 수 있으므로 마지막 `)` 뒤를 읽는다.
+pub fn is_live_user_process(pid: u32, stat: &str, me: u32) -> bool {
+    if pid <= 2 || pid == me {
+        return false;
+    }
+    let Some(rest) = stat.rfind(')').map(|i| &stat[i + 1..]) else {
+        return false;
+    };
+    let mut f = rest.split_ascii_whitespace();
+    let state = f.next().unwrap_or("");
+    let ppid: u32 = f.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+    ppid != 2 && !matches!(state, "Z" | "X" | "x")
+}
+
 /// 떼어 놓고 실행한다(`HostMsg::ExecDetached`): 표준 입출력은 `/dev/null`, `Started`를 보내고 곧바로 끝난다.
 /// 연결이 닫혀도 프로세스는 계속 돈다. 이 프로세스(연결 처리)가 부모이므로 스레드 하나가 거둔다.
-pub fn run_detached(x: Exec, root: &Path, out: Out) {
+pub fn run_detached(x: Exec, root: &Path, out: Out, procs: Option<&Procs>) {
     let started = (|| {
         if x.tty || x.stdin || x.main {
             return Err(Error::new(
@@ -132,6 +379,9 @@ pub fn run_detached(x: Exec, root: &Path, out: Out) {
     })();
     match started {
         Ok(mut child) => {
+            if let Some(p) = procs {
+                p.add(child.id());
+            }
             let _ = out.send(&GuestMsg::Started { pid: child.id() });
             thread::spawn(move || child.wait());
         }
@@ -191,8 +441,15 @@ fn run_inner(
     mut input: impl Read + Send + 'static,
     out: &Out,
     main: &Main,
+    step: Option<Sweep>,
+    procs: Option<&Procs>,
 ) -> Result<(), Error> {
     let mut cmd = command(&x, root)?;
+    // 단계의 프로세스 그룹(Sweep::Group은 이 그룹을 끝낸다), 호스트에서 돌 때는 전원 끄기 흉내가 끝낼 그룹.
+    // 터미널이면 새 세션을 만들므로 그것이 곧 그룹이다(그룹 우두머리는 setsid를 할 수 없다).
+    if (step.is_some() || procs.is_some()) && !x.tty {
+        cmd.process_group(0);
+    }
     let program = &x.args[0];
     // 터미널이면 주 쪽을 쥐고, 종 쪽을 자식의 표준 입출력으로 준다.
     let tty = if x.tty {
@@ -219,10 +476,14 @@ fn run_inner(
     // 부모가 쥔 종 쪽을 닫는다. 그래야 자식들이 모두 닫으면 주 쪽에서 끝을 본다.
     drop(cmd);
     let mut child = spawned.map_err(|e| spawn_error(program, e))?;
+    if let Some(p) = procs {
+        p.add(child.id());
+    }
 
     let proc = Arc::new(Proc {
         pid: child.id(),
         alive: Mutex::new(true),
+        hold: None,
     });
     if x.main {
         main.set(&proc);
@@ -277,6 +538,10 @@ fn run_inner(
         main.clear(&proc);
     }
     let status = status?;
+    if let Some(how) = step {
+        // 남은 프로세스가 출력 파이프를 쥐고 있을 수 있다. 끝내야 아래의 읽기가 끝난다.
+        sweep(how, proc.pid)?;
+    }
     if x.main {
         ended.mark();
     }

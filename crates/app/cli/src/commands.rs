@@ -113,6 +113,11 @@ pub const COMMANDS: &[Command] = &[
         "Show running sandboxes' CPU, memory, disk and process count",
     ),
     cmd(
+        "volume",
+        Section::Sandboxes,
+        "Manage volumes: disks that outlive sandboxes (create, ls, inspect, rm, prune)",
+    ),
+    cmd(
         "exec",
         Section::Inside,
         "Run a command in a running sandbox",
@@ -133,9 +138,29 @@ pub const COMMANDS: &[Command] = &[
         "Copy files between the host and a sandbox (SANDBOX:PATH on the sandbox side)",
     ),
     cmd(
+        "build",
+        Section::Images,
+        "Build an image from a Dockerfile, each RUN step in a microVM",
+    ),
+    cmd(
+        "builder",
+        Section::Images,
+        "Manage the build cache (prune; it also stays under SBX_BUILD_CACHE_MAX on its own)",
+    ),
+    cmd(
         "pull",
         Section::Images,
         "Download an image (only downloads)",
+    ),
+    cmd(
+        "push",
+        Section::Images,
+        "Upload an image to its registry (layers, config, then the manifest)",
+    ),
+    cmd(
+        "tag",
+        Section::Images,
+        "Add a reference to an image (TARGET can name another registry)",
     ),
     cmd(
         "prepare",
@@ -175,7 +200,7 @@ pub const COMMANDS: &[Command] = &[
     cmd(
         "tui",
         Section::Watch,
-        "Watch and manage sandboxes, images, events and executors on one screen",
+        "Watch and manage sandboxes, images, volumes, events and executors on one screen",
     ),
     cmd(
         "events",

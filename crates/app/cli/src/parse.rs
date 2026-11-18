@@ -1,8 +1,8 @@
-//! 옵션 값 해석. Docker와 같은 문법을 받는다. 다른 점은 [`DOCKER_DIFFERENCES`](crate::behavior::DOCKER_DIFFERENCES)에 있다.
+//! 옵션 값 해석. Docker와 같은 문법을 받는다. 다른 점은 [`crate::compat`]의 표에 있다.
 
 use std::path::{Path, PathBuf};
 
-use sbx_model::{Arch, Mount, MountKind, SandboxId};
+use sbx_model::{Arch, Mount, MountKind, SandboxId, VolumeMount};
 
 /// 해석 오류. 사용자에게 그대로 보여줄 문장이다.
 pub type ParseResult<T> = Result<T, String>;
@@ -132,6 +132,14 @@ pub fn transfer_bytes(value: &str) -> ParseResult<u64> {
         .and_then(|n| n.checked_mul(1 << shift))
         .filter(|n| *n > 0)
         .ok_or_else(|| format!("invalid size {value:?} (bytes, or e.g. 500m, 2g)"))
+}
+
+/// 크기(`SBX_BUILD_CACHE_MAX`, `builder prune --keep-storage`): [`transfer_bytes`]와 같고 `0`도 받는다.
+pub fn size_or_zero(value: &str) -> ParseResult<u64> {
+    if value.trim() == "0" {
+        return Ok(0);
+    }
+    transfer_bytes(value)
 }
 
 /// `--cpus`. VM의 vCPU 개수라서 1 이상의 정수만 받는다.
@@ -322,9 +330,39 @@ fn host_path(src: &str, whole: &str) -> ParseResult<PathBuf> {
         Ok(p.to_owned())
     } else {
         Err(format!(
-            "mount source must be an absolute host path (named volumes are not supported): {whole:?}"
+            "mount source must be an absolute host path or a volume name: {whole:?}"
         ))
     }
+}
+
+/// `-v`, `--mount`가 붙이는 것.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Attach {
+    /// 호스트 폴더(`bind`, `copy`).
+    Folder(Mount),
+    /// 이름 붙은 볼륨.
+    Volume(VolumeMount),
+}
+
+/// `-v`의 첫 부분이 볼륨 이름인지(Docker 규칙): `/`, `.`, `~`로 시작하거나 경로 구분자가 있거나 Windows 드라이브
+/// (`C:`)이면 호스트 경로다. 그 밖은 이름이다(이름 규칙은 [`sbx_model::check_volume_name`]이 본다).
+pub fn is_volume_name(src: &str) -> bool {
+    let b = src.as_bytes();
+    let drive = b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':';
+    !(src.is_empty() || src.starts_with(['/', '.', '~']) || src.contains(['/', '\\']) || drive)
+}
+
+const ANONYMOUS: &str = "anonymous volumes are not supported: name the volume (-v NAME:/path, \
+                         or --mount type=volume,source=NAME,target=/path); it is created on first use";
+
+fn named(name: &str, dst: &str, whole: &str, readonly: bool, no_copy: bool) -> ParseResult<Attach> {
+    sbx_model::check_volume_name(name).map_err(|e| format!("{e}: {whole:?}"))?;
+    Ok(Attach::Volume(VolumeMount {
+        name: name.to_owned(),
+        destination: guest_path(dst, whole)?,
+        readonly,
+        no_copy,
+    }))
 }
 
 fn guest_path(dst: &str, whole: &str) -> ParseResult<String> {
@@ -335,31 +373,50 @@ fn guest_path(dst: &str, whole: &str) -> ParseResult<String> {
     }
 }
 
-/// `-v SRC:DST[:ro|rw]`. `--mount type=bind`의 줄임말이다.
+/// `-v SRC:DST[:OPTIONS]`. SRC가 호스트 경로면 `--mount type=bind`, 이름이면 `--mount type=volume`의 줄임말이다
+/// ([`is_volume_name`]). OPTIONS는 쉼표로 이은 `ro`, `rw`, `nocopy`(볼륨만: 빈 볼륨을 이미지 내용으로 채우지 않는다).
+/// 경로 하나(`-v /path`, Docker의 이름 없는 볼륨)는 거부한다.
 ///
 /// 뒤에서부터 나눈다. 그래서 Windows 경로(`C:\work:/work`)도 받는다.
-pub fn volume(value: &str) -> ParseResult<Mount> {
-    let (rest, readonly) = match value.rsplit_once(':') {
-        Some((rest, "ro")) => (rest, true),
-        Some((rest, "rw")) => (rest, false),
-        _ => (value, false),
+pub fn volume(value: &str) -> ParseResult<Attach> {
+    let options =
+        |o: &str| !o.is_empty() && o.split(',').all(|x| matches!(x, "ro" | "rw" | "nocopy"));
+    let (rest, opts) = match value.rsplit_once(':') {
+        Some((rest, o)) if options(o) => (rest, o.split(',').collect::<Vec<_>>()),
+        _ => (value, Vec::new()),
     };
-    let (src, dst) = rest
-        .rsplit_once(':')
-        .ok_or_else(|| format!("expected SRC:DST[:ro]: {value:?}"))?;
-    Ok(Mount {
+    let readonly = opts.contains(&"ro");
+    if readonly && opts.contains(&"rw") {
+        return Err(format!("both ro and rw: {value:?}"));
+    }
+    let no_copy = opts.contains(&"nocopy");
+    let Some((src, dst)) = rest.rsplit_once(':') else {
+        if rest.starts_with('/') {
+            return Err(format!("{ANONYMOUS}: {value:?}"));
+        }
+        return Err(format!("expected SRC:DST[:ro]: {value:?}"));
+    };
+    if is_volume_name(src) {
+        return named(src, dst, value, readonly, no_copy);
+    }
+    if no_copy {
+        return Err(format!("nocopy is only for volumes: {value:?}"));
+    }
+    Ok(Attach::Folder(Mount {
         source: host_path(src, value)?,
         destination: guest_path(dst, value)?,
         kind: MountKind::Bind,
         readonly,
-    })
+    }))
 }
 
-/// `--mount type=bind|copy,source=...,target=...[,readonly]`.
+/// `--mount type=bind|copy|volume,source=...,target=...[,readonly][,volume-nocopy]`.
 ///
-/// 키 이름은 Docker와 같다: `source`/`src`, `target`/`destination`/`dst`, `readonly`/`ro`(값 없이 또는 `true`/`false`).
-pub fn mount(value: &str) -> ParseResult<Mount> {
+/// 키 이름은 Docker와 같다: `source`/`src`, `target`/`destination`/`dst`, `readonly`/`ro`(값 없이 또는 `true`/`false`),
+/// `volume-nocopy`(볼륨만). `type=volume`의 `source`는 볼륨 이름이고, 없으면(Docker의 이름 없는 볼륨) 거부한다.
+pub fn mount(value: &str) -> ParseResult<Attach> {
     let (mut kind, mut src, mut dst, mut readonly) = (None, None, None, false);
+    let (mut volume, mut no_copy) = (false, false);
     for field in value.split(',') {
         let (k, v) = match field.split_once('=') {
             Some((k, v)) => (k, Some(v)),
@@ -368,9 +425,14 @@ pub fn mount(value: &str) -> ParseResult<Mount> {
         match (k, v) {
             ("type", Some("bind")) => kind = Some(MountKind::Bind),
             ("type", Some("copy")) => kind = Some(MountKind::Copy),
+            ("type", Some("volume")) => volume = true,
             ("type", Some(t)) => {
-                return Err(format!("unsupported mount type {t:?} (bind or copy)"));
+                return Err(format!(
+                    "unsupported mount type {t:?} (bind, copy or volume)"
+                ));
             }
+            ("volume-nocopy", None | Some("true" | "1")) => no_copy = true,
+            ("volume-nocopy", Some("false" | "0")) => no_copy = false,
             ("source" | "src", Some(s)) => src = Some(s),
             ("target" | "destination" | "dst", Some(d)) => dst = Some(d),
             ("readonly" | "ro", None | Some("true" | "1")) => readonly = true,
@@ -378,7 +440,17 @@ pub fn mount(value: &str) -> ParseResult<Mount> {
             _ => return Err(format!("unknown mount option {field:?}")),
         }
     }
-    Ok(Mount {
+    if volume {
+        let dst = dst.ok_or_else(|| format!("mount needs target=: {value:?}"))?;
+        let Some(name) = src else {
+            return Err(format!("{ANONYMOUS}: {value:?}"));
+        };
+        return named(name, dst, value, readonly, no_copy);
+    }
+    if no_copy {
+        return Err(format!("volume-nocopy is only for type=volume: {value:?}"));
+    }
+    Ok(Attach::Folder(Mount {
         source: host_path(
             src.ok_or_else(|| format!("mount needs source=: {value:?}"))?,
             value,
@@ -387,9 +459,10 @@ pub fn mount(value: &str) -> ParseResult<Mount> {
             dst.ok_or_else(|| format!("mount needs target=: {value:?}"))?,
             value,
         )?,
-        kind: kind.ok_or_else(|| format!("mount needs type=bind or type=copy: {value:?}"))?,
+        kind: kind
+            .ok_or_else(|| format!("mount needs type=bind, type=copy or type=volume: {value:?}"))?,
         readonly,
-    })
+    }))
 }
 
 /// `cp`의 한쪽 끝.
@@ -429,9 +502,105 @@ pub fn port_mapping(v: &str) -> Result<sbx_model::PortMapping, String> {
     v.parse()
 }
 
+/// `--connect`의 항목 하나. 대상은 아직 찾지 않았다(ID 앞부분일 수 있다). 찾아서 기록할 꼴로 바꾸는 규칙은
+/// [`crate::behavior::connect_rule`]에 있다.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectArg {
+    /// `NAME=`으로 준 안의 이름(소문자, [`sbx_model::check_connect_name`]). 없으면 대상의 이름을 쓴다.
+    pub name: Option<String>,
+    /// 대상: 이름, ID, ID 앞부분(다른 명령과 같다).
+    pub target: String,
+    /// 대상 안의 포트.
+    pub port: u16,
+}
+
+/// `--connect [NAME=]SANDBOX:PORT`. 쉼표로 여럿을 준다. 숫자만 있는 조각은 앞 항목의 대상에 포트를 더한다
+/// (`db:5432,8080`은 `db:5432,db:8080`). 대상은 샌드박스 이름이나 ID(앞부분)의 꼴이어야 한다.
+pub fn connect(value: &str) -> ParseResult<Vec<ConnectArg>> {
+    let bad = |why: &str| format!("invalid --connect {value:?}: {why} (want [NAME=]SANDBOX:PORT)");
+    let port = |p: &str| match p.parse::<u16>() {
+        Ok(n) if n > 0 => Ok(n),
+        _ => Err(bad(&format!("{p:?} is not a port (1 to 65535)"))),
+    };
+    let mut out: Vec<ConnectArg> = Vec::new();
+    for piece in value.split(',') {
+        if !piece.is_empty() && piece.bytes().all(|b| b.is_ascii_digit()) {
+            let Some(last) = out.last() else {
+                return Err(bad("a port comes after SANDBOX:"));
+            };
+            let more = ConnectArg {
+                port: port(piece)?,
+                ..last.clone()
+            };
+            out.push(more);
+            continue;
+        }
+        let (name, rest) = match piece.split_once('=') {
+            Some((n, rest)) => (
+                Some(sbx_model::check_connect_name(n).map_err(|e| bad(&e.to_string()))?),
+                rest,
+            ),
+            None => (None, piece),
+        };
+        let Some((target, p)) = rest.rsplit_once(':') else {
+            return Err(bad("missing :PORT"));
+        };
+        if sbx_model::check_sandbox_name(target).is_err() && SandboxId::new(target).is_err() {
+            return Err(bad(&format!("{target:?} is not a sandbox name or ID")));
+        }
+        out.push(ConnectArg {
+            name,
+            target: target.to_owned(),
+            port: port(p)?,
+        });
+    }
+    Ok(out)
+}
+
+/// clap의 `--connect` 값 검사: [`connect`]로 읽어 보고 받은 글을 그대로 둔다(대상은 만들 때 찾는다).
+pub fn connect_value(value: &str) -> ParseResult<String> {
+    connect(value).map(|_| value.to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connect_takes_names_targets_and_ports() {
+        let c = |name: Option<&str>, target: &str, port: u16| ConnectArg {
+            name: name.map(Into::into),
+            target: target.into(),
+            port,
+        };
+        assert_eq!(connect("db:5432"), Ok(vec![c(None, "db", 5432)]));
+        assert_eq!(
+            connect("PG=db:5432,8080,cache:6379"),
+            Ok(vec![
+                c(Some("pg"), "db", 5432),
+                c(Some("pg"), "db", 8080),
+                c(None, "cache", 6379)
+            ])
+        );
+        assert_eq!(connect("3f2a:80"), Ok(vec![c(None, "3f2a", 80)]));
+        for bad in [
+            "",
+            "db",
+            "db:",
+            "db:0",
+            "db:65536",
+            ":80",
+            "5432",
+            "db:5432,",
+            "localhost=db:1",
+            "a b:1",
+            "x=:1",
+            "10.0.0.1=db:1",
+        ] {
+            assert!(connect(bad).is_err(), "{bad:?}");
+        }
+        assert!(connect("db").unwrap_err().contains("[NAME=]SANDBOX:PORT"));
+    }
 
     #[test]
     fn times_take_rfc3339_unix_seconds_and_durations_ago() {
@@ -526,37 +695,103 @@ mod tests {
         assert!(platform("windows/amd64").is_err());
     }
 
+    // 아래 둘은 `volumes`와 `mounts`만 쓴다. 그 테스트는 Unix 호스트 경로(`/data`)를 쓰므로 Unix에서만 돈다.
+    #[cfg(unix)]
+    fn folder(a: ParseResult<Attach>) -> Mount {
+        match a {
+            Ok(Attach::Folder(m)) => m,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    fn named_volume(a: ParseResult<Attach>) -> VolumeMount {
+        match a {
+            Ok(Attach::Volume(v)) => v,
+            other => panic!("{other:?}"),
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn volumes() {
         assert_eq!(
-            volume("/data:/work:ro"),
-            Ok(Mount {
+            folder(volume("/data:/work:ro")),
+            Mount {
                 source: "/data".into(),
                 destination: "/work".into(),
                 kind: MountKind::Bind,
                 readonly: true
-            })
+            }
         );
-        assert!(!volume("/data:/work").unwrap().readonly);
-        assert!(volume("named:/work").is_err());
+        assert!(!folder(volume("/data:/work")).readonly);
         assert!(volume("/data:work").is_err());
-        assert!(volume("/data").is_err());
+        // 이름이면 볼륨이다(Docker 규칙).
+        assert_eq!(
+            named_volume(volume("pgdata:/var/lib/postgresql/data")),
+            VolumeMount {
+                name: "pgdata".into(),
+                destination: "/var/lib/postgresql/data".into(),
+                readonly: false,
+                no_copy: false,
+            }
+        );
+        let v = named_volume(volume("cache:/c:ro,nocopy"));
+        assert!(v.readonly && v.no_copy);
+        assert!(volume("a/b:/c").unwrap_err().contains("absolute host path"));
+        assert!(volume("./src:/c").is_err());
+        assert!(volume("x:/c").unwrap_err().contains("volume name"));
+        assert!(volume("pg:/c:ro,rw").unwrap_err().contains("both"));
+        assert!(
+            volume("/data:/c:nocopy")
+                .unwrap_err()
+                .contains("only for volumes")
+        );
+        // 이름 없는 볼륨은 거부한다.
+        assert!(volume("/data").unwrap_err().contains("anonymous"));
+        assert!(volume("/data:ro").unwrap_err().contains("anonymous"));
+        assert!(volume("pgdata").is_err());
+    }
+
+    #[test]
+    fn volume_names_are_told_from_paths_like_docker() {
+        for name in ["pgdata", "db.v2", "C"] {
+            assert!(is_volume_name(name), "{name}");
+        }
+        for path in ["/data", "./src", "../x", "~/x", "a/b", "C:\\work", "c:", ""] {
+            assert!(!is_volume_name(path), "{path}");
+        }
     }
 
     #[cfg(unix)]
     #[test]
     fn mounts() {
-        let m = mount("type=copy,src=/in,dst=/work,readonly").unwrap();
+        let m = folder(mount("type=copy,src=/in,dst=/work,readonly"));
         assert_eq!(
             (m.kind, m.source, m.destination.as_str(), m.readonly),
             (MountKind::Copy, PathBuf::from("/in"), "/work", true)
         );
         assert_eq!(
-            mount("type=bind,source=/a,target=/b").unwrap().kind,
+            folder(mount("type=bind,source=/a,target=/b")).kind,
             MountKind::Bind
         );
-        assert!(mount("type=volume,src=/a,dst=/b").is_err());
+        let v = named_volume(mount(
+            "type=volume,source=pg,target=/d,readonly,volume-nocopy",
+        ));
+        assert_eq!((v.name.as_str(), v.destination.as_str()), ("pg", "/d"));
+        assert!(v.readonly && v.no_copy);
+        assert!(
+            mount("type=volume,src=/a,dst=/b")
+                .unwrap_err()
+                .contains("volume name")
+        );
+        assert!(
+            mount("type=volume,dst=/b")
+                .unwrap_err()
+                .contains("anonymous")
+        );
+        assert!(mount("type=volume,src=pg,dst=/b,volume-driver=x").is_err());
+        assert!(mount("type=bind,src=/a,dst=/b,volume-nocopy").is_err());
         assert!(mount("src=/a,dst=/b").is_err());
         assert!(mount("type=bind,src=/a,dst=/b,foo=1").is_err());
     }

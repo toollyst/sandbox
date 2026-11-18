@@ -58,13 +58,21 @@ pub fn firecracker_config(
             let id = match d.role {
                 DiskRole::Rootfs => format!("rootfs{i}"),
                 DiskRole::Scratch => format!("scratch{i}"),
+                DiskRole::Volume => format!("volume{i}"),
             };
-            Ok(json!({
+            let mut drive = json!({
                 "drive_id": id,
                 "path_on_host": utf8(&d.path, "disk")?,
                 "is_root_device": false,
                 "is_read_only": d.readonly,
-            }))
+            });
+            // 볼륨은 게스트의 flush가 호스트 파일의 fsync까지 가야 한다(규약 3). Firecracker는 `Writeback`일 때만
+            // 게스트에 flush 기능을 보이고 받은 flush를 fsync로 넘긴다. 기본값 `Unsafe`는 flush를 보이지 않는다.
+            // 층과 scratch는 VM과 함께 버려도 되므로 기본값 그대로다.
+            if d.role == DiskRole::Volume {
+                drive["cache_type"] = json!("Writeback");
+            }
+            Ok(drive)
         })
         .collect::<Result<Vec<_>, String>>()?;
     Ok(json!({
@@ -155,6 +163,90 @@ mod tests {
         v.kernel = Some("/c/images/x/kernel".into());
         let c = firecracker_config(&v, Path::new("/k/kernel"), false).unwrap();
         assert_eq!(c["boot-source"]["kernel_image_path"], "/c/images/x/kernel");
+    }
+
+    /// 층 디스크가 여럿이면(맨 아래 층, scratch, 위 층들) 받은 차례 그대로 drive가 된다. 게스트 장치 이름이 그 차례다.
+    #[test]
+    fn layer_disks_become_drives_in_order() {
+        let mut v = vm();
+        for i in 1..=2 {
+            v.disks.push(DiskSpec {
+                path: format!("/c/layers/{i}/layer.erofs").into(),
+                role: DiskRole::Rootfs,
+                readonly: true,
+            });
+        }
+        let c = firecracker_config(&v, Path::new("/k/kernel"), false).unwrap();
+        let d = c["drives"].as_array().unwrap();
+        let got: Vec<(&str, &str, bool)> = d
+            .iter()
+            .map(|x| {
+                (
+                    x["drive_id"].as_str().unwrap(),
+                    x["path_on_host"].as_str().unwrap(),
+                    x["is_read_only"].as_bool().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("rootfs0", "/c/rootfs.erofs", true),
+                ("scratch1", "/d/scratch.img", false),
+                ("rootfs2", "/c/layers/1/layer.erofs", true),
+                ("rootfs3", "/c/layers/2/layer.erofs", true),
+            ]
+        );
+        assert!(d.iter().all(|x| x["is_root_device"] == false));
+    }
+
+    /// 볼륨 디스크는 `Writeback`으로 붙여 게스트의 flush가 호스트에 닿게 한다. 다른 디스크는 `cache_type`이 없다.
+    #[test]
+    fn volume_disks_pass_flushes_to_the_host() {
+        let mut v = vm();
+        v.disks.push(DiskSpec {
+            path: "/d/volumes/pg/disk.img".into(),
+            role: DiskRole::Volume,
+            readonly: false,
+        });
+        v.disks.push(DiskSpec {
+            path: "/d/volumes/ro/disk.img".into(),
+            role: DiskRole::Volume,
+            readonly: true,
+        });
+        let c = firecracker_config(&v, Path::new("/k/kernel"), false).unwrap();
+        let d = c["drives"].as_array().unwrap();
+        assert!(d[..2].iter().all(|x| x.get("cache_type").is_none()));
+        assert_eq!(d[2]["drive_id"], "volume2");
+        assert_eq!(d[2]["cache_type"], "Writeback");
+        assert_eq!(d[2]["is_read_only"], false);
+        assert_eq!(
+            (d[3]["cache_type"].as_str(), d[3]["is_read_only"].as_bool()),
+            (Some("Writeback"), Some(true))
+        );
+    }
+
+    /// 설정 파일은 upstream Firecracker가 읽는 키만 담는다: 아래가 전부다(빠진 키도, 더한 키도 없다). 확장 키
+    /// (`extensions` 같은 것)는 VMM의 인터페이스가 정해지기 전에는 넣지 않는다.
+    #[test]
+    fn config_has_exactly_the_upstream_keys() {
+        let c = firecracker_config(&vm(), Path::new("/k/kernel"), false).unwrap();
+        assert_eq!(
+            c,
+            json!({
+                "boot-source": {
+                    "kernel_image_path": "/k/kernel",
+                    "initrd_path": "/c/initramfs",
+                    "boot_args": "console=ttyS0 quiet reboot=k panic=1 sbx.hostname=box-1 sbx.halt=reboot",
+                },
+                "drives": [
+                    {"drive_id": "rootfs0", "path_on_host": "/c/rootfs.erofs", "is_root_device": false, "is_read_only": true},
+                    {"drive_id": "scratch1", "path_on_host": "/d/scratch.img", "is_root_device": false, "is_read_only": false},
+                ],
+                "machine-config": {"vcpu_count": 2, "mem_size_mib": 512, "smt": false},
+                "vsock": {"guest_cid": 3, "uds_path": "/s/abc.sock"},
+            })
+        );
     }
 
     #[test]

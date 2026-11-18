@@ -8,21 +8,27 @@ fake executor serves it over the same protocol. Real VMs are the last check, not
 | Level | Where | Needs | Catches |
 | --- | --- | --- | --- |
 | Unit tests | `src/**` in every crate (`tests.rs` or `mod tests`) | nothing | the rules in each doc comment: parsing, merge rules, state transitions, locks, wire encoding, Docker behavior |
-| Guest handling on the host | [`crates/app/guest`](../../crates/app/guest) unit tests | Unix | exec, copy, egress proxy and DNS over plain sockets |
-| Privileged guest tests | `cargo test -p sbx-guest --lib privileged` with `SANDBOX_PRIVILEGED_TESTS=1` | root, loop devices (CI runs them in a privileged container) | the kernel mounting scratch and using it as the overlay upper layer |
+| Guest handling on the host | [`crates/app/guest`](../../crates/app/guest) unit tests | Unix | exec, copy, egress proxy and DNS over plain sockets; turning an overlay upper directory into build-layer entries |
+| Privileged guest tests | `cargo test -p sbx-guest --lib privileged` with `SANDBOX_PRIVILEGED_TESTS=1` | root, loop devices (CI runs them in a privileged container) | the kernel mounting scratch and using it as the overlay upper layer; build layers stacked by the real overlayfs (whiteouts, opaque directories, `redirect_dir=off`, a busy layer, the 500-layer limit), exported and replayed with the OCI rules; transparent TCP's netlink `local` route for `198.18.0.0/15` and a `/32`, listening and connecting on those addresses |
+| Guest clock on a real kernel | `cargo test -p sbx-guest --lib privileged_kernel_clock` with `SANDBOX_PRIVILEGED_TESTS=1 SANDBOX_CLOCK_TESTS=1` | root, **a throwaway VM** (it sets that kernel's wall clock; a container shares the host's, so CI doesn't run it) | stepping forward and back with `ADJ_SETOFFSET`, slewing at the kernel's rate without the clock going backwards, a step cancelling a slew |
 | Filesystem checkers | `SANDBOX_REQUIRE_FSCK_EROFS=1`, `SANDBOX_REQUIRE_E2FSCK=1` | `erofs-utils`, `e2fsprogs` | the EROFS and ext2 images we write, validated by the official `fsck` tools |
-| Runtime with the in-process fake | [`crates/core/runtime/src/tests.rs`](../../crates/core/runtime/src/tests.rs) | Unix | lifecycle, ownership, names, records, egress, `cp` targets |
+| Runtime with the in-process fake | [`crates/core/runtime/src/tests.rs`](../../crates/core/runtime/src/tests.rs) | Unix | lifecycle, ownership, names, records, egress, `--connect` between sandboxes, `cp` targets, build layers exported as OCI tars and merged by `sbx-rootfs`, the guest clock set after start |
 | Executor protocol conformance | [`crates/executor/fake/tests/conformance.rs`](../../crates/executor/fake/tests/conformance.rs) | Unix | `sbx-executor-process` against a protocol-speaking binary, including misbehaving ones |
 | Firecracker adapter sessions | [`crates/executor/firecracker/tests/session.rs`](../../crates/executor/firecracker/tests/session.rs) | Unix | the protocol session and Firecracker config, with a shell script standing in for `firecracker` |
 | Event log | [`crates/port/events/src/tests.rs`](../../crates/port/events/src/tests.rs) | nothing | concurrent appends, rotation, following across generations, half-written and broken lines |
 | CLI output contract | `cargo test -p sbx-cli --lib output` | nothing | that [cli-output.md](cli-output.md) and its JSON Schema match the types in `output.rs` (`SBX_BLESS=1` rewrites them), `--jq` |
+| Compatibility table (Docker, Podman, nerdctl, products) | `cargo test -p sbx-cli --lib compat` | nothing | every row of `compat.rs` against clap, whichever tool it comes from (a working row's flag exists, a missing one doesn't, every sbx flag has a row), its evidence test exists, each row names the tools that have it, and each product cell cites an official page; [tool-compatibility.md](../guide/tool-compatibility.md) and the README line are current (`SBX_BLESS=1` rewrites them) |
 | TUI without a terminal | [`tui/model/tests.rs`](../../crates/app/cli/src/tui/model/tests.rs), [`tui/view/tests.rs`](../../crates/app/cli/src/tui/view/tests.rs) | nothing | every key's `sbx` command line, filtering, virtual scrolling, drawing (ratatui `TestBackend`) |
 | CLI end to end | [`crates/app/cli/tests/e2e.rs`](../../crates/app/cli/tests/e2e.rs) | nothing (Windows skips the parts that need Unix sockets) | the real `sbx` binary: flags, output, exit codes, `--rm`, names, `ps`, `logs` (timestamps, `--since`), `cp`, `events`, `--filter`, `--jq`, every JSON output read back strictly as its type, completion candidates, executor versions and pins, MCP |
-| Installer | [`.github/scripts/test-install.sh`](../../.github/scripts/test-install.sh) | Linux or macOS | `install.sh` against a fake release and a fake `cosign`: checksum, every `SBX_VERIFY` value, missing or bad signatures, the identity it asks `cosign` for, archives missing files |
+| Installer | [`.github/scripts/test-install.sh`](../../.github/scripts/test-install.sh) | Linux or macOS | `install.sh` against a fake release, a fake `cosign` and a fake `sbx`: `--version` and the first line, checksum, every `SBX_VERIFY` value, missing or bad signatures, the identity it asks `cosign` for (the pinned tag), archives missing files, and the executor step (pinned or not, `SBX_EXECUTOR`, keeping an executor you chose, a failed install) |
+| Installer pins | `cargo test -p xtask installer` | nothing | `install.sh` and `install.ps1` carry exactly what `installer.env` says; a published installer version is never changed; `install.sh` is the newest version |
+| Default executor on first use | `the_default_executor_is_installed_on_first_use` in [`e2e.rs`](../../crates/app/cli/tests/e2e.rs) | Unix | with a local signed repository as `official`: the repository's `default`, one notice on stderr and none on stdout, both ways to turn it off, an unsigned or unreachable repository, two first runs at once |
 | Dependency rules | `cargo xtask check-deps` | nothing | layers, per-crate allow lists, forbidden features, module cycles, the map in `crates.md` |
+| Links in the docs | `cargo test -p xtask links` (or `cargo xtask check-links`) | nothing | every relative link and `#anchor` in the repository's Markdown points at a file that exists, with the same letter case, and at a heading or `id` that GitHub would make |
 | Fuzzing | [`fuzz/`](../../fuzz), `cargo xtask fuzz` ([below](#fuzzing)) | nightly, `cargo-fuzz` | inputs no hand-written test thought of, in every parser that reads bytes from a guest, a registry, an image or an executor repository |
-| Real VMs | `cargo xtask smoke` | an installed executor | 17 checks: output and exit codes, stdin, no network device, fast DNS failure, writable root, detached `exec`/`cp`/`logs`/`stop`/`rm`, allow list |
+| Real VMs | `cargo xtask smoke` | an installed executor | 27 checks (25 with `--no-internet`): output and exit codes, stdin, `/dev/fd` and `/dev/stdin` links, no network device, fast DNS failure, writable root, detached `exec`/`cp`/`logs`/`stop`/`rm`, `--connect`, `build` (two stages with a closed-network `RUN` and `COPY --from`, run, `-o type=oci` then `load` gives the exported ID and runs, a rebuild comes from the cache), allow list. 4 more when the executor announces `live_share`: `-v` both ways, and a host edit reaching the guest's `inotifyd` |
 | Numbers | `cargo xtask bench [--docker]` | an installed executor (and Docker for `--docker`) | regressions on the hot path: `run`, `exec`, parallel runs |
+| Build numbers | `cargo xtask bench build` ([below](#comparing-sbx-build-with-docker-build)) | an installed executor; Docker to compare (without it, sbx alone) | `sbx build` against `docker build` on the same Dockerfiles: uncached, cached, one file changed, multi-stage; that both images hold the same files |
 
 When you fix a bug, add the test at the lowest level that can see it. If it took a real VM to find, ask whether a
 unit test or the fake executor could have found it.
@@ -39,6 +45,81 @@ cargo xtask smoke --sbx target/release/sbx
 Point them at scratch directories to keep test sandboxes away from your own. `--no-internet` skips the check that
 needs an HTTPS site.
 
+### Comparing `sbx build` with `docker build`
+
+```sh
+cargo xtask bench build --sbx target/release/sbx                 # Markdown table on stdout, progress on stderr
+cargo xtask bench build --sbx target/release/sbx --format json   # the same numbers for a job summary or the README
+cargo xtask bench build --dry-run                                # the Dockerfiles and every command; nothing runs
+```
+
+It builds the same Dockerfiles with `sbx build` and `docker build` ([`build_bench.rs`](../../xtask/src/build_bench.rs)
+has them) and prints, per case and tool, the first build (cold) and the min, p50, p90 and max of the next `--runs`
+builds (warm, default 10), the sbx/docker ratio of the p50s, and whether both images hold the same files.
+
+| Case | What is timed |
+| --- | --- |
+| `no-cache` | `build --no-cache` of one stage: `WORKDIR`, `COPY`, a `RUN` making 200 files, `COPY src/`, a `RUN` |
+| `cached` | the same Dockerfile again with nothing changed: every step comes from the cache (sbx starts no VM) |
+| `one-file-changed` | the same Dockerfile after `src/main.txt` changed: `COPY src/` and the `RUN` after it run again |
+| `multi-stage` | `build --no-cache` of three stages: two independent ones with a `RUN` each, then two `COPY --from` |
+| `network` (`--network`) | `build --no-cache` of `RUN apk add --no-cache jq`. It downloads from `dl-cdn.alpinelinux.org`, so the mirror is in the numbers; sbx gets `--network allow --allow dl-cdn.alpinelinux.org:443`, Docker's builder has network by default |
+
+How it keeps the comparison fair:
+
+- The base image (`--image`, default `alpine:3.20`) is pulled on both sides before timing, and `sbx prepare`d; that
+  is not timed. Every `FROM` names a tag of it made for this run only (`sbx-bench-build/base:<run-id>`), so neither
+  builder asks a registry. Both build for the host's architecture; a Docker server for another platform is not
+  compared.
+- Each time is the tool's process from start to exit, with `-q`. sbx and docker take turns going first, so load and
+  warm caches don't favour one side. `one-file-changed` writes the new content before both builds of a round.
+- After each case, its last image is run once on each side (not timed) to list the checked paths: type, mode, owner,
+  size and sha256 of every file, link targets, the working directory, user and `ENV`. Times and layer digests are
+  not compared. If the lists differ, the report says where and the command fails.
+- Both tools run with their defaults, and the report says what that leaves different: sbx runs each stage's steps in
+  a VM (1 vCPU and 512 MiB unless you pass `--cpus` and `--memory`), Docker runs `RUN` steps in containers with all
+  of its VM or host; Docker's builder runs independent stages at once, sbx one after another; Docker exports to its
+  image store with whatever its builder adds by default. The header prints both versions, the executor,
+  Docker's product, builder driver and resources, and the host.
+
+What it does not measure: large images and real projects, pushing, cache import and export, the first start of
+Docker's VM or of an executor, and builds that need the network other than the `network` case.
+
+Docker is optional. When `docker` is not on PATH, its daemon is not reachable or it builds for another platform, the
+report says why and shows sbx alone; `--no-docker` skips it. Nothing in CI needs Docker for this, and `cargo xtask
+bench` itself is unchanged.
+
+It removes only what it made, by name, also when a build fails: every tag (`sbx-bench-build/<case>:<run-id>-<n>`),
+the base tag, the base image if this run pulled it, Docker's build records (`docker buildx history rm`) and its
+temporary directory (`sbx-bench-build-<run-id>` in the system temp directory). It never removes by image ID. Build
+cache entries stay on both sides (`sbx builder prune`, `docker builder prune` reclaim them). If you interrupt it, those
+names are what is left: find them with `sbx images` and `docker images --filter reference='sbx-bench-build/*'`,
+`docker buildx history ls`, and remove them with `rmi`; check `sbx ps -a` for a build VM of a killed `sbx build`.
+
+#### Measured on 2026-11-17
+
+`cargo xtask bench build --sbx target/release/sbx --runs 10 --network` at `b304475`, on an Apple M1 Pro (10 CPUs,
+32 GiB, macOS, Darwin 27.2.0 arm64). sbx 0.2.2 with a development build of the wick executor (main `8862bcbb`,
+Firecracker adapter), build VM 1 vCPU and 512 MiB (sbx's default). Docker Desktop 4.99.0 with Docker 29.9.3,
+linux/arm64, builder driver `docker`, 6 CPUs and 15.7 GiB for its containers. Base `alpine:3.20`, pulled and prepared
+on both sides before timing.
+
+| case | tool | cold | warm runs | min | p50 | p90 | max | p50 sbx/docker | same files |
+|---|---|---|---|---|---|---|---|---|---|
+| no-cache | sbx | 615 ms | 10 | 347 ms | 366 ms | 402 ms | 402 ms | 0.87× | yes |
+| no-cache | docker | 507 ms | 10 | 394 ms | 423 ms | 436 ms | 441 ms |  |  |
+| cached | sbx | 35 ms | 10 | 32 ms | 33 ms | 35 ms | 36 ms | 0.19× | yes |
+| cached | docker | 190 ms | 10 | 176 ms | 179 ms | 188 ms | 190 ms |  |  |
+| one-file-changed | sbx | 281 ms | 10 | 270 ms | 280 ms | 288 ms | 290 ms | 0.97× | yes |
+| one-file-changed | docker | 302 ms | 10 | 276 ms | 289 ms | 305 ms | 317 ms |  |  |
+| multi-stage | sbx | 791 ms | 10 | 738 ms | 757 ms | 787 ms | 794 ms | 2.09× | yes |
+| multi-stage | docker | 424 ms | 10 | 344 ms | 363 ms | 388 ms | 455 ms |  |  |
+| network | sbx | 684 ms | 10 | 553 ms | 658 ms | 808 ms | 863 ms | 1.02× | yes |
+| network | docker | 640 ms | 10 | 596 ms | 645 ms | 682 ms | 1259 ms |  |  |
+
+`multi-stage` is where sbx is slower: it builds the two independent stages one after the other, each in its own VM,
+while Docker's builder runs them at the same time. `network` includes the Alpine mirror on both sides.
+
 ## Fuzzing
 
 [`fuzz/`](../../fuzz) is a [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) (libFuzzer) crate. It is its own
@@ -51,11 +132,12 @@ directory, version order is a total order. The doc comment at the top of each ta
 | --- | --- | --- |
 | `guest_msg` | a message body and a stream of frames from the guest | [`sbx-guest-proto`](../../crates/spec/guest-proto/src/lib.rs) decoders, both directions |
 | `copy_from_guest` | a hostile guest's answer to `sbx cp` | `hostfs::receive`, `receive_bytes` in [`sbx-runtime`](../../crates/core/runtime/src/hostfs.rs), into a temp dir next to a directory that must stay untouched |
+| `layer_from_guest` | a hostile guest's build layer entries | `layer::receive` in [`sbx-runtime`](../../crates/core/runtime/src/layer.rs): accepted layers are whole tars that the `prepare` path reads and merges, and `.wh.` names come only from whiteouts and opaque directories |
 | `copy_into_guest` | the host's side of `sbx cp` into a sandbox | `copy::receive` in [`sbx-guest`](../../crates/app/guest/src/copy.rs), into a temp dir next to a directory that must stay untouched; exactly one `Done` or `Error` |
 | `mcp_args` | an agent's tool arguments (JSON) | `mcp::run_args` in [`sbx-cli`](../../crates/app/cli/src/mcp.rs): accepted input becomes only the options it names, never `-v`, `--mount`, `--env-file`, `--entrypoint` or another label |
-| `egress_rules` | `--network allow=` rules and a guest's `Connect { host, port }` | `AllowRule` in `sbx-model`, [`egress::check`](../../crates/core/runtime/src/egress.rs) (IP hosts only, so no DNS), `is_public_ip` |
+| `egress_rules` | `--network allow=` rules, a guest's `Connect { host, port }` and its name lookups (`Lookup { name }`) | `AllowRule` in `sbx-model`, [`egress::check`](../../crates/core/runtime/src/egress.rs) (IP hosts only, so no DNS), [`egress::lookup`](../../crates/core/runtime/src/egress.rs) (answers from the list only), `is_public_ip` |
 | `shim_log` | a `main.log` file, and guest output written then read back | `LogWriter`, `LogReader` in [`sbx-shim`](../../crates/app/shim/src/log.rs) |
-| `oci_documents` | manifest, index and image config JSON, `WWW-Authenticate`, image references | [`sbx-oci`](../../crates/adapter/oci/src/manifest.rs), and the image's `User`, `StopSignal` and `Env` through [`process`](../../crates/core/runtime/src/process.rs) |
+| `oci_documents` | manifest, index and image config JSON, `WWW-Authenticate`, image references; for push, registry error bodies, `Range` and `Location` headers and the chunked-upload state | [`sbx-oci`](../../crates/adapter/oci/src/manifest.rs) (and [`push.rs`](../../crates/adapter/oci/src/push.rs)), and the image's `User`, `StopSignal` and `Env` through [`process`](../../crates/core/runtime/src/process.rs) |
 | `image_layer` | a layer blob (plain, gzip or zstd) | the `prepare` path: zstd and tar reading in `sbx-manage`, the merge and the EROFS writer in [`sbx-rootfs`](../../crates/port/rootfs/src/lib.rs) |
 | `rootfs_merge` | structured layers (whiteouts, opaque dirs, hard links, devices) and a kernel path | `MergedTree::apply_layer`, `resolve`, `ErofsBuilder` |
 | `executor_index` | an executor repository index | `Index::parse`, `available`, `pick` in [`sbx-executor-repo`](../../crates/spec/executor-repo/src/index.rs) |
@@ -85,8 +167,10 @@ owns the code (the fixes found so far each have one) and fix it there.
 The checked-in seeds in `fuzz/seeds/` are made by [`fuzz/examples/seeds.rs`](../../fuzz/examples/seeds.rs) with the
 real encoders (`encode`, `tar::Builder`, gzip, zstd, the shapes the unit tests use), which also checks that each seed
 gets past the first parser. Regenerate them with `cargo xtask fuzz --seeds` after changing a format; CI fails when they
-differ from the generator. Targets that take structured input (`copy_from_guest`, `copy_into_guest`, `rootfs_merge`, `shim_log`) and
-`mcp_args` (JSON, guided by its dictionary) have no seeds; libFuzzer grows them from nothing within seconds. When you add a parser that reads untrusted bytes, add a
+differ from the generator. Targets that take structured input (`copy_from_guest`, `copy_into_guest`, `layer_from_guest`, `rootfs_merge`, `shim_log`) and
+`mcp_args` (JSON, guided by its dictionary) have no seeds; libFuzzer grows them from nothing within seconds. An input
+that CI fuzzing found goes to `fuzz/regressions/<target>/` and the generator copies it into the seeds as
+`regress-<name>`, structured targets included. When you add a parser that reads untrusted bytes, add a
 target (a file in `fuzz/fuzz_targets/` and a `[[bin]]` in `fuzz/Cargo.toml`); CI picks it up by file name.
 
 GitHub's runners are Linux, so CI fuzzes on Linux only. On macOS, `cargo fuzz` works the same on Apple Silicon.
@@ -97,9 +181,9 @@ GitHub's runners are Linux, so CI fuzzes on Linux only. On macOS, `cargo fuzz` w
 
 | Job | Runs on | Does |
 | --- | --- | --- |
-| `test` | Linux x86_64 and arm64, macOS, Windows | `fmt --check`, `clippy -D warnings`, `test --no-fail-fast`, `doc -D warnings`, `check-deps`. On Windows also the `install.ps1` checks (`.github/scripts/test-install.ps1`: a fake release and a fake `cosign`, with the real `sbx.exe`). On Linux also `shellcheck` on `install.sh` and `.github/scripts/*.sh`, both guest initramfs builds, the e2e tests again with the init embedded, and `cargo xtask dist` |
+| `test` | Linux x86_64 and arm64, macOS, Windows | `fmt --check`, `clippy -D warnings`, `test --no-fail-fast`, `doc -D warnings`, `check-deps`. On Windows also the `install.ps1` checks (`.github/scripts/test-install.ps1`: a fake release and a fake `cosign`, with the real `sbx.exe`). On Linux also `shellcheck` on `install.sh` and `.github/scripts/*.sh`, that the installer version in `installer.env` is either unpublished or published with the same content (`cargo xtask installer --check-published` against this repository's `gh-pages`), both guest initramfs builds, the e2e tests again with the init embedded, and `cargo xtask dist` |
 | `privileged` | Linux, in a `--privileged` container | the guest tests that need root and loop devices |
-| `vm` | Linux x86_64 with KVM (arm64 runs when the runner has KVM) | builds `sbx`, the adapter and the kernel (cached by its config), and makes a VMM package from upstream Firecracker (checked by its sha256). It installs `sbx` with `install.sh`, puts the adapter and the VMM package (as `firecracker@1.17.0`) in a local schema 2 `file://` repository, and installs from there the way a user does (`.github/scripts/smoke-local.sh`). It uses neither wick nor the official repository. Then it runs `smoke` and `bench` (the numbers go to the job summary) |
+| `vm` | Linux x86_64 with KVM (arm64 runs when the runner has KVM) | builds `sbx`, the adapter and the kernel (cached by its config), and makes a VMM package from upstream Firecracker (checked by its sha256). It installs `sbx` with `install.sh` (`SBX_EXECUTOR=none`), puts the adapter and the VMM package (as `firecracker@1.17.0`) in a local schema 2 `file://` repository, and installs from there the way a user does (`.github/scripts/smoke-local.sh`). It uses neither wick nor the official repository. Then it runs `smoke` and `bench` (the numbers go to the job summary) |
 
 [`fuzz.yml`](../../.github/workflows/fuzz.yml) runs on every push to `main` and `feat/**`, and by hand
 (`gh workflow run fuzz.yml -f seconds=1800 [-f targets="guest_msg copy_from_guest"]`).
@@ -142,9 +226,9 @@ Pushing `v<version>` runs [`release.yml`](../../.github/workflows/release.yml):
    wick release nor what the official repository holds, so `sbx` and the executors can be released in any order. If
    the protocol version changes, publish a matching adapter to the official repository afterwards
    ([Executors](#executors)).
-4. **`publish`** signs every tar.gz with the archive key (`.minisig`, secret `SBX_RELEASE_SIGNING_KEY`), creates the
-   GitHub release with the `sbx` archives, and copies `install.sh` and `install.ps1` to the top of the `gh-pages`
-   branch. It also adds the release to `gh-pages/releases.json` (`cargo xtask release-index`) and signs that with the
+4. **`publish`** signs every tar.gz with the archive key (`.minisig`, secret `SBX_RELEASE_SIGNING_KEY`) and creates
+   the GitHub release with the `sbx` archives. It does not publish the install scripts; that is a separate step
+   ([Install scripts](#install-scripts)). It adds the release to `gh-pages/releases.json` (`cargo xtask release-index`) and signs that with the
    index key (`release-sign`, secret `SBX_RELEASE_INDEX_KEY`), marking it `security` when the CHANGELOG section names a
    GHSA or CVE. Without the secrets those steps are skipped with a warning, and `sbx upgrade` and the new-version
    notice don't see the release. GitHub Pages serves that branch at <https://toollyst.github.io/sandbox/>.
@@ -152,7 +236,9 @@ Pushing `v<version>` runs [`release.yml`](../../.github/workflows/release.yml):
 To cut a release:
 
 1. Bump `version` under `[workspace.package]` in `Cargo.toml` (this updates `Cargo.lock` on the next build, and
-   `cargo check` in `fuzz/` updates `fuzz/Cargo.lock`), rename
+   `cargo check` in `fuzz/` updates `fuzz/Cargo.lock`). If the install scripts should install the new release, also
+   set `SBX` and bump `INSTALLER_VERSION` in `installer.env` and run `cargo xtask installer`
+   ([Install scripts](#install-scripts); the `version` job warns when `SBX` isn't the tag). Rename
    `## Unreleased` in [`CHANGELOG.md`](../../CHANGELOG.md) to `## v0.3.0` (and start a new empty `## Unreleased`),
    and merge it to `main` with CI green. The release notes are that section
    ([`release-notes.sh`](../../.github/scripts/release-notes.sh)), followed by GitHub's generated list; a tag without
@@ -160,9 +246,9 @@ To cut a release:
 2. Optionally, on a Mac with a macOS VMM installed (for example `wick`), run `cargo xtask dist && cargo xtask smoke`.
    CI has no macOS VM run, so this is the only check there; it does not gate the release.
 3. Tag and push: `git tag -a v0.3.0 -m "sbx 0.3.0" && git push origin v0.3.0`.
-4. Check the result the way a user would: `curl -fsSL https://toollyst.github.io/sandbox/install.sh | sh` into a
-   scratch `SBX_INSTALL_DIR`, then `sbx info`, and with an executor installed (`sbx executor install wick` once the official repository has
-   it), `cargo xtask smoke --sbx <that sbx>`.
+4. Publish the install scripts for it with `installer.yml` ([Install scripts](#install-scripts)), then check the
+   result the way a user would: `curl -fsSL https://toollyst.github.io/sandbox/install.sh | sh` with scratch
+   `SBX_INSTALL_DIR`, `SBX_DATA_DIR` and `SBX_CACHE_DIR`, then `sbx info` and `cargo xtask smoke --sbx <that sbx>`.
 
 `build` and the attestations run in the reusable [`sbx-build.yml`](../../.github/workflows/sbx-build.yml) (SLSA Build
 L3: the provenance is signed as that workflow, not as `release.yml`), and the binaries are built with
@@ -173,7 +259,7 @@ only be created by admins, and `main` and `gh-pages` can't be force-pushed or de
 
 A tag whose workflow fails publishes nothing, because `publish` only runs when every build succeeded. Fix the cause,
 bump the version and tag again rather than moving a pushed tag. If only the `gh-pages` push fails, the GitHub release
-is already up: copy `install.sh` and `install.ps1` to `gh-pages` by hand and fix the step on `main`.
+is already up: run `cargo xtask release-index` for it by hand (as the step does) and fix the step on `main`.
 
 **Release index and keys.** [`releases-resign.yml`](../../.github/workflows/releases-resign.yml) re-signs
 `releases.json` every Monday (it expires after 30 days) in the `release-index` environment (no approval, `main`
@@ -212,8 +298,38 @@ gh workflow run fuzz.yml --ref <branch> -f seconds=60
 
 The steps of `publish` that run only on a tag (attestations, the GitHub release, the `gh-pages` push) are first
 exercised by the next real release. After a major update of `actions/checkout` or of an action those steps use, check
-them in that release's log. The `gh-pages` step skips the push when neither installer changed; if its log says
-`install.sh and install.ps1 are unchanged`, the push is still unchecked.
+them in that release's log. The `gh-pages` step skips the push when `releases.json` didn't change; if its log says
+`gh-pages is unchanged`, the push is still unchecked. The same goes for `installer.yml`'s `publish`.
+
+### Install scripts
+
+The install scripts have their own version, separate from `sbx`'s and the executor's. Each version installs one
+`sbx` release and one executor (with its adapter) that were tested together, and is published once, as
+`install-<version>.sh` and `install-<version>.ps1` on `gh-pages`, and never changed; `install.sh` and `install.ps1`
+there are copies of the newest (Pages can't redirect, and `curl | sh` must get the file itself). The pinning is a
+recommendation: `sbx` itself knows no executor version, and nothing checks the pair after installing.
+
+[`installer.env`](../../installer.env) is the one place for the values: `INSTALLER_VERSION`, `SBX` (a release,
+without the `v`), and `EXECUTOR` and `ADAPTER` (`NAME@VERSION` in the official repository; empty means the script
+installs no executor and `sbx` fetches the newest default one on first use). `cargo xtask installer` writes them into
+the pin blocks of both scripts; `cargo test` fails while a script differs from `installer.env`.
+
+Publish a new installer version when a new `sbx` or a new default executor should be what people get, or when the
+scripts themselves change (a fix, a new OS) with the same versions:
+
+1. Edit `installer.env`: bump `INSTALLER_VERSION` and set what changed. Run `cargo xtask installer`, commit, and merge
+   to `main` with CI green. CI fails a change to the scripts that keeps an `INSTALLER_VERSION` already on `gh-pages`.
+2. On a Mac, check the pair on macOS (GitHub's runners can't start VMs there): run the new `install.sh` from the
+   branch with scratch `SBX_INSTALL_DIR`, `SBX_DATA_DIR` and `SBX_CACHE_DIR`, then `cargo xtask smoke --sbx <it>`.
+3. `gh workflow run installer.yml`. It checks the pins and that the `sbx` release exists, runs the script the way a
+   user does on Linux x86_64 with KVM (the real release, the executor from the official repository) and, with an
+   executor pinned, `cargo xtask smoke`. Then it waits for approval in the `installer` environment (Settings →
+   Environments: required reviewers, `main` only) and pushes `install-<version>.*` and the new `install.sh` and
+   `install.ps1` to `gh-pages` (`cargo xtask installer --publish`). Re-running it is harmless; it refuses to replace
+   a published version with other content.
+
+This is the only workflow that reads the official executor repository. `sbx` releases and CI never wait for it, so
+`sbx`, the executors and the installer can each be released in any order.
 
 ### Executors
 
@@ -227,7 +343,8 @@ hand) takes a [toollyst/wick](https://github.com/toollyst/wick/releases) release
 (`-f sandbox=v0.2.0`, default `main`), builds the `firecracker` adapter and the kernel from that commit, and uses that
 commit's tools:
 
-- `cargo xtask repo-add --schema 2` adds the packages to the index.
+- `cargo xtask repo-add --schema 2` adds the packages to the index; `--default` on the default executor's packages
+  (today `wick`) names it in the index's `default`, which is what `sbx` installs when it has no executor.
 - `cargo xtask repo-sign` signs the index with a fresh `serial` and a 90-day `expires`.
 - [`.github/scripts/upstream-vmm.sh`](../../.github/scripts/upstream-vmm.sh) packages upstream Firecracker on a
   platform the wick release has no build for.
@@ -242,7 +359,8 @@ rebuilt or overwritten.
 **Signing.** That repository's secret `EXECUTORS_SIGNING_KEY` (a minisign secret key from `cargo xtask repo-keygen`)
 signs its index; the matching public key goes in `OFFICIAL_KEYS` in
 [`executors.rs`](../../crates/app/cli/src/executors.rs). Until both exist, `official` is an unsigned repository, and
-once `OFFICIAL_KEYS` has a key the workflow refuses to publish unsigned. Its `executors-resign.yml` re-signs before
+once `OFFICIAL_KEYS` has a key the workflow refuses to publish unsigned. `sbx` installs the default executor on its
+own only from a signed `official`, so a release without a key in `OFFICIAL_KEYS` never does. Its `executors-resign.yml` re-signs before
 the index expires. To rotate the key, add the new public key next to the old one in `OFFICIAL_KEYS`, release, then
 switch the secret.
 

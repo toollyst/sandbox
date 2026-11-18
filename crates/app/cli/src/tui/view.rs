@@ -57,6 +57,7 @@ pub fn draw(frame: &mut Frame, model: &mut Model, now_ns: u64) {
         }
         Tab::Sandboxes => sandboxes(frame, model, body, now_ns),
         Tab::Images => images(frame, model, body),
+        Tab::Volumes => volumes(frame, model, body),
         Tab::Events => events(frame, model, body),
         Tab::Executors => executors(frame, model, body),
     }
@@ -70,6 +71,7 @@ fn header(frame: &mut Frame, model: &Model, area: Rect) {
     let counts = [
         model.visible_sandboxes().len(),
         model.visible_images().len(),
+        model.visible_volumes().len(),
         model.visible_events().len(),
         model.visible_executor_rows().len(),
     ];
@@ -246,6 +248,18 @@ fn no_executor(model: &Model) -> bool {
         .is_some_and(|x| x.executors.is_empty() && x.current.is_err())
 }
 
+/// 실행기가 없고, 첫 `run`이 기본 실행기를 받아 깐다(`executor current`가 그렇게 말한다: [`AUTO_INSTALL`]).
+///
+/// [`AUTO_INSTALL`]: crate::executors::AUTO_INSTALL
+fn auto_install(model: &Model) -> bool {
+    no_executor(model)
+        && model.executors.as_ref().is_some_and(|x| {
+            x.current
+                .as_ref()
+                .is_err_and(|e| e.contains(crate::executors::AUTO_INSTALL))
+        })
+}
+
 fn sandboxes(frame: &mut Frame, model: &mut Model, area: Rect, now_ns: u64) {
     // 표 위치는 꺼내 쓰고 돌려놓는다(줄은 모델을 빌린 채로 그린다).
     let mut cursor = *model.cursor(Tab::Sandboxes);
@@ -267,7 +281,15 @@ fn sandboxes(frame: &mut Frame, model: &mut Model, area: Rect, now_ns: u64) {
         // "Less than a second ago"가 다 들어간다.
         Constraint::Length(22),
     ];
-    let next = if no_executor(model) {
+    let next = if auto_install(model) {
+        hint(&[
+            "Press ",
+            ":",
+            " and type ",
+            "run -it alpine sh",
+            "; the first run installs the default executor",
+        ])
+    } else if no_executor(model) {
         hint(&[
             "Install an executor first: press ",
             "4",
@@ -311,29 +333,43 @@ fn sandboxes(frame: &mut Frame, model: &mut Model, area: Rect, now_ns: u64) {
     *model.cursor(Tab::Sandboxes) = cursor;
 }
 
+/// 이미지 탭. 맨 앞 칸의 `*`는 `sbx build`로 만들어 어디서 만들었는지 기록이 있는 이미지다(`R`이 다시 빌드한다).
+/// 그 자리(컨텍스트, Dockerfile)는 상세 창에 있다. 80칸에서도 이름 칸이 남도록 경로 칸을 두지 않고 표시만 한다.
 fn images(frame: &mut Frame, model: &mut Model, area: Rect) {
     let mut cursor = *model.cursor(Tab::Images);
     let rows = model.visible_images();
+    let any_built = rows.iter().any(|i| i.build.is_some());
     let spec = Spec {
-        title: "Images",
+        title: if any_built {
+            "Images · * built here"
+        } else {
+            "Images"
+        },
         len: rows.len(),
         loaded: model.images.is_some(),
-        header: &["REFERENCE", "ID", "ARCH", "SIZE", "PREPARED"],
+        // SIZE는 이 이미지가 쓰는 것 모두, SHARED는 그중 다른 이미지도 쓰는 층(`sbx images`와 같다).
+        header: &["", "REFERENCE", "ID", "ARCH", "SIZE", "SHARED", "PREPARED"],
         widths: &[
+            Constraint::Length(1),
             Constraint::Fill(1),
             Constraint::Length(MIN_ID_PREFIX as u16),
             Constraint::Length(6),
             Constraint::Length(9),
-            Constraint::Max(20),
+            Constraint::Length(9),
+            // 형식은 지금 erofs 하나다. 이름 칸에 자리를 남긴다(80칸에서 17자).
+            Constraint::Max(10),
         ],
         filter: &model.filter,
         empty: Empty::new(
             "No images yet",
             hint(&[
-                "run pulls what it needs, or press ",
+                "Press ",
+                "b",
+                " to build one, or ",
                 ":",
                 " and type ",
                 "pull IMAGE",
+                " (run pulls what it needs)",
             ]),
         ),
     };
@@ -343,6 +379,7 @@ fn images(frame: &mut Frame, model: &mut Model, area: Rect) {
             .map(|i| {
                 let refs: Vec<&str> = i.references.iter().map(|r| familiar(r)).collect();
                 Row::new(vec![
+                    Cell::from(if i.build.is_some() { "*" } else { "" }),
                     Cell::from(if refs.is_empty() {
                         "<none>".to_owned()
                     } else {
@@ -350,13 +387,58 @@ fn images(frame: &mut Frame, model: &mut Model, area: Rect) {
                     }),
                     Cell::from(short(&i.id).to_owned()),
                     Cell::from(i.arch.clone()),
-                    Cell::from(human_size(i.compressed_size)),
+                    Cell::from(human_size(i.disk_size)),
+                    Cell::from(human_size(i.shared_size)),
                     Cell::from(i.prepared.join(", ")),
                 ])
             })
             .collect()
     });
     *model.cursor(Tab::Images) = cursor;
+}
+
+/// 볼륨 탭. SIZE는 볼륨의 크기, ON DISK는 호스트에서 실제로 차지하는 것(sparse), USED BY는 가리키는 샌드박스다.
+/// 지금 붙어 있으면 `●`.
+fn volumes(frame: &mut Frame, model: &mut Model, area: Rect) {
+    let mut cursor = *model.cursor(Tab::Volumes);
+    let rows = model.visible_volumes();
+    let spec = Spec {
+        title: "Volumes",
+        len: rows.len(),
+        loaded: model.volumes.is_some(),
+        header: &["NAME", "SIZE", "ON DISK", "IN USE", "USED BY"],
+        widths: &[
+            Constraint::Fill(1),
+            Constraint::Length(9),
+            Constraint::Length(9),
+            Constraint::Length(6),
+            Constraint::Fill(1),
+        ],
+        filter: &model.filter,
+        empty: Empty::new(
+            "No volumes yet",
+            hint(&[
+                "run -v NAME:/path makes one on first use, or press ",
+                "c",
+                " to create one",
+            ]),
+        ),
+    };
+    table(frame, area, &mut cursor, spec, |range| {
+        rows[range]
+            .iter()
+            .map(|v| {
+                Row::new(vec![
+                    Cell::from(v.name.clone()),
+                    Cell::from(human_size(v.size)),
+                    Cell::from(human_size(v.disk_usage)),
+                    Cell::from(if v.in_use { "●" } else { "" }),
+                    Cell::from(model.users(v).join(", ")),
+                ])
+            })
+            .collect()
+    });
+    *model.cursor(Tab::Volumes) = cursor;
 }
 
 /// 실행기 탭. 위 한 줄은 새 샌드박스가 쓸 실행기와 그 까닭(`executor current`), 아래는 실행기와 어댑터 표.
@@ -401,7 +483,7 @@ fn executors(frame: &mut Frame, model: &mut Model, area: Rect) {
     let mut cursor = *model.cursor(Tab::Executors);
     let rows = model.visible_executor_rows();
     // 칸마다 내용만큼(넘치면 자른다). 남는 자리는 경로 칸이 갖는다.
-    let cells: Vec<[String; 7]> = rows
+    let cells: Vec<[String; 8]> = rows
         .iter()
         .map(|r| executor_cells(r, current.as_deref()))
         .collect();
@@ -415,6 +497,7 @@ fn executors(frame: &mut Frame, model: &mut Model, area: Rect) {
         Constraint::Length(w(3, 7, 24)),
         Constraint::Length(w(4, 17, 32)),
         Constraint::Length(w(5, 4, 16)),
+        Constraint::Length(w(6, 7, 24)),
         Constraint::Fill(1),
     ];
     let spec = Spec {
@@ -428,19 +511,30 @@ fn executors(frame: &mut Frame, model: &mut Model, area: Rect) {
             "VERSION",
             "ADAPTER / USED BY",
             "FROM",
+            "RUNNING",
             "PATH",
         ],
         widths: &widths,
         filter: &model.filter,
         empty: Empty::new(
             "No executors installed",
-            hint(&[
-                "Press ",
-                "S",
-                " to search the repositories, or ",
-                "i",
-                " to install one",
-            ]),
+            if auto_install(model) {
+                hint(&[
+                    "The first run installs the default one. Press ",
+                    "S",
+                    " to search the repositories, or ",
+                    "i",
+                    " to install another",
+                ])
+            } else {
+                hint(&[
+                    "Press ",
+                    "S",
+                    " to search the repositories, or ",
+                    "i",
+                    " to install one",
+                ])
+            },
         ),
     };
     table(frame, list, &mut cursor, spec, |range| {
@@ -452,9 +546,11 @@ fn executors(frame: &mut Frame, model: &mut Model, area: Rect) {
     *model.cursor(Tab::Executors) = cursor;
 }
 
-/// 실행기 탭 한 줄의 칸: 표시(`>` 지금 쓸 것, `*` 기본), 종류, 이름, 버전, 어댑터나 그것을 쓰는 VMM 묶음, 출처, 경로.
-fn executor_cells(r: &ExecutorRow, current: Option<&str>) -> [String; 7] {
+/// 실행기 탭 한 줄의 칸: 표시(`>` 지금 쓸 것, `*` 기본), 종류, 이름, 버전, 어댑터나 그것을 쓰는 VMM 묶음, 출처,
+/// 그것으로 띄운 실행 중 샌드박스(있으면 `rm`이 거부한다), 경로.
+fn executor_cells(r: &ExecutorRow, current: Option<&str>) -> [String; 8] {
     let dash = |v: Option<String>| v.unwrap_or_else(|| "-".into());
+    let running = |v: &[String]| dash((!v.is_empty()).then(|| v.join(", ")));
     // 저장소가 거둔 버전은 뒤에 표시를 붙인다(알림 문구는 상세 창에).
     let version = |v: &str, yanked: bool| {
         if yanked {
@@ -479,6 +575,7 @@ fn executor_cells(r: &ExecutorRow, current: Option<&str>) -> [String; 7] {
                 version(&e.version, e.yanked),
                 dash(e.adapter.clone()),
                 dash(e.origin.clone()),
+                running(&e.running),
                 e.path.clone(),
             ]
         }
@@ -489,6 +586,7 @@ fn executor_cells(r: &ExecutorRow, current: Option<&str>) -> [String; 7] {
             version(&a.version, a.yanked),
             dash((!a.used_by.is_empty()).then(|| a.used_by.join(", "))),
             dash(a.origin.clone()),
+            running(&a.running),
             a.path.clone(),
         ],
     }
@@ -602,15 +700,36 @@ fn hints(model: &Model) -> Vec<(&'static str, &'static str)> {
             ("enter", "details"),
         ]),
         Tab::Images => {
-            if !model.visible_images().is_empty() {
-                h.extend([("D", "rmi"), ("O", "save"), ("enter", "details")]);
+            if let Some(i) = model.selected_image() {
+                h.extend([("D", "rmi"), ("t", "tag")]);
+                // 올리기는 이름이 있는 이미지만, 다시 빌드는 빌드 기록이 있는 이미지만.
+                if !i.references.is_empty() {
+                    h.push(("p", "push"));
+                }
+                if i.build.is_some() {
+                    h.push(("R", "rebuild"));
+                }
+                h.extend([("O", "save"), ("enter", "details")]);
             }
-            h.extend([("I", "load"), ("L", "login"), ("U", "usage")]);
+            h.extend([
+                ("b", "build"),
+                ("I", "load"),
+                ("L", "login"),
+                ("U", "usage"),
+            ]);
+        }
+        Tab::Volumes => {
+            if !model.visible_volumes().is_empty() {
+                h.extend([("D", "rm"), ("enter", "details")]);
+            }
+            h.extend([("c", "create"), ("P", "prune")]);
         }
         Tab::Events if !model.visible_events().is_empty() => h.push(("enter", "details")),
         Tab::Executors => {
             let rows = model.visible_executor_rows();
-            let i = model.cursors[3].selected.min(rows.len().saturating_sub(1));
+            let i = model.cursors[Tab::Executors.index()]
+                .selected
+                .min(rows.len().saturating_sub(1));
             let executor = matches!(rows.get(i), Some(ExecutorRow::Executor(_)));
             if executor {
                 h.push(("u", "use"));
@@ -864,7 +983,7 @@ fn state(s: &Sandbox) -> Span<'static> {
 
 fn action_style(action: &str) -> Style {
     match action {
-        "start" | "pull" | "prepare" => Style::new().fg(Color::Green),
+        "start" | "pull" | "build" | "prepare" => Style::new().fg(Color::Green),
         "stop" | "remove" | "delete" | "untag" => Style::new().fg(Color::Red),
         _ => Style::new(),
     }

@@ -1,7 +1,7 @@
 # How it works
 
 This page follows `sbx run --rm alpine echo hello` from the command line into a VM and back. Then it covers the
-detached path, `exec` and `cp` from another process, the network, and the image pipeline. Each step names the code
+detached path, `exec` and `cp` from another process, volumes, the network, `sbx build`, and the image pipeline. Each step names the code
 that does it. The doc comment there is the precise rule.
 
 ## The pieces at run time
@@ -9,10 +9,11 @@ that does it. The doc comment there is the precise rule.
 ```text
  your terminal
      │
- sbx (sbx-cli) ──────────── cache_dir: blobs, images/<id>/rootfs.erofs, guest/…/initramfs,   (sbx-manage writes)
-     │                                 events/images/
+ sbx (sbx-cli) ──────────── cache_dir: blobs, images/<id>/, layers/<diff_id>/layer.erofs,       (sbx-manage writes)
+     │                                 merged/<chain_id>/rootfs.erofs, build/<key>.json, guest/…/initramfs, events/images/
      │  sbx-runtime ─────── data_dir:  sandboxes/<id>/{spec.json,state.json,scratch.img,owner.lock,logs/},
-     │                                 events/sandboxes/, events/network/, executors/, adapters/ (the last two: sbx executor)
+     │                                 volumes/<name>/{volume.json,disk.img,use.lock},
+     │                                 events/{sandboxes,volumes,network}/, executors/, adapters/ (the last two: sbx executor)
      │                      socket_dir: short paths for Unix sockets (macOS caps them at 104 bytes)
      │  stdin/stdout: executor protocol (line-delimited JSON)
      ▼
@@ -20,8 +21,10 @@ that does it. The doc comment there is the precise rule.
                                                    │
                        control_socket ◄── vsock ──►│ microVM
                        (CONNECT 1024)              │  /init = sbx-guest (PID 1)
-                                                   │  /dev/vda rootfs.erofs (read-only)
+                                                   │  /dev/vda bottom layer (EROFS, read-only)
                                                    │  /dev/vdb scratch.img  (writable)
+                                                   │  /dev/vdc… upper layers (EROFS, read-only)
+                                                   │  then volumes (ext4, writable unless :ro)
 ```
 
 There are three directories, each passed in by the caller. The CLI's defaults are in
@@ -33,7 +36,9 @@ Both `data_dir` and `cache_dir` hold a `layout-version` file (from 0.2.1): one d
 that wrote them. [`layout.rs`](../../crates/app/cli/src/layout.rs) checks it whenever `sbx` starts. A missing file
 (a directory 0.2.0 wrote) is layout 1 and gets written; a higher number than this `sbx` knows is refused rather than
 guessed at; a lower one is migrated in place. A change to the layout bumps `layout::CURRENT` and adds a step to
-`layout::migrate`.
+`layout::migrate`. Layout 2 stores root filesystems per layer: migrating a layout 1 cache deletes each image's
+`images/<id>/rootfs.<format>`, keeps the blobs and image records, and the next `run`, `start` or `prepare` builds
+the layer disks from the blobs. An older `sbx` then refuses the cache, as above.
 
 ## `sbx run --rm alpine echo hello`
 
@@ -63,10 +68,29 @@ neither. The CLI then calls the management core:
   writing and reports progress (the CLI draws the bar). The manifest and config are kept as pulled (for `sbx save`),
   and the image record and reference are written last.
   `sbx load` runs the same steps with an OCI image layout as the source ([`layout.rs`](../../crates/adapter/oci/src/layout.rs)).
-- **`prepare`**: [`sbx-rootfs`](../../crates/port/rootfs) merges the layers in memory (whiteouts, opaque
-  directories, hard links) and writes one EROFS image to `images/<id>/rootfs.erofs`. Nothing is unpacked onto your
-  disk, so the result is the same on macOS, Linux and Windows. If the image carries its own kernel (label
-  `io.github.toollyst.sandbox.kernel`), it is extracted next to the rootfs.
+- **`push`** (the other way, `sbx push`): `sbx-manage` prepares an export ([`export.rs`](../../crates/core/manage/src/export.rs)).
+  For a pulled image it reads the stored manifest and config, checks that the
+  manifest still hashes to the image ID and each layer file has the size the manifest says (a built image is
+  exported from its layer disks, see [`sbx build`](#sbx-build)), and hands the blobs to an
+  [`ImageDestination`](../../crates/port/image/src/lib.rs) one by one, the manifest last. `sbx-oci`
+  ([`push.rs`](../../crates/adapter/oci/src/push.rs)) speaks the Distribution push protocol for each: `HEAD` to skip a
+  blob the registry has, a cross-repository mount when the image was pulled from another repository of the same
+  registry, otherwise an upload session (`POST`, then one `PUT` with the whole blob, or `PATCH` chunks that follow the
+  registry's `Location` and `Range` if it answers 413), and finally `PUT` of the manifest bytes by tag. The token asks
+  for `pull,push`. The name alone picks the registry: no mirror, no `location` rewrite, and `blocked` refuses. Nothing
+  is tagged until every blob is there.
+- **`prepare`**: each layer becomes one EROFS image, `layers/<diff_id>/layer.erofs`, shared by every image that
+  has that layer. [`sbx-rootfs`](../../crates/port/rootfs) `lower` writes a layer the way overlayfs reads a lower
+  directory: a whiteout is a character device 0/0, an opaque directory has `trusted.overlay.opaque=y`. Nothing is
+  unpacked onto your disk, so the result is the same on macOS, Linux and Windows. The plan
+  ([`stack.rs`](../../crates/port/store/src/stack.rs)) walks from the top layer down and gives each layer its own
+  disk while the executor has disks left (`max_disks` minus one for scratch and one per volume, at most 16). The layers below that are
+  merged into one EROFS, `merged/<chain_id>/rootfs.erofs`, the same in-memory merge (whiteouts, opaque directories,
+  hard links) that 0.2 did for the whole image. A layer that can't stand on its own as a lower (a hard link to a
+  file in a lower layer, a whiteout of the root) is merged with everything below it. Two processes preparing images
+  that share a layer build it once: each layer and merged disk has its own lock (`.lock` in its directory), and the
+  files appear by rename. If the image carries its own kernel (label `io.github.toollyst.sandbox.kernel`), it is
+  extracted to `images/<id>/kernel`.
 
 ### 3. Create the sandbox (`sbx-runtime`)
 
@@ -81,20 +105,29 @@ neither. The CLI then calls the management core:
   ([`records.rs`](../../crates/core/runtime/src/records.rs)).
 - **Claims `--name`, if given**, as a file under `names/`.
 
-`create` never pulls. If the image or rootfs is missing, it fails, and the CLI is the one that pulled in step 2.
+`create` never pulls. If the image or its layer disks for this executor are missing, it fails, and the CLI is the
+one that pulled and prepared in step 2. `start` prepares again if they went missing since (a cache migrated from
+layout 1, or a `prepare` for an executor with fewer disks).
 
 ### 4. Start: launch the VM (`sbx-runtime` → executor)
 
 `Sandbox::start`:
 
-1. **Takes ownership.** It holds `owner.lock` and a shared lease on the image in the cache, so `rmi` can't delete the
-   rootfs under a running VM.
+1. **Takes ownership.** It holds `owner.lock` and a shared lease on the image in the cache, so `rmi` and
+   `system prune` can't delete its layer disks under a running VM. A layer is deleted only when no image uses it
+   any more (`sbx_store::write::collect`, under the store's lock that `prepare` also waits on).
 2. **Picks the boot files.** The guest init is the initramfs embedded in `sbx`, extracted once to
    `cache_dir/guest/sha256-<digest>/<arch>/initramfs`. The kernel is the executor's default, unless the image
    brought its own.
 3. **Launches through the executor.** [`sbx-executor-process`](../../crates/adapter/executor-process) runs
    `sbx-executor run` and sends `Launch` (disks, initrd, kernel, vCPUs, memory, `control_socket`). Then it waits for
-   `Started`. The executor's stderr goes to `logs/executor.log`.
+   `Started`. The executor's stderr goes to `logs/executor.log`. The disks are, in order: the bottom layer (or the
+   merged disk), scratch, the upper layers bottom to top, then the sandbox's volumes. Each is attached as the next
+   virtio-blk device, so the order alone tells the guest what it is. An executor only has to attach up to its
+   `max_disks` disks in order. Volume disks have the role `volume` (executor protocol 3): the executor must pass the
+   guest's flushes through to the host file, so what a program `fsync`ed survives the VM being killed (the `firecracker`
+   adapter attaches them with `cache_type: Writeback`). With an executor that speaks only version 2 nothing changes
+   until a sandbox asks for a volume, which is then refused.
 4. **The executor starts the VMM.** [`sbx-executor-firecracker`](../../crates/executor/firecracker) writes a
    Firecracker config with vsock at `control_socket`, guest CID 3 and the kernel command line
    (`sbx.hostname=…`, `sbx.halt=reboot`), and runs `firecracker --no-api --config-file`. The config file sits next to
@@ -110,13 +143,17 @@ The kernel unpacks the initramfs and runs `/init` = `sbx-guest` as PID 1
 ([`boot.rs`](../../crates/app/guest/src/boot.rs)):
 
 1. It mounts `/dev`, `/proc` and `/sys`, and reads the kernel command line.
-2. It mounts `/dev/vda` (EROFS) read-only. It formats `/dev/vdb` on first boot (scratch is zero-filled, so "no
-   filesystem" means "new") and reuses it after a restart.
-3. It stacks overlay(rootfs ↓, scratch ↑), mounts `/proc`, `/sys`, `/dev`, `/dev/pts` and `/dev/shm` inside, moves
+2. It mounts `/dev/vda` and then `/dev/vdc`, `/dev/vdd`, … read-only, up to the first disk that isn't EROFS
+   ([`disks.rs`](../../crates/app/guest/src/disks.rs): volumes come after the layers and are never EROFS). It
+   formats `/dev/vdb` on first boot (scratch is zero-filled, so "no filesystem" means "new") and reuses it after a
+   restart. The kernel command line doesn't change.
+3. It stacks overlay(layers ↓, scratch ↑), mounts `/proc`, `/sys`, `/dev` (with the `/dev/fd`, `/dev/stdin`,
+   `/dev/stdout` and `/dev/stderr` links OCI runtimes add), `/dev/pts` and `/dev/shm` inside, moves
    it to `/`, and chroots. It brings up loopback and sets the hostname.
 4. It re-executes itself as the **agent**, which listens on vsock port 1024 and serves each connection on its own
    thread. It also starts a loopback DNS responder that answers NXDOMAIN at once, so name lookups without network
-   fail instantly instead of after a 5 s timeout.
+   fail instantly instead of after a 5 s timeout (with `--network allow` it answers from the allow list instead;
+   see "The network").
 5. PID 1 then only reaps orphans. When the agent exits, the VM powers off.
 
 ### 6. Run the command (host ↔ guest)
@@ -136,8 +173,8 @@ Stdin / Resize / Signal   ───────►
                           ◄───────     Exited{code}
 ```
 
-Before the main process starts, the runtime copies in `--mount type=copy` sources and asks the guest to mount live
-shares. The CLI's [`attach.rs`](../../crates/app/cli/src/attach.rs) connects your terminal: raw mode with `-t`,
+Before the main process starts, the runtime asks the guest to attach each volume (`Volume{disk, target, readonly,
+copy}`), copies in `--mount type=copy` sources and asks the guest to mount live shares. The CLI's [`attach.rs`](../../crates/app/cli/src/attach.rs) connects your terminal: raw mode with `-t`,
 stdin with `-i`, window resizes, and signals.
 
 ### 7. Exit and clean up
@@ -169,25 +206,92 @@ These don't go through the owner. Any process with the same `data_dir` reads `st
 `CopyOut` or `Shutdown`. That is why `sbx exec` takes milliseconds and works the same for attached and detached
 sandboxes. `cp` targets follow `docker cp` ([`cpplan.rs`](../../crates/core/runtime/src/cpplan.rs)).
 
+## Volumes
+
+A volume ([`volume.rs`](../../crates/core/runtime/src/volume.rs)) is a directory in `data_dir/volumes/<name>/`: the
+record (`volume.json`: size, labels, creation time), a sparse zero-filled `disk.img`, and `use.lock`. It belongs to no
+sandbox, so `rm` leaves it; `volume rm` refuses one that a sandbox record still names.
+
+- **Who may attach it.** `start` takes `use.lock` before launching (`Runtime::hold_volumes`): exclusive for a
+  read-write attach, shared for `:ro`. The lock is the OS file lock, held by the process that owns the VM (`sbx`, or
+  `sbx-shim` for `-d`) for the VM's life, so it goes away with that process just like `owner.lock`. A second writer
+  finds it taken and is told which running sandbox names the volume. The lock goes the moment the owner dies, but its
+  VM lives until the executor powers it off, so after taking the lock `start` also checks every other sandbox that
+  names the volume (and would conflict: one of the two writes) and is still recorded as running: if its
+  `control_socket` still accepts a connection, the VM is alive, and `start` waits for it up to 3 s
+  (`volume::VM_GONE_WAIT`), then refuses. Two kernels never write one disk.
+- **How the guest tells it from a layer.** The guest counts layers up to the first disk that isn't EROFS, so a
+  volume must never look like one: the host refuses to attach a disk with the EROFS magic at byte 1024 (the guest can
+  write anything to a volume, and a crafted one could otherwise pass for a layer of the next sandbox).
+- **First use.** The runtime sends `Volume{disk, target, readonly, copy}` after the root filesystem is up and before
+  the main process ([`volume.rs`](../../crates/app/guest/src/volume.rs) in the guest). A disk without a filesystem is
+  formatted as ext4 with an internal journal ([`mkfs.rs`](../../crates/app/guest/src/mkfs.rs), the same code that
+  formats scratch, plus the journal). If the volume is empty and `copy` is set, the guest copies what the image has at
+  the target into it (owners, modes, times, symlinks, device nodes), removes `lost+found` so programs that want an
+  empty directory (`initdb`) get one, and `sync`s. Then it moves the mount over the target. A read-only attach of a
+  volume that was never formatted is an error: there is nothing to read.
+- **Durability.** Writable volumes are mounted with `errors=remount-ro`; the journal keeps the filesystem consistent
+  after a crash, and the executor's flush passthrough makes `fsync` reach the host file.
+
+## The guest clock
+
+A VM's clock stops while the host sleeps and is not corrected when it wakes, and it drifts a little even without
+sleep (about 0.35 s a day on the reference executor). So the owner (`sbx` for attached runs, `sbx-shim` for detached
+ones) keeps the guest clock on the host's, without chrony in the image or anything more from the executor. Right
+after the guest is ready, every 60 s, and as soon as it sees the host's wall clock jump, it opens a connection with
+`ClockSync`. The guest sends `ClockAsk` up to four times, the host answers each with `ClockNow{its wall clock}`, and
+the guest keeps the sample with the shortest round trip: the host's time at arrival is estimated as `ClockNow` plus
+half the round trip, so the error is at most half of it (vsock round trips are about 0.1 ms; samples slower than
+20 ms are not used). Offsets of 128 ms or more are stepped at once (as after a sleep, or when someone ran `date -s`
+inside); smaller ones are slewed at the kernel's 0.5 ms per second, so the clock never runs backwards for them. A host
+clock set back by more than 128 ms is followed backwards too. The owner notices a jump by waking every 0.5 s and
+comparing how far the wall clock and the monotonic clock moved: on macOS and Linux the monotonic clock stops during
+sleep, so the wall clock runs ahead; where it keeps running (Windows), the 0.5 s wait ends late. Either way the
+guest is corrected within about half a second of waking. The first sync runs in the background and never delays
+the main process. Nothing the guest replies affects the host, and failures go to `logs/executor.log`, once per kind;
+a guest init too old to know `ClockSync` is left alone. Rules: [`clock.rs`](../../crates/core/runtime/src/clock.rs)
+(host) and [`clock.rs`](../../crates/app/guest/src/clock.rs) (guest).
+
+## Host edits in a live share
+
+Virtio-fs has no way to tell the guest that the host changed a file, so inotify in the guest stays quiet and hot
+reload (vite, webpack, nodemon) misses edits made in a host editor. The owner (as for the clock) watches each writable
+live share on the host with the `notify` crate (FSEvents, inotify, ReadDirectoryChangesW). It gathers events until
+50 ms pass without one (at most 500 ms), reads what each path looks like now (exists, directory, size, modification
+time) and sends `ShareChanged{target, paths}` for the paths that look different from what it last sent, relative to
+the share. The guest re-reads each entry's modification time (`statx` with `AT_STATX_FORCE_SYNC`, so from the file
+server, not its cache) and writes the same value back with `utimensat`, access time omitted. The kernel reports a
+setattr of the modification time alone as `IN_MODIFY` to watchers of the entry and of its folder; contents and times
+don't change. A path that no longer exists sends the event on its nearest existing folder inside the share. That
+setattr changes only the host file's ctime, which looks the same to the owner, so nothing bounces back. A `:ro` share
+isn't watched (the guest can't setattr there). Rules: [`watch.rs`](../../crates/core/runtime/src/watch.rs) (host) and
+[`changes.rs`](../../crates/app/guest/src/changes.rs) (guest).
+
+All of this needs an executor that announces `live_share`. The `firecracker` adapter doesn't yet: upstream
+Firecracker has no virtio-fs, and wick's (a separate `wick-fsd` server per share behind a socket) is designed but its
+interface isn't fixed, so the adapter writes the upstream config and refuses shares. The fake executor announces it,
+which is how the tests cover the path end to end.
+
 ## Events, JSON output and the TUI
 
 There is no daemon to ask what changed, so the process that changes something writes it down.
 `sbx-runtime` appends a line to `data_dir/events/sandboxes` whenever it records a sandbox as created, running,
-stopped or removed, and `sbx-manage` appends to `cache_dir/events/images` after a pull, prepare, untag or delete.
+stopped or removed (and to `data_dir/events/volumes` when it creates or removes a volume), and `sbx-manage` appends to `cache_dir/events/images` after a pull, build, prepare, tag, untag, push or
+delete.
 Both use [`sbx-events`](../../crates/port/events/src/lib.rs): one JSON object per line, appended under a file lock,
 two generations of 1 MiB. `sbx events` reads both directories and the outgoing-connection records in
 `data_dir/events/network`, merges them by time, replays from `--since`, and
 keeps following until `--until` or Ctrl-C. A VM whose owner was killed has no `stop` event, because nobody was left
-to write it (it is listed in `DOCKER_DIFFERENCES`).
+to write it (the `events` row of [`compat.rs`](../../crates/app/cli/src/compat.rs) says so).
 
 `--format json` prints the public types in [`output.rs`](../../crates/app/cli/src/output.rs), never the on-disk
 records, so the storage format can change without breaking scripts. [cli-output.md](cli-output.md) is generated from
 those types. `--jq` runs on that output in-process.
 
 `sbx tui` ([`tui/`](../../crates/app/cli/src/tui/mod.rs)) is the first user of that contract. It never calls the
-cores. It runs the same `sbx` binary as children: `ps -a`, `images` and the `executor` listings with
-`--format json`, and `events --since 1h` followed in the background. A sandbox event re-reads `ps -a`, an image
-event re-reads `images`. Every key becomes an `sbx` command line, shown in the status bar, and commands that need the
+cores. It runs the same `sbx` binary as children: `ps -a`, `images`, `volume ls` and the `executor` listings with
+`--format json`, and `events --since 1h` followed in the background. A sandbox event re-reads `ps -a` and
+`volume ls`, an image event re-reads `images`, a volume event `volume ls`. Every key becomes an `sbx` command line, shown in the status bar, and commands that need the
 terminal (`exec -it`, `attach`, `logs -f`, the `:` prompt) get it handed over until they exit. A child's error is
 its JSON error line; the TUI shows its `message`, never the JSON. Enter shows the selected row's public type as
 `name  value` lines (`detail`), in the JSON's field names and order, with the command that prints the same JSON.
@@ -209,7 +313,140 @@ The VM has no network device. With `--network allow`:
    relaying at the limit and refuses new connections. Each decision goes to `data_dir/events/network` (`connect`,
    `refuse`, `close` with byte counts), apart from the lifecycle events so a busy sandbox can't push them out.
 
-UDP, and programs that ignore the proxy settings, simply have no way out.
+**Transparent TCP** is for programs that ignore the proxy. It needs nothing from the executor or the guest kernel
+beyond IPv4 loopback ([`transparent.rs`](../../crates/app/guest/src/transparent.rs) in the guest):
+
+4. Right after lending the connections, the runtime sends `Transparent` with the IPv4 rules the guest can listen
+   on. The guest adds one netlink route, `local 198.18.0.0/15 dev lo` (so it can listen on any address in that
+   range), rewrites `/etc/resolv.conf` to `nameserver 127.0.0.1` in the writable layer, and listens on each IP rule
+   (making that `/32` local too). Rules with a `*` port, IPv6 addresses and `localhost` are recorded as
+   `proxy_only`; the CLI warns about them when the sandbox is created.
+5. The guest's loopback DNS ([`dns.rs`](../../crates/app/guest/src/dns.rs)) answers `localhost` itself and asks the
+   host about any other name with `Lookup{name}` over a lent connection. The host
+   ([`lookup`](../../crates/core/runtime/src/egress.rs)) matches the name against the list and answers `Resolved`
+   with the open ports, without resolving it, so a name you didn't allow never leaves the machine, not even as a DNS
+   query. It records `lookup` or `refuse` (`via=dns`) once per name, up to 1024 names per start. The connection
+   goes back to the pool.
+6. For an allowed name the guest picks the next address in the range (stable for the VM's life; PTR maps it back),
+   opens a listener on it for each port, and only then answers. AAAA and other types get "no records", so programs
+   use IPv4. A name that isn't allowed is NXDOMAIN.
+7. A connection to a stand-in address is mapped back to the name and sent as the same `Connect{host, port}` the
+   proxy sends; from there step 3 is unchanged. The proxy does the same mapping if a program resolved first and then
+   asked the proxy for the address.
+
+UDP beyond DNS, rules with a `*` port for programs that ignore the proxy, and programs with their own DNS have no way
+out.
+
+**Connecting sandboxes** (`--connect db:5432`) rides on transparent TCP. Nothing listens on the host and the target
+needs no option. Rules: [`connect.rs`](../../crates/core/runtime/src/connect.rs) and
+[`egress.rs`](../../crates/core/runtime/src/egress.rs) in the runtime, `ConnectRule` and `check_connect` in
+[`sbx-model`](../../crates/model/src/lib.rs).
+
+1. At create time the CLI resolves each target the way other commands do (name, ID, unique ID prefix) and records it
+   by name if it was given by name, by full ID otherwise. The runtime checks the list (the name is a DNS name, it is
+   not also an `--allow` name, it does not point at the sandbox itself), that every target exists, and that it
+   carries the labels in `connect_scope` (`sbx mcp` sets the MCP owner label there).
+2. At start the owner lends connections and sends `Transparent` even with `--network none`, but without
+   `EgressListen`: there is no proxy and the allow list is empty, so only the `--connect` names resolve.
+3. `Lookup{db}` is answered from the allow list and the connect list together; the guest gives `db` a stand-in
+   address and listens on the connected ports only.
+4. A connection arrives as `Connect{db, 5432}`. If it matches a connect rule, the owner looks the target up again,
+   by exact ID or by name (never by prefix, so a vanished name can't land on another sandbox), and refuses it if it
+   is missing, is the sandbox itself, lacks a `connect_scope` label, is not running (its owner lock tells), or if
+   the port is the target's egress proxy. Otherwise it opens the target's control socket from `state.json`, as
+   `exec` does, sends `Forward{port}` (the `-p` path: the target's guest dials its `127.0.0.1:port`) and, once that
+   answers `Done`, answers `Connected` and relays `Data`/`End` frames between the two guests.
+5. Bytes count against the connecting sandbox's `--egress-limit` in both directions, and the connection holds one
+   of its open-connection places. `connect`, `refuse` and `close` events carry `target` and `target_id`.
+
+Because the lookup happens per connection, a restarted target (new control socket) is reached on the next
+connection, and a stopped one fails that connection only, within the time it takes to read its records.
+
+## `sbx build`
+
+Four crates take part, and only the CLI knows all of them
+([`app/build.rs`](../../crates/app/cli/src/app/build.rs)):
+
+1. **Plan** ([`sbx-dockerfile`](../../crates/adapter/dockerfile/src/lib.rs)). The Dockerfile and the options
+   (`--build-arg`, `--target`, the host's architecture) become a `BuildPlan` (`sbx_model::build`): stages and
+   steps with every variable already expanded. Dockerfile types never leave that crate. A base image's `Env` changes
+   what `$PATH` expands to, so the CLI plans twice: once to learn the `FROM` images, which it then finds or pulls
+   through `sbx-manage`, and again with their `Env`.
+2. **Run the plan** ([`sbx-build`](../../crates/core/build/src/lib.rs)). The core walks the stages in order and
+   sees the world through three traits ([`ports.rs`](../../crates/core/build/src/ports.rs)): `Store` (images, the
+   cache, layers), `Machines` (start a build VM on a list of layers) and `Vm` (open a layer, run, export, put
+   files). For each step it computes a cache key ([`key.rs`](../../crates/core/build/src/key.rs)):
+   `sha256` over the key below, the step's text and its extras (the `ARG`s a `RUN` sees, the content hash of what a
+   `COPY` copies, the stage or image it copies from). A hit reuses the recorded layer and its time.
+3. **Layers.** A `RUN` that misses starts the stage's VM if it isn't running yet, on the stage's layers so far. In
+   the guest, `OpenLayer` stacks a new empty writable overlay layer on top, `ExecStep` runs the command there (with
+   the step's env, workdir and user; the guest ends whatever it left behind), and `ExportLayer` sends the layer's
+   changes back as entries, which the host writes as an uncompressed OCI layer tar
+   ([`runtime/src/layer.rs`](../../crates/core/runtime/src/layer.rs) checks them as hostile input). `COPY`, `ADD`
+   and `WORKDIR` never need the VM: [`source.rs`](../../crates/core/build/src/source.rs) finds the sources (context
+   or a merged tree of another stage's or image's layers), [`copy.rs`](../../crates/core/build/src/copy.rs) places
+   them by Docker's destination rules against the merged tree of the layers below, and
+   [`tarw.rs`](../../crates/core/build/src/tarw.rs) writes the tar. If the VM is running, the same entries are also
+   put into its open layer (`CopyIn`), so later `RUN`s see them.
+4. **Store** ([`sbx-manage`](../../crates/core/manage/src/build.rs)). `add_layer` reads each tar with the same
+   reader as a pulled layer and turns it into a layer disk under `layers/<diff_id>/`. There is no compressed blob:
+   a built layer is only its disk (a layer that can't stand alone, such as a hard link to a file in a lower layer,
+   keeps its tar as an uncompressed blob and is merged with the layers below). A tar with no entries is the well-known empty layer, which takes no disk
+   and is skipped when stacking. The layer's diff_id is not the hash of the tar the VM sent: `add_layer` writes the
+   disk, reads it back and writes the entries as a *canonical tar* ([`canon.rs`](../../crates/core/manage/src/canon.rs):
+   GNU headers, PAX records only for extended attributes, entries in the disk's order, nothing taken from the
+   clock), and the diff_id is that tar's `sha256`. So the export below can write the same tar again from the disk
+   alone. `commit_built` writes the OCI config the core assembled
+   ([`config.rs`](../../crates/core/build/src/config.rs), with BuildKit's history entries); the image ID is that
+   config's `sha256`, and the image is recorded with `source = "sbx build"`. It is skipped when `--output` doesn't
+   ask for sbx's store; the layers and cache records are kept either way.
+
+The build VM is an ordinary sandbox with no main process (`hold`), the label `io.github.toollyst.sandbox.build=1`, a
+16 GiB sparse writable disk and the build's network policy. Its clock is kept on the host's like any sandbox's
+(see [The guest clock](#the-guest-clock)), so `RUN` steps check TLS certificates against the right time. The clock
+thread opens its own guest connections at any moment, even between `OpenLayer`, `ExecStep` and `ExportLayer`: that is
+safe because `ClockSync` touches no file system, while the guest's switch to a new layer changes the root for every
+request that does (the order rule in [`layer.rs`](../../crates/app/guest/src/layer.rs)). The start checks the layer
+count (`CheckLayers`) before the clock thread starts, so a wrong disk count stops the VM before anything else talks
+to it. Its root is a hidden image record (`sbx build (working
+root)`) holding the stage's layers so far, removed with the VM when the stage ends, even on failure. Refused names for a failed
+step's `blocked:` lines come from the network log (`refuse` events of that sandbox).
+
+With the network closed (`--network none`, the default) the build VM still answers name lookups through the host
+(`SandboxSpec::record_names`): the host has no rules, so every name is refused and recorded as a `refuse` event,
+which is where a failed step's `blocked:` lines and the "the build network is closed" hint come from. No name is
+resolved and nothing leaves the VM; it only replaces an instant NXDOMAIN in the guest with an NXDOMAIN from the host.
+
+**`SOURCE_DATE_EPOCH`** (environment or `--build-arg`) is part of every step's cache key. It sets the config's
+`created` and the history times, and `add_layer` clamps every file time in the layers the build makes to it
+(BuildKit's rule: later times become the epoch, earlier ones stay). Base image layers keep their times.
+
+**Cache records** live in `cache_dir/build/<key>.json`, one small JSON file each (`layer` and `created`). They hold
+layers alive: the collector in `sbx-store` keeps every layer and blob a record names, so `sbx rmi` of the last
+image on a layer leaves the disk while the cache can reuse it. A cache hit sets the record's modification time to
+now, which is what "least recently used" means below. After every build (even a failed one) the CLI trims the cache
+(`Manager::trim_build_cache`) under `SBX_BUILD_CACHE_MAX` (default 10 GiB, `none` for no cap): it counts only layers
+that no image uses (the `build cache` row of `system df`), and while the total is over the cap it removes every
+record of the least recently used layer, then collects. `sbx builder prune` does the same with `--keep-storage`
+(default 0), `-a` and `sbx system prune` remove every record and stale build root first, then collect.
+While a build runs it holds claims on the layers it has made or reused (cache hits included), so a concurrent
+prune or trim doesn't delete them before the image or record is written.
+
+**Export** ([`export.rs`](../../crates/core/manage/src/export.rs)) turns a built image, stored or not, into an OCI
+image: `save`, `push`, and `build --output type=docker|oci|registry` all go through `Export`. A layer with a blob
+(a base image's, or one that needs the layers below) is sent as is. Any other layer is read back from its disk as the
+canonical tar (its `sha256` must be the diff_id, or the export fails), gzipped with fixed settings (level 6, no name,
+time 0, OS 255; the test `gzip_is_pinned` catches a compressor that changes its bytes). The first export of a layer
+compresses it once into a hashing sink and records the blob's digest and size in `layers/<diff_id>/export.json`;
+every later export uses the record, so the manifest (built from the layer list with fixed key order) and its digest
+never change. The compressed blob is never stored: it is compressed again while it is sent and checked against the
+record at the end (a mismatch deletes the record and fails: run again). A registry that already has the blob (`HEAD`)
+costs no compression at all. So exporting costs disk only for a small record per layer, and the time of compressing
+each new layer twice (once on the first export).
+
+The fake executor ([`sbx-executor-fake`](../../crates/executor/fake/src/lib.rs)) plays the build VM for tests: on
+the first `OpenLayer` it unpacks the EROFS layer disks into a directory on the host and moves every guest path under
+it, so the e2e tests run whole builds without a VM (commands run on the host, so they use relative paths).
 
 ## Executors and their repositories
 
@@ -219,6 +456,15 @@ the nearest `.sbx-executor` from the current directory up, then the default in `
 `sbx-executor` on `PATH`. A sandbox created with an installed executor records its `NAME@VERSION` in the label
 `io.github.toollyst.sandbox.executor`. A detached sandbox's shim is handed the chosen program (and VMM directory).
 `sbx executor current` prints the choice and where it came from.
+
+**The default executor.** When nothing is chosen and no executor is installed, `run`, `create`, `start` and `build`
+install one first ([`executors.rs`](../../crates/app/cli/src/executors.rs), "기본 실행기 자동 설치"): the executor
+the `official` repository's index names in `default` (or its only executor), newest version for this host, installed
+exactly like `sbx executor install --repo official NAME`. Only a signed `official` is used, so no question is asked
+even without a terminal. `sbx` holds no executor name, so the official repository decides what the default is and can
+change it. A lock in the cache directory (`executor-downloads/.auto-install.lock`) makes two first runs install it
+once. `SBX_NO_AUTO_EXECUTOR` and `--executor none` turn it off. The installer installs the executor its version pins
+before any of this happens ([testing and releasing](testing-and-releasing.md#install-scripts)).
 
 **Two shapes.** An installed executor ([`sbx-executor-install`](../../crates/spec/executor-install/src/lib.rs)) is
 either self-contained, with `sbx-executor` at the top, or a **VMM package**: the VMM's files plus `.sbx-adapter`,
@@ -247,8 +493,8 @@ checked before any of this, so a refusal doesn't leave an adapter behind. Every 
 name or `local`), and a name already installed from one origin is never installed from another
 ([`sbx-executor-install`](../../crates/spec/executor-install/src/lib.rs)).
 Each download is checked against the sha256 and size in the index and unpacked into a staging directory. Before the
-rename into place, `sbx-executor capabilities` (for a VMM package, the adapter given that directory) must report this
-`sbx`'s protocol version and the host's architecture ([`executors.rs`](../../crates/app/cli/src/executors.rs)).
+rename into place, `sbx-executor capabilities` (for a VMM package, the adapter given that directory) must report a
+protocol version this `sbx` speaks (2 or 3) and the host's architecture ([`executors.rs`](../../crates/app/cli/src/executors.rs)).
 The official repository is <https://toollyst.github.io/sandbox-executors/>, published from its own repository,
 [toollyst/sandbox-executors](https://github.com/toollyst/sandbox-executors) ([Releasing](testing-and-releasing.md#executors)).
 

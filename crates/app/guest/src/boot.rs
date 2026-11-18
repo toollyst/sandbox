@@ -1,12 +1,15 @@
 //! 부팅 (Linux, PID 1). 맨 위 층이다.
 //!
-//! 디스크는 실행기가 붙인 순서대로 `/dev/vda`가 rootfs(읽기 전용), `/dev/vdb`가 scratch다.
+//! 디스크는 실행기가 붙인 순서대로 `/dev/vda`가 이미지의 맨 아래 층, `/dev/vdb`가 scratch, 그 뒤 EROFS 디스크들이
+//! 위 층들이다. 규칙은 [`crate::disks`]에 있다.
 //!
 //! **PID 1** ([`pid1`])
 //! 1. `/dev`(devtmpfs), `/proc`, `/sys`를 마운트하고 커널 명령줄(`cmdline`)을 읽는다.
-//! 2. rootfs를 erofs로 읽기 전용 마운트한다.
+//! 2. 층 디스크마다 erofs로 읽기 전용 마운트한다(`/run/sbx/lower/0`이 맨 아래).
 //! 3. scratch에 파일 시스템이 없으면 포맷한다(`mkfs`). 있으면 그대로 쓴다(정지 뒤 다시 시작).
-//! 4. rootfs를 아래, scratch를 위로 overlay를 만들고, 그 안에 `/proc`, `/sys`, `/dev`, `/dev/pts`, `/dev/shm`을 마운트한다.
+//! 4. 층들을 아래(lowerdir, 맨 위 층이 앞), scratch를 위로 overlay를 만들고, 그 안에 `/proc`, `/sys`, `/dev`,
+//!    `/dev/pts`, `/dev/shm`을 마운트한다. `/dev`에는 OCI 런타임처럼 `/dev/fd`, `/dev/stdin` 등의 링크를 둔다
+//!    (`crate::devfs`). 층이 하나면 지금까지와 같은 overlay다.
 //! 5. overlay를 `/`로 옮기고 chroot한다. 루프백을 올리고 호스트 이름을 정한다.
 //! 6. 자신을 `agent` 인자로 다시 실행해 연결 처리 프로세스를 띄운다.
 //! 7. 이후로는 고아 프로세스를 거두기만 한다. 연결 처리 프로세스가 끝나면 VM을 끝낸다.
@@ -15,7 +18,10 @@
 //!
 //! **연결 처리** ([`agent`]): vsock [`GUEST_PORT`]에서 연결마다 스레드 하나로 `server::serve`를 돌린다.
 //! 루프백 DNS([`crate::dns`])도 띄운다: 이름 풀기가 시간 초과(5초)를 기다리지 않고 곧바로 실패하게 한다.
+//! 시계는 호스트가 `ClockSync`를 보낼 때 커널 시계를 맞춘다([`crate::clock`]).
+//! 이름 붙은 볼륨은 호스트가 시작할 때 `Volume`으로 알리면 붙인다([`crate::volume`]). 부팅은 볼륨을 모른다.
 //! `Shutdown` 요청이면 sync 뒤 `sbx.halt` 방법으로 VM을 끝낸다.
+//! 빌드 층(`OpenLayer`)은 이 프로세스의 뿌리를 층 안으로 옮긴다. 규칙은 `overlay` 모듈에 있다. PID 1은 처음 뿌리에 남는다.
 //!
 //! 어느 단계든 실패하면 콘솔에 이유를 쓰고 VM을 끝낸다. 호스트는 연결이 되지 않는 것으로 안다.
 
@@ -31,7 +37,6 @@ use crate::mkfs;
 use crate::server::{self, Ctx};
 use crate::sys::linux as sys;
 
-const ROOTFS_DEV: &str = "/dev/vda";
 const SCRATCH_DEV: &str = "/dev/vdb";
 const LOWER: &str = "/run/sbx/lower";
 const SCRATCH: &str = "/run/sbx/scratch";
@@ -118,14 +123,31 @@ fn switch_root(cfg: &BootConfig) -> io::Result<()> {
         libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
         "",
     )?;
-    mount_dir(ROOTFS_DEV, LOWER, "erofs", libc::MS_RDONLY, "")?;
+    let layers = crate::disks::layer_devices(std::path::Path::new("/dev"))?;
+    let mut lowers = Vec::with_capacity(layers.len());
+    for (i, dev) in layers.iter().enumerate() {
+        let target = format!("{LOWER}/{i}");
+        mount_dir(
+            &dev.to_string_lossy(),
+            &target,
+            "erofs",
+            libc::MS_RDONLY,
+            "",
+        )?;
+        lowers.push(target);
+    }
+    // overlay는 lowerdir의 앞을 위로 본다.
+    lowers.reverse();
     prepare_scratch()?;
     mount_dir(
         "overlay",
         NEWROOT,
         "overlay",
         0,
-        &format!("lowerdir={LOWER},upperdir={SCRATCH}/upper,workdir={SCRATCH}/work"),
+        &format!(
+            "lowerdir={},upperdir={SCRATCH}/upper,workdir={SCRATCH}/work",
+            lowers.join(":")
+        ),
     )?;
     let nosuid = libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC;
     mount_dir("proc", &format!("{NEWROOT}/proc"), "proc", nosuid, "")?;
@@ -143,6 +165,10 @@ fn switch_root(cfg: &BootConfig) -> io::Result<()> {
         libc::MS_NOSUID,
         "mode=0755",
     )?;
+    // `/dev/fd`, `/dev/stdin` 등(OCI 런타임과 같다). 없어도 부팅은 계속한다.
+    if let Err(e) = crate::devfs::add_links(std::path::Path::new(&format!("{NEWROOT}/dev"))) {
+        log(&format!("/dev links: {e}"));
+    }
     mount_dir(
         "devpts",
         &format!("{NEWROOT}/dev/pts"),
@@ -222,22 +248,55 @@ pub fn agent() -> ! {
             halt(cfg.halt);
         }
     };
+    // 나가는 연결과 투명 TCP. 루프백 DNS는 이것에게 답을 받는다(투명 TCP가 켜지기 전에는 모두 NXDOMAIN).
+    let egress = std::sync::Arc::new(crate::egress::Egress::with_net(Box::new(
+        crate::transparent::KernelNet,
+    )));
     // 루프백 DNS. 띄우지 못해도(이미 누가 듣는다) 부팅은 계속한다. 그때는 이름 풀기가 느리게 실패할 뿐이다.
     for addr in ["127.0.0.1:53", "[::1]:53"] {
         match std::net::UdpSocket::bind(addr) {
             Ok(sock) => {
-                thread::spawn(move || crate::dns::serve(&sock));
+                let resolver = egress.resolver();
+                thread::spawn(move || crate::dns::serve(&sock, resolver));
             }
             Err(e) => log(&format!("dns on {addr}: {e}")),
         }
     }
     let halt_how = cfg.halt;
+    // 층 디스크는 부팅 때와 같은 규칙으로 다시 찾는다(디스크 차례와 내용만 본다). 찾지 못하면 수를 모른다고 본다.
+    let found = crate::disks::layer_devices(std::path::Path::new("/dev")).ok();
+    let layer_disks = found.as_ref().and_then(|d| u32::try_from(d.len()).ok());
+    let layer_devs =
+        found.unwrap_or_else(|| vec![std::path::Path::new("/dev").join(crate::disks::device(0))]);
+    // 볼륨은 층 디스크와 scratch 뒤다. 층 수를 몰라도 장치가 EROFS이면 붙이기가 거부한다.
+    let volumes = crate::volume::linux::Attach {
+        dev: "/dev".into(),
+        staging: crate::volume::STAGING.into(),
+        first: crate::volume::first_volume_disk(layer_devs.len()),
+    };
+    let transparent_on = {
+        let e = egress.clone();
+        move || e.transparent_on()
+    };
     let ctx: &'static Ctx = Box::leak(Box::new(Ctx {
         root: "/".into(),
         on_shutdown: Box::new(move || halt(halt_how)),
         share: Some(Box::new(mount_share)),
-        egress: Default::default(),
+        egress,
         main: Default::default(),
+        // 첫 OpenLayer 전에는 아무것도 하지 않는다(보통의 run에는 비용이 없다).
+        layers: Some(Box::new(
+            crate::overlay::Overlay::guest(layer_devs, SCRATCH_DEV)
+                .with_resolver(Box::new(transparent_on)),
+        )),
+        sweep: crate::exec::Sweep::Everything,
+        procs: None,
+        layer_disks,
+        // 시계 맞추기: 호스트가 보낼 때만 한다. 규칙은 clock 모듈에 있다.
+        clock: Some(Box::new(crate::clock::Kernel)),
+        volume: Some(Box::new(move |disk, target, readonly, copy| {
+            volumes.attach(disk, target, readonly, copy)
+        })),
     }));
     loop {
         match sys::accept(&listener) {

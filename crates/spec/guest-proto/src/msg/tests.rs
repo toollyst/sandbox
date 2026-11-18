@@ -75,6 +75,48 @@ fn host_samples() -> Vec<HostMsg> {
         HostMsg::SignalMain(15),
         HostMsg::Usage,
         HostMsg::Forward { port: 8080 },
+        HostMsg::OpenLayer,
+        HostMsg::ExportLayer,
+        HostMsg::Transparent { literals: vec![] },
+        HostMsg::Transparent {
+            literals: vec![
+                "140.82.112.3:22".parse().unwrap(),
+                "10.0.0.5:5432".parse().unwrap(),
+            ],
+        },
+        HostMsg::Resolved {
+            ports: vec![],
+            any_port: false,
+        },
+        HostMsg::Resolved {
+            ports: vec![22, 443],
+            any_port: true,
+        },
+        HostMsg::ClockSync,
+        HostMsg::ClockNow {
+            unix_nanos: 1_763_000_000_123_456_789,
+        },
+        HostMsg::ClockNow { unix_nanos: -1 },
+        HostMsg::Volume {
+            disk: 2,
+            target: "/var/lib/postgresql/data".into(),
+            readonly: false,
+            copy: true,
+        },
+        HostMsg::Volume {
+            disk: 9,
+            target: "/v".into(),
+            readonly: true,
+            copy: false,
+        },
+        HostMsg::ShareChanged {
+            target: "/app".into(),
+            paths: vec!["".into(), "src/main.ts".into(), "gone".into()],
+        },
+        HostMsg::ShareChanged {
+            target: "/w".into(),
+            paths: vec![],
+        },
         HostMsg::ExecDetached(Exec {
             args: vec!["sleep".into(), "9".into()],
             env: vec![],
@@ -88,6 +130,22 @@ fn host_samples() -> Vec<HostMsg> {
             size: None,
             main: false,
         }),
+        HostMsg::ExecStep(Exec {
+            args: vec!["sh".into(), "-c".into(), "make &".into()],
+            env: vec![("A".into(), "1".into())],
+            cwd: "/app".into(),
+            user: User {
+                user: Ident::Name("node".into()),
+                group: Some(Ident::Id(1000)),
+            },
+            tty: false,
+            stdin: false,
+            size: None,
+            main: false,
+        }),
+        HostMsg::Hold,
+        HostMsg::CheckLayers { count: 0 },
+        HostMsg::CheckLayers { count: 16 },
     ]
 }
 
@@ -122,6 +180,56 @@ fn guest_samples() -> Vec<GuestMsg> {
             host: "pypi.org".into(),
             port: 443,
         },
+        GuestMsg::LayerOpened { layer: 3 },
+        GuestMsg::Lookup {
+            name: "github.com".into(),
+        },
+        GuestMsg::ClockAsk,
+    ]
+    .into_iter()
+    .chain(layer_samples().into_iter().map(GuestMsg::LayerEntry))
+    .collect()
+}
+
+fn layer_entry(path: &str, kind: LayerKind) -> LayerEntry {
+    LayerEntry {
+        path: path.into(),
+        kind,
+        mode: 0o2755,
+        uid: 1000,
+        gid: 100,
+        mtime: -7,
+        xattrs: vec![],
+    }
+}
+
+fn layer_samples() -> Vec<LayerEntry> {
+    vec![
+        layer_entry("d", LayerKind::Dir { opaque: false }),
+        LayerEntry {
+            xattrs: vec![
+                ("user.a".into(), b"1".to_vec()),
+                ("security.capability".into(), vec![0, 1, 0xFF]),
+            ],
+            ..layer_entry("d/o", LayerKind::Dir { opaque: true })
+        },
+        layer_entry("d/f", LayerKind::File { size: 5 }),
+        layer_entry(
+            "d/s",
+            LayerKind::Symlink {
+                target: "/abs/../x".into(),
+            },
+        ),
+        layer_entry(
+            "d/h",
+            LayerKind::Hardlink {
+                target: "d/f".into(),
+            },
+        ),
+        layer_entry("dev/c", LayerKind::CharDevice { major: 1, minor: 3 }),
+        layer_entry("dev/b", LayerKind::BlockDevice { major: 8, minor: 1 }),
+        layer_entry("p", LayerKind::Fifo),
+        layer_entry("gone", LayerKind::Whiteout),
     ]
 }
 
@@ -187,6 +295,15 @@ fn entry_mode_outside_permission_bits_is_rejected() {
     let at = 1 + 4 + 1 + 1;
     body[at..at + 4].copy_from_slice(&0o100644u32.to_be_bytes());
     assert!(HostMsg::decode(&body).is_err());
+}
+
+#[test]
+fn layer_entry_mode_outside_permission_bits_is_rejected() {
+    let mut body = GuestMsg::LayerEntry(layer_entry("a", LayerKind::Fifo)).encode();
+    // 경로(4+1) 뒤 종류(1) 뒤가 mode.
+    let at = 1 + 4 + 1 + 1;
+    body[at..at + 4].copy_from_slice(&0o010644u32.to_be_bytes());
+    assert!(GuestMsg::decode(&body).is_err());
 }
 
 #[test]

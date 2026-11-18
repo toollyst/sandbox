@@ -26,7 +26,10 @@ fn sandboxes_tab_shows_rows_hints_and_recent_events() {
     m.apply(Msg::Event(event("sandbox", "start", &"1".repeat(64))));
     let s = render(&mut m, 120, 30);
     assert!(s.contains("1 Sandboxes 2"), "{s}");
-    assert!(s.contains("2 Images 1") && s.contains("3 Events 1"), "{s}");
+    assert!(
+        s.contains("2 Images 1") && s.contains("3 Volumes 0") && s.contains("4 Events 1"),
+        "{s}"
+    );
     for want in [
         "NAME",
         "web",
@@ -61,7 +64,7 @@ fn only_visible_rows_are_drawn_and_the_selection_stays_on_screen() {
     let s = render(&mut m, 100, 20);
     assert!(s.contains("id0004") && !s.contains("id0499"), "{s}");
     // 표 칸(테두리, 머리줄 뺀 15줄)만큼만 그렸다.
-    let c = m.cursors[2];
+    let c = m.cursors[Tab::Events.index()];
     assert_eq!((c.selected, c.offset), (4, 4));
 }
 
@@ -143,7 +146,7 @@ fn executors_tab_shows_current_marks_and_adapters() {
     assert!(render(&mut m, 120, 20).contains("Loading…"));
     m.apply(Msg::Executors(Ok(executors())));
     let s = render(&mut m, 140, 20);
-    assert!(s.contains("4 Executors 3"), "{s}");
+    assert!(s.contains("5 Executors 3"), "{s}");
     assert!(
         s.contains("current: wick@1.18.0") && s.contains("adapter firecracker@0.2.0"),
         "{s}"
@@ -189,6 +192,27 @@ fn executors_tab_shows_current_marks_and_adapters() {
         "{s}"
     );
     assert!(!s.contains("s start"), "{s}");
+    // 첫 run이 기본 실행기를 받아 깔면(`executor current`가 그렇게 말한다) 그대로 run하라고 한다.
+    let auto = format!(
+        "no executor is installed; the first `sbx run` {}",
+        crate::executors::AUTO_INSTALL
+    );
+    x.current = Err(auto.clone());
+    m.apply(Msg::Executors(Ok(x.clone())));
+    let s = render(&mut m, 140, 30);
+    assert!(
+        s.contains("run -it alpine sh; the first run installs the default executor")
+            && !s.contains("Install an executor first"),
+        "{s}"
+    );
+    m.tab = Tab::Executors;
+    let s = render(&mut m, 140, 20);
+    assert!(
+        s.contains("The first run installs the default one. Press S to search")
+            && !s.contains("current:"),
+        "{s}"
+    );
+    x.current = Err(crate::choose::NO_EXECUTOR.into());
     // 설치한 것이 있는데 고를 수 없으면 그 까닭은 보인다.
     x.executors = executors().executors;
     m.apply(Msg::Executors(Ok(x)));
@@ -288,4 +312,167 @@ fn header_shows_the_version_and_a_newer_one() {
         "{s}"
     );
     assert!(s.contains("1 Sandboxes 2"), "tabs still fit: {s}");
+}
+
+#[test]
+fn volumes_tab_shows_size_disk_use_and_users() {
+    use crate::tui::model::tests::volume;
+    let mut m = loaded();
+    m.tab = Tab::Volumes;
+    assert!(render(&mut m, 120, 20).contains("Loading…"));
+    m.apply(Msg::Volumes(Ok(vec![])));
+    let s = render(&mut m, 120, 20);
+    assert!(
+        s.contains("No volumes yet") && s.contains("c to create one"),
+        "{s}"
+    );
+    m.apply(Msg::Volumes(Ok(vec![
+        volume("pgdata", &['1']),
+        volume("cache", &[]),
+    ])));
+    let s = render(&mut m, 120, 20);
+    assert!(s.contains("3 Volumes 2"), "{s}");
+    for want in [
+        "NAME", "ON DISK", "USED BY", "pgdata", "17.2GB", "41.9MB", "●", "web", "cache",
+    ] {
+        assert!(s.contains(want), "{want}: {s}");
+    }
+    assert!(s.contains("D rm") && s.contains("P prune"), "{s}");
+}
+
+#[test]
+fn images_tab_offers_build_always_and_rebuild_for_built_images() {
+    use crate::tui::model::tests::{built, image};
+    let mut m = crate::tui::model::Model {
+        tab: Tab::Images,
+        ..Default::default()
+    };
+    // 빈 탭은 빌드를 먼저 권한다. 고른 줄이 없으니 줄에 하는 키는 없다.
+    m.apply(Msg::Images(Ok(Vec::new())));
+    let s = render(&mut m, 160, 20);
+    assert!(
+        s.contains("Press b to build one, or : and type pull IMAGE (run pulls what it needs)"),
+        "{s}"
+    );
+    assert!(
+        s.contains("b build  I load") && !s.contains("R rebuild"),
+        "{s}"
+    );
+    // 만든 이미지(빌드 기록이 있다)는 `*`이고 다시 빌드할 수 있다. 받은 이미지는 올리기만, 이름 없는 것은 둘 다 없다.
+    m.apply(Msg::Images(Ok(vec![
+        built(
+            Some("docker.io/library/app:1"),
+            Some("/home/me/app/Dockerfile"),
+            None,
+        ),
+        image(Some("docker.io/library/alpine:3.20")),
+        image(None),
+    ])));
+    let s = render(&mut m, 160, 20);
+    assert!(s.contains("Images · * built here"), "{s}");
+    let row = |s: &str, what: &str| s.lines().find(|l| l.contains(what)).unwrap().to_owned();
+    assert!(row(&s, "app:1").contains("│ *  app:1"), "{s}");
+    assert!(!row(&s, "alpine:3.20").contains('*'), "{s}");
+    assert!(
+        s.contains("p push  R rebuild") && s.contains("b build"),
+        "{s}"
+    );
+    m.key(KeyEvent::from(KeyCode::Down));
+    let s = render(&mut m, 160, 20);
+    assert!(s.contains("p push") && !s.contains("R rebuild"), "{s}");
+    m.key(KeyEvent::from(KeyCode::Down));
+    let s = render(&mut m, 160, 20);
+    assert!(
+        !s.contains("R rebuild") && !s.contains("p push") && s.contains("t tag"),
+        "{s}"
+    );
+    // 80칸에서도 이름이 다 보인다.
+    let s = render(&mut m, 80, 20);
+    assert!(s.contains("*  app:1") && s.contains("alpine:3.20"), "{s}");
+    // 상세 창에 어디서 만들었는지.
+    m.key(KeyEvent::from(KeyCode::Char('g')));
+    m.key(KeyEvent::from(KeyCode::Enter));
+    let s = render(&mut m, 120, 40);
+    for want in [
+        "Image app:1",
+        "build",
+        "context  /home/me/app",
+        "file     /home/me/app/Dockerfile",
+    ] {
+        assert!(s.contains(want), "{want}\n{s}");
+    }
+    // R은 명령 줄을 채운다(입력 줄에 보인다). 실행은 Enter 뒤다.
+    m.key(KeyEvent::from(KeyCode::Esc));
+    m.key(KeyEvent::from(KeyCode::Char('R')));
+    let s = render(&mut m, 160, 20);
+    assert!(
+        s.lines()
+            .last()
+            .unwrap()
+            .starts_with(":sbx build -t app:1 -f /home/me/app/Dockerfile /home/me/app"),
+        "{s}"
+    );
+}
+
+#[test]
+fn sandbox_details_show_the_allow_list_and_connect_targets() {
+    let mut m = loaded();
+    let mut s = crate::tui::model::tests::sandbox(Some("app"), '3', "running");
+    s.network = serde_json::from_value(serde_json::json!({
+        "mode": "allow",
+        "allow": ["registry.npmjs.org:443", "github.com:22"],
+        "connect": [{"name": "db", "sandbox": "pg", "port": 5432}],
+    }))
+    .unwrap();
+    m.apply(Msg::Sandboxes(Ok(vec![s])));
+    m.key(KeyEvent::from(KeyCode::Enter));
+    let s = render(&mut m, 120, 50);
+    for want in [
+        "Sandbox app",
+        "network",
+        "mode   allow",
+        "allow  registry.npmjs.org:443, github.com:22",
+        "connect",
+        "- name     db",
+        "sandbox  pg",
+        "port     5432",
+        "same as: sbx inspect app --format json",
+    ] {
+        assert!(s.contains(want), "{want}\n{s}");
+    }
+}
+
+#[test]
+fn executors_in_use_show_their_sandboxes_and_rm_shows_the_refusal() {
+    let mut m = loaded();
+    m.tab = Tab::Executors;
+    let mut x = executors();
+    x.executors[1].running = vec!["web".into()];
+    x.adapters[0].running = vec!["web".into()];
+    m.apply(Msg::Executors(Ok(x)));
+    let s = render(&mut m, 160, 20);
+    assert!(s.contains("RUNNING"), "{s}");
+    let wick = s.lines().find(|l| l.contains("/d/executors/wick")).unwrap();
+    assert!(wick.contains("web"), "{wick}");
+    // D는 묻고 `executor rm`을 부른다. 거부는 CLI가 하고, 그 까닭이 상태 줄에 나온다.
+    m.key(KeyEvent::from(KeyCode::Char('j')));
+    m.key(KeyEvent::from(KeyCode::Char('D')));
+    m.key(KeyEvent::from(KeyCode::Char('y')));
+    let args: Vec<String> = ["executor", "rm", "wick@1.18.0"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    m.apply(Msg::Done {
+        args,
+        ok: false,
+        message: "executor wick@1.18.0 is in use by running sandbox web; stop it first, or use -f"
+            .into(),
+    });
+    let s = render(&mut m, 160, 20);
+    assert!(
+        s.contains(
+            "✗ sbx executor rm wick@1.18.0: executor wick@1.18.0 is in use by running sandbox web"
+        ),
+        "{s}"
+    );
 }

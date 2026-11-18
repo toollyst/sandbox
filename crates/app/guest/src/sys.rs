@@ -25,6 +25,27 @@ pub fn kill(pid: u32, signal: i32) -> io::Result<()> {
     check(unsafe { libc::kill(pid, signal) })
 }
 
+/// 프로세스 그룹 전체에 시그널을 보낸다(`killpg`).
+pub fn kill_group(pgid: u32, signal: i32) -> io::Result<()> {
+    let pgid =
+        libc::pid_t::try_from(pgid).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    if pgid <= 1 {
+        // 0은 이 프로세스의 그룹, 1은 init의 그룹이다. 남의 그룹은 받지 않는다.
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    // SAFETY: killpg는 메모리를 건드리지 않는다.
+    check(unsafe { libc::killpg(pgid, signal) })
+}
+
+/// 프로세스 그룹에 아직 프로세스가 있는지(좀비 포함). 시그널 0으로 본다.
+pub fn group_alive(pgid: u32) -> bool {
+    match kill_group(pgid, 0) {
+        Ok(()) => true,
+        // 권한이 없으면 있는 것이다.
+        Err(e) => e.raw_os_error() == Some(libc::EPERM),
+    }
+}
+
 /// Linux 번호가 다른 시그널: (Linux 번호, 이 OS의 번호). Linux에서는 비어 있다.
 #[cfg(target_os = "linux")]
 const RENUMBERED: &[(i32, i32)] = &[];
@@ -190,6 +211,17 @@ pub fn is_root() -> bool {
     unsafe { libc::geteuid() == 0 }
 }
 
+/// 특수 파일(FIFO, 장치)을 만든다(`mknod(2)`). `mode`는 종류와 권한, `rdev`는 장치 번호(`st_rdev` 그대로).
+// mode_t, dev_t의 C 형은 OS마다 다르다(macOS는 u16, i32).
+#[allow(clippy::unnecessary_cast)]
+pub fn mknod(path: &std::path::Path, mode: u32, rdev: u64) -> io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    // SAFETY: c는 이 호출 동안 살아 있는 NUL 종료 문자열이다. mknod는 그 밖의 메모리를 건드리지 않는다.
+    check(unsafe { libc::mknod(c.as_ptr(), mode as libc::mode_t, rdev as libc::dev_t) })
+}
+
 /// 버퍼에 있는 파일 시스템 쓰기를 디스크로 내린다.
 pub fn sync() {
     // SAFETY: sync는 인자가 없고 실패하지 않는다.
@@ -211,18 +243,244 @@ pub fn disk_usage(path: &str) -> io::Result<(u64, u64)> {
     Ok((total, total.saturating_sub(free)))
 }
 
-/// Linux 전용 시스템 호출. 부팅(`boot`)만 쓴다.
+/// 장치 번호(`st_rdev`)를 (major, minor)로 나눈다. 인코딩은 OS마다 다르다.
+pub fn dev_split(rdev: u64) -> (u32, u32) {
+    #[cfg(target_os = "linux")]
+    {
+        // glibc `gnu_dev_major`, `gnu_dev_minor`와 같다.
+        let major = ((rdev >> 8) & 0xfff) | ((rdev >> 32) & !0xfff);
+        let minor = (rdev & 0xff) | ((rdev >> 12) & !0xff);
+        (major as u32, minor as u32)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        // BSD와 macOS: 위 8비트가 major, 아래 24비트가 minor.
+        (((rdev >> 24) & 0xff) as u32, (rdev & 0xff_ffff) as u32)
+    }
+}
+
+/// netlink `RTM_NEWROUTE` 메시지 하나: `ip route replace local <dst>/<prefix> dev <ifindex>`와 같다
+/// (표 local, 종류 local, 범위 host). 응답(ack)을 달라고 한다. 헤더는 이 CPU의 바이트 순서, 주소는 네트워크 순서다.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn local_route_message(dst: std::net::Ipv4Addr, prefix: u8, ifindex: u32, seq: u32) -> Vec<u8> {
+    const RTM_NEWROUTE: u16 = 24;
+    const NLM_F_REQUEST: u16 = 0x1;
+    const NLM_F_ACK: u16 = 0x4;
+    const NLM_F_REPLACE: u16 = 0x100;
+    const NLM_F_CREATE: u16 = 0x400;
+    const AF_INET: u8 = 2;
+    const RT_TABLE_LOCAL: u8 = 255;
+    const RTPROT_STATIC: u8 = 4;
+    const RT_SCOPE_HOST: u8 = 254;
+    const RTN_LOCAL: u8 = 2;
+    const RTA_DST: u16 = 1;
+    const RTA_OIF: u16 = 4;
+    let mut m = Vec::with_capacity(44);
+    m.extend_from_slice(&44u32.to_ne_bytes());
+    m.extend_from_slice(&RTM_NEWROUTE.to_ne_bytes());
+    m.extend_from_slice(&(NLM_F_REQUEST | NLM_F_ACK | NLM_F_REPLACE | NLM_F_CREATE).to_ne_bytes());
+    m.extend_from_slice(&seq.to_ne_bytes());
+    m.extend_from_slice(&0u32.to_ne_bytes());
+    // rtmsg: family, dst_len, src_len, tos, table, protocol, scope, type, flags.
+    m.extend_from_slice(&[
+        AF_INET,
+        prefix,
+        0,
+        0,
+        RT_TABLE_LOCAL,
+        RTPROT_STATIC,
+        RT_SCOPE_HOST,
+        RTN_LOCAL,
+    ]);
+    m.extend_from_slice(&0u32.to_ne_bytes());
+    // rtattr: 길이, 종류, 값.
+    m.extend_from_slice(&8u16.to_ne_bytes());
+    m.extend_from_slice(&RTA_DST.to_ne_bytes());
+    m.extend_from_slice(&dst.octets());
+    m.extend_from_slice(&8u16.to_ne_bytes());
+    m.extend_from_slice(&RTA_OIF.to_ne_bytes());
+    m.extend_from_slice(&ifindex.to_ne_bytes());
+    m
+}
+
+/// netlink 응답에서 `seq`의 ack를 찾는다: `Some(0)`이면 성공, `Some(errno)`이면 실패, 없으면 `None`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn netlink_ack(buf: &[u8], seq: u32) -> Option<i32> {
+    const NLMSG_ERROR: u16 = 2;
+    let mut at = 0;
+    while at + 16 <= buf.len() {
+        let word = |o: usize| u32::from_ne_bytes(buf[o..o + 4].try_into().unwrap_or_default());
+        let len = word(at) as usize;
+        if len < 16 || at + len > buf.len() {
+            return None;
+        }
+        let kind = u16::from_ne_bytes([buf[at + 4], buf[at + 5]]);
+        if kind == NLMSG_ERROR && word(at + 8) == seq && len >= 20 {
+            let err = i32::from_ne_bytes(buf[at + 16..at + 20].try_into().unwrap_or_default());
+            return Some(-err);
+        }
+        // 다음 메시지는 4바이트 경계에서 시작한다.
+        at += (len + 3) & !3;
+    }
+    None
+}
+
+/// `path`의 수정 시각을 지금 값 그대로 다시 쓴다. 접근 시각은 두고(`UTIME_OMIT`), 마지막 링크는 따라가지 않는다.
+/// 커널은 이것을 `IN_MODIFY`로 알린다(`changes` 모듈). Linux는 시각을 캐시가 아닌 파일 시스템에 새로 묻는다
+/// (`statx`의 `AT_STATX_FORCE_SYNC`. virtio-fs·FUSE는 서버에 묻는다). 다른 OS(호스트에서 도는 fake 실행기)는 `lstat`이다.
+// timespec 필드의 C 형은 OS마다 다르다.
+#[allow(clippy::unnecessary_cast, clippy::useless_conversion)]
+pub fn touch_mtime(path: &std::path::Path) -> io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    #[cfg(target_os = "linux")]
+    let (sec, nsec) = {
+        // SAFETY: statx는 정수 필드만 있는 C 구조체라 0으로 채워도 된다.
+        let mut st: libc::statx = unsafe { std::mem::zeroed() };
+        // SAFETY: c는 NUL로 끝나는 문자열이고 st는 쓸 수 있는 statx다. 커널은 st 밖을 쓰지 않는다. libc의 statx 함수
+        // 대신 시스템 호출을 쓴다(오래된 musl에는 그 함수가 없다).
+        let ret = unsafe {
+            libc::syscall(
+                libc::SYS_statx,
+                libc::AT_FDCWD,
+                c.as_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW | libc::AT_STATX_FORCE_SYNC,
+                libc::STATX_MTIME,
+                &mut st as *mut libc::statx,
+            )
+        };
+        if ret == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        (st.stx_mtime.tv_sec as i64, st.stx_mtime.tv_nsec as i64)
+    };
+    #[cfg(not(target_os = "linux"))]
+    let (sec, nsec) = {
+        use std::os::unix::fs::MetadataExt;
+        let m = std::fs::symlink_metadata(path)?;
+        (m.mtime(), m.mtime_nsec())
+    };
+    let times = [
+        libc::timespec {
+            tv_sec: 0,
+            tv_nsec: libc::UTIME_OMIT as _,
+        },
+        libc::timespec {
+            tv_sec: sec as libc::time_t,
+            tv_nsec: nsec as _,
+        },
+    ];
+    // SAFETY: c는 NUL로 끝나는 문자열이고 times는 timespec 두 개짜리 배열이다. utimensat은 둘을 읽기만 한다.
+    check(unsafe {
+        libc::utimensat(
+            libc::AT_FDCWD,
+            c.as_ptr(),
+            times.as_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    })
+}
+
+/// Linux 전용 시스템 호출. 부팅(`boot`)과 빌드 층(`overlay`, `layer`)과 투명 TCP(`transparent`)가 쓴다.
 #[cfg(target_os = "linux")]
 pub mod linux {
     use std::ffi::CString;
     use std::fs::File;
     use std::io;
-    use std::os::fd::{FromRawFd, OwnedFd};
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
 
     use super::check;
 
     fn cstr(s: &str) -> io::Result<CString> {
         CString::new(s).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))
+    }
+
+    fn cpath(p: &Path) -> io::Result<CString> {
+        CString::new(p.as_os_str().as_bytes())
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))
+    }
+
+    /// `umount2(2)`, 플래그 없이. 쓰는 프로세스가 있으면 `EBUSY`로 실패한다(늦게 떼기를 쓰지 않는다).
+    pub fn umount(target: &str) -> io::Result<()> {
+        let t = cstr(target)?;
+        // SAFETY: t는 이 호출 동안 살아 있는 NUL 종료 문자열이다.
+        check(unsafe { libc::umount2(t.as_ptr(), 0) })
+    }
+
+    /// 작업 디렉터리를 열린 디렉터리로 바꾼다(`fchdir(2)`). chroot 밖의 디렉터리여도 된다.
+    pub fn fchdir(dir: &File) -> io::Result<()> {
+        // SAFETY: fchdir은 열린 fd 하나만 받는다. dir이 이 호출 동안 살아 있다.
+        check(unsafe { libc::fchdir(dir.as_raw_fd()) })
+    }
+
+    /// 확장 속성 이름 목록. 심볼릭 링크를 따라가지 않는다(`llistxattr(2)`). xattr이 없는 파일 시스템이면 빈 목록이다.
+    pub fn list_xattrs(path: &Path) -> io::Result<Vec<Vec<u8>>> {
+        let p = cpath(path)?;
+        loop {
+            // SAFETY: 크기 0이면 버퍼를 쓰지 않고 필요한 크기만 돌려준다.
+            let need = unsafe { libc::llistxattr(p.as_ptr(), std::ptr::null_mut(), 0) };
+            if need < 0 {
+                let e = io::Error::last_os_error();
+                return match e.raw_os_error() {
+                    Some(libc::ENOTSUP) => Ok(Vec::new()),
+                    _ => Err(e),
+                };
+            }
+            if need == 0 {
+                return Ok(Vec::new());
+            }
+            let mut buf = vec![0u8; need as usize];
+            // SAFETY: buf는 buf.len() 바이트를 쓸 수 있다.
+            let got = unsafe { libc::llistxattr(p.as_ptr(), buf.as_mut_ptr().cast(), buf.len()) };
+            if got < 0 {
+                let e = io::Error::last_os_error();
+                if e.raw_os_error() == Some(libc::ERANGE) {
+                    continue; // 그 사이에 늘었다.
+                }
+                return Err(e);
+            }
+            buf.truncate(got as usize);
+            return Ok(buf
+                .split(|b| *b == 0)
+                .filter(|n| !n.is_empty())
+                .map(<[u8]>::to_vec)
+                .collect());
+        }
+    }
+
+    /// 확장 속성 값 하나. 심볼릭 링크를 따라가지 않는다(`lgetxattr(2)`). 없으면 `None`.
+    pub fn get_xattr(path: &Path, name: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        let p = cpath(path)?;
+        let n = CString::new(name).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        loop {
+            // SAFETY: 크기 0이면 버퍼를 쓰지 않는다.
+            let need = unsafe { libc::lgetxattr(p.as_ptr(), n.as_ptr(), std::ptr::null_mut(), 0) };
+            if need < 0 {
+                let e = io::Error::last_os_error();
+                return match e.raw_os_error() {
+                    Some(libc::ENODATA) | Some(libc::ENOTSUP) => Ok(None),
+                    _ => Err(e),
+                };
+            }
+            let mut buf = vec![0u8; need as usize];
+            // SAFETY: buf는 buf.len() 바이트를 쓸 수 있다.
+            let got = unsafe {
+                libc::lgetxattr(p.as_ptr(), n.as_ptr(), buf.as_mut_ptr().cast(), buf.len())
+            };
+            if got < 0 {
+                let e = io::Error::last_os_error();
+                match e.raw_os_error() {
+                    Some(libc::ERANGE) => continue,
+                    Some(libc::ENODATA) => return Ok(None),
+                    _ => return Err(e),
+                }
+            }
+            buf.truncate(got as usize);
+            return Ok(Some(buf));
+        }
     }
 
     /// `mount(2)`.
@@ -264,6 +522,54 @@ pub mod linux {
     pub fn sethostname(name: &str) -> io::Result<()> {
         // SAFETY: 포인터와 길이가 같은 바이트열을 가리킨다.
         check(unsafe { libc::sethostname(name.as_ptr().cast(), name.len()) })
+    }
+
+    /// PID 1과 이 프로세스를 뺀 모든 프로세스에 시그널을 보낸다(`kill(-1, …)`). 게스트(VM 안)에서만 부른다.
+    /// 보낼 프로세스가 없으면(`ESRCH`) 성공이다.
+    pub fn kill_everyone_else(signal: i32) -> io::Result<()> {
+        // SAFETY: kill은 메모리를 건드리지 않는다.
+        match check(unsafe { libc::kill(-1, signal) }) {
+            Err(e) if e.raw_os_error() == Some(libc::ESRCH) => Ok(()),
+            r => r,
+        }
+    }
+
+    /// `CLOCK_MONOTONIC_RAW`: 시계 맞추기(천천히 맞추기 포함)가 빠르기를 바꾸지 않는 단조 시계.
+    pub fn monotonic_raw() -> std::time::Duration {
+        // SAFETY: timespec은 정수 필드뿐이라 0으로 채운 값이 올바르다.
+        let mut t: libc::timespec = unsafe { std::mem::zeroed() };
+        // SAFETY: t는 이 호출 동안 살아 있는 timespec이다. 이 시계는 2.6.28부터 있어 실패하지 않는다.
+        unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC_RAW, &mut t) };
+        std::time::Duration::new(
+            t.tv_sec.max(0) as u64,
+            t.tv_nsec.clamp(0, 999_999_999) as u32,
+        )
+    }
+
+    /// 벽시계(`CLOCK_REALTIME`)에 `secs`초 + `nanos`나노초를 바로 더한다(`ADJ_SETOFFSET`). `nanos`는 `0..1e9`여야 한다
+    /// (음수 차이는 초를 내려 나타낸다). 읽고 쓰는 사이의 틈이 없다(커널이 한 번에 더한다).
+    pub fn clock_step(secs: i64, nanos: i64) -> io::Result<()> {
+        // SAFETY: timex는 정수 필드뿐이라 0으로 채운 값이 올바르다.
+        let mut t: libc::timex = unsafe { std::mem::zeroed() };
+        t.modes = libc::ADJ_SETOFFSET | libc::ADJ_NANO;
+        // 게스트는 64비트뿐이라(x86_64, aarch64) 필드가 모두 i64다. 다른 크기면 여기서 컴파일되지 않는다.
+        t.time.tv_sec = secs;
+        // ADJ_NANO에서는 tv_usec이 나노초다.
+        t.time.tv_usec = nanos;
+        // SAFETY: t는 이 호출 동안 살아 있는 timex다.
+        check(unsafe { libc::adjtimex(&mut t) })
+    }
+
+    /// 벽시계를 `micros` 마이크로초만큼 천천히 옮긴다(`ADJ_OFFSET_SINGLESHOT`, `adjtime(3)`과 같다). 커널은 1초에
+    /// 0.5ms까지 고친다. 남은 몫이 있으면 이 값으로 바꾼다. 0이면 진행 중인 것을 취소한다.
+    pub fn clock_slew_micros(micros: i64) -> io::Result<()> {
+        // SAFETY: timex는 정수 필드뿐이라 0으로 채운 값이 올바르다.
+        let mut t: libc::timex = unsafe { std::mem::zeroed() };
+        // 이 방식은 다른 비트와 함께 쓰지 않는다(커널이 EINVAL).
+        t.modes = libc::ADJ_OFFSET_SINGLESHOT;
+        t.offset = micros;
+        // SAFETY: t는 이 호출 동안 살아 있는 timex다.
+        check(unsafe { libc::adjtimex(&mut t) })
     }
 
     /// 아무 자식이나 끝나면 거둔다. (pid, 종료 상태). 자식이 없으면 `ECHILD` 오류.
@@ -311,6 +617,115 @@ pub mod linux {
         }
         // SAFETY: 위와 같다.
         check(unsafe { libc::ioctl(sock.as_raw_fd(), libc::SIOCSIFFLAGS as libc::Ioctl, &req) })
+    }
+
+    /// `dst/prefix`를 루프백의 local 경로로 잡는다(`ip route replace local dst/prefix dev lo`). 이미 있으면 그대로다.
+    /// 그 뒤로 범위 안의 어느 주소에서나 듣고 연결할 수 있다.
+    pub fn add_local_route(dst: std::net::Ipv4Addr, prefix: u8) -> io::Result<()> {
+        use std::os::fd::AsRawFd;
+        // SAFETY: 이름은 NUL로 끝나는 정적 문자열이다.
+        let lo = unsafe { libc::if_nametoindex(c"lo".as_ptr()) };
+        if lo == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: socket은 새 fd를 돌려주거나 -1이다.
+        let fd = unsafe {
+            libc::socket(
+                libc::AF_NETLINK,
+                libc::SOCK_RAW | libc::SOCK_CLOEXEC,
+                libc::NETLINK_ROUTE,
+            )
+        };
+        check(fd)?;
+        // SAFETY: fd는 방금 만든, 아무도 소유하지 않은 fd다.
+        let sock = unsafe { OwnedFd::from_raw_fd(fd) };
+        let seq = 1;
+        let msg = super::local_route_message(dst, prefix, lo, seq);
+        // SAFETY: sockaddr_nl은 정수 필드만 있어 0으로 채워도 된다(nl_pid 0은 커널).
+        let mut kernel: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
+        kernel.nl_family = libc::AF_NETLINK as libc::sa_family_t;
+        // SAFETY: msg와 kernel은 이 호출 동안 살아 있고 길이는 그 크기다.
+        let sent = unsafe {
+            libc::sendto(
+                sock.as_raw_fd(),
+                msg.as_ptr().cast(),
+                msg.len(),
+                0,
+                (&kernel as *const libc::sockaddr_nl).cast(),
+                std::mem::size_of::<libc::sockaddr_nl>() as libc::socklen_t,
+            )
+        };
+        if sent < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut buf = vec![0u8; 8192];
+        loop {
+            // SAFETY: buf는 buf.len() 바이트를 쓸 수 있다.
+            let n = unsafe { libc::recv(sock.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len(), 0) };
+            if n < 0 {
+                let e = io::Error::last_os_error();
+                if e.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(e);
+            }
+            match super::netlink_ack(&buf[..n as usize], seq) {
+                Some(0) => return Ok(()),
+                Some(errno) => return Err(io::Error::from_raw_os_error(errno)),
+                None if n == 0 => return Err(io::ErrorKind::UnexpectedEof.into()),
+                None => {}
+            }
+        }
+    }
+
+    /// 디렉터리 하나를 보는 inotify(테스트가 알림을 확인한다).
+    #[cfg(test)]
+    pub struct Inotify(OwnedFd);
+
+    #[cfg(test)]
+    impl Inotify {
+        /// `dir`의 모든 사건을 본다. 읽기는 기다리지 않는다.
+        pub fn watch(dir: &Path) -> io::Result<Self> {
+            // SAFETY: inotify_init1은 메모리를 건드리지 않는다.
+            let fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: fd는 방금 열어 아무도 갖지 않은 파일 기술자다.
+            let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+            let c = cpath(dir)?;
+            // SAFETY: c는 NUL로 끝나는 문자열이다.
+            let wd =
+                unsafe { libc::inotify_add_watch(fd.as_raw_fd(), c.as_ptr(), libc::IN_ALL_EVENTS) };
+            if wd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(Self(fd))
+        }
+
+        /// 쌓인 사건: (마스크, 이름). 이름이 없으면(디렉터리 자신) 빈 문자열.
+        pub fn read_events(&self) -> io::Result<Vec<(u32, String)>> {
+            let mut buf = [0u8; 4096];
+            // SAFETY: buf는 그 길이만큼 쓸 수 있다.
+            let n = unsafe { libc::read(self.0.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
+            if n < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let n = n as usize;
+            let mut out = Vec::new();
+            let mut at = 0;
+            // struct inotify_event: wd(i32), mask(u32), cookie(u32), len(u32), 이름(len 바이트, NUL로 채움).
+            while at + 16 <= n {
+                let word =
+                    |i: usize| u32::from_ne_bytes([buf[i], buf[i + 1], buf[i + 2], buf[i + 3]]);
+                let (mask, len) = (word(at + 4), word(at + 12) as usize);
+                let name = &buf[at + 16..(at + 16 + len).min(n)];
+                let name = name.split(|b| *b == 0).next().unwrap_or_default();
+                out.push((mask, String::from_utf8_lossy(name).into_owned()));
+                at += 16 + len;
+            }
+            Ok(out)
+        }
     }
 
     /// vsock 포트에서 듣는다.
@@ -361,5 +776,55 @@ pub mod linux {
                 return Err(e);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_local_route_message_is_laid_out_as_the_kernel_reads_it() {
+        let m = local_route_message(std::net::Ipv4Addr::new(198, 18, 0, 0), 15, 1, 7);
+        assert_eq!(m.len(), 44);
+        assert_eq!(u32::from_ne_bytes(m[0..4].try_into().unwrap()), 44);
+        assert_eq!(u16::from_ne_bytes([m[4], m[5]]), 24);
+        assert_eq!(u16::from_ne_bytes([m[6], m[7]]), 0x505);
+        assert_eq!(u32::from_ne_bytes(m[8..12].try_into().unwrap()), 7);
+        assert_eq!(&m[16..24], &[2, 15, 0, 0, 255, 4, 254, 2]);
+        assert_eq!(
+            &m[28..32],
+            &[8u16.to_ne_bytes(), 1u16.to_ne_bytes()].concat()[..]
+        );
+        assert_eq!(&m[32..36], &[198, 18, 0, 0]);
+        assert_eq!(
+            &m[36..40],
+            &[8u16.to_ne_bytes(), 4u16.to_ne_bytes()].concat()[..]
+        );
+        assert_eq!(u32::from_ne_bytes(m[40..44].try_into().unwrap()), 1);
+    }
+
+    #[test]
+    fn netlink_acks_are_found_by_sequence() {
+        let ack = |seq: u32, err: i32| {
+            let mut m = Vec::new();
+            m.extend_from_slice(&36u32.to_ne_bytes());
+            m.extend_from_slice(&2u16.to_ne_bytes());
+            m.extend_from_slice(&0u16.to_ne_bytes());
+            m.extend_from_slice(&seq.to_ne_bytes());
+            m.extend_from_slice(&0u32.to_ne_bytes());
+            m.extend_from_slice(&err.to_ne_bytes());
+            m.extend_from_slice(&[0; 16]);
+            m
+        };
+        assert_eq!(netlink_ack(&ack(1, 0), 1), Some(0));
+        assert_eq!(netlink_ack(&ack(1, -17), 1), Some(17));
+        assert_eq!(netlink_ack(&[ack(9, -1), ack(1, 0)].concat(), 1), Some(0));
+        assert_eq!(netlink_ack(&ack(2, 0), 1), None);
+        assert_eq!(netlink_ack(&ack(1, 0)[..10], 1), None);
+        let mut lying = ack(1, 0);
+        lying[0] = 200;
+        assert_eq!(netlink_ack(&lying, 1), None);
+        assert_eq!(netlink_ack(&[], 1), None);
     }
 }

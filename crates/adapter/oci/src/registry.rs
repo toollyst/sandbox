@@ -1,10 +1,14 @@
-//! Distribution Spec 클라이언트. pull에 필요한 GET만 한다.
+//! Distribution Spec 클라이언트. pull의 GET과, push([`crate::push`])가 쓰는 요청 하나([`Registry::push_request`]).
 //!
 //! 인증: 401 응답의 `WWW-Authenticate`를 따른다. `Bearer`면 거기 적힌 곳(`realm`)에서 토큰을 받아 다시 요청하고,
 //! `Basic`이면 자격 증명을 그대로 보낸다. 자격 증명은 그 레지스트리(사용자가 이미지 이름으로 고른 호스트)의 것만
 //! 찾는다([`crate::auth`]). 있으면 토큰 요청에 Basic으로(identity token이면 OAuth2 refresh token으로 POST) 싣고,
-//! 없으면 익명으로 받는다. 토큰은 저장소마다 메모리에만 둔다. 자격 증명을 실은 요청은 https로만 간다
-//! (레지스트리 자체가 http인 `localhost`는 예외).
+//! 없으면 익명으로 받는다. 토큰은 저장소마다(push는 요청한 scope 묶음마다) 메모리에만 둔다. 자격 증명을 실은 요청은
+//! https로만 간다(레지스트리 자체가 http인 `localhost`는 예외).
+//!
+//! 토큰의 scope: pull은 챌린지가 준 것(없으면 `repository:<저장소>:pull`), push는 부르는 쪽이 정한 것
+//! (`repository:<저장소>:pull,push`, mount면 `repository:<원래 저장소>:pull`을 더한다. Docker와 같다).
+//! 챌린지의 scope는 그 요청(예: `HEAD`)에 필요한 것뿐이라 push에 쓰지 않는다.
 //!
 //! `localhost`와 `127.0.0.1` 레지스트리는 http로, 나머지는 https로 접속한다. Docker와 같은 기본값이다.
 //! `registries.conf`에서 `insecure`인 호스트([`Registry::with_insecure`])는 https로 연결할 수 없으면 http로 접속하고,
@@ -24,8 +28,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
-use reqwest::header::{ACCEPT, CONTENT_TYPE, WWW_AUTHENTICATE};
-use reqwest::{Response, StatusCode, Url};
+use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderName, WWW_AUTHENTICATE};
+use reqwest::{Method, Response, StatusCode, Url};
 use serde::Deserialize;
 
 use sbx_image::ImageError;
@@ -228,6 +232,38 @@ fn client(named: &Named) -> Result<reqwest::Client, ImageError> {
         .map_err(transport)
 }
 
+/// push 요청의 본문을 (다시) 만든다. 인증 뒤 다시 보낼 때 또 부른다.
+pub type BodyFn<'a> = &'a (dyn Fn() -> Result<reqwest::Body, ImageError> + Sync);
+
+/// push 요청이 가는 곳.
+#[derive(Debug, Clone)]
+pub enum Target {
+    /// `<base>/v2/<저장소>/<경로>`(쿼리를 붙여도 된다).
+    Path(String),
+    /// 레지스트리가 준 주소(`Location`). 레지스트리와 같은 곳(스킴, 호스트, 포트)일 때만 인증을 싣는다.
+    Url(Url),
+}
+
+/// push 요청 하나.
+pub struct PushRequest<'a> {
+    /// 메서드.
+    pub method: Method,
+    /// 가는 곳.
+    pub target: Target,
+    /// 더 싣는 헤더.
+    pub headers: Vec<(HeaderName, String)>,
+    /// 본문. 없으면 빈 본문.
+    pub body: Option<BodyFn<'a>>,
+}
+
+/// 주소에서 쿼리를 뺀 것. 오류 문구에 쓴다(올리기 주소의 쿼리는 그 세션을 여는 열쇠일 수 있다).
+pub fn shown(url: &Url) -> String {
+    let mut u = url.clone();
+    u.set_query(None);
+    u.set_fragment(None);
+    u.to_string()
+}
+
 /// 요청에 싣는 인증.
 #[derive(Clone)]
 enum Auth {
@@ -410,10 +446,14 @@ impl Registry {
                 let challenge = parse_challenge(&header).ok_or_else(|| {
                     ImageError::Transport(format!("{url}: 401 without a Bearer or Basic challenge"))
                 })?;
+                let scope = challenge
+                    .scope
+                    .clone()
+                    .unwrap_or_else(|| format!("repository:{repository}:pull"));
                 let token = self
                     .token(
                         &challenge,
-                        Some(repository),
+                        &[scope],
                         url.starts_with("http:"),
                         cred.as_ref(),
                     )
@@ -472,7 +512,8 @@ impl Registry {
         let challenge = parse_challenge(&header).ok_or_else(|| {
             ImageError::Transport(format!("{url}: 401 without a Bearer or Basic challenge"))
         })?;
-        self.token(&challenge, None, url.starts_with("http:"), Some(cred))
+        let scopes: Vec<String> = challenge.scope.clone().into_iter().collect();
+        self.token(&challenge, &scopes, url.starts_with("http:"), Some(cred))
             .await?;
         Ok(LoginCheck::Accepted)
     }
@@ -482,31 +523,166 @@ impl Registry {
         if !accept.is_empty() {
             req = req.header(ACCEPT, accept.join(", "));
         }
-        req = match auth {
+        self.authorized(req, url, auth)?
+            .send()
+            .await
+            .map_err(transport)
+    }
+
+    /// 요청에 인증을 싣는다. Basic은 https로만([`Registry::require_https`]).
+    fn authorized(
+        &self,
+        req: reqwest::RequestBuilder,
+        url: &str,
+        auth: &Auth,
+    ) -> Result<reqwest::RequestBuilder, ImageError> {
+        Ok(match auth {
             Auth::None => req,
             Auth::Bearer(t) => req.bearer_auth(t),
             Auth::Basic(c) => {
                 self.require_https(url)?;
                 req.basic_auth(&c.username, Some(&c.secret))
             }
-        };
-        req.send().await.map_err(transport)
+        })
     }
 
-    /// 토큰을 받는다. `repository`가 없으면(로그인 확인) 챌린지의 scope만 쓴다.
+    /// push 요청 하나를 보낸다. 401이면 `scopes`로 인증해서 한 번 더 보낸다(본문은 다시 만든다). 상태 코드는
+    /// 부르는 쪽이 본다. 돌려주는 주소는 실제로 간 곳이다(`insecure` 호스트는 http로 바뀌었을 수 있다).
+    ///
+    /// `insecure` 호스트에 https 연결이 안 되면 http로 한 번 더 한다([`Target::Path`]만, pull과 같다).
+    pub async fn push_request(
+        &self,
+        host: &str,
+        repository: &str,
+        scopes: &[String],
+        req: &PushRequest<'_>,
+    ) -> Result<(Url, Response), ImageError> {
+        if let Ok(mut n) = self.named.lock() {
+            n.insert(named_key(host));
+        }
+        let key = format!("{host} {}", scopes.join(" "));
+        let cached = match self.basic.lock().ok().and_then(|b| b.get(host).cloned()) {
+            Some(c) => Auth::Basic(c),
+            None => self
+                .tokens
+                .lock()
+                .ok()
+                .and_then(|t| t.get(&key).cloned())
+                .map_or(Auth::None, Auth::Bearer),
+        };
+        let (url, mut resp) = self.push_send_to(host, req, &cached).await?;
+        if resp.status() == StatusCode::UNAUTHORIZED {
+            let header = resp
+                .headers()
+                .get(WWW_AUTHENTICATE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_owned();
+            let cred = self.credential(host, repository).await?;
+            let auth = if is_basic(&header) {
+                // 자격 증명이 없으면 그 401을 그대로 돌려준다(무엇이 거부됐는지는 부르는 쪽이 말한다).
+                let Some(c) = cred else {
+                    return Ok((url, resp));
+                };
+                if let Ok(mut b) = self.basic.lock() {
+                    b.insert(host.to_owned(), c.clone());
+                }
+                Auth::Basic(c)
+            } else {
+                let challenge = parse_challenge(&header).ok_or_else(|| {
+                    ImageError::Transport(format!(
+                        "{}: 401 without a Bearer or Basic challenge",
+                        shown(&url)
+                    ))
+                })?;
+                let token = self
+                    .token(&challenge, scopes, url.scheme() == "http", cred.as_ref())
+                    .await?;
+                if let Ok(mut t) = self.tokens.lock() {
+                    t.insert(key, token.clone());
+                }
+                Auth::Bearer(token)
+            };
+            resp = self.push_send(&url, host, req, &auth).await?;
+        }
+        Ok((url, resp))
+    }
+
+    /// [`Registry::push_request`]의 한 번. 주소를 정하고 `insecure`면 http로 바꿔 본다.
+    async fn push_send_to(
+        &self,
+        host: &str,
+        req: &PushRequest<'_>,
+        auth: &Auth,
+    ) -> Result<(Url, Response), ImageError> {
+        let url = |base: String| match &req.target {
+            Target::Path(rest) => Url::parse(&format!("{base}/v2/{rest}")).map_err(transport),
+            Target::Url(u) => Ok(u.clone()),
+        };
+        let first = url(self.base_for(host))?;
+        match self.push_send(&first, host, req, auth).await {
+            Err(ImageError::Transport(_))
+                if matches!(req.target, Target::Path(_))
+                    && self.insecure.contains(host)
+                    && first.scheme() == "https" =>
+            {
+                if let Ok(mut p) = self.plain_http.lock() {
+                    p.insert(host.to_owned());
+                }
+                let second = url(self.base_for(host))?;
+                let resp = self.push_send(&second, host, req, auth).await?;
+                Ok((second, resp))
+            }
+            r => Ok((first, r?)),
+        }
+    }
+
+    async fn push_send(
+        &self,
+        url: &Url,
+        host: &str,
+        req: &PushRequest<'_>,
+        auth: &Auth,
+    ) -> Result<Response, ImageError> {
+        // 레지스트리가 다른 곳을 가리켰으면 그곳은 레지스트리가 고른 주소다: 규칙을 지키는지 보고 인증은 싣지 않는다.
+        let same = self.same_origin(url, host);
+        if !same {
+            let from_http = self.base_for(host).starts_with("http:");
+            check_target(url, from_http, &self.named).map_err(ImageError::Transport)?;
+        }
+        let mut b = self.http.request(req.method.clone(), url.clone());
+        for (k, v) in &req.headers {
+            b = b.header(k, v);
+        }
+        if let Some(body) = req.body {
+            b = b.body(body()?);
+        }
+        let auth = if same { auth } else { &Auth::None };
+        self.authorized(b, url.as_str(), auth)?
+            .send()
+            .await
+            .map_err(transport)
+    }
+
+    /// `url`이 레지스트리 `host`와 같은 곳(스킴, 호스트, 포트)인가.
+    fn same_origin(&self, url: &Url, host: &str) -> bool {
+        Url::parse(&self.base_for(host)).is_ok_and(|b| {
+            b.scheme() == url.scheme()
+                && b.host_str() == url.host_str()
+                && b.port_or_known_default() == url.port_or_known_default()
+        })
+    }
+
+    /// 토큰을 받는다. `scopes`가 비면(로그인 확인에서 챌린지에 scope가 없을 때) scope 없이 묻는다.
     async fn token(
         &self,
         ch: &Challenge,
-        repository: Option<&str>,
+        scopes: &[String],
         from_http: bool,
         cred: Option<&Credential>,
     ) -> Result<String, ImageError> {
         let mut url = Url::parse(&ch.realm).map_err(transport)?;
         check_target(&url, from_http, &self.named).map_err(ImageError::Transport)?;
-        let scope = ch
-            .scope
-            .clone()
-            .or_else(|| repository.map(|r| format!("repository:{r}:pull")));
         let resp = match cred {
             // OAuth2 refresh token (Docker의 identity token).
             Some(c) if c.identity_token().is_some() => {
@@ -520,8 +696,9 @@ impl Registry {
                     if let Some(s) = &ch.service {
                         q.append_pair("service", s);
                     }
-                    if let Some(s) = &scope {
-                        q.append_pair("scope", s);
+                    // OAuth2: scope 여럿은 공백으로 잇는다.
+                    if !scopes.is_empty() {
+                        q.append_pair("scope", &scopes.join(" "));
                     }
                 }
                 self.http
@@ -538,7 +715,8 @@ impl Registry {
                     if let Some(s) = &ch.service {
                         q.append_pair("service", s);
                     }
-                    if let Some(s) = &scope {
+                    // Docker 토큰 규약: scope 여럿은 `scope`를 되풀이한다.
+                    for s in scopes {
                         q.append_pair("scope", s);
                     }
                 }

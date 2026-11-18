@@ -82,6 +82,18 @@ jobs:
           ./.github/scripts/test-install.ps1 -Shell powershell.exe
       - if: runner.os == 'Linux'
         run: shellcheck install.sh .github/scripts/*.sh
+      # 올린 설치 스크립트는 바꾸지 않는다: gh-pages에 지금 INSTALLER_VERSION의 파일이 이미 있으면 지금 스크립트와
+      # 같아야 한다(고쳤으면 installer.env의 INSTALLER_VERSION을 올린다). 스크립트와 installer.env가 같은지는
+      # cargo test(xtask)가 본다. 이 저장소의 gh-pages만 보고, 실행기 저장소는 보지 않는다.
+      - if: runner.os == 'Linux'
+        name: published installers are unchanged
+        run: |
+          if git fetch -q --depth=1 origin gh-pages:gh-pages 2>/dev/null; then
+            git worktree add -q pages gh-pages
+            cargo xtask installer --check-published pages
+          else
+            echo "no gh-pages branch: no installer is published yet"
+          fi
       # 게스트 init initramfs. 두 아키텍처 모두 어느 호스트에서나 rust-lld로 링크된다.
       # 호스트 아키텍처의 것을 내장한 sbx로 e2e를 다시 돌리고(내장한 init을 캐시로 꺼내는지), 배포 빌드를 만든다.
       # 여기의 dist는 만들어지는지만 본다. 배포 프로필의 fat LTO(몇 분)는 vm 작업과 릴리스가 한다.
@@ -96,7 +108,8 @@ jobs:
           SBX_EMBED_GUEST="$PWD/target/guest/$(uname -m)/initramfs" cargo test -p sbx-cli --test e2e
           cargo xtask dist
 
-  # root와 loop 장치가 필요한 테스트 (커널이 scratch를 마운트하고 overlay upper로 쓰는지).
+  # root와 loop 장치가 필요한 테스트 (커널이 scratch를 마운트하고 overlay upper로 쓰는지, 층 디스크를 쌓은 모습이 합친
+  # rootfs와 같은지).
   privileged:
     runs-on: ubuntu-latest
     steps:
@@ -104,8 +117,9 @@ jobs:
       - run: |
           docker run --rm --privileged -v "$PWD":/src -w /src \
             -e SANDBOX_PRIVILEGED_TESTS=1 -e SANDBOX_REQUIRE_E2FSCK=1 rust:1 bash -ec '
-              apt-get update -qq && apt-get install -y -qq e2fsprogs
-              cargo test -p sbx-guest --lib privileged -- --nocapture'
+              apt-get update -qq && apt-get install -y -qq e2fsprogs erofs-utils
+              cargo test -p sbx-guest --lib privileged -- --nocapture
+              cargo test -p sbx-rootfs --all-features --lib privileged -- --nocapture'
 
   # 실제 VM: 사용자가 받는 것과 같은 v2 경로. 이 커밋의 어댑터(sbx-executor-firecracker + `cargo xtask kernel`로 만든
   # 커널)와 upstream Firecracker VMM 묶음으로 로컬 v2 저장소(file://)를 만들고, install.sh로 설치한 sbx로
@@ -174,7 +188,8 @@ jobs:
           cp target/release/sbx target/release/sbx-shim "rel/$d/"
           tar -czf "rel/$d.tar.gz" -C rel "$d"
           (cd rel && sha256sum "$d.tar.gz" > "$d.tar.gz.sha256")
-          SBX_DOWNLOAD_URL="file://$PWD/rel" SBX_INSTALL_DIR="$RUNNER_TEMP/bin" sh install.sh
+          # 실행기는 아래에서 로컬 저장소로 깐다(공식 저장소를 보지 않는다).
+          SBX_EXECUTOR=none SBX_DOWNLOAD_URL="file://$PWD/rel" SBX_INSTALL_DIR="$RUNNER_TEMP/bin" sh install.sh
       - if: steps.kvm.outputs.ok == 'true'
         name: install upstream Firecracker from a local v2 repository, then smoke
         run: |

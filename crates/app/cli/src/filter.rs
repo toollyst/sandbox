@@ -3,7 +3,7 @@
 //! - 다른 키끼리는 모두 맞아야 하고(AND), 같은 키를 여러 번 주면 그중 하나만 맞으면 된다(OR).
 //! - 명령마다 받는 키는 [`PS`], [`IMAGES`], [`EVENTS`]에 있다. 모르는 키나 잘못된 값이면 아무것도 하지 않고 오류다.
 //! - 키마다 맞추는 방법은 표의 설명(`help`)이 정본이고, 공용 규칙은 [`label`], [`glob`], [`image`]다.
-//!   Docker와 다른 점(이름은 정규식이 아니라 부분 문자열 등)은 `behavior::DOCKER_DIFFERENCES`에 있다.
+//!   Docker와 다른 점(이름은 정규식이 아니라 부분 문자열 등)은 `compat`의 표에 있다.
 //!
 //! 이 모듈은 입출력이 없다. 무엇과 맞출지는 부르는 쪽(`app`)이 값을 넘긴다.
 
@@ -50,10 +50,15 @@ pub const ACTIONS: &[&str] = &[
     "pull",
     "prepare",
     "untag",
+    "tag",
+    "push",
     "delete",
     "connect",
     "refuse",
     "close",
+    "lookup",
+    "proxy_only",
+    "notice",
 ];
 
 /// `ps --filter`. `status`나 `exited`가 있으면 `-a`가 없어도 멈춘 것까지 본다(Docker와 같다).
@@ -93,14 +98,15 @@ pub const IMAGES: &[Key] = &[
 pub const EVENTS: &[Key] = &[
     key(
         "type",
-        Value::OneOf(&["sandbox", "image", "network"]),
+        Value::OneOf(&["sandbox", "image", "network", "volume"]),
         "event type is VALUE",
     ),
     key("event", Value::OneOf(ACTIONS), "action is VALUE"),
     key(
         "sandbox",
         Value::Any,
-        "sandbox event whose sandbox ID starts with VALUE or whose name is VALUE",
+        "sandbox or network event whose sandbox ID starts with VALUE or whose name is VALUE; network events of a \
+         --connect also match the sandbox it reaches",
     ),
     key(
         "image",
@@ -109,6 +115,24 @@ pub const EVENTS: &[Key] = &[
          the reference is the event's own, else the one in the cache, so a deleted image matches by ID only)",
     ),
 ];
+
+/// `volume ls --filter`(Docker와 같은 키, `driver`는 없다).
+pub const VOLUMES: &[Key] = &[
+    key("name", Value::Any, "name contains VALUE"),
+    key("label", Value::Any, "has label KEY, or KEY=VALUE exactly"),
+    key(
+        "dangling",
+        Value::Bool,
+        "true: no sandbox uses it (running or not); false: one does",
+    ),
+];
+
+/// `volume prune --filter`.
+pub const VOLUME_PRUNE: &[Key] = &[key(
+    "label",
+    Value::Any,
+    "has label KEY, or KEY=VALUE exactly",
+)];
 
 /// `system prune --filter`(Docker와 같은 키). 샌드박스에 적용한다.
 pub const PRUNE: &[Key] = &[

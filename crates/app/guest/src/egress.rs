@@ -13,16 +13,22 @@
 //! - 허용된 뒤로 클라이언트에서 받은 바이트는 `GuestMsg::Data`로 보내고, 클라이언트가 보내기를 끝내면 `GuestMsg::End`.
 //!   호스트가 보낸 `HostMsg::Data`는 클라이언트에 쓰고, `HostMsg::End`면 클라이언트 쪽 보내기를 닫는다(반쯤 닫기).
 //!   양쪽이 끝나면(또는 어느 쪽이든 오류면) 둘 다 닫는다. 끝을 vsock의 반쯤 닫기에 맡기지 않는다.
+//! - 투명 TCP([`crate::transparent`])도 같은 맡긴 연결을 쓴다. 이름 묻기(`GuestMsg::Lookup`)에는 [`DNS_SLOT_WAIT`]까지만
+//!   기다리고, 답(`HostMsg::Resolved`)을 받으면 그 연결을 다시 맡겨 둔다. 받은 연결은 프록시와 같은 `Connect`로 넘긴다.
+//! - 프록시 요청의 호스트가 가짜 주소(투명 TCP가 이름에 준 주소)면 그 이름으로 되돌려 보낸다(이름을 먼저 풀고
+//!   주소로 프록시에 오는 프로그램). 호스트는 이름으로 확인한다.
 
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, Shutdown, SocketAddrV4, TcpListener, TcpStream};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use sbx_guest_proto::{GuestMsg, HostMsg};
 
+use crate::dns;
+use crate::transparent::{Host, Net, Transparent};
 use crate::wire::Conn;
 
 /// `-p`(`HostMsg::Forward`): 게스트 안 서비스에 연결하는 시간.
@@ -61,6 +67,9 @@ pub fn forward<C: Conn>(port: u16, conn: C, out: &crate::wire::Out) {
 /// 맡겨 둔 연결을 기다리는 시간.
 pub const SLOT_WAIT: Duration = Duration::from_secs(10);
 
+/// 이름 묻기가 맡겨 둔 연결을 기다리는 시간. 리졸버의 기본 시간 제한(5초)보다 짧다.
+pub const DNS_SLOT_WAIT: Duration = Duration::from_secs(3);
+
 /// 요청 머리의 최대 크기.
 pub const MAX_HEAD: usize = 16 * 1024;
 
@@ -92,9 +101,46 @@ pub struct Egress {
     port: Mutex<Option<u16>>,
     slots: Mutex<VecDeque<Slot>>,
     ready: Condvar,
+    transparent: Transparent,
+}
+
+/// 맡긴 연결로 `Connect`를 보낸 결과.
+enum Opened {
+    /// 연결했다. 그 뒤로 잇는다.
+    Connected(Slot),
+    /// 허용하지 않거나 연결하지 못했다(이유).
+    Refused(String),
+    /// 맡긴 연결이 없다.
+    NoSlot,
+    /// 호스트가 답하지 않았다.
+    NoAnswer,
 }
 
 impl Egress {
+    /// 투명 TCP를 켤 수 있는 프록시. `net`은 게스트 커널에 하는 일이다([`crate::transparent::Net`]).
+    /// [`Default`]로 만든 것은 투명 TCP를 켤 수 없다.
+    pub fn with_net(net: Box<dyn Net>) -> Self {
+        Self {
+            transparent: Transparent::new(Some(net)),
+            ..Self::default()
+        }
+    }
+
+    /// 투명 TCP를 켠다(`HostMsg::Transparent`). 규칙은 [`crate::transparent`] 모듈에 있다.
+    pub fn enable_transparent(self: &Arc<Self>, literals: &[SocketAddrV4]) -> Result<(), String> {
+        self.transparent.enable(self.clone(), literals)
+    }
+
+    /// 투명 TCP가 켜졌는지(빌드 층이 `/etc/resolv.conf`를 둘지 정한다).
+    pub fn transparent_on(&self) -> bool {
+        self.transparent.is_on()
+    }
+
+    /// 루프백 DNS가 쓸 답하는 쪽. 투명 TCP가 꺼져 있으면 모든 이름에 NXDOMAIN이다([`dns`]).
+    pub fn resolver(self: &Arc<Self>) -> Arc<dyn dns::Resolver> {
+        Arc::new(Resolver(self.clone()))
+    }
+
     /// 듣기 시작한다. 이미 듣고 있으면 그 포트를 돌려준다.
     pub fn listen(self: &Arc<Self>) -> io::Result<u16> {
         let mut port = self.port.lock().unwrap_or_else(|e| e.into_inner());
@@ -123,8 +169,8 @@ impl Egress {
         self.ready.notify_one();
     }
 
-    fn take(&self) -> Option<Slot> {
-        let deadline = Instant::now() + SLOT_WAIT;
+    fn take(&self, wait: Duration) -> Option<Slot> {
+        let deadline = Instant::now() + wait;
         let mut slots = self.slots.lock().unwrap_or_else(|e| e.into_inner());
         loop {
             if let Some(s) = slots.pop_front() {
@@ -145,35 +191,29 @@ impl Egress {
             Ok(None) => return reply(&mut client, 431, "request header too large"),
             Err(_) => return,
         };
-        let Some(req) = parse_request(&head) else {
+        let Some(mut req) = parse_request(&head) else {
             return reply(
                 &mut client,
                 400,
                 "expected CONNECT host:port or an absolute http:// URL",
             );
         };
-        // 맡겨 둔 연결이 이미 끊겼을 수 있다(호스트가 다시 맡긴다). 보내기가 되는 것을 쓴다.
-        let mut slot = loop {
-            let Some(mut s) = self.take() else {
-                return reply(&mut client, 503, "no connection from the host is available");
-            };
-            let msg = GuestMsg::Connect {
-                host: req.host.clone(),
-                port: req.port,
-            };
-            if msg
-                .write_to(&mut s.writer)
-                .and_then(|()| s.writer.flush())
-                .is_ok()
-            {
-                break s;
-            }
-        };
-        match HostMsg::read_from(&mut slot.reader) {
-            Ok(HostMsg::Connected) => {}
-            Ok(HostMsg::Refused { reason }) => return reply(&mut client, 403, &reason),
-            _ => return reply(&mut client, 502, "the host did not answer"),
+        if let Some(name) = req
+            .host
+            .parse::<Ipv4Addr>()
+            .ok()
+            .and_then(|ip| self.transparent.name_of(ip))
+        {
+            req.host = name;
         }
+        let slot = match self.open(&req.host, req.port) {
+            Opened::Connected(s) => s,
+            Opened::Refused(reason) => return reply(&mut client, 403, &reason),
+            Opened::NoSlot => {
+                return reply(&mut client, 503, "no connection from the host is available");
+            }
+            Opened::NoAnswer => return reply(&mut client, 502, "the host did not answer"),
+        };
         let first: Vec<u8> = if req.tunnel {
             if client
                 .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
@@ -187,6 +227,83 @@ impl Egress {
             [head, extra].concat()
         };
         splice(client, slot, &first);
+    }
+}
+
+impl Egress {
+    /// 맡겨 둔 연결 하나로 `msg`를 보낸다. 이미 끊긴 연결은 버리고 다음 것을 쓴다(호스트가 다시 맡긴다).
+    fn send_on_slot(&self, msg: &GuestMsg, wait: Duration) -> Option<Slot> {
+        loop {
+            let mut s = self.take(wait)?;
+            if msg
+                .write_to(&mut s.writer)
+                .and_then(|()| s.writer.flush())
+                .is_ok()
+            {
+                return Some(s);
+            }
+        }
+    }
+
+    /// 호스트에 `Connect { host, port }`를 보내고 답을 받는다.
+    fn open(&self, host: &str, port: u16) -> Opened {
+        let msg = GuestMsg::Connect {
+            host: host.to_owned(),
+            port,
+        };
+        let Some(mut slot) = self.send_on_slot(&msg, SLOT_WAIT) else {
+            return Opened::NoSlot;
+        };
+        match HostMsg::read_from(&mut slot.reader) {
+            Ok(HostMsg::Connected) => Opened::Connected(slot),
+            Ok(HostMsg::Refused { reason }) => Opened::Refused(reason),
+            _ => Opened::NoAnswer,
+        }
+    }
+}
+
+impl Host for Egress {
+    fn lookup(&self, name: &str) -> Option<(Vec<u16>, bool)> {
+        let msg = GuestMsg::Lookup {
+            name: name.to_owned(),
+        };
+        let mut slot = self.send_on_slot(&msg, DNS_SLOT_WAIT)?;
+        match HostMsg::read_from(&mut slot.reader) {
+            Ok(HostMsg::Resolved { ports, any_port }) => {
+                // 이 연결은 다시 맡겨 둔 것이다.
+                self.offer(slot);
+                Some((ports, any_port))
+            }
+            // 모르는 답: 그 연결은 버린다.
+            _ => {
+                (slot.shutdown_both)();
+                None
+            }
+        }
+    }
+
+    fn pass(&self, client: TcpStream, host: &str, port: u16) {
+        match self.open(host, port) {
+            Opened::Connected(slot) => splice(client, slot, &[]),
+            // 거부: 프로그램은 닫힌 연결을 본다. 이유는 호스트의 기록에 있다.
+            _ => {
+                let _ = client.shutdown(Shutdown::Both);
+            }
+        }
+    }
+}
+
+/// [`Egress::resolver`].
+struct Resolver(Arc<Egress>);
+
+impl dns::Resolver for Resolver {
+    fn enabled(&self) -> bool {
+        self.0.transparent.is_on()
+    }
+
+    fn answer(&self, name: &str, qtype: u16) -> dns::Answer {
+        let host: Arc<dyn Host> = self.0.clone();
+        self.0.transparent.answer(&host, name, qtype)
     }
 }
 

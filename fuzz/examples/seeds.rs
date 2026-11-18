@@ -2,7 +2,8 @@
 //! 실제 인코더(`encode`, `tar::Builder`, gzip, zstd)로 만든다. `cargo xtask fuzz --seeds`가 부른다.
 //!
 //! 구조화된 입력(`arbitrary`)을 받는 대상(`copy_from_guest`, `rootfs_merge`, `shim_log`)은 사람이 만든 바이트가
-//! 뜻이 없으므로 시작 입력이 없다. 퍼저가 빈 입력에서 금방 키운다.
+//! 뜻이 없으므로 시작 입력이 없다. 퍼저가 빈 입력에서 금방 키운다. CI 퍼징이 찾은 입력(`fuzz/regressions/<대상>/`)은
+//! 그런 대상이라도 시작 입력으로 둔다(`regress-<이름>`).
 //!
 //! 사용: `cargo run --manifest-path fuzz/Cargo.toml --example seeds -- <seeds 디렉터리>`
 
@@ -59,6 +60,10 @@ fn guest_msgs(out: &Path) {
             host: "pypi.org".into(),
             port: 443,
         },
+        GuestMsg::Lookup {
+            name: "github.com".into(),
+        },
+        GuestMsg::ClockAsk,
     ];
     let host = [
         HostMsg::Hello { version: 2 },
@@ -87,6 +92,23 @@ fn guest_msgs(out: &Path) {
         },
         HostMsg::Refused {
             reason: "not allowed".into(),
+        },
+        HostMsg::Transparent {
+            literals: vec!["140.82.112.3:22".parse().unwrap()],
+        },
+        HostMsg::Resolved {
+            ports: vec![22, 443],
+            any_port: true,
+        },
+        HostMsg::ClockSync,
+        HostMsg::ClockNow {
+            unix_nanos: 1_763_000_000_123_456_789,
+        },
+        HostMsg::Volume {
+            disk: 2,
+            target: "/var/lib/postgresql/data".into(),
+            readonly: false,
+            copy: true,
         },
     ];
     let mut stream = Vec::new();
@@ -119,6 +141,11 @@ fn egress(out: &Path) {
             "[::ffff:10.0.0.1]:80\n[64:ff9b::a00:1]:80\n[::ffff:10.0.0.1] 80",
         ),
         ("refused", "example.com:443\nexample.org 443"),
+        // 이름 묻기(투명 TCP): 같은 이름의 여러 포트, 와일드카드, 포트가 *인 것, 이름이 아닌 것.
+        (
+            "lookups",
+            "github.com:22\ngithub.com:443\n*.githubusercontent.com:443\ncdn.example:*\n140.82.112.3:22\nGitHub.COM. 22",
+        ),
     ];
     for (name, text) in cases {
         put(out, "egress_rules", name, text.as_bytes());
@@ -183,6 +210,18 @@ fn oci(out: &Path) {
             "values-overflow",
             0,
             "RTMIN+2147483647\nRTMAX--2147483648\n4294967296:0",
+        ),
+        // push: 레지스트리 오류 본문.
+        (
+            "push-errors",
+            0,
+            r#"{"errors":[{"code":"DIGEST_INVALID","message":"provided digest did not match uploaded content","detail":{}}]}"#,
+        ),
+        // push: 나눠 보내기 응답(Location, Range를 차례로). 크기 = 첫 바이트 × 3 = 30.
+        (
+            "push-chunks",
+            10,
+            "/v2/a/blobs/uploads/1?_state=7\n0-6\nhttps://reg.example/v2/a/blobs/uploads/1?_state=10\nbytes=0-9\n?_state=x\n0-16\n\n0-99",
         ),
     ] {
         let mut b = vec![ct];
@@ -413,6 +452,9 @@ fn main() {
         "executor_index",
         "executor_spec",
         "executor_unpack",
+        "dockerfile",
+        "dockerignore",
+        "layer_from_guest",
     ] {
         let _ = fs::remove_dir_all(out.join(t));
     }
@@ -421,13 +463,100 @@ fn main() {
     oci(&out);
     image_layer(&out);
     executor_repo(&out);
+    dockerfile(&out);
+    regressions(&out);
     check(&out);
     println!("{}", out.display());
+}
+
+/// 구조화된 입력을 받는 대상의 회귀 입력: CI 퍼징이 찾은 입력 그대로. 원본은 `fuzz/regressions/`에 둔다.
+fn regressions(out: &Path) {
+    // 100바이트를 넘고 줄바꿈이 든 opaque 디렉터리 이름(2026-11-18): 긴 이름을 PAX `path`로 쓰면 `tar` 크레이트가
+    // 그 기록을 놓쳐 디렉터리와 그 표시가 같은 이름(머리의 앞 100바이트)으로 읽혔다.
+    put(
+        out,
+        "layer_from_guest",
+        "regress-long-opaque-dir-name-with-newline",
+        include_bytes!("../regressions/layer_from_guest/long-opaque-dir-name-with-newline"),
+    );
+}
+
+/// Dockerfile: `sbx-dockerfile` 테스트의 Dockerfile 묶음 그대로, 그리고 `--target`·`--build-arg`를 붙인 것
+/// (NUL 뒤가 옵션이다). `.dockerignore`: 흔한 패턴과 경로.
+fn dockerfile(out: &Path) {
+    macro_rules! fixtures {
+        ($($name:literal),* $(,)?) => {
+            [$(($name, include_str!(concat!("../../crates/adapter/dockerfile/tests/dockerfiles/", $name)))),*]
+        };
+    }
+    let files = fixtures![
+        "docs-arg.Dockerfile",
+        "docs-best-practices.Dockerfile",
+        "docs-env.Dockerfile",
+        "docs-escape.Dockerfile",
+        "docs-multistage.Dockerfile",
+        "go.Dockerfile",
+        "node.Dockerfile",
+        "postgres-style.Dockerfile",
+        "python.Dockerfile",
+        "rejected-cache-mount.Dockerfile",
+        "rejected-heredoc.Dockerfile",
+        "rust.Dockerfile",
+    ];
+    for (name, text) in files {
+        put(out, "dockerfile", name, text.as_bytes());
+    }
+    let node = files
+        .iter()
+        .find(|(n, _)| *n == "node.Dockerfile")
+        .unwrap()
+        .1;
+    put(
+        out,
+        "dockerfile",
+        "node-target-args",
+        format!("{node}\0test\nNODE_VERSION=20\nUNUSED=1").as_bytes(),
+    );
+    // 회귀: CI 퍼징이 찾은 입력(원본이 둘인 `COPY … .`, 2026-11-17). 원본은 `fuzz/regressions/`에 둔다.
+    put(
+        out,
+        "dockerfile",
+        "regress-copy-several-sources-into-dot",
+        include_bytes!("../regressions/dockerfile/copy-several-sources-into-dot"),
+    );
+    let ignore = "# comment\nnode_modules\n**/*.log\n!keep.log\n/dist/\n*.md\n!README*.md\n[a-c]?.txt\n\0node_modules/x\nsrc/a.log\nkeep.log\nREADME.md\nb1.txt\nsrc/main.rs";
+    put(out, "dockerignore", "common", ignore.as_bytes());
+    put(
+        out,
+        "dockerignore",
+        "double-star",
+        b"**/test/**\nsrc/**/gen\n**.tmp\n\0a/test/b\nsrc/x/y/gen/z\nq.tmp\ntest",
+    );
 }
 
 /// 시작 입력이 해석의 깊은 곳까지 닿는지 본다(첫 단계에서 거부되는 입력은 시작점으로 쓸모가 적다).
 fn check(out: &Path) {
     let read = |t: &str, n: &str| fs::read(out.join(t).join(n)).unwrap();
+
+    let opts = sbx_model::build::BuildOptions {
+        build_args: vec![],
+        target: None,
+        arch: sbx_model::Arch::Aarch64,
+    };
+    for n in [
+        "node.Dockerfile",
+        "python.Dockerfile",
+        "go.Dockerfile",
+        "docs-env.Dockerfile",
+    ] {
+        let text = String::from_utf8(read("dockerfile", n)).unwrap();
+        sbx_dockerfile::plan(&text, &opts, &mut |_| Ok(vec![])).expect(n);
+    }
+    for n in ["common", "double-star"] {
+        let text = String::from_utf8(read("dockerignore", n)).unwrap();
+        let (patterns, _) = text.split_once('\0').unwrap();
+        sbx_dockerfile::DockerIgnore::parse(patterns).expect(n);
+    }
 
     let url = url::Url::parse("https://repo.example/executors/v2/index.json").unwrap();
     for n in ["v1.json", "v2.json"] {

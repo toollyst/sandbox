@@ -11,8 +11,11 @@
 //! |---|---|
 //! | `start`, `stop`, `restart`, `kill`, `wait`, `rm`, `attach`, `inspect`, `logs`의 샌드박스, `exec`의 첫 인자 | [`sandboxes`] |
 //! | `cp`의 양쪽 | [`cp_endpoints`]: `이름:`·`ID:`와 호스트 경로 |
-//! | `pull`, `prepare`, `rmi`의 이미지, `run`·`create`의 첫 인자 | [`images`] |
+//! | `run`·`create`의 `--connect` | [`connect_targets`]: `이름:`·`ID:`(앞 항목과 `NAME=`은 그대로) |
+//! | `pull`, `push`, `prepare`, `rmi`의 이미지, `tag`의 양쪽, `run`·`create`의 첫 인자 | [`images`] |
 //! | `executor use`, `executor rm` | [`executors`] |
+//! | `volume inspect`, `volume rm` | [`volumes`] |
+//! | `run`·`create`의 `-v` | [`volume_sources`]: `이름:`과 호스트 경로 |
 //!
 //! - 후보는 친 앞부분으로 시작하는 것만이다. 순서는 이름이 먼저, 그다음 ID다.
 //! - 디렉터리: 이미 친 `--data-dir`/`--cache-dir`(`--data-dir X`와 `--data-dir=X`, 여러 번이면 마지막) >
@@ -112,6 +115,36 @@ pub fn sandboxes(data_dir: &Path, current: &str) -> Vec<CompletionCandidate> {
     out
 }
 
+/// 볼륨 후보: 이름(설명은 크기). 기록(`volume.json`)만 읽는다(잠금을 건드리지 않는다).
+pub fn volumes(data_dir: &Path, current: &str) -> Vec<CompletionCandidate> {
+    sbx_runtime::volume::list(data_dir)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|v| keep(&v.name, current))
+        .map(|v| {
+            CompletionCandidate::new(&v.name)
+                .help(Some(format!("volume, {}m", v.record.size_mib).into()))
+        })
+        .collect()
+}
+
+/// `-v`의 값 후보. `:` 앞을 치는 중이면 볼륨 이름(`이름:`)과 호스트 경로, 그 뒤(게스트 경로)는 없다.
+pub fn volume_sources(data_dir: &Path, current: &str) -> Vec<CompletionCandidate> {
+    if current.contains(':') {
+        return Vec::new();
+    }
+    let mut out: Vec<CompletionCandidate> = Vec::new();
+    if crate::parse::is_volume_name(current) || current.is_empty() {
+        out.extend(volumes(data_dir, current).into_iter().map(|c| {
+            let mut value = c.get_value().to_owned();
+            value.push(":");
+            CompletionCandidate::new(value).help(c.get_help().cloned())
+        }));
+    }
+    out.extend(PathCompleter::any().complete(OsStr::new(current)));
+    out
+}
+
 /// 이미지 후보: 받아 둔 참조를 `images`처럼 줄인 것(`alpine:3.20`, 설명은 이미지 ID 앞 12자).
 /// 줄인 모양이 친 것과 맞지 않고 원래 모양이 맞으면(`docker.io/library/al`) 원래 모양.
 pub fn images(cache_dir: &Path, current: &str) -> Vec<CompletionCandidate> {
@@ -208,6 +241,29 @@ pub fn cp_endpoints(data_dir: &Path, current: &str) -> Vec<CompletionCandidate> 
     }
     out.extend(PathCompleter::any().complete(OsStr::new(current)));
     out
+}
+
+/// `--connect`의 후보: 친 값의 마지막 항목(쉼표 뒤)이 아직 `:` 앞이면 샌드박스 이름·짧은 ID에 `:`를 붙인 것.
+/// 앞의 항목과 `NAME=`은 그대로 앞에 둔다. `:` 뒤(포트)는 완성하지 않는다(대상 안에서 무엇이 듣는지는 VM에 물어야 한다).
+pub fn connect_targets(data_dir: &Path, current: &str) -> Vec<CompletionCandidate> {
+    let (before, piece) = match current.rfind(',') {
+        Some(i) => current.split_at(i + 1),
+        None => ("", current),
+    };
+    let (alias, typed) = match piece.split_once('=') {
+        Some((a, t)) => (&piece[..=a.len()], t),
+        None => ("", piece),
+    };
+    if typed.contains(':') {
+        return Vec::new();
+    }
+    sandboxes(data_dir, typed)
+        .into_iter()
+        .map(|c| {
+            let value = format!("{before}{alias}{}:", c.get_value().to_string_lossy());
+            CompletionCandidate::new(value).help(c.get_help().cloned())
+        })
+        .collect()
 }
 
 /// 여러 값을 받는 인자의 첫 값만 완성할 때: clap 정의 전체와 그 인자의 id.
@@ -314,9 +370,24 @@ pub fn first_image(command: fn() -> clap::Command, id: &'static str) -> ArgValue
     completer(in_cache, Some((command, id)))
 }
 
+/// `--connect`의 완성기.
+pub fn connect_targets_arg() -> ArgValueCompleter {
+    completer(|d, c| in_data(connect_targets, d, c), None)
+}
+
 /// `cp` 끝의 완성기.
 pub fn cp_endpoint_arg() -> ArgValueCompleter {
     completer(|d, c| in_data(cp_endpoints, d, c), None)
+}
+
+/// 볼륨 이름 인자의 완성기.
+pub fn volume() -> ArgValueCompleter {
+    completer(|d, c| in_data(volumes, d, c), None)
+}
+
+/// `-v` 값의 완성기.
+pub fn volume_source() -> ArgValueCompleter {
+    completer(|d, c| in_data(volume_sources, d, c), None)
 }
 
 /// 설치한 실행기 인자의 완성기.
@@ -403,6 +474,7 @@ mod tests {
                 scratch_disk_mib: 4,
             },
             mounts: vec![],
+            volumes: vec![],
             network: NetworkPolicy::Disabled,
             hostname: None,
             labels: Default::default(),
@@ -413,6 +485,10 @@ mod tests {
             lifetime_secs: None,
             ports: Vec::new(),
             egress_limit_bytes: None,
+            hold: false,
+            connect: Vec::new(),
+            connect_scope: Default::default(),
+            record_names: false,
         };
         std::fs::write(dir.join("spec.json"), serde_json::to_vec(&spec).unwrap()).unwrap();
         std::fs::write(dir.join("state.json"), br#"{"state":"stopped"}"#).unwrap();
@@ -435,6 +511,50 @@ mod tests {
         assert!(!root.join("none").exists());
         // 소유 잠금을 만들지 않는다.
         assert!(!data.join("sandboxes").join(&a).join("owner.lock").exists());
+    }
+
+    #[test]
+    fn volumes_are_names_and_dash_v_offers_name_colon() {
+        let root = temp("vol");
+        let data = root.join("data");
+        for n in ["pgdata", "cache"] {
+            sbx_runtime::volume::create(&data, n, 64, Default::default()).unwrap();
+        }
+        assert_eq!(values(&volumes(&data, "")), ["cache", "pgdata"]);
+        assert_eq!(values(&volumes(&data, "p")), ["pgdata"]);
+        assert_eq!(values(&volume_sources(&data, "pg")), ["pgdata:"]);
+        // `:` 뒤(게스트 경로)는 완성하지 않는다. 경로처럼 시작하면 이름을 내지 않는다.
+        assert!(volume_sources(&data, "pgdata:/").is_empty());
+        assert!(
+            !values(&volume_sources(&data, "/"))
+                .iter()
+                .any(|v| v.ends_with(':'))
+        );
+        // 잠금을 쥐지 않는다(읽기만).
+        assert!(!sbx_runtime::volume::in_use(&data, "pgdata").unwrap());
+        assert!(volumes(&root.join("none"), "").is_empty());
+        assert!(!root.join("none").exists());
+    }
+
+    #[test]
+    fn connect_offers_sandboxes_with_a_colon() {
+        let root = temp("conn");
+        let data = root.join("data");
+        let a = "a1".repeat(32);
+        plant_sandbox(&data, &a, Some("db"));
+        assert_eq!(values(&connect_targets(&data, "d")), ["db:"]);
+        assert_eq!(values(&connect_targets(&data, "pg=d")), ["pg=db:"]);
+        assert_eq!(
+            values(&connect_targets(&data, "cache:6379,d")),
+            ["cache:6379,db:"]
+        );
+        assert_eq!(
+            values(&connect_targets(&data, "a1a1")),
+            [format!("{}:", &a[..12])]
+        );
+        // 포트는 완성하지 않는다.
+        assert!(connect_targets(&data, "db:").is_empty());
+        assert!(connect_targets(&data, "db:54").is_empty());
     }
 
     #[test]

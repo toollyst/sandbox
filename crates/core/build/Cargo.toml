@@ -1,0 +1,24 @@
+[package]
+name = "sbx-build"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+# 빌드 코어. VM과 저장소는 trait 뒤에 있다(lib.rs). 층 tar는 직접 쓰고(COPY, WORKDIR), 캐시 키는 sha256이다.
+[dependencies]
+sbx-model.workspace = true
+sbx-rootfs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tar.workspace = true
+
+[dev-dependencies]
+# 테스트의 가짜 VM이 실제 게스트처럼 놓을 경로를 확인한다(`check_relative_path`). 빌드 코어 자신은 쓰지 않는다.
+sbx-guest-proto.workspace = true

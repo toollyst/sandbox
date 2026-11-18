@@ -10,8 +10,9 @@
 //!
 //! | detached 소유 | `--shim <실행 파일>`(`SBX_SHIM`, 기본 sbx 옆의 `sbx-shim`, 없으면 PATH): `sbx-shim` |
 //!
-//! 실행기 실행 파일은 VM을 띄우는 명령(`run`, `create`, `start`)에만 필요하다. 나머지는 떠 있는 VM에 규약대로 연결만 한다
-//! ([`sbx_executor_process::ConnectOnly`]).
+//! 실행기 실행 파일은 VM을 띄우는 명령(`run`, `create`, `start`, `build`)에만 필요하다. 나머지는 떠 있는 VM에 규약대로
+//! 연결만 한다([`sbx_executor_process::ConnectOnly`]). 그 명령들이 실행기를 고르지 못하면 기본 실행기를 받아 깐다
+//! (`Ctx::choose`, 규칙은 [`executors`]의 "기본 실행기 자동 설치").
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -38,20 +39,24 @@ use sbx_store::CacheLayout;
 use crate::attach::{self, attach};
 use crate::behavior::{self, ImageMatch, LookupError, RmiAction, RmiDecision, Step};
 use crate::cli::{
-    AttachArgs, Cli, Command, ExecArgs, ExecutorCommand, Format, LogsArgs, RunArgs, StopArgs,
-    SystemCommand,
+    AttachArgs, BuilderCommand, Cli, Command, ExecArgs, ExecutorCommand, Format, LogsArgs, RunArgs,
+    StopArgs, SystemCommand,
 };
 use crate::filter::{self, Filters};
 use crate::output;
+use crate::parse::Attach;
 use crate::parse::{self, CpEndpoint};
 use crate::progress::Status;
 use crate::{choose, dirs, executors, guest, host};
 
+mod build;
 mod load;
 mod login;
+mod push;
 mod stats;
 mod system;
 mod upgrade;
+mod volume;
 
 /// `logs -f`, `events`가 새 기록을 보러 가는 간격.
 const FOLLOW_POLL: Duration = Duration::from_millis(100);
@@ -130,7 +135,21 @@ fn host_arch() -> AppResult<Arch> {
 pub async fn run(cli: Cli) -> AppResult<u8> {
     let ctx = Ctx::new(&cli)?;
     match &cli.command {
+        Command::Build(a) => ctx.build(a).await,
+        Command::Builder { command } => match command {
+            BuilderCommand::Prune {
+                all,
+                force,
+                keep_storage,
+            } => ctx.builder_prune(*all, *force, keep_storage.as_deref()),
+        },
         Command::Pull { platform, image } => ctx.pull(platform.as_deref(), image).await,
+        Command::Push {
+            all_tags,
+            quiet,
+            name,
+        } => ctx.push(*all_tags, *quiet, name).await,
+        Command::Tag { source, target } => ctx.tag(source, target),
         Command::Executor { command } => ctx.executor_cmd(command).await,
         Command::Login {
             username,
@@ -144,9 +163,12 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
         Command::Stats { no_stream, ids } => ctx.stats(*no_stream, ids).await,
         Command::System { command } => match command {
             SystemCommand::Df => ctx.system_df().await,
-            SystemCommand::Prune { all, force, filter } => {
-                ctx.system_prune(*all, *force, filter).await
-            }
+            SystemCommand::Prune {
+                all,
+                volumes,
+                force,
+                filter,
+            } => ctx.system_prune(*all, *volumes, *force, filter).await,
         },
         Command::Prepare {
             rootfs_format,
@@ -216,6 +238,7 @@ pub async fn run(cli: Cli) -> AppResult<u8> {
             id,
         } => ctx.attach_cmd(*no_stdin, *sig_proxy, detach_keys, id).await,
         Command::Ps { all, quiet, filter } => ctx.ps(*all, *quiet, filter).await,
+        Command::Volume { command } => ctx.volume_cmd(command).await,
         Command::Inspect { id } => ctx.inspect(id).await,
         Command::Events {
             since,
@@ -304,20 +327,53 @@ impl LogSink {
     }
 }
 
+/// 이 Ctx가 쓰고 만들 수 있는 볼륨.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum VolumeScope {
+    /// 모두(CLI).
+    All,
+    /// 이 라벨이 있는 것만. 처음 쓸 때 만드는 볼륨에 이 라벨을 붙이고, 그런 볼륨은 `max`개까지다(`sbx mcp`).
+    Labeled {
+        /// 라벨 키.
+        key: &'static str,
+        /// 라벨 값.
+        value: &'static str,
+        /// 그 라벨의 볼륨 수 상한.
+        max: u32,
+        /// 만드는 볼륨의 크기(MiB).
+        size_mib: u32,
+    },
+}
+
+impl VolumeScope {
+    fn allows(&self, v: &sbx_runtime::volume::VolumeInfo) -> bool {
+        match self {
+            VolumeScope::All => true,
+            VolumeScope::Labeled { key, value, .. } => {
+                v.record.labels.get(*key).map(String::as_str) == Some(*value)
+            }
+        }
+    }
+}
+
 /// 명령들이 함께 쓰는 설정과 코어. `mcp`도 이것으로 코어를 부른다.
 pub(crate) struct Ctx {
     data_dir: PathBuf,
     cache_dir: PathBuf,
     socket_dir: PathBuf,
     guest_init: Option<PathBuf>,
-    /// `--executor`로 준 것.
+    /// `--executor`로 준 것. [`executors::NONE`]이면 `None`이고 `executor_none`이 참이다.
     executor: Option<PathBuf>,
+    /// `--executor none`: 고르지 않고, 기본 실행기를 자동으로 받지도 않는다.
+    executor_none: bool,
     shim: Option<PathBuf>,
     format: Format,
     /// 고른 실행기마다 실행 코어를 한 번만 만든다(실행기 `capabilities`와 게스트 init 확인을 되풀이하지 않는다).
     launchers: std::sync::Mutex<Vec<(choose::Chosen, Runtime)>>,
     /// 받을 이미지의 크기 상한(`sbx mcp --max-image-size`).
     pub(crate) max_image_bytes: Option<u64>,
+    /// 쓰고 만들 수 있는 볼륨(`sbx mcp`는 MCP로 만든 것만).
+    pub(crate) volume_scope: VolumeScope,
 }
 
 impl Ctx {
@@ -333,8 +389,12 @@ impl Ctx {
             .or_else(dirs::data_dir)
             .ok_or_else(|| msg("cannot determine a data directory; use --data-dir"))?;
         // 더 새 sbx가 바꾼 배치는 짐작하지 않고 거부한다(COMPATIBILITY.md).
-        crate::layout::check(&data_dir, "data directory").map_err(msg)?;
-        crate::layout::check(&cache_dir, "cache directory").map_err(msg)?;
+        crate::layout::check(&data_dir, crate::layout::Dir::Data).map_err(msg)?;
+        crate::layout::check(&cache_dir, crate::layout::Dir::Cache).map_err(msg)?;
+        let executor_none = cli
+            .executor
+            .as_deref()
+            .is_some_and(|e| e.as_os_str() == executors::NONE);
         Ok(Self {
             socket_dir: cli
                 .socket_dir
@@ -344,11 +404,13 @@ impl Ctx {
             guest_init: cli.guest_init.clone(),
             data_dir,
             cache_dir,
-            executor: cli.executor.clone(),
+            executor: cli.executor.clone().filter(|_| !executor_none),
+            executor_none,
             shim: cli.shim.clone(),
             format: cli.format,
             launchers: std::sync::Mutex::new(Vec::new()),
             max_image_bytes: None,
+            volume_scope: VolumeScope::All,
         })
     }
 
@@ -423,6 +485,21 @@ impl Ctx {
             .unwrap_or_else(|| PathBuf::from(name))
     }
 
+    /// 있는 샌드박스를 띄우기 전에: 그 이미지의 층 구성이 이 실행기의 디스크 수에 맞게 준비되어 있지 않으면 만든다.
+    /// 다른 실행기로 시작하거나, 합친 디스크(캐시)를 지웠거나, 캐시 배치를 옮긴 뒤(배치 1의 rootfs는 지운다)에 그렇다.
+    /// 이미지가 없으면 아무것도 하지 않는다(시작이 그 오류를 낸다).
+    async fn ensure_prepared(&self, rt: &Runtime, sandbox: &sbx_runtime::Sandbox) -> AppResult<()> {
+        let spec = &sandbox.info().spec;
+        let m = self.manager()?;
+        let disks = rt.layer_disks_for(spec.volumes.len());
+        if m.store().has_image(&spec.image)
+            && !m.is_prepared(&spec.image, spec.rootfs_format, disks)
+        {
+            m.prepare(&spec.image, spec.rootfs_format, disks).await?;
+        }
+        Ok(())
+    }
+
     /// shim으로 시작한다(붙지 않는다). 시작이 끝나면 돌아온다.
     pub(crate) async fn start_detached(
         &self,
@@ -431,7 +508,9 @@ impl Ctx {
     ) -> AppResult<()> {
         // 실행기와 이미지를 먼저 확인한다(shim 안에서 실패하면 이유가 덜 분명하다).
         let chosen = self.choose_for(id).await?;
-        let sandbox = self.launcher_with(&chosen)?.get(id).await?;
+        let rt = self.launcher_with(&chosen)?;
+        let sandbox = rt.get(id).await?;
+        self.ensure_prepared(&rt, &sandbox).await?;
         let config = ShimConfig {
             runtime: self.runtime_config(true)?,
             executor: chosen.program.clone(),
@@ -549,21 +628,59 @@ impl Ctx {
             .labels
             .get(choose::PIN_LABEL)
             .cloned();
-        self.choose(pinned.as_deref())
+        self.choose(pinned.as_deref()).await
     }
 
-    /// 쓸 실행기. 순서는 [`crate::choose`]에 있다. `pinned`는 샌드박스에 고정된 것.
-    pub(crate) fn choose(&self, pinned: Option<&str>) -> AppResult<choose::Chosen> {
-        self.try_choose(pinned)?.ok_or_else(|| {
-            // 무엇을 하면 되는지 알린다. 실행기가 없는 OS(지금은 Windows)에서는 설치할 것도 없다.
-            msg(match std::env::consts::OS {
-                "linux" | "macos" => choose::NO_EXECUTOR.to_owned(),
-                os => format!(
-                    "sandboxes cannot run on {os} yet: there is no executor for this platform \
-                     (pull, prepare and images work)"
-                ),
-            })
-        })
+    /// VM을 띄울 때 쓸 실행기. 순서는 [`crate::choose`]에 있다. `pinned`는 샌드박스에 고정된 것. 고를 것이 없으면
+    /// 공식 저장소의 기본 실행기를 받아 깔고 그것을 쓴다(규칙은 [`executors`]의 "기본 실행기 자동 설치").
+    pub(crate) async fn choose(&self, pinned: Option<&str>) -> AppResult<choose::Chosen> {
+        if let Some(c) = self.try_choose(pinned)? {
+            return Ok(c);
+        }
+        if let Some(off) = self.auto_install_off() {
+            return Err(msg(self.nothing_chosen(Some(&off))));
+        }
+        // 두 명령이 함께 처음 돌면 하나씩: 뒤의 것은 앞의 것이 설치한 것을 쓴다.
+        let lock = executors::auto_install_lock(&self.cache_dir).await?;
+        if let Some(c) = self.try_choose(pinned)? {
+            return Ok(c);
+        }
+        executors::install_default(&self.executors_ctx(&[], &[])).await?;
+        drop(lock);
+        self.try_choose(pinned)?
+            .ok_or_else(|| msg(self.nothing_chosen(self.auto_install_off().as_deref())))
+    }
+
+    /// 기본 실행기를 자동으로 받지 않는 까닭([`executors::auto_install_off`]).
+    fn auto_install_off(&self) -> Option<String> {
+        executors::auto_install_off(&self.data_dir, self.executor_none)
+    }
+
+    /// 고를 실행기가 없을 때 무엇을 하면 되는지. 실행기가 없는 OS(지금은 Windows)에서는 설치할 것도 없다.
+    fn nothing_chosen(&self, off: Option<&str>) -> String {
+        match std::env::consts::OS {
+            "linux" | "macos" => executors::nothing_chosen(&self.data_dir, off),
+            os => format!(
+                "sandboxes cannot run on {os} yet: there is no executor for this platform \
+                 (pull, prepare and images work)"
+            ),
+        }
+    }
+
+    fn executors_ctx<'a>(
+        &'a self,
+        pins: &'a [(String, String)],
+        running: &'a [(String, Vec<PathBuf>)],
+    ) -> executors::Ctx<'a> {
+        executors::Ctx {
+            data_dir: &self.data_dir,
+            cache_dir: &self.cache_dir,
+            json: self.json(),
+            flag: self.executor.as_deref(),
+            pins,
+            running,
+            auto_off: self.auto_install_off(),
+        }
     }
 
     /// [`Ctx::choose`]와 같고, 아무것도 없으면 `None`.
@@ -582,30 +699,31 @@ impl Ctx {
 
     /// `executor ...`.
     async fn executor_cmd(&self, c: &ExecutorCommand) -> AppResult<u8> {
-        let pins: Vec<(String, String)> = if executors::needs_pins(c) {
-            self.runtime()?
-                .list()
-                .await?
-                .into_iter()
-                .filter_map(|i| {
-                    let pin = i.spec.labels.get(choose::PIN_LABEL)?.clone();
-                    Some((i.spec.name.clone().unwrap_or_else(|| i.id.to_string()), pin))
-                })
-                .collect()
+        let sandboxes = if executors::needs_sandboxes(c) {
+            self.runtime()?.list().await?
         } else {
             Vec::new()
         };
-        executors::run(
-            &executors::Ctx {
-                data_dir: &self.data_dir,
-                cache_dir: &self.cache_dir,
-                json: self.json(),
-                flag: self.executor.as_deref(),
-                pins: &pins,
-            },
-            c,
-        )
-        .await
+        let pins: Vec<(String, String)> = sandboxes
+            .iter()
+            .filter_map(|i| {
+                let pin = i.spec.labels.get(choose::PIN_LABEL)?.clone();
+                Some((i.spec.name.clone().unwrap_or_else(|| i.id.to_string()), pin))
+            })
+            .collect();
+        let running: Vec<(String, Vec<PathBuf>)> = sandboxes
+            .iter()
+            .filter(|i| i.state == State::Running && !i.executor_files.is_empty())
+            .map(|i| {
+                let label = i
+                    .spec
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| short_id(&i.id).to_owned());
+                (label, i.executor_files.clone())
+            })
+            .collect();
+        executors::run(&self.executors_ctx(&pins, &running), c).await
     }
 
     fn lookup(&self, m: &Manager, name: &str) -> AppResult<Option<ImageMatch>> {
@@ -647,12 +765,21 @@ impl Ctx {
         Ok(0)
     }
 
+    /// `prepare`: 쓸 실행기가 붙일 수 있는 디스크 수에 맞춰 층 디스크를 만든다(`sbx run`이 하는 것과 같다). 실행기를
+    /// 고를 수 없으면 층마다 디스크 하나(`MAX_LAYER_DISKS`까지)로 만든다.
     async fn prepare(&self, format: RootfsFormat, image: &str) -> AppResult<u8> {
         let m = self.manager()?;
         let found = self.require(&m, image)?;
+        let disks = match self.try_choose(None) {
+            Ok(Some(chosen)) => self
+                .launcher_with(&chosen)
+                .map(|rt| rt.layer_disks())
+                .unwrap_or(sbx_store::MAX_LAYER_DISKS),
+            _ => sbx_store::MAX_LAYER_DISKS,
+        };
         let status = Status::new();
         status.text(&format!("Preparing {format} rootfs for {image}…"));
-        let built = m.prepare(found.id(), format).await?;
+        let built = m.prepare(found.id(), format, disks).await?;
         status.clear();
         if self.json() {
             output::print_value(&output::Prepared {
@@ -680,7 +807,7 @@ impl Ctx {
                     sbx_executor::ExecutorError::Launch(m) => m,
                     e => e.to_string(),
                 }),
-            Ok(None) => Err(choose::NO_EXECUTOR.to_owned()),
+            Ok(None) => Err(self.nothing_chosen(self.auto_install_off().as_deref())),
             Err(e) => Err(e.clone()),
         };
         let chosen = chosen.ok().flatten();
@@ -795,8 +922,8 @@ impl Ctx {
 
     fn images(&self, quiet: bool, filters: &[String]) -> AppResult<u8> {
         let f = Filters::parse(filters, filter::IMAGES).map_err(msg)?;
-        let images: Vec<_> = self
-            .manager()?
+        let m = self.manager()?;
+        let images: Vec<_> = m
             .images()?
             .into_iter()
             .filter(|i| {
@@ -814,26 +941,38 @@ impl Ctx {
             }
             return Ok(0);
         }
+        let sizes = self.image_disk_sizes(&m)?;
         if self.json() {
             let list: Vec<_> = images
                 .iter()
-                .map(|i| output::Image {
-                    id: i.record.id.to_string(),
-                    references: i.refs.clone(),
-                    arch: i.record.arch.oci_name().to_owned(),
-                    prepared: i.prepared.iter().map(|f| f.to_string()).collect(),
-                    compressed_size: i.record.compressed_size(),
-                    ignored_fields: i.record.ignored_fields.clone(),
-                    exposed_ports: i.record.config.exposed_ports.clone(),
-                    volumes: i.record.config.volumes.clone(),
+                .map(|i| {
+                    let (disk_size, shared_size, unique_size) = sizes(&i.record.id);
+                    output::Image {
+                        id: i.record.id.to_string(),
+                        references: i.refs.clone(),
+                        arch: i.record.arch.oci_name().to_owned(),
+                        prepared: i.prepared.iter().map(|f| f.to_string()).collect(),
+                        compressed_size: i.record.compressed_size(),
+                        disk_size,
+                        shared_size,
+                        unique_size,
+                        ignored_fields: i.record.ignored_fields.clone(),
+                        exposed_ports: i.record.config.exposed_ports.clone(),
+                        volumes: i.record.config.volumes.clone(),
+                        build: i.record.build.as_ref().map(|b| output::ImageBuild {
+                            context: b.context.clone(),
+                            file: b.file.clone(),
+                            target: b.target.clone(),
+                        }),
+                    }
                 })
                 .collect();
             output::print_value(&list)?;
             return Ok(0);
         }
         println!(
-            "{:<40} {:<14} {:<12} {:<10} SIZE",
-            "REFERENCE", "IMAGE ID", "PLATFORM", "ROOTFS"
+            "{:<40} {:<14} {:<12} {:<10} {:<10} {:<10} UNIQUE",
+            "REFERENCE", "IMAGE ID", "PLATFORM", "ROOTFS", "SIZE", "SHARED"
         );
         for i in &images {
             let rootfs: Vec<&str> = i.prepared.iter().map(|f| f.as_str()).collect();
@@ -847,14 +986,17 @@ impl Ctx {
             } else {
                 i.refs.iter().map(|r| behavior::familiar(r)).collect()
             };
+            let (size, shared, unique) = sizes(&i.record.id);
             for r in refs {
                 println!(
-                    "{:<40} {:<14} {:<12} {:<10} {}",
+                    "{:<40} {:<14} {:<12} {:<10} {:<10} {:<10} {}",
                     r,
                     short(&i.record.id),
                     format!("linux/{}", i.record.arch.oci_name()),
                     rootfs,
-                    behavior::human_size(i.record.compressed_size())
+                    behavior::human_size(size),
+                    behavior::human_size(shared),
+                    behavior::human_size(unique)
                 );
             }
         }
@@ -943,6 +1085,34 @@ impl Ctx {
         }
     }
 
+    /// `--connect` 값들을 기록할 규칙으로 바꾼다. 대상은 다른 명령과 같은 규칙으로 찾고(이름, ID, ID 앞부분), 기록하는
+    /// 꼴은 [`behavior::connect_rule`]이 정한다. 대상이 없으면 이미지를 받기 전에 실패한다.
+    pub(crate) async fn connect_rules(
+        &self,
+        given: &[String],
+    ) -> AppResult<Vec<sbx_model::ConnectRule>> {
+        let mut out = Vec::new();
+        if given.is_empty() {
+            return Ok(out);
+        }
+        let rt = self.runtime()?;
+        for v in given {
+            for c in parse::connect(v)? {
+                let target = rt
+                    .find(&c.target)
+                    .await
+                    .map_err(|e| msg(format!("--connect {v}: {e}")))?;
+                let info = target.info();
+                out.push(behavior::connect_rule(
+                    &c,
+                    &info.id,
+                    info.spec.name.as_deref(),
+                )?);
+            }
+        }
+        Ok(out)
+    }
+
     /// `run`과 `create`: 옵션을 먼저 모두 해석하고, [`behavior::create_steps`] 순서로 코어를 부른다.
     pub(crate) async fn create(&self, a: &RunArgs) -> AppResult<SandboxId> {
         self.create_with(a, &|_| {}).await
@@ -955,8 +1125,12 @@ impl Ctx {
         on_pull: &(dyn Fn(sbx_manage::PullProgress) + Sync),
     ) -> AppResult<SandboxId> {
         // 실행기를 먼저 고른다. 없으면 이미지를 받기 전에 실패한다.
-        let chosen = self.choose(None)?;
+        let chosen = self.choose(None).await?;
         let network = behavior::network_policy(&a.network, &a.allow)?;
+        for w in behavior::proxy_only_warnings(&network) {
+            eprintln!("warning: {w}");
+        }
+        let connect = self.connect_rules(&a.connect).await?;
         let user = a.user.as_deref().map(str::parse::<UserSpec>).transpose()?;
         let stop_signal = a
             .stop_signal
@@ -991,13 +1165,18 @@ impl Ctx {
                 .unwrap_or(behavior::DEFAULT_MEMORY_MIB),
             scratch_disk_mib: a.storage_opt.unwrap_or(behavior::DEFAULT_SCRATCH_MIB),
         };
-        let mut mounts = a
+        let mut mounts = Vec::new();
+        let mut volumes = Vec::new();
+        for attached in a
             .volumes
             .iter()
             .map(|v| parse::volume(v))
-            .collect::<Result<Vec<_>, _>>()?;
-        for m in &a.mounts {
-            mounts.push(parse::mount(m)?);
+            .chain(a.mounts.iter().map(|m| parse::mount(m)))
+        {
+            match attached? {
+                Attach::Folder(m) => mounts.push(m),
+                Attach::Volume(v) => volumes.push(v),
+            }
         }
         let labels: BTreeMap<String, String> = a.labels.iter().map(|l| parse::label(l)).collect();
 
@@ -1010,9 +1189,11 @@ impl Ctx {
             )));
         }
         let found = self.lookup(&m, image_name)?;
+        // 볼륨이 디스크를 쓰는 만큼 층 디스크가 준다(층이 더 많으면 아래 층을 합친다).
+        let disks = self.launcher_with(&chosen)?.layer_disks_for(volumes.len());
         let rootfs_present = found
             .as_ref()
-            .is_some_and(|f| m.is_prepared(f.id(), format));
+            .is_some_and(|f| m.is_prepared(f.id(), format, disks));
         let steps = behavior::create_steps(a.pull, found.is_some(), rootfs_present)
             .map_err(|e| msg(format!("{image_name}: {e}")))?;
         let mut image = found.map(|f| f.id().clone());
@@ -1037,7 +1218,7 @@ impl Ctx {
                         .ok_or_else(|| msg("internal: prepare before pull"))?;
                     let status = Status::new();
                     status.text(&format!("Preparing {format} rootfs for {image_name}…"));
-                    let built = m.prepare(id, format).await?;
+                    let built = m.prepare(id, format, disks).await?;
                     status.clear();
                     if built {
                         eprintln!("{}: {format} rootfs prepared", short(id));
@@ -1063,6 +1244,7 @@ impl Ctx {
                         process,
                         resources,
                         mounts: mounts.clone(),
+                        volumes: volumes.clone(),
                         network: network.clone(),
                         hostname: a.hostname.clone(),
                         labels,
@@ -1073,8 +1255,18 @@ impl Ctx {
                         lifetime_secs: a.timeout,
                         ports: a.publish.clone(),
                         egress_limit_bytes: a.egress_limit,
+                        hold: false,
+                        connect: connect.clone(),
+                        connect_scope: a.connect_scope.clone(),
+                        record_names: false,
                     };
-                    let sandbox = self.launcher_with(&chosen)?.create(spec).await?;
+                    let rt = self.launcher_with(&chosen)?;
+                    // 없는 볼륨은 지금 만든다(Docker와 같다). 실행기가 받을 수 있는지 먼저 본다.
+                    if !spec.volumes.is_empty() {
+                        sbx_runtime::validate::check(&spec, &rt.capabilities())?;
+                        self.ensure_volumes(&rt, &spec.volumes)?;
+                    }
+                    let sandbox = rt.create(spec).await?;
                     return Ok(sandbox.id().clone());
                 }
             }
@@ -1129,6 +1321,7 @@ impl Ctx {
         let id = self.runtime()?.resolve(id).await?;
         let rt = self.launcher_for(&id).await?;
         let sandbox = rt.get(&id).await?;
+        self.ensure_prepared(&rt, &sandbox).await?;
         let spec = &sandbox.info().spec;
         let mut io = attach::io_mode(interactive, spec.tty)?;
         io.stdin |= spec.open_stdin;
@@ -1243,7 +1436,7 @@ impl Ctx {
         self.each(&rt, &a.ids, async |id| {
             let s = rt.get(&id).await?;
             let timeout = behavior::stop_timeout(a.time, s.info().spec.stop.timeout_secs);
-            s.stop(signal, timeout).await?;
+            behavior::stopped_anyway(s.stop(signal, timeout).await)?;
             Ok(())
         })
         .await
@@ -1257,7 +1450,7 @@ impl Ctx {
             let s = rt.get(&id).await?;
             if s.state() == State::Running {
                 let timeout = behavior::stop_timeout(a.time, s.info().spec.stop.timeout_secs);
-                s.stop(signal, timeout).await?;
+                behavior::stopped_anyway(s.stop(signal, timeout).await)?;
             }
             self.start_detached(&id, false).await
         })
@@ -1291,8 +1484,8 @@ impl Ctx {
                 if !force {
                     return Err(msg("sandbox is running; stop it first or use -f"));
                 }
-                // Docker의 SIGKILL처럼 기다리지 않고 끈다.
-                sandbox.stop(None, Duration::ZERO).await?;
+                // Docker의 SIGKILL처럼 기다리지 않고 끈다. 그 사이 스스로 끝났으면 그대로 지운다.
+                behavior::stopped_anyway(sandbox.stop(None, Duration::ZERO).await)?;
                 rt.get(&id).await?.delete().await?;
             } else {
                 sandbox.delete().await?;
@@ -1387,8 +1580,10 @@ impl Ctx {
     pub(crate) fn image_name(&self, image: &ImageId) -> String {
         sbx_store::Store::open(&self.cache_dir)
             .image(image)
+            .ok()
+            .filter(|r| !r.reference.is_empty())
             .map(|r| behavior::familiar(&r.reference).to_owned())
-            .unwrap_or_else(|_| short(image).to_owned())
+            .unwrap_or_else(|| short(image).to_owned())
     }
 
     async fn inspect(&self, id: &str) -> AppResult<u8> {
@@ -1412,13 +1607,27 @@ impl Ctx {
         use std::io::Write as _;
         let f = Filters::parse(filters, filter::EVENTS).map_err(msg)?;
         let store = sbx_store::Store::open(&self.cache_dir);
+        // 네트워크 기록에는 이름이 없다. 지금 있는 샌드박스의 이름으로 ID를 찾는다.
+        let names: BTreeMap<String, String> = sbx_runtime::sandbox_names(&self.data_dir)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(id, name)| Some((name?, id.to_string())))
+            .collect();
         let wanted = |e: &sbx_events::Event| {
             let attr = |k: &str| e.attributes.get(k).map(String::as_str);
+            let network = e.kind == sbx_runtime::NETWORK_EVENT_KIND;
             f.allows("type", |v| v == e.kind)
                 && f.allows("event", |v| v == e.action)
                 && f.allows("sandbox", |v| {
-                    (e.kind == sbx_runtime::EVENT_KIND || e.kind == sbx_runtime::NETWORK_EVENT_KIND)
-                        && (e.id.starts_with(v) || attr("name") == Some(v))
+                    let named = names.get(v).map(String::as_str);
+                    (e.kind == sbx_runtime::EVENT_KIND || network)
+                        && (e.id.starts_with(v)
+                            || attr("name") == Some(v)
+                            || (network && named == Some(e.id.as_str()))
+                            // `--connect`의 대상 쪽에서도 보인다.
+                            || (network
+                                && (attr("target") == Some(v)
+                                    || attr("target_id").is_some_and(|t| t.starts_with(v)))))
                 })
                 && f.allows("image", |v| {
                     let id = if e.kind == sbx_manage::EVENT_KIND {
@@ -1450,6 +1659,7 @@ impl Ctx {
         let mut readers = [
             sbx_runtime::events_log(&self.data_dir).reader(start)?,
             sbx_runtime::network_log(&self.data_dir).reader(start)?,
+            sbx_runtime::volume::volume_events_log(&self.data_dir).reader(start)?,
             sbx_manage::events_log(&self.cache_dir).reader(start)?,
         ];
         // 표준 출력은 줄마다 비운다. 묶음마다 한 번 비우게 감싼다.
@@ -1514,7 +1724,8 @@ impl Ctx {
         let reference = sbx_store::Store::open(&self.cache_dir)
             .image(&s.spec.image)
             .ok()
-            .map(|r| r.reference);
+            .map(|r| r.reference)
+            .filter(|r| !r.is_empty());
         output::Sandbox::new(s, reference)
     }
 

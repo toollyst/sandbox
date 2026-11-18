@@ -84,6 +84,161 @@
       ],
       "type": "object"
     },
+    "BuildCachePruned": {
+      "additionalProperties": false,
+      "description": "What `builder prune` removed.",
+      "properties": {
+        "build_cache": {
+          "description": "How many build cache entries (cached steps) were removed.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reclaimed": {
+          "description": "Bytes freed on disk.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "build_cache",
+        "reclaimed"
+      ],
+      "type": "object"
+    },
+    "BuildEvent": {
+      "additionalProperties": false,
+      "description": "One line of `build` (JSON Lines): a step's progress (`step`), a piece of `RUN` output (`output`), then the image\n(`built`), then one `exported` line for each output that is not sbx's image store (one per pushed name). A failed\nbuild ends with the error line instead.",
+      "properties": {
+        "data": {
+          "description": "`output`: the bytes as text (invalid UTF-8 replaced).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dest": {
+          "description": "`exported`: where it went: a file or directory path, `-` (stdout), `docker` (`docker load`), or the reference\nthat was pushed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "`built`: the image ID (the config's digest, also when the image was not kept). `exported`: the manifest's\ndigest (the same each time the same image is exported).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "line": {
+          "description": "`step`: the Dockerfile line.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "millis": {
+          "description": "`step` with `done`: how long it took (milliseconds).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "output": {
+          "description": "`exported`: the output's type: `docker`, `oci` or `registry`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stage": {
+          "description": "`step`: the stage's `AS` name, or `null`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stage_index": {
+          "description": "`step`: the stage's number (0 is the first stage in the Dockerfile that the build needs).",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "status": {
+          "description": "`step`: `started`, `cached` or `done`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "step": {
+          "description": "`step`: the step's number in its stage (1 is `FROM`).",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "steps": {
+          "description": "`step`: how many steps the stage has (with `FROM`).",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "stored": {
+          "description": "`built`: whether the image was kept in sbx's image store (`--output type=sbx`, the default).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "stream": {
+          "description": "`output`: `stdout` or `stderr`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tags": {
+          "description": "`built`: the references from `-t`, normalized.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "text": {
+          "description": "`step`: the instruction with its variables expanded.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "description": "`step`, `output`, `built` or `exported`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
     "Capabilities": {
       "additionalProperties": false,
       "description": "What an executor supports.",
@@ -168,36 +323,70 @@
       ],
       "type": "object"
     },
+    "Connect": {
+      "additionalProperties": false,
+      "description": "One `--connect`: a port of another sandbox, reached by a name inside.",
+      "properties": {
+        "name": {
+          "description": "The name programs inside use (`db` in `db:5432`).",
+          "type": "string"
+        },
+        "port": {
+          "description": "The TCP port inside that sandbox.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sandbox": {
+          "description": "The sandbox it reaches: a name (a sandbox recreated under that name is reached too) or a full ID. Looked up\nagain at each connection.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "sandbox",
+        "port"
+      ],
+      "type": "object"
+    },
     "DiskUsage": {
       "additionalProperties": false,
       "description": "One row of `system df`.",
       "properties": {
         "active": {
-          "description": "Images some sandbox uses; sandboxes that are running. Always 0 for executors.",
+          "description": "Images some sandbox uses; sandboxes that are running; volumes a running sandbox has attached; executors and\nadapters a running sandbox was started with. Always 0 for the build cache.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
         },
         "reclaimable": {
-          "description": "Bytes `system prune -a` would free: unused images with the layers only they use, stopped sandboxes.",
+          "description": "Bytes `system prune -a` would free: unused images with the layers only they use, stopped sandboxes, the\nlayers only the build cache holds (`system prune` frees those too); for volumes, the ones no sandbox uses\n(`system prune -a --volumes`).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "shared": {
+          "default": 0,
+          "description": "For images: the part of `size` that more than one image uses (shared layers). For the build cache: layers\nthat images use too (counted under images, not in `size`). Always 0 for the others.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
         },
         "size": {
-          "description": "Bytes they take on disk (a sandbox's writable disk counts what it wrote, not its size).",
+          "description": "Bytes they take on disk (a sandbox's writable disk counts what it wrote, not its size). A layer several images\nshare is counted once.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
         },
         "total": {
-          "description": "How many there are (executors count installed executors and adapters).",
+          "description": "How many there are (executors count installed executors and adapters; the build cache counts cached\nsteps).",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
         },
         "type": {
-          "description": "`images`, `sandboxes` or `executors`.",
+          "description": "`images`, `build cache`, `sandboxes`, `volumes` or `executors`.",
           "type": "string"
         }
       },
@@ -279,18 +468,18 @@
       "description": "Something that changed (`events`).",
       "properties": {
         "action": {
-          "description": "Sandbox: `create`, `start`, `stop`, `remove`. Image: `pull`, `prepare`, `untag`, `delete`.",
+          "description": "Sandbox: `create`, `start`, `stop`, `remove`. Image: `pull`, `build`, `prepare`, `tag`, `untag`, `push`,\n`delete`. Volume: `create`, `remove`.",
           "type": "string"
         },
         "attributes": {
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Details. Sandbox: `image`, `name`; on `stop` also `exit_code` and `error`. Image: `reference` (`pull`,\n`untag`), `rootfs_format` (`prepare`).",
+          "description": "Details. Sandbox: `image`, `name`; on `stop` also `exit_code` and `error`. Image: `reference` (`pull`,\n`tag`, `untag`, `push`: the reference pushed to; `build`: the first `-t`), `rootfs_format` (`prepare`).",
           "type": "object"
         },
         "id": {
-          "description": "Sandbox ID or image ID.",
+          "description": "Sandbox ID, image ID or volume name.",
           "type": "string"
         },
         "time": {
@@ -298,7 +487,7 @@
           "type": "string"
         },
         "type": {
-          "description": "`sandbox` or `image`.",
+          "description": "`sandbox`, `image`, `network` or `volume`.",
           "type": "string"
         }
       },
@@ -435,8 +624,26 @@
           "description": "Architecture in OCI terms.",
           "type": "string"
         },
+        "build": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ImageBuild"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "For an image `sbx build` stored: where it was built, to build it again. Absent for pulled and loaded images,\nand for images built before sbx recorded it. Kept only in the local image store: it never goes into the\nimage's config, history or labels, nor into anything `save`, `push` or `build --output` writes."
+        },
         "compressed_size": {
           "description": "Sum of the compressed layer sizes, in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "disk_size": {
+          "default": 0,
+          "description": "Bytes this image takes on disk: its record, its compressed layers, its layer disks and any merged disk it\nuses. Layers it shares with other images are counted in full here (like `SIZE` in `docker system df -v`).",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
@@ -461,7 +668,7 @@
           "type": "array"
         },
         "prepared": {
-          "description": "Root filesystem formats that are prepared.",
+          "description": "Root filesystem formats that are prepared (layer disks ready for some executor's disk count).",
           "items": {
             "type": "string"
           },
@@ -473,6 +680,20 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "shared_size": {
+          "default": 0,
+          "description": "The part of `disk_size` that other images also use (shared layers). Counted once in `system df`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "unique_size": {
+          "default": 0,
+          "description": "The part of `disk_size` only this image uses: what `rmi` frees.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
         },
         "volumes": {
           "default": [],
@@ -490,6 +711,34 @@
         "prepared",
         "compressed_size",
         "ignored_fields"
+      ],
+      "type": "object"
+    },
+    "ImageBuild": {
+      "additionalProperties": false,
+      "description": "Where a stored image was built (`images`): the last `sbx build` that stored this image ID. Build arguments,\n`--allow` rules and other flags are not recorded.",
+      "properties": {
+        "context": {
+          "description": "Absolute path of the build context directory.",
+          "type": "string"
+        },
+        "file": {
+          "description": "Absolute path of the Dockerfile; null when it was read from stdin (`-f -`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target": {
+          "description": "The `--target` stage; null when none was given.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "context"
       ],
       "type": "object"
     },
@@ -600,6 +849,14 @@
           "description": "Path of its executable.",
           "type": "string"
         },
+        "running": {
+          "default": [],
+          "description": "Running sandboxes started with it (name or short ID). `executor adapter rm` refuses it while there are any,\nand `executor prune` keeps it.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "used_by": {
           "description": "Installed VMM packages (`name@version`) that use an adapter of this name.",
           "items": {
@@ -661,6 +918,14 @@
         "path": {
           "description": "Path of its executable; for a VMM package, its directory.",
           "type": "string"
+        },
+        "running": {
+          "default": [],
+          "description": "Running sandboxes started with it (name or short ID). `executor rm` refuses it while there are any, and\n`executor prune` keeps it.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "version": {
           "description": "Version.",
@@ -809,6 +1074,13 @@
           },
           "type": "array"
         },
+        "connect": {
+          "description": "Ports of other sandboxes it reaches by name (`--connect`), with either mode. Absent when there are none.",
+          "items": {
+            "$ref": "#/$defs/Connect"
+          },
+          "type": "array"
+        },
         "mode": {
           "$ref": "#/$defs/NetworkMode",
           "description": "`none` or `allow`."
@@ -898,6 +1170,13 @@
       "additionalProperties": false,
       "description": "What `system prune` removed.",
       "properties": {
+        "build_cache": {
+          "default": 0,
+          "description": "How many build cache entries (cached steps) were removed. Their layers are in `layers` when no image uses\nthem.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
         "images": {
           "description": "IDs of removed images (`-a`).",
           "items": {
@@ -927,6 +1206,14 @@
         },
         "sandboxes": {
           "description": "IDs of removed sandboxes.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "volumes": {
+          "default": [],
+          "description": "Names of removed volumes (`-a --volumes`).",
           "items": {
             "type": "string"
           },
@@ -992,6 +1279,73 @@
         "reference",
         "id",
         "arch"
+      ],
+      "type": "object"
+    },
+    "Pushed": {
+      "additionalProperties": false,
+      "description": "An image pushed to a registry (`push`; one line per tag with `-a`).",
+      "properties": {
+        "blobs": {
+          "description": "Layers (each once), then the image config.",
+          "items": {
+            "$ref": "#/$defs/PushedBlob"
+          },
+          "type": "array"
+        },
+        "id": {
+          "description": "Image ID: the `sha256:…` of the manifest, the same as before the push (it is sent as it was pulled).",
+          "type": "string"
+        },
+        "reference": {
+          "description": "Normalized reference it was pushed to, e.g. `ghcr.io/me/app:1`.",
+          "type": "string"
+        },
+        "size": {
+          "description": "Size of the manifest in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "reference",
+        "id",
+        "size",
+        "blobs"
+      ],
+      "type": "object"
+    },
+    "PushedBlob": {
+      "additionalProperties": false,
+      "description": "One blob of a pushed image.",
+      "properties": {
+        "digest": {
+          "description": "Digest (`sha256:…`).",
+          "type": "string"
+        },
+        "mounted_from": {
+          "description": "For `mounted`: the repository it came from (`registry/repository`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "size": {
+          "description": "Size in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "status": {
+          "description": "`exists` (the registry had it, nothing sent), `mounted` (taken from another repository of the same\nregistry, nothing sent) or `uploaded`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "digest",
+        "size",
+        "status"
       ],
       "type": "object"
     },
@@ -1201,6 +1555,13 @@
         "tty": {
           "description": "Whether the main process has a terminal (`-t`).",
           "type": "boolean"
+        },
+        "volumes": {
+          "description": "Named volumes attached (`-v NAME:/path`).",
+          "items": {
+            "$ref": "#/$defs/SandboxVolume"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -1285,6 +1646,35 @@
           "type": "string"
         }
       ]
+    },
+    "SandboxVolume": {
+      "additionalProperties": false,
+      "description": "A named volume a sandbox attaches.",
+      "properties": {
+        "destination": {
+          "description": "Guest path.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Volume name.",
+          "type": "string"
+        },
+        "no_copy": {
+          "default": false,
+          "description": "An empty volume is not filled from the image (`nocopy`).",
+          "type": "boolean"
+        },
+        "readonly": {
+          "description": "Attached read-only.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "destination",
+        "readonly"
+      ],
+      "type": "object"
     },
     "Stats": {
       "additionalProperties": false,
@@ -1378,6 +1768,25 @@
       ],
       "type": "object"
     },
+    "Tagged": {
+      "additionalProperties": false,
+      "description": "A reference added to an image (`tag`).",
+      "properties": {
+        "id": {
+          "description": "Image ID it now points at.",
+          "type": "string"
+        },
+        "reference": {
+          "description": "Normalized new reference, e.g. `docker.io/library/app:1`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reference",
+        "id"
+      ],
+      "type": "object"
+    },
     "UpdateInfo": {
       "additionalProperties": false,
       "description": "What the last new-version check found (`info`).",
@@ -1467,6 +1876,103 @@
         "current",
         "security",
         "yanked"
+      ],
+      "type": "object"
+    },
+    "Volume": {
+      "additionalProperties": false,
+      "description": "A named volume (`volume create`, `volume ls`, `volume inspect`).",
+      "properties": {
+        "created": {
+          "description": "When it was created (RFC 3339).",
+          "type": "string"
+        },
+        "disk": {
+          "description": "The disk image on the host.",
+          "type": "string"
+        },
+        "disk_usage": {
+          "description": "Bytes the disk takes on the host. The disk is sparse, so this grows with what sandboxes write.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "in_use": {
+          "description": "Whether a running sandbox has it attached now.",
+          "type": "boolean"
+        },
+        "labels": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Labels (`--label`).",
+          "type": "object"
+        },
+        "name": {
+          "description": "Name.",
+          "type": "string"
+        },
+        "sandboxes": {
+          "description": "IDs of the sandboxes that attach it, running or not. `volume rm` refuses while there are any.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "size": {
+          "description": "Disk size in bytes: the most it can hold.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "created",
+        "size",
+        "disk_usage",
+        "disk",
+        "labels",
+        "sandboxes",
+        "in_use"
+      ],
+      "type": "object"
+    },
+    "VolumePrune": {
+      "additionalProperties": false,
+      "description": "What `volume prune` removed.",
+      "properties": {
+        "reclaimed": {
+          "description": "Bytes freed on disk.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "volumes": {
+          "description": "Names of removed volumes.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "volumes",
+        "reclaimed"
+      ],
+      "type": "object"
+    },
+    "VolumeRef": {
+      "additionalProperties": false,
+      "description": "One volume `volume rm` removed.",
+      "properties": {
+        "name": {
+          "description": "Name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
       ],
       "type": "object"
     }

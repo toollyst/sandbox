@@ -21,12 +21,16 @@
 //! # VM ([`config`])
 //!
 //! - initrd는 sbx가 준 게스트 init, `root=`는 없다. 디스크는 받은 순서대로(rootfs `vda` 읽기 전용, scratch `vdb`).
+//!   볼륨 디스크(규약 3, 역할 `volume`)는 `cache_type: "Writeback"`으로 붙인다. 그래야 게스트가 flush 기능을 보고,
+//!   게스트의 flush가 호스트 파일의 fsync로 간다(기본값 `Unsafe`는 flush를 보이지 않는다). 규약 2와 3을 말한다.
 //! - vsock: guest CID 3, `uds_path`는 규약의 `control_socket`. 남아 있는 파일은 지운다(Firecracker는 있으면 실패한다).
 //!   경로는 [`config::MAX_SOCKET_PATH`] 바이트 이하여야 한다(macOS Unix 소켓 한도).
 //! - 커널 명령줄: `console=ttyS0 quiet reboot=k panic=1`(x86_64는 `pci=off`도), `sbx.hostname=`, `sbx.halt=reboot`
 //!   (Firecracker는 게스트의 재시작 요청을 VM 종료로 다룬다). `quiet`는 부팅 메시지를 시리얼 콘솔에 쓰는 시간
 //!   (약 100ms)을 없앤다. 경고와 오류는 그대로 나온다.
-//! - 네트워크 장치와 공유 폴더(virtio-fs)는 없다(`live_share: false`). 스냅샷도 아직 알리지 않는다.
+//! - 네트워크 장치와 공유 폴더(virtio-fs)는 없다(`live_share: false`). 스냅샷도 아직 알리지 않는다. upstream
+//!   Firecracker에는 virtio-fs가 없고, wick의 것은 설계만 있다(인터페이스가 정해지지 않았다). 설정 파일에는 upstream이
+//!   읽는 키만 쓰고, firecracker에는 upstream이 아는 인자만 준다.
 //!
 //! # 프로세스 ([`session`])
 //!
@@ -35,6 +39,10 @@
 //! - firecracker는 이 실행 파일의 `vmm` 모드(감시 프로세스) 아래에서 돈다. 감시 프로세스는 표준 입력이 닫히면
 //!   firecracker를 죽인다. 표준 입력은 `run` 세션이 쥐고 있으므로 `Kill`, 세션의 입력 끝, 세션 프로세스가
 //!   강제로 죽는 경우 모두 VM이 끝난다(고아 VM이 남지 않는다).
+//! - 거꾸로 감시 프로세스만 강제로 죽으면(SIGKILL, OOM) firecracker를 죽일 쪽이 없다. 그래서 Unix에서는 감시 프로세스를
+//!   새 프로세스 그룹으로 띄우고(firecracker가 물려받는다), 세션이 감시 프로세스의 끝을 보면 거두기 전에 그 그룹을
+//!   SIGKILL로 끝낸 뒤 `Exited`를 보낸다. 남는 경우: 세션과 감시 프로세스가 함께 강제로 죽으면 firecracker는 남는다
+//!   (둘을 이어 주는 것이 없다. Linux의 PR_SET_PDEATHSIG는 fork와 exec 사이에 unsafe가 필요해 쓰지 않는다).
 //! - VM이 끝나면 `Exited`: firecracker가 0으로 끝나면 `guest powered off`, 죽였으면 `killed`.
 
 pub mod config;

@@ -41,6 +41,35 @@ pub(crate) fn image(reference: Option<&str>) -> Image {
     .unwrap()
 }
 
+/// `sbx build`가 저장한 이미지: `images`가 낼 `build` 기록이 있다.
+pub(crate) fn built(reference: Option<&str>, file: Option<&str>, target: Option<&str>) -> Image {
+    let mut i = image(reference);
+    i.id = format!("sha256:{}", "ef".repeat(32));
+    i.build = Some(
+        serde_json::from_value(serde_json::json!({
+            "context": "/home/me/app",
+            "file": file,
+            "target": target,
+        }))
+        .unwrap(),
+    );
+    i
+}
+
+pub(crate) fn volume(name: &str, users: &[char]) -> Volume {
+    serde_json::from_value(serde_json::json!({
+        "name": name,
+        "created": "2026-11-10T12:00:00Z",
+        "size": 16u64 << 30,
+        "disk_usage": 40u64 << 20,
+        "disk": format!("/data/volumes/{name}/disk.img"),
+        "labels": {"app": "db"},
+        "sandboxes": users.iter().map(|c| c.to_string().repeat(64)).collect::<Vec<_>>(),
+        "in_use": !users.is_empty(),
+    }))
+    .unwrap()
+}
+
 pub(crate) fn event(kind: &str, action: &str, id: &str) -> Event {
     Event {
         time: "2026-11-10T13:20:14.000000001Z".to_owned(),
@@ -182,6 +211,140 @@ fn destructive_keys_ask_first() {
 }
 
 #[test]
+fn image_keys_fill_in_tag_and_push() {
+    let mut m = loaded();
+    press(&mut m, KeyCode::Char('2'));
+    // t: 새 이름은 사용자가 친다.
+    assert_eq!(press(&mut m, KeyCode::Char('t')), None);
+    assert_eq!(
+        m.prompt.as_ref().unwrap().text,
+        "tag docker.io/library/alpine:3.20 "
+    );
+    for c in "ghcr.io/me/alpine:1".chars() {
+        press(&mut m, KeyCode::Char(c));
+    }
+    assert_eq!(
+        press(&mut m, KeyCode::Enter),
+        Some(Action::Handover(strings(&[
+            "tag",
+            "docker.io/library/alpine:3.20",
+            "ghcr.io/me/alpine:1"
+        ])))
+    );
+    // p: 그 참조를 올린다. Enter면 터미널을 넘겨 진행을 보인다.
+    assert_eq!(press(&mut m, KeyCode::Char('p')), None);
+    assert_eq!(
+        m.prompt.as_ref().unwrap().text,
+        "push docker.io/library/alpine:3.20"
+    );
+    assert_eq!(
+        press(&mut m, KeyCode::Enter),
+        Some(Action::Handover(strings(&[
+            "push",
+            "docker.io/library/alpine:3.20"
+        ])))
+    );
+    // 만든 이미지(`sbx build`)도 같다: save와 push가 내보낸다. B는 빌드 캐시를 비운다(묻고).
+    m.apply(Msg::Images(Ok(vec![image(Some("docker.io/local/app:1"))])));
+    press(&mut m, KeyCode::Char('O'));
+    assert_eq!(
+        m.prompt.take().unwrap().text,
+        "save docker.io/local/app:1 -o "
+    );
+    press(&mut m, KeyCode::Char('p'));
+    assert_eq!(m.prompt.take().unwrap().text, "push docker.io/local/app:1");
+    assert_eq!(press(&mut m, KeyCode::Char('B')), None);
+    assert_eq!(
+        press(&mut m, KeyCode::Char('y')),
+        Some(Action::Run(strings(&["builder", "prune", "-f"])))
+    );
+    // 참조가 없는 이미지는 올릴 수 없다(태그는 된다).
+    m.apply(Msg::Images(Ok(vec![image(None)])));
+    assert_eq!(press(&mut m, KeyCode::Char('p')), None);
+    assert!(m.prompt.is_none());
+    press(&mut m, KeyCode::Char('t'));
+    assert!(m.prompt.take().unwrap().text.starts_with("tag "));
+}
+
+#[test]
+fn images_tab_builds_and_rebuilds_through_the_command_line() {
+    // b: 고른 이미지가 없어도 된다. 이름과 컨텍스트는 사용자가 치고, Enter면 터미널을 넘긴다(진행이 보인다).
+    let mut m = Model::default();
+    press(&mut m, KeyCode::Char('2'));
+    assert_eq!(press(&mut m, KeyCode::Char('b')), None);
+    assert_eq!(m.prompt.as_ref().unwrap().text, "build -t ");
+    chars(&mut m, "app:dev -f Dockerfile.dev .");
+    assert_eq!(
+        press(&mut m, KeyCode::Enter),
+        Some(Action::Handover(strings(&[
+            "build",
+            "-t",
+            "app:dev",
+            "-f",
+            "Dockerfile.dev",
+            "."
+        ])))
+    );
+    // R: 빌드 기록(`images`의 `build`)으로 명령 줄을 다 채운다. 실행하지 않는다: 고쳐 친 뒤 Enter.
+    m.apply(Msg::Images(Ok(vec![
+        built(
+            Some("docker.io/library/app:1"),
+            Some("/home/me/app/ci/Dockerfile dev"),
+            Some("prod"),
+        ),
+        built(
+            Some("ghcr.io/me/api:2"),
+            Some("/home/me/app/Dockerfile"),
+            None,
+        ),
+        image(Some("docker.io/library/alpine:3.20")),
+    ])));
+    assert_eq!(press(&mut m, KeyCode::Char('R')), None);
+    assert_eq!(
+        m.prompt.as_ref().unwrap().text,
+        "build -t app:1 -f '/home/me/app/ci/Dockerfile dev' --target prod /home/me/app"
+    );
+    chars(&mut m, " --no-cache");
+    assert_eq!(
+        press(&mut m, KeyCode::Enter),
+        Some(Action::Handover(strings(&[
+            "build",
+            "-t",
+            "app:1",
+            "-f",
+            "/home/me/app/ci/Dockerfile dev",
+            "--target",
+            "prod",
+            "/home/me/app",
+            "--no-cache"
+        ])))
+    );
+    assert!(m.status.is_none(), "nothing ran before Enter");
+    press(&mut m, KeyCode::Down);
+    press(&mut m, KeyCode::Char('R'));
+    assert_eq!(
+        m.prompt.take().unwrap().text,
+        "build -t ghcr.io/me/api:2 -f /home/me/app/Dockerfile /home/me/app"
+    );
+    // Esc는 아무것도 하지 않고 닫는다.
+    press(&mut m, KeyCode::Char('R'));
+    assert_eq!(press(&mut m, KeyCode::Esc), None);
+    assert!(m.prompt.is_none() && m.status.is_none());
+    // 받은 이미지(빌드 기록 없음)에는 R이 없다.
+    press(&mut m, KeyCode::Down);
+    assert_eq!(press(&mut m, KeyCode::Char('R')), None);
+    assert!(m.prompt.is_none());
+    // 표준 입력에서 읽은 Dockerfile(`-f -`)은 다시 줄 수 없으니 `-f ` 뒤를 비워 둔다. 이름 없는 이미지는 `-t`도 없다.
+    m.apply(Msg::Images(Ok(vec![built(None, None, None)])));
+    // (고른 줄은 그릴 때 줄 수에 맞춘다. 여기서는 그리지 않으니 처음으로 옮긴다.)
+    press(&mut m, KeyCode::Char('g'));
+    press(&mut m, KeyCode::Char('R'));
+    assert_eq!(m.prompt.take().unwrap().text, "build /home/me/app -f ");
+    press(&mut m, KeyCode::Char('b'));
+    assert_eq!(m.prompt.take().unwrap().text, "build -t ");
+}
+
+#[test]
 fn every_listed_letter_key_does_something() {
     for h in KEYS.iter().filter(|h| h.tabs == "sandboxes") {
         let mut m = loaded();
@@ -195,6 +358,28 @@ fn every_listed_letter_key_does_something() {
         m.apply(Msg::Executors(Ok(executors())));
         m.tab = Tab::Executors;
         // 기본이 아닌 실행기(fake)를 고른다.
+        let c = h.keys.chars().next().unwrap();
+        let acted =
+            press(&mut m, KeyCode::Char(c)).is_some() || m.popup.is_some() || m.prompt.is_some();
+        assert!(acted, "{:?}", h.keys);
+    }
+    for h in KEYS.iter().filter(|h| h.tabs == "images") {
+        let mut m = loaded();
+        m.apply(Msg::Images(Ok(vec![built(
+            Some("docker.io/library/app:1"),
+            Some("/home/me/app/Dockerfile"),
+            None,
+        )])));
+        m.tab = Tab::Images;
+        let c = h.keys.chars().next().unwrap();
+        let acted =
+            press(&mut m, KeyCode::Char(c)).is_some() || m.popup.is_some() || m.prompt.is_some();
+        assert!(acted, "{:?}", h.keys);
+    }
+    for h in KEYS.iter().filter(|h| h.tabs == "volumes") {
+        let mut m = loaded();
+        m.apply(Msg::Volumes(Ok(vec![volume("pgdata", &[])])));
+        m.tab = Tab::Volumes;
         let c = h.keys.chars().next().unwrap();
         let acted =
             press(&mut m, KeyCode::Char(c)).is_some() || m.popup.is_some() || m.prompt.is_some();
@@ -333,18 +518,26 @@ fn events_follow_the_newest_unless_you_scroll_up_and_old_ones_drop() {
     for i in 0..5 {
         m.apply(Msg::Event(event("sandbox", "start", &i.to_string())));
     }
-    assert_eq!(m.cursors[2].selected, 4, "follows the newest");
+    assert_eq!(
+        m.cursors[Tab::Events.index()].selected,
+        4,
+        "follows the newest"
+    );
     m.tab = Tab::Events;
     press(&mut m, KeyCode::Up);
     m.apply(Msg::Event(event("sandbox", "stop", "5")));
-    assert_eq!(m.cursors[2].selected, 3, "stays where you scrolled");
+    assert_eq!(
+        m.cursors[Tab::Events.index()].selected,
+        3,
+        "stays where you scrolled"
+    );
     press(&mut m, KeyCode::Char('G'));
     for i in 0..EVENTS_KEPT {
         m.apply(Msg::Event(event("image", "pull", &format!("x{i}"))));
     }
     assert_eq!(m.events.len(), EVENTS_KEPT);
     assert_eq!(m.events.front().unwrap().id, "x0");
-    assert_eq!(m.cursors[2].selected, EVENTS_KEPT - 1);
+    assert_eq!(m.cursors[Tab::Events.index()].selected, EVENTS_KEPT - 1);
 }
 
 #[test]
@@ -399,7 +592,7 @@ fn help_text_lists_every_key() {
 #[test]
 fn executors_tab_lists_executors_then_adapters_and_runs_executor_commands() {
     let mut m = loaded();
-    assert_eq!(chars(&mut m, "4"), None);
+    assert_eq!(chars(&mut m, "5"), None);
     assert_eq!(m.tab(), Tab::Executors);
     // 아직 못 받았으면 고를 것이 없지만, 설치와 검색은 된다.
     assert_eq!(press(&mut m, KeyCode::Char('u')), None);
@@ -496,4 +689,50 @@ fn v_upgrades_from_any_tab() {
         press(&mut m, KeyCode::Char('V')),
         Some(Action::Handover(vec!["upgrade".into()]))
     );
+}
+
+#[test]
+fn volumes_tab_lists_users_by_name_and_runs_volume_commands() {
+    let mut m = loaded();
+    assert_eq!(chars(&mut m, "3"), None);
+    assert_eq!(m.tab(), Tab::Volumes);
+    // 아직 못 받았어도 만들기와 지우기(prune)는 된다.
+    assert_eq!(press(&mut m, KeyCode::Char('D')), None);
+    assert_eq!(m.popup, None);
+    assert_eq!(press(&mut m, KeyCode::Char('c')), None);
+    assert_eq!(m.prompt.as_ref().unwrap().text, "volume create ");
+    chars(&mut m, "cache --opt size=2g");
+    assert_eq!(
+        press(&mut m, KeyCode::Enter),
+        Some(Action::Handover(strings(&[
+            "volume", "create", "cache", "--opt", "size=2g"
+        ])))
+    );
+    press(&mut m, KeyCode::Char('P'));
+    assert_eq!(
+        m.popup,
+        Some(Popup::Confirm {
+            args: strings(&["volume", "prune", "-a", "-f"])
+        })
+    );
+    m.popup = None;
+    m.apply(Msg::Volumes(Ok(vec![
+        volume("pgdata", &['1']),
+        volume("scratch", &['2']),
+    ])));
+    // 쓰는 샌드박스는 이름으로(없으면 짧은 ID).
+    let users: Vec<Vec<String>> = m.visible_volumes().iter().map(|v| m.users(v)).collect();
+    assert_eq!(users, [vec!["web".to_owned()], vec!["2".repeat(12)]]);
+    // 거르기는 쓰는 샌드박스의 이름도 본다.
+    chars(&mut m, "/web");
+    press(&mut m, KeyCode::Enter);
+    assert_eq!(m.visible_volumes().len(), 1);
+    press(&mut m, KeyCode::Char('D'));
+    assert_eq!(
+        press(&mut m, KeyCode::Char('y')),
+        Some(Action::Run(strings(&["volume", "rm", "pgdata"])))
+    );
+    press(&mut m, KeyCode::Enter);
+    assert!(matches!(&m.popup, Some(Popup::Detail { title, source, .. })
+            if title == "Volume pgdata" && source == "sbx volume inspect pgdata --format json"));
 }

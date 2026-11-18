@@ -20,6 +20,7 @@ serde_json.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 sbx-guest.workspace = true
+sbx-rootfs = { workspace = true, features = ["erofs"] }
 
 [dev-dependencies]
 sbx-executor-process.workspace = true

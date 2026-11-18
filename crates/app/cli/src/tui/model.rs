@@ -12,6 +12,7 @@ use super::detail::{DetailLine, readable};
 use crate::behavior::familiar;
 use crate::output::{
     ChosenExecutor, Event, Image, InstalledAdapter, InstalledExecutor, Sandbox, SandboxState,
+    Volume,
 };
 
 /// 이벤트를 얼마나 거슬러 받는지(`events --since`). 화면을 열 때 최근 일을 보여 준다.
@@ -31,6 +32,8 @@ pub enum Tab {
     Sandboxes,
     /// 이미지(`images`).
     Images,
+    /// 볼륨(`volume ls`).
+    Volumes,
     /// 이벤트(`events --since`).
     Events,
     /// 실행기와 어댑터(`executor ls`, `executor adapter ls`, `executor current`).
@@ -38,7 +41,13 @@ pub enum Tab {
 }
 
 /// 탭 순서.
-pub const TABS: [Tab; 4] = [Tab::Sandboxes, Tab::Images, Tab::Events, Tab::Executors];
+pub const TABS: [Tab; 5] = [
+    Tab::Sandboxes,
+    Tab::Images,
+    Tab::Volumes,
+    Tab::Events,
+    Tab::Executors,
+];
 
 impl Tab {
     /// 제목.
@@ -46,17 +55,20 @@ impl Tab {
         match self {
             Tab::Sandboxes => "Sandboxes",
             Tab::Images => "Images",
+            Tab::Volumes => "Volumes",
             Tab::Events => "Events",
             Tab::Executors => "Executors",
         }
     }
 
-    const fn index(self) -> usize {
+    /// [`TABS`]에서의 자리.
+    pub const fn index(self) -> usize {
         match self {
             Tab::Sandboxes => 0,
             Tab::Images => 1,
-            Tab::Events => 2,
-            Tab::Executors => 3,
+            Tab::Volumes => 2,
+            Tab::Events => 3,
+            Tab::Executors => 4,
         }
     }
 }
@@ -79,6 +91,8 @@ pub enum Msg {
     Sandboxes(Result<Vec<Sandbox>, String>),
     /// `images`의 결과.
     Images(Result<Vec<Image>, String>),
+    /// `volume ls`의 결과.
+    Volumes(Result<Vec<Volume>, String>),
     /// `events`가 낸 줄 하나.
     Event(Event),
     /// `events`가 끝났다(끝나면 안 된다).
@@ -237,6 +251,8 @@ pub struct Model {
     pub sandboxes: Option<Vec<Sandbox>>,
     /// `images`. 아직 못 받았으면 `None`.
     pub images: Option<Vec<Image>>,
+    /// `volume ls`. 아직 못 받았으면 `None`.
+    pub volumes: Option<Vec<Volume>>,
     /// 받은 이벤트, 오래된 것부터.
     pub events: VecDeque<Event>,
     /// 이벤트 탭에서 맨 아래가 아닌 줄을 골랐다. 아니면 새 것을 따라간다(거르는 글이 바뀌어도).
@@ -244,7 +260,7 @@ pub struct Model {
     /// 실행기 탭. 아직 못 받았으면 `None`.
     pub executors: Option<Executors>,
     /// 탭마다의 표 위치.
-    pub cursors: [Cursor; 4],
+    pub cursors: [Cursor; TABS.len()],
     /// 거르는 글(`/`). 비면 거르지 않는다.
     pub filter: String,
     /// 입력 중인 줄.
@@ -305,6 +321,38 @@ impl Model {
             .collect()
     }
 
+    /// 거른 볼륨.
+    pub fn visible_volumes(&self) -> Vec<&Volume> {
+        let f = self.filter.to_lowercase();
+        self.volumes
+            .iter()
+            .flatten()
+            .filter(|v| {
+                f.is_empty()
+                    || v.name.to_lowercase().contains(&f)
+                    || v.labels
+                        .iter()
+                        .any(|(k, x)| format!("{k}={x}").to_lowercase().contains(&f))
+                    || self.users(v).iter().any(|u| u.to_lowercase().contains(&f))
+            })
+            .collect()
+    }
+
+    /// 볼륨을 가리키는 샌드박스: 이름이 있으면 이름, 없으면 짧은 ID.
+    pub fn users(&self, v: &Volume) -> Vec<String> {
+        v.sandboxes
+            .iter()
+            .map(|id| {
+                self.sandboxes
+                    .iter()
+                    .flatten()
+                    .find(|s| &s.id == id)
+                    .and_then(|s| s.name.clone())
+                    .unwrap_or_else(|| id.chars().take(12).collect())
+            })
+            .collect()
+    }
+
     /// 거른 이벤트, 오래된 것부터.
     pub fn visible_events(&self) -> Vec<&Event> {
         let f = self.filter.to_lowercase();
@@ -338,6 +386,7 @@ impl Model {
         match tab {
             Tab::Sandboxes => self.visible_sandboxes().len(),
             Tab::Images => self.visible_images().len(),
+            Tab::Volumes => self.visible_volumes().len(),
             Tab::Events => self.visible_events().len(),
             Tab::Executors => self.visible_executor_rows().len(),
         }
@@ -353,9 +402,15 @@ impl Model {
         self.visible_sandboxes().get(i).copied()
     }
 
-    fn selected_image(&self) -> Option<&Image> {
+    /// 이미지 탭에서 고른 이미지.
+    pub fn selected_image(&self) -> Option<&Image> {
         let i = self.cursors[Tab::Images.index()].selected;
         self.visible_images().get(i).copied()
+    }
+
+    fn selected_volume(&self) -> Option<&Volume> {
+        let i = self.cursors[Tab::Volumes.index()].selected;
+        self.visible_volumes().get(i).copied()
     }
 
     /// 소식을 반영한다.
@@ -369,12 +424,17 @@ impl Model {
                 self.images = Some(v);
                 self.error = None;
             }
+            Msg::Volumes(Ok(v)) => {
+                self.volumes = Some(v);
+                self.error = None;
+            }
             Msg::Executors(Ok(v)) => {
                 self.executors = Some(v);
                 self.error = None;
             }
             Msg::Sandboxes(Err(e))
             | Msg::Images(Err(e))
+            | Msg::Volumes(Err(e))
             | Msg::Executors(Err(e))
             | Msg::EventsEnded(e) => {
                 self.error = Some(e);
@@ -426,7 +486,7 @@ impl Model {
             KeyCode::Char('q') => return Some(Action::Quit),
             KeyCode::Tab => self.tab = TABS[(tab.index() + 1) % TABS.len()],
             KeyCode::BackTab => self.tab = TABS[(tab.index() + TABS.len() - 1) % TABS.len()],
-            KeyCode::Char(c @ '1'..='4') => self.tab = TABS[c as usize - '1' as usize],
+            KeyCode::Char(c @ '1'..='5') => self.tab = TABS[c as usize - '1' as usize],
             KeyCode::Down | KeyCode::Char('j') => self.cursor(tab).move_by(1, len),
             KeyCode::Up | KeyCode::Char('k') => self.cursor(tab).move_by(-1, len),
             KeyCode::PageDown => self.cursor(tab).move_by(page, len),
@@ -512,6 +572,12 @@ impl Model {
                     .collect(),
             ),
             Tab::Images if c == 'U' => Some(Action::Handover(vec!["system".into(), "df".into()])),
+            Tab::Images if c == 'B' => self.confirm(
+                ["builder", "prune", "-f"]
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+            ),
             Tab::Images if c == 'L' => {
                 // 레지스트리를 쳐서 끝낸다. 터미널을 넘기므로 비밀번호는 sbx login이 보이지 않게 묻는다.
                 self.prompt = Some(Prompt {
@@ -525,6 +591,14 @@ impl Model {
                 self.prompt = Some(Prompt {
                     kind: PromptKind::Command,
                     text: "load -i ".into(),
+                });
+                None
+            }
+            Tab::Images if c == 'b' => {
+                // 이름과 컨텍스트(그리고 -f 등)는 사용자가 친다. Enter면 터미널을 넘겨 단계마다의 진행을 보인다.
+                self.prompt = Some(Prompt {
+                    kind: PromptKind::Command,
+                    text: "build -t ".into(),
                 });
                 None
             }
@@ -544,11 +618,61 @@ impl Model {
                         });
                         None
                     }
+                    // 새 이름은 사용자가 친다.
+                    't' => {
+                        self.prompt = Some(Prompt {
+                            kind: PromptKind::Command,
+                            text: format!("tag {target} "),
+                        });
+                        None
+                    }
+                    // 올릴 곳은 이름이 정한다: 고쳐 칠 수 있게 채운다. 진행을 보이도록 터미널을 넘긴다.
+                    // 참조가 없는 이미지는 올릴 수 없다(먼저 `t`로 이름을 붙인다).
+                    'p' => {
+                        let reference = image.references.first()?;
+                        self.prompt = Some(Prompt {
+                            kind: PromptKind::Command,
+                            text: format!("push {reference}"),
+                        });
+                        None
+                    }
+                    // 다시 빌드: `images`가 내는 빌드 기록(`build`)이 있는 이미지만. 실행하지 않고 명령 줄을 채운다
+                    // (빌드는 오래 걸리고 무엇을 바꿔 칠지 모른다). Enter면 터미널을 넘긴다.
+                    'R' => {
+                        let text = rebuild_line(image)?;
+                        self.prompt = Some(Prompt {
+                            kind: PromptKind::Command,
+                            text,
+                        });
+                        None
+                    }
                     _ => None,
                 }
             }
+            Tab::Volumes => self.volume_key(c),
             Tab::Events => None,
             Tab::Executors => self.executor_key(c),
+        }
+    }
+
+    /// 볼륨 탭의 명령 키. `c`, `P`는 고른 줄이 없어도 된다.
+    fn volume_key(&mut self, c: char) -> Option<Action> {
+        let words = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        match c {
+            // 이름과 크기는 사용자가 친다.
+            'c' => {
+                self.prompt = Some(Prompt {
+                    kind: PromptKind::Command,
+                    text: "volume create ".into(),
+                });
+                None
+            }
+            'P' => self.confirm(words(&["volume", "prune", "-a", "-f"])),
+            'D' => {
+                let name = self.selected_volume()?.name.clone();
+                self.confirm(words(&["volume", "rm", &name]))
+            }
+            _ => None,
         }
     }
 
@@ -619,6 +743,14 @@ impl Model {
                     format!("Image {r}"),
                     readable(i),
                     words(&["images", "--format", "json"]),
+                )
+            }
+            Tab::Volumes => {
+                let v = self.selected_volume()?;
+                (
+                    format!("Volume {}", v.name),
+                    readable(v),
+                    words(&["volume", "inspect", &v.name, "--format", "json"]),
                 )
             }
             Tab::Executors => {
@@ -724,6 +856,30 @@ fn scroll_key(key: KeyEvent, scroll: &mut u16) -> bool {
         _ => return false,
     }
     true
+}
+
+/// 만든 이미지를 같은 자리에서 다시 빌드하는 명령 줄(앞의 `sbx` 없이, `:` 입력 줄에 채운다):
+/// `build -t NAME -f FILE [--target T] CONTEXT`. 이름은 첫 참조(없으면 `-t`도 없다). Dockerfile을 표준 입력에서
+/// 읽었으면(`file`이 없다) 끝에 `-f `를 두어 사용자가 칠 자리를 남긴다. 빌드 기록이 없으면 `None`.
+/// 기록한 경로가 지금도 있는지는 보지 않는다(없으면 CLI가 말한다).
+pub fn rebuild_line(image: &Image) -> Option<String> {
+    let b = image.build.as_ref()?;
+    let mut words: Vec<String> = vec!["build".into()];
+    if let Some(r) = image.references.first() {
+        words.extend(["-t".into(), familiar(r).to_owned()]);
+    }
+    if let Some(f) = &b.file {
+        words.extend(["-f".into(), f.clone()]);
+    }
+    if let Some(t) = &b.target {
+        words.extend(["--target".into(), t.clone()]);
+    }
+    words.push(b.context.clone());
+    let mut line: Vec<String> = words.iter().map(|w| super::detail::quote(w)).collect();
+    if b.file.is_none() {
+        line.push("-f ".into());
+    }
+    Some(line.join(" "))
 }
 
 /// 명령에 넘기는 샌드박스: 이름이 있으면 이름, 없으면 전체 ID.

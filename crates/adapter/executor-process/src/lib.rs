@@ -70,7 +70,7 @@ fn negotiated(name: &str, min: Option<u32>, max: u32) -> Result<u32, ExecutorErr
 
 /// 규약의 capability를 실행기 타입으로. 모르는 rootfs 형식 이름은 버린다.
 pub fn convert_capabilities(c: proto::Capabilities) -> Result<Capabilities, ExecutorError> {
-    negotiated(&c.name, c.min_version, c.version)?;
+    let version = negotiated(&c.name, c.min_version, c.version)?;
     let name: &'static str = Box::leak(c.name.into_boxed_str());
     Ok(Capabilities {
         name,
@@ -87,6 +87,7 @@ pub fn convert_capabilities(c: proto::Capabilities) -> Result<Capabilities, Exec
         custom_kernel: c.custom_kernel,
         snapshot: c.snapshot,
         max_disks: c.max_disks as usize,
+        volumes: version >= proto::DiskRole::Volume.since(),
     })
 }
 
@@ -103,6 +104,7 @@ pub fn convert_vm(vm: &VmConfig) -> proto::VmSpec {
                 role: match d.role {
                     DiskRole::Rootfs => proto::DiskRole::Rootfs,
                     DiskRole::Scratch => proto::DiskRole::Scratch,
+                    DiskRole::Volume => proto::DiskRole::Volume,
                 },
                 readonly: d.readonly,
             })
@@ -195,6 +197,18 @@ impl Executor for ProcessExecutor {
         })
     }
 
+    /// 실행 파일과, 어댑터면 넘기는 VMM 묶음 디렉터리([`proto::VMM_DIR_ENV`]).
+    fn files(&self) -> Vec<PathBuf> {
+        std::iter::once(self.binary.clone())
+            .chain(
+                self.env
+                    .iter()
+                    .filter(|(k, _)| k == proto::VMM_DIR_ENV)
+                    .map(|(_, v)| PathBuf::from(v)),
+            )
+            .collect()
+    }
+
     fn connect(&self, channel: &ChannelSpec) -> io::Result<Box<dyn GuestConn>> {
         connect_channel(channel)
     }
@@ -240,6 +254,7 @@ impl Executor for ConnectOnly {
             custom_kernel: false,
             snapshot: false,
             max_disks: 0,
+            volumes: false,
         }
     }
 
@@ -635,6 +650,10 @@ mod tests {
         assert_eq!(p.version, proto::VERSION);
         let p = ProcessExecutor::new(executor("same", &caps(None, proto::VERSION))).unwrap();
         assert_eq!(p.version, proto::VERSION);
+        assert!(p.caps.volumes);
+        // 규약 2만 말하는 실행기: 쓰지만 볼륨은 붙일 수 없다(`VmConfig::check`가 거부한다).
+        let p = ProcessExecutor::new(executor("two", &caps(None, 2))).unwrap();
+        assert_eq!((p.version, p.caps.volumes), (2, false));
         // 겹치지 않으면 범위를 알린다.
         let e = ProcessExecutor::new(executor(
             "future",

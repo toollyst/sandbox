@@ -23,10 +23,22 @@
 //!   Docker와 달리 기본 프로세스에 SIGTERM을 먼저 보내지 않는다.
 //! - `bind` 마운트: 실행기에 공유 폴더로 넘기고(태그 `sbx0`, `sbx1`, … 마운트 순서대로), 게스트가 준비되면 그 경로에 마운트하게 한다.
 //!   실행기가 실시간 공유를 지원하지 않으면 만들 때 오류다([`validate`]).
+//! - **볼륨**(`spec.volumes`, [`volume`]): data_dir의 디스크 하나를 층 디스크 뒤에 붙이고(역할 `Volume`, 실행기 규약 3),
+//!   게스트가 준비되면 대상 경로에 붙이게 한다(`HostMsg::Volume`). 볼륨이 디스크를 쓰는 만큼 층 디스크가 줄어든다
+//!   ([`Runtime::layer_disks_for`]): 층이 더 많으면 아래 층들을 합친다. 시작할 때 볼륨마다 잠금을 쥐고(쓰기는 배타,
+//!   읽기 전용은 공유) VM을 소유하는 동안 놓지 않는다. 다른 샌드박스가 쥐고 있으면 VM을 띄우기 전에
+//!   [`RuntimeError::VolumeBusy`]다. 없는 볼륨은 만들지 않고 오류다([`RuntimeError::VolumeNotFound`]): 만드는 것은
+//!   부르는 쪽([`Runtime::create_volume`])이다. 샌드박스를 지워도 볼륨은 남는다. 샌드박스 기록이 가리키는 볼륨은
+//!   지울 수 없다([`Runtime::remove_volume`]).
+//!   순서: 볼륨을 모두 붙인 뒤 bind, copy 마운트.
 //! - `copy` 마운트는 시작할 때 기본 프로세스보다 먼저 한 번 복사한다. 대상이 디렉터리로 있으면 그 안에 내용을, 없으면 그 경로로 만든다.
 //!   순서: bind를 모두 마운트한 뒤 copy를 마운트 순서대로.
 //! - 파일 복사([`Sandbox::copy_in`], [`Sandbox::copy_out`])의 대상 규칙은 Docker `cp`와 같다([`cpplan`]).
 //!   Docker와 달리 실행 중인 샌드박스에서만 된다(디스크를 읽는 것이 게스트이기 때문이다).
+//! - **빌드 층**([`Sandbox::open_layer`], [`Sandbox::export_layer`]): 이미지를 만드는 쪽(빌드 코어)이 한 VM 안에서
+//!   층을 하나씩 쌓는다. 층을 연 뒤의 exec와 복사는 그 층에서 하고, 내보내면 그 층의 변경이 압축하지 않은 OCI 층
+//!   tar로 나온다. 게스트가 보낸 항목은 믿지 않는다([`layer`]). 차례(층을 여는 동안 다른 요청을 보내지 않는다,
+//!   앞 단계의 프로세스를 끝낸다)는 부르는 쪽이 지킨다. 게스트 쪽 규칙은 `sbx-guest`의 `layer`, `overlay`에 있다.
 //!
 //! **수명 (attached)**: VM을 띄운 프로세스가 그 VM을 소유한다(`owner.lock`). 소유 프로세스가 끝나면 실행기 규약에 따라
 //! VM도 끝나고, 다른 프로세스는 그 샌드박스를 `stopped`로 본다. 다른 프로세스도 같은 data_dir로 exec, cp, stop을 할 수 있다.
@@ -37,9 +49,23 @@
 //! **이벤트**: 상태를 바꾸는 자리에서 `<data_dir>/events/sandboxes`([`events_log`])에 덧붙인다. 종류는 [`EVENT_KIND`],
 //! 동작은 `create`(만듦), `start`(`running` 기록), `stop`(`stopped` 기록, `exit_code`·`error`), `remove`(지움)이고,
 //! 속성은 `image`(ID)와 `name`(있으면)이다. 기록하지 못해도 동작은 계속한다(알림이다).
+//! 볼륨은 `<data_dir>/events/volumes`([`volume::volume_events_log`])에 종류 [`volume::VOLUME_EVENT_KIND`], 동작
+//! `create`·`remove`, ID는 볼륨 이름으로 남긴다.
 //! 소유 프로세스가 갑자기 죽으면 아무도 `stopped`를 기록하지 않으므로(읽는 쪽이 `stopped`로 본다) `stop` 이벤트도 없다.
 //!
-//! **층**: `lib` → `egress` → `client` → `hostfs`, `records` → `process`, `validate`, `cpplan`, `chan` → `error`.
+//! **시계**: VM을 소유한 프로세스는 게스트 시계를 호스트에 맞춘다(시작 직후, 1분마다, 호스트 시계가 뛰면 곧바로).
+//! 시작을 기다리게 하지 않고, 실패는 `logs/executor.log`에 종류마다 한 번 쓴다. 규칙은 [`clock`]에 있다.
+//!
+//! **공유 폴더 변경**: VM을 소유한 프로세스는 쓰기로 붙인 `bind` 공유의 호스트 디렉터리를 보고, 바뀐 경로를 게스트에
+//! 알려 게스트의 파일 감시(inotify)가 보게 한다(virtio-fs는 전하지 않는다). 공유를 마운트한 뒤 시작하고, 실패는
+//! `logs/executor.log`에 종류마다 한 번 쓴다. 규칙은 [`watch`]에 있다.
+//!
+//! **잇기** (`spec.connect`, `--connect`): VM을 소유한 프로세스가 같은 data_dir의 다른 샌드박스에 연결마다 잇는다.
+//! 네트워크가 `Disabled`여도 투명 TCP를 켜지만 프록시는 띄우지 않고 잇기 이름 말고는 열지 않는다.
+//! [`Runtime::create`]는 대상이 모두 있고 `connect_scope` 안인지 본다(규칙 검사는 [`validate`]). 연결마다의 규칙은
+//! `connect` 모듈과 [`egress`]에 있다.
+//!
+//! **층**: `lib` → `egress`, `watch` → `clock` → `connect` → `client` → `hostfs`, `layer`, `volume` → `records` → `process`, `validate`, `cpplan`, `chan` → `error`.
 //!
 //! - 의존: `sbx-model`, `sbx-guest-proto`, `sbx-executor`, `sbx-store`(읽기), `sbx-events`
 
@@ -47,26 +73,31 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use sbx_executor::{ChannelSpec, Disk, DiskRole, Executor, GuestConn, VmConfig, VmHandle};
 use sbx_guest_proto::{ExitStatus, GuestMsg, HostMsg, WinSize};
 use sbx_model::{
     ExecSpec, Ident, MountKind, NetworkPolicy, ProcessDefaults, SandboxId, SandboxSpec, Signal,
-    State, UserSpec, blocking,
+    State, UserSpec, VolumeMount, blocking,
 };
 use sbx_store::{LeaseError, RootfsLease, Store};
 
 mod chan;
 mod client;
+pub mod clock;
+mod connect;
 pub mod cpplan;
 pub mod egress;
 mod error;
 mod hostfs;
+pub mod layer;
 mod ports;
 pub mod process;
 mod records;
 pub mod validate;
+pub mod volume;
+pub mod watch;
 
 /// 퍼징(`fuzz/`)만 쓰는 입구: 게스트가 보낸 파일을 호스트에 받는 `hostfs`. `fuzzing` feature를 켜야 있다.
 /// 배포하는 바이너리는 이 feature를 켜지 않는다(`cargo xtask check-deps`가 확인한다).
@@ -77,6 +108,8 @@ pub mod fuzzing {
 }
 
 pub use error::RuntimeError;
+pub use hostfs::{OpenContent, Placed, PlacedKind};
+pub use layer::LayerStats;
 pub use records::{OWNER_GONE, StateRecord};
 
 use client::Guest;
@@ -119,7 +152,13 @@ struct Owned {
     ended_by: Option<String>,
     /// `-p`의 듣기. 버리면(정리할 때) 멈춘다.
     _ports: Option<ports::Forwarding>,
+    /// 게스트 시계 맞추기. 버리면 멈춘다. 끝낼 때 VM에 종료를 요청하기 전에 먼저 버린다.
+    clock: Option<clock::Running>,
+    /// 공유 폴더의 호스트 쪽 변경 알림. 버리면 멈춘다. 시계처럼 끝낼 때 먼저 버린다.
+    watch: Option<watch::Running>,
     _lease: RootfsLease,
+    /// 붙인 볼륨의 잠금. VM을 정리할 때(소유 잠금과 함께) 놓는다.
+    _volumes: Vec<volume::Hold>,
     _lock: OwnerLock,
 }
 
@@ -164,6 +203,9 @@ pub struct SandboxInfo {
     pub egress_port: Option<u16>,
     /// 공개한 포트(`-p`, 실행 중일 때): (듣는 호스트 주소, 게스트 포트). 포트 0을 준 것은 OS가 고른 포트다.
     pub published: Vec<(std::net::SocketAddr, u16)>,
+    /// VM을 띄운 실행기의 파일(실행 중일 때, [`sbx_executor::Executor::files`]). 실행 중인 샌드박스가 어느 설치한
+    /// 실행기·어댑터를 쓰는지 알려 준다.
+    pub executor_files: Vec<PathBuf>,
     /// 만든 시각. 만든 뒤 바뀌지 않는 설정 파일의 수정 시각이다. 파일 시스템이 주지 않으면 `None`.
     pub created: Option<std::time::SystemTime>,
 }
@@ -229,6 +271,11 @@ impl Runtime {
         &self.inner.config
     }
 
+    /// 실행기의 기능.
+    pub fn capabilities(&self) -> sbx_executor::Capabilities {
+        self.inner.executor.capabilities()
+    }
+
     fn paths(&self, id: &SandboxId) -> Paths {
         Paths::new(&self.inner.config.data_dir, id)
     }
@@ -253,9 +300,172 @@ impl Runtime {
         Ok(path)
     }
 
+    /// 이 실행기로 붙일 수 있는 층 디스크 수: 실행기의 `max_disks`에서 scratch 하나를 뺀 것. 관리 쪽의 prepare에 그대로
+    /// 넘긴다(`sbx_store::stack`). 그보다 층이 많은 이미지는 아래 층들을 합친 디스크로 뜬다.
+    pub fn layer_disks(&self) -> usize {
+        self.layer_disks_for(0)
+    }
+
+    /// 볼륨 `volumes`개를 붙이는 샌드박스의 층 디스크 수: [`Runtime::layer_disks`]에서 볼륨마다 하나를 뺀 것.
+    /// 볼륨이 너무 많아 하나도 남지 않으면 0이다(만들기와 시작이 [`RuntimeError::TooManyVolumes`]로 거부한다).
+    pub fn layer_disks_for(&self, volumes: usize) -> usize {
+        self.inner
+            .executor
+            .capabilities()
+            .max_disks
+            .saturating_sub(1)
+            .saturating_sub(volumes)
+    }
+
+    /// 볼륨을 만든다(`volume create`, `-v NAME:` 처음 쓸 때). 크기와 라벨은 부르는 쪽이 정한다. 이미 있으면
+    /// [`RuntimeError::VolumeExists`]. 만들면 `create` 이벤트를 남긴다.
+    pub fn create_volume(
+        &self,
+        name: &str,
+        size_mib: u32,
+        labels: std::collections::BTreeMap<String, String>,
+    ) -> Result<volume::VolumeInfo, RuntimeError> {
+        let v = volume::create(&self.inner.config.data_dir, name, size_mib, labels)?;
+        self.emit_volume("create", &v.name, &[("size", format!("{size_mib}m"))]);
+        Ok(v)
+    }
+
+    /// 볼륨 하나. 없으면 `None`.
+    pub fn volume(&self, name: &str) -> Result<Option<volume::VolumeInfo>, RuntimeError> {
+        volume::get(&self.inner.config.data_dir, name)
+    }
+
+    /// 모든 볼륨. 이름 순서.
+    pub fn volumes(&self) -> Result<Vec<volume::VolumeInfo>, RuntimeError> {
+        volume::list(&self.inner.config.data_dir)
+    }
+
+    /// 볼륨마다 그것을 가리키는 샌드박스(어느 상태든, ID 순서). 가리키는 샌드박스가 없는 볼륨은 빠진다.
+    pub async fn volume_users(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, Vec<SandboxInfo>>, RuntimeError> {
+        let mut out: std::collections::BTreeMap<String, Vec<SandboxInfo>> = Default::default();
+        for s in self.list().await? {
+            for v in &s.spec.volumes {
+                out.entry(v.name.clone()).or_default().push(s.clone());
+            }
+        }
+        Ok(out)
+    }
+
+    /// 볼륨을 지운다. 샌드박스 기록이 가리키면(멈춘 것도) [`RuntimeError::VolumeReferenced`], 붙인 샌드박스가 있으면
+    /// [`RuntimeError::VolumeBusy`]. 지우면 `remove` 이벤트를 남긴다.
+    pub async fn remove_volume(&self, name: &str) -> Result<(), RuntimeError> {
+        if self.volume(name)?.is_none() {
+            return Err(RuntimeError::VolumeNotFound(name.to_owned()));
+        }
+        if let Some(users) = self.volume_users().await?.get(name) {
+            return Err(RuntimeError::VolumeReferenced {
+                name: name.to_owned(),
+                sandboxes: users.iter().map(sandbox_label).collect(),
+            });
+        }
+        volume::remove(&self.inner.config.data_dir, name)?;
+        self.emit_volume("remove", name, &[]);
+        Ok(())
+    }
+
+    fn emit_volume(&self, action: &str, name: &str, extra: &[(&str, String)]) {
+        let mut e = sbx_events::Event::new(volume::VOLUME_EVENT_KIND, action, name);
+        for (k, v) in extra {
+            e = e.with(k, v.clone());
+        }
+        let _ = volume::volume_events_log(&self.inner.config.data_dir).append(e);
+    }
+
+    /// 시작할 볼륨의 잠금을 쥐고 디스크를 돌려준다(크레이트 문서의 "볼륨"). 다른 샌드박스가 쥐고 있으면 그
+    /// 샌드박스를 찾아 이름을 댄다.
+    fn hold_volumes(
+        &self,
+        id: &SandboxId,
+        mounts: &[VolumeMount],
+    ) -> Result<Vec<(volume::Hold, PathBuf)>, RuntimeError> {
+        let data_dir = &self.inner.config.data_dir;
+        let mut held = Vec::with_capacity(mounts.len());
+        for m in mounts {
+            let v = volume::get(data_dir, &m.name)?
+                .ok_or_else(|| RuntimeError::VolumeNotFound(m.name.clone()))?;
+            let Some(hold) = volume::hold(data_dir, &m.name, m.readonly)? else {
+                return Err(RuntimeError::VolumeBusy {
+                    name: m.name.clone(),
+                    holder: self.volume_holder(id, &m.name),
+                });
+            };
+            // 잠금은 소유 프로세스와 함께 사라지지만 VM은 실행기가 끌 때까지 조금 더 산다. 그 VM이 아직 이 볼륨을
+            // 붙이고 있으면 꺼지기를 기다리고, 끝내 꺼지지 않으면 거부한다(잠금을 놓는다).
+            if let Some(holder) = self.vm_left_running(id, m, volume::VM_GONE_WAIT) {
+                return Err(RuntimeError::VolumeStillAttached {
+                    name: m.name.clone(),
+                    holder,
+                });
+            }
+            let disk = v.disk();
+            if volume::looks_like_layer(&disk)? {
+                return Err(RuntimeError::Invalid(format!(
+                    "volume {} holds an image layer (EROFS), not a volume; sbx does not attach it",
+                    m.name
+                )));
+            }
+            held.push((hold, disk));
+        }
+        Ok(held)
+    }
+
+    /// 소유 프로세스가 죽었는데 VM이 아직 살아 있어 볼륨 `m`과 겹치는 다른 샌드박스(이름이나 짧은 ID). `wait`까지
+    /// 꺼지기를 기다린다. 겹친다는 것은 둘 중 하나라도 쓰기로 붙인다는 것이다.
+    ///
+    /// VM이 살아 있는지는 기록의 제어 소켓(`state.control`)에 붙어 보아 안다: 실행기 규약에서 그 소켓은 VM이 사는
+    /// 동안 실행기가 연다(Firecracker는 VMM이, 가짜 실행기는 실행기가 듣는다). VM이 끝나면 파일이 없거나 붙지 않는다.
+    /// 붙기만 하고 아무것도 보내지 않으므로 게스트에는 끊긴 연결 하나다. Unix가 아니면 보지 않는다.
+    fn vm_left_running(&self, me: &SandboxId, m: &VolumeMount, wait: Duration) -> Option<String> {
+        let ids = records::ids(&self.inner.config.data_dir).ok()?;
+        let mut live: Vec<(String, PathBuf)> = ids
+            .into_iter()
+            .filter(|id| id != me)
+            .filter_map(|id| self.read_info(&id).ok().flatten())
+            .filter(|i| {
+                i.spec
+                    .volumes
+                    .iter()
+                    .any(|v| v.name == m.name && !(v.readonly && m.readonly))
+            })
+            .filter_map(|i| {
+                let control = records::recorded_control(&self.paths(&i.id))?;
+                Some((sandbox_label(&i), control))
+            })
+            .collect();
+        let deadline = Instant::now() + wait;
+        loop {
+            live.retain(|(_, control)| control_socket_alive(control));
+            if live.is_empty() {
+                return None;
+            }
+            if Instant::now() >= deadline {
+                return live.into_iter().next().map(|(label, _)| label);
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// 그 볼륨을 붙이고 실행 중인 다른 샌드박스(이름이나 짧은 ID). 시작하는 중이라 아직 실행 중으로 적히지 않았으면 없다.
+    fn volume_holder(&self, me: &SandboxId, name: &str) -> Option<String> {
+        let ids = records::ids(&self.inner.config.data_dir).ok()?;
+        ids.into_iter()
+            .filter(|id| id != me)
+            .filter_map(|id| self.read_info(&id).ok().flatten())
+            .find(|i| i.state == State::Running && i.spec.volumes.iter().any(|v| v.name == name))
+            .map(|i| sandbox_label(&i))
+    }
+
     /// 샌드박스를 만든다. 아직 시작하지 않는다.
     ///
-    /// 검사 순서: 실행기 기능([`validate::check`]) → 이미지 존재 → rootfs 존재.
+    /// 검사 순서: 실행기 기능과 설정([`validate::check`]) → 이름 → `--connect` 대상(있고 `connect_scope` 안) → 이미지
+    /// 존재 → rootfs 존재.
     /// 어느 것이든 없으면 받거나 만들지 않고 오류를 낸다.
     pub async fn create(&self, spec: SandboxSpec) -> Result<Sandbox, RuntimeError> {
         validate::check(&spec, &self.inner.executor.capabilities())?;
@@ -269,11 +479,22 @@ impl Runtime {
                 });
             }
         }
+        connect::check_targets(data_dir, &spec)?;
         let store = &self.inner.store;
         if !store.has_image(&spec.image) {
             return Err(RuntimeError::ImageNotPulled(spec.image));
         }
-        if !store.has_rootfs(&spec.image, spec.rootfs_format) {
+        for v in &spec.volumes {
+            if volume::get(data_dir, &v.name)?.is_none() {
+                return Err(RuntimeError::VolumeNotFound(v.name.clone()));
+            }
+        }
+        let budget = self.layer_disks_for(spec.volumes.len());
+        let ready = store
+            .image(&spec.image)
+            .ok()
+            .and_then(|r| store.stack(&r, spec.rootfs_format, budget));
+        if ready.is_none() {
             return Err(RuntimeError::RootfsNotPrepared {
                 image: spec.image,
                 format: spec.rootfs_format,
@@ -368,6 +589,7 @@ impl Runtime {
             control: state.control,
             egress_port: state.egress_port,
             published: state.published,
+            executor_files: state.executor_files,
             created: std::fs::metadata(paths.spec())
                 .and_then(|m| m.modified())
                 .ok(),
@@ -460,6 +682,9 @@ impl Runtime {
             return;
         };
         let error = owned.ended_by.take().or(error);
+        // 꺼지는 VM과 시계를 맞추다 실패를 기록하지 않게 먼저 멈춘다.
+        owned.clock.take();
+        owned.watch.take();
         let _ = self.guest(&owned.control).shutdown();
         if !chan::block_on(owned.vm.wait(grace)).unwrap_or(false) {
             let _ = owned.vm.kill();
@@ -472,6 +697,7 @@ impl Runtime {
             control: None,
             egress_port: None,
             published: Vec::new(),
+            executor_files: Vec::new(),
         };
         if records::write_state(&self.paths(id), &state).is_ok() {
             let spec = records::read(&self.paths(id))
@@ -506,6 +732,54 @@ fn to_proto_user(u: &UserSpec) -> sbx_guest_proto::User {
         user: ident(&u.user),
         group: u.group.as_ref().map(ident),
     }
+}
+
+/// 이름(있으면)이나 짧은 ID. 오류 메시지에 쓴다.
+/// VM의 제어 소켓이 아직 연결을 받는지([`Runtime::vm_left_running`]).
+#[cfg(unix)]
+fn control_socket_alive(control: &Path) -> bool {
+    std::os::unix::net::UnixStream::connect(control).is_ok()
+}
+
+#[cfg(not(unix))]
+fn control_socket_alive(_control: &Path) -> bool {
+    false
+}
+
+fn sandbox_label(s: &SandboxInfo) -> String {
+    s.spec
+        .name
+        .clone()
+        .unwrap_or_else(|| s.id.as_str().chars().take(12).collect())
+}
+
+/// VM에 붙일 디스크: 맨 아래 층, scratch, 그 위 층들, 볼륨들 차례(실행기 규약의 "게스트에 대한 약속", 게스트의 부팅
+/// 규칙). 층은 모두 `Rootfs` 역할, 읽기 전용이다. 볼륨 `i`번째(0부터)는 디스크 `layers.len() + 1 + i`번째다
+/// ([`volume_disk`]).
+fn vm_disks(layers: &[PathBuf], scratch: PathBuf, volumes: &[(PathBuf, bool)]) -> Vec<Disk> {
+    let layer = |p: &PathBuf| Disk {
+        path: p.clone(),
+        role: DiskRole::Rootfs,
+        readonly: true,
+    };
+    let mut disks: Vec<Disk> = layers.iter().take(1).map(layer).collect();
+    disks.push(Disk {
+        path: scratch,
+        role: DiskRole::Scratch,
+        readonly: false,
+    });
+    disks.extend(layers.iter().skip(1).map(layer));
+    disks.extend(volumes.iter().map(|(path, readonly)| Disk {
+        path: path.clone(),
+        role: DiskRole::Volume,
+        readonly: *readonly,
+    }));
+    disks
+}
+
+/// 층 디스크가 `layers`개일 때 볼륨 `i`번째의 디스크 차례([`vm_disks`]).
+fn volume_disk(layers: usize, i: usize) -> usize {
+    layers.max(1) + 1 + i
 }
 
 /// bind 마운트 `i`번째(0부터)의 공유 태그.
@@ -665,10 +939,24 @@ impl Sandbox {
             return Err(RuntimeError::GuestInitMissing(guest_init));
         }
         let spec = info.spec.clone();
+        // 볼륨 수가 이 실행기에 맞는지 VM 전에 본다(만든 뒤 다른 실행기로 시작할 수 있다).
+        validate::check(&spec, &rt.inner.executor.capabilities())?;
+        // 볼륨 잠금은 VM 전에 쥔다: 다른 샌드박스가 쓰고 있으면 VM 없이 실패한다.
+        let held = rt.hold_volumes(&id, &spec.volumes)?;
+        let volume_disks: Vec<(PathBuf, bool)> = held
+            .iter()
+            .zip(&spec.volumes)
+            .map(|((_, disk), m)| (disk.clone(), m.readonly))
+            .collect();
+        let holds: Vec<volume::Hold> = held.into_iter().map(|(h, _)| h).collect();
         let lease = rt
             .inner
             .store
-            .lease(&spec.image, spec.rootfs_format)
+            .lease(
+                &spec.image,
+                spec.rootfs_format,
+                rt.layer_disks_for(spec.volumes.len()),
+            )
             .map_err(|e| match e {
                 LeaseError::ImageNotFound => RuntimeError::ImageNotPulled(spec.image.clone()),
                 LeaseError::RootfsNotFound => RuntimeError::RootfsNotPrepared {
@@ -681,18 +969,7 @@ impl Sandbox {
         let vm_config = VmConfig {
             guest_init,
             kernel: lease.kernel().map(Path::to_path_buf),
-            disks: vec![
-                Disk {
-                    path: lease.rootfs().to_owned(),
-                    role: DiskRole::Rootfs,
-                    readonly: true,
-                },
-                Disk {
-                    path: paths.scratch(),
-                    role: DiskRole::Scratch,
-                    readonly: false,
-                },
-            ],
+            disks: vm_disks(lease.disks(), paths.scratch(), &volume_disks),
             vcpus: spec.resources.vcpus,
             memory_mib: spec.resources.memory_mib,
             shares: spec
@@ -735,21 +1012,60 @@ impl Sandbox {
             .map_err(|e| record_failure(e.into()))?;
 
         let guest = rt.guest(&control);
+        let layer_count = lease.disks().len();
+        let hold = spec.hold;
         let mut main = to_proto_exec(&spec.process, io, true);
         let mounts = spec.mounts.clone();
+        let volumes = spec.volumes.clone();
         let network = spec.network.clone();
         let egress_limit = spec.egress_limit_bytes;
         let data_dir = rt.inner.config.data_dir.clone();
         let id_for_egress = id.as_str().to_owned();
+        let record_names = spec.record_names;
+        let peers = (!spec.connect.is_empty()).then(|| connect::Peers {
+            rules: spec.connect.clone(),
+            data_dir: data_dir.clone(),
+            executor: rt.inner.executor.clone(),
+            me: id.clone(),
+            scope: spec.connect_scope.clone(),
+        });
+        let clock_log = paths.executor_log();
+        let watch_log = paths.executor_log();
         let (vm, started) = blocking(move || {
             let mut vm = vm;
             let r = (|| {
                 let mut alive = || !chan::block_on(vm.wait(Duration::ZERO)).unwrap_or(true);
                 guest.wait_ready(START_TIMEOUT, &mut alive)?;
+                // 실행기가 디스크를 빠뜨리면 게스트는 모자란 뿌리로 뜬다. 붙인 층 수를 알려 게스트가 견주게 한다.
+                // 시계보다 먼저 한다: 견주기가 끝나기 전에는 이 VM에 다른 연결을 열지 않는다(틀리면 게스트가 꺼진다).
+                guest.check_layers(layer_count)?;
+                // 시계는 따로 맞춘다. 아래(공유 폴더, 복사, 기본 프로세스)는 기다리지 않는다. 빌드 VM(`hold`)도 맞춘다:
+                // `RUN`의 TLS 검사와 파일 시각이 호스트 시각을 본다. 시계 맞추기는 파일 시스템을 보지 않으므로 빌드 층을
+                // 여닫는 차례와 섞여도 된다(`sbx-guest`의 `layer` 모듈).
+                let clock = clock::start(guest.clone(), clock_log);
+                for (i, v) in volumes.iter().enumerate() {
+                    guest.volume(
+                        &v.name,
+                        volume_disk(layer_count, i),
+                        &v.destination,
+                        v.readonly,
+                        !v.no_copy,
+                    )?;
+                }
                 let binds = mounts.iter().filter(|m| m.kind == MountKind::Bind);
                 for (i, m) in binds.enumerate() {
                     guest.share(&share_tag(i), &m.destination, m.readonly)?;
                 }
+                // 마운트한 뒤에 호스트 쪽 변경을 보기 시작한다. 읽기 전용 공유는 게스트가 알림을 만들 수 없다(`watch`).
+                let watched: Vec<watch::Share> = mounts
+                    .iter()
+                    .filter(|m| m.kind == MountKind::Bind && !m.readonly)
+                    .map(|m| watch::Share {
+                        host: m.source.clone(),
+                        target: m.destination.clone(),
+                    })
+                    .collect();
+                let watching = watch::start_for(guest.clone(), watched, watch_log);
                 for m in mounts.iter().filter(|m| m.kind == MountKind::Copy) {
                     let target = guest.stat(&m.destination)?;
                     match target {
@@ -769,30 +1085,36 @@ impl Sandbox {
                     }
                 }
                 // 나가는 연결: 프록시를 띄우고, 맡길 연결을 돌리고, 기본 프로세스에 프록시 환경 변수를 준다.
-                let egress_port = match network {
-                    NetworkPolicy::Disabled => None,
-                    NetworkPolicy::Allow(rules) => {
+                // 잇기만 있으면(`--connect`) 프록시 없이 맡길 연결과 투명 TCP만 켠다.
+                let limits = egress::Limits {
+                    bytes: egress_limit,
+                };
+                let record = egress::Record {
+                    log: network_log(&data_dir),
+                    sandbox: id_for_egress.clone(),
+                };
+                let egress_port = match (network, peers) {
+                    // 닫힌 네트워크에서 이름 묻기만 받아 모두 거부하고 기록한다(빌드의 안내, `record_names`).
+                    (NetworkPolicy::Disabled, None) if record_names => {
+                        egress::start(guest.clone(), Vec::new(), None, limits, record);
+                        None
+                    }
+                    (NetworkPolicy::Disabled, None) => None,
+                    (NetworkPolicy::Disabled, Some(peers)) => {
+                        egress::start(guest.clone(), Vec::new(), Some(peers), limits, record);
+                        None
+                    }
+                    (NetworkPolicy::Allow(rules), peers) => {
                         let port = guest.egress_listen()?;
-                        egress::start(
-                            guest.clone(),
-                            rules,
-                            egress::Limits {
-                                bytes: egress_limit,
-                            },
-                            egress::Record {
-                                log: network_log(&data_dir),
-                                sandbox: id_for_egress.clone(),
-                            },
-                        );
+                        egress::start(guest.clone(), rules, peers, limits, record);
                         process::add_proxy_env(&mut main.env, port);
                         Some(port)
                     }
                 };
                 let forwarding =
                     (!bound.listeners_empty()).then(|| ports::serve(bound, guest.clone()));
-                guest
-                    .exec(main)
-                    .map(|(c, pid)| (c, pid, egress_port, forwarding))
+                let started = if hold { guest.hold() } else { guest.exec(main) };
+                started.map(|(c, pid)| (c, pid, egress_port, forwarding, (clock, watching)))
             })();
             if r.is_err() {
                 let _ = vm.kill();
@@ -800,7 +1122,8 @@ impl Sandbox {
             (vm, r)
         })
         .await;
-        let (conn, pid, egress_port, forwarding) = started.map_err(record_failure)?;
+        let (conn, pid, egress_port, forwarding, (clock, watching)) =
+            started.map_err(record_failure)?;
 
         let state = StateRecord {
             state: State::Running,
@@ -810,6 +1133,7 @@ impl Sandbox {
             control: Some(control.clone()),
             egress_port,
             published,
+            executor_files: rt.inner.executor.files(),
         };
         records::write_state(&paths, &state)?;
         rt.emit("start", &id, Some(&spec), &[]);
@@ -822,7 +1146,10 @@ impl Sandbox {
                 started,
                 ended_by: None,
                 _ports: forwarding,
+                clock: Some(clock),
+                watch: watching,
                 _lease: lease,
+                _volumes: holds,
                 _lock: owner,
             },
         );
@@ -880,6 +1207,43 @@ impl Sandbox {
             rt.emit("exec_die", &id, Some(&spec), &extra);
         });
         Ok(Process::spawn(conn, pid, None, Some(on_exit)))
+    }
+
+    /// 빌드 단계 하나를 실행한다(`RUN`). [`Sandbox::exec`]와 같고, 끝나면 게스트가 그 단계가 남긴 프로세스를 모두
+    /// 끝낸다(`HostMsg::ExecStep`). 빌드 층이 열려 있어야 한다([`Sandbox::open_layer`]).
+    pub async fn exec_step(&self, spec: ExecSpec) -> Result<Process, RuntimeError> {
+        let (info, guest) = self.require_running("build")?;
+        let p = process::for_exec(&info.spec.process, &spec)?;
+        let mut x = to_proto_exec(&p, IoMode::default(), false);
+        if let Some(port) = info.egress_port {
+            process::add_proxy_env(&mut x.env, port);
+        }
+        let (conn, pid) = blocking(move || guest.exec_step(x)).await?;
+        Ok(Process::spawn(conn, pid, None, None))
+    }
+
+    /// 항목들을 게스트 디렉터리 `dest_dir`(절대 경로, 있어야 한다) 아래에 놓는다. 경로, 소유자, 권한, 시각은 부르는
+    /// 쪽이 정한 그대로다(빌드의 `COPY`). 같은 이름은 덮고 디렉터리끼리는 합친다(`CopyIn`). `running`에서만.
+    pub async fn copy_entries(
+        &self,
+        dest_dir: &str,
+        entries: Vec<Placed>,
+    ) -> Result<(), RuntimeError> {
+        let (_, guest) = self.require_running("copy")?;
+        require_absolute(dest_dir)?;
+        let dest = dest_dir.to_owned();
+        blocking(move || guest.copy_entries(&dest, entries)).await
+    }
+
+    /// 게스트 경로 정보(심볼릭 링크는 게스트 안에서 따라간다). 없으면 `None`. `running`에서만.
+    pub async fn stat(
+        &self,
+        guest_path: &str,
+    ) -> Result<Option<sbx_guest_proto::Entry>, RuntimeError> {
+        let (_, guest) = self.require_running("stat")?;
+        require_absolute(guest_path)?;
+        let p = guest_path.to_owned();
+        blocking(move || guest.stat(&p)).await
     }
 
     /// 게스트가 보고하는 자원 사용량(`sbx stats`). `running`에서만.
@@ -1035,6 +1399,36 @@ impl Sandbox {
                     guest.copy_out(src, parent, Some(&name))
                 }
             }
+        })
+        .await
+    }
+
+    /// 빌드 층을 하나 연다. 이미지 rootfs와 앞서 연 층들 위에 빈 쓰기 층을 쌓고, 그 번호(1부터)를 돌려준다.
+    /// 그 뒤의 [`exec`](Self::exec), [`copy_in`](Self::copy_in), [`copy_out`](Self::copy_out)은 이 층으로 본
+    /// 파일 시스템에서 한다. `running`에서만.
+    ///
+    /// 앞 단계의 프로세스가 남아 앞 층을 쥐고 있거나 층이 [`MAX_LAYERS`](sbx_guest_proto::MAX_LAYERS)를 넘으면
+    /// 게스트 오류([`RuntimeError::Guest`])다.
+    pub async fn open_layer(&self) -> Result<u32, RuntimeError> {
+        let (_, guest) = self.require_running("build")?;
+        blocking(move || guest.open_layer()).await
+    }
+
+    /// 지금 층의 변경을 압축하지 않은 OCI 층 tar로 `sink`에 쓰고 `sink`를 돌려준다. 층은 열린 채로 둔다.
+    /// `running`에서만.
+    ///
+    /// `limit`은 층에 든 파일 내용 합계의 상한이다. 게스트가 보낸 것은 [`layer`]의 규칙으로 확인한다. 오류이면
+    /// 그때까지 `sink`에 쓴 것은 온전한 tar가 아니므로 버려야 한다.
+    pub async fn export_layer<W: std::io::Write + Send + 'static>(
+        &self,
+        mut sink: W,
+        limit: u64,
+    ) -> Result<(W, LayerStats), RuntimeError> {
+        let (_, guest) = self.require_running("build")?;
+        blocking(move || {
+            let stats = guest.export_layer(&mut sink, limit)?;
+            sink.flush()?;
+            Ok((sink, stats))
         })
         .await
     }

@@ -13,15 +13,25 @@ use sbx_model::{Digest, ImageId, Mount, NetworkPolicy, Resources, RootfsFormat};
 
 use crate::chan::block_on;
 
+#[cfg(unix)]
+mod layers;
+#[cfg(unix)]
+mod volumes;
+
 struct Env {
     root: PathBuf,
     rt: Runtime,
+    fake: FakeExecutor,
     uid: u32,
     gid: u32,
 }
 
 impl Env {
     fn new(name: &str) -> Self {
+        Self::with(name, FakeExecutor::basic())
+    }
+
+    fn with(name: &str, fake: FakeExecutor) -> Self {
         // Unix 소켓 길이 제한 때문에 짧은 경로를 쓴다.
         let root = PathBuf::from(format!("/tmp/sbx-rt-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -34,7 +44,7 @@ impl Env {
                 guest_init: root.join("initramfs"),
                 socket_dir: root.join("s"),
             },
-            Arc::new(FakeExecutor::basic()),
+            Arc::new(fake.clone()),
         )
         .unwrap();
         // fake 게스트는 지금 사용자로 돈다. 디렉터리 소유 그룹은 부모를 따를 수 있으므로(macOS) id로 구한다.
@@ -48,7 +58,13 @@ impl Env {
                 .unwrap_or(0)
         };
         let (uid, gid) = (id("-u"), id("-g"));
-        Self { root, rt, uid, gid }
+        Self {
+            root,
+            rt,
+            fake,
+            uid,
+            gid,
+        }
     }
 
     fn image() -> ImageId {
@@ -65,17 +81,20 @@ impl Env {
             config: Default::default(),
             layers: vec![],
             ignored_fields: vec![],
+            build: None,
         })
         .unwrap()
     }
 
-    /// 관리 쪽이 해 두었을 일: 이미지 기록, rootfs, 잠금 파일.
+    /// 관리 쪽이 해 두었을 일: 이미지 기록, rootfs(층 없는 이미지는 빈 rootfs 하나), 잠금 파일.
     fn prepare_image(&self) {
         let layout = self.rt.inner.store.layout();
         let id = Self::image();
         std::fs::create_dir_all(layout.image_dir(&id)).unwrap();
         std::fs::write(layout.image_record(&id), Env::record(&id)).unwrap();
-        std::fs::write(layout.rootfs(&id, RootfsFormat::Erofs), b"fs").unwrap();
+        let empty = layout.merged_disk(&sbx_store::stack::empty_chain(), RootfsFormat::Erofs);
+        std::fs::create_dir_all(empty.parent().unwrap()).unwrap();
+        std::fs::write(empty, b"fs").unwrap();
         std::fs::write(layout.image_lock(&id), b"").unwrap();
     }
 
@@ -98,6 +117,7 @@ impl Env {
                 scratch_disk_mib: 4,
             },
             mounts: vec![],
+            volumes: vec![],
             network: NetworkPolicy::Disabled,
             hostname: None,
             labels: BTreeMap::new(),
@@ -108,6 +128,10 @@ impl Env {
             lifetime_secs: None,
             ports: Vec::new(),
             egress_limit_bytes: None,
+            hold: false,
+            connect: Vec::new(),
+            connect_scope: Default::default(),
+            record_names: false,
         }
     }
 
@@ -135,7 +159,19 @@ impl Env {
 
 impl Drop for Env {
     fn drop(&mut self) {
+        // 끝난 VM의 프로세스가 남았으면 가짜 실행기(VM 끄기)의 결함이다. 막 끝낸 VM의 것은 잠깐 기다린다.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut leaked = self.fake.leaked();
+        while !leaked.is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+            leaked = self.fake.leaked();
+        }
+        // 아직 도는 VM(테스트가 멈추지 않은 것, 패닉한 테스트)의 프로세스도 거둔다.
+        self.fake.kill_everything();
         let _ = std::fs::remove_dir_all(&self.root);
+        if !leaked.is_empty() && !std::thread::panicking() {
+            panic!("process groups outlived their fake VM: {leaked:?}");
+        }
     }
 }
 
@@ -200,6 +236,81 @@ fn create_writes_records_and_sparse_scratch() {
     let list = block_on(e.rt.list()).unwrap();
     assert_eq!(list.len(), 1);
     assert_eq!(list[0].spec, e.spec(&["sh"]));
+}
+
+/// 층이 `n`개인 이미지를 둔다. 층 디스크도 모두 둔다(관리 쪽이 prepare로 했을 일). 층 디스크 경로, 아래부터.
+fn layered_image(e: &Env, n: u8) -> Vec<PathBuf> {
+    let layout = e.rt.inner.store.layout();
+    let id = Env::image();
+    let layers: Vec<sbx_model::Layer> = (0..n)
+        .map(|i| {
+            let d = sbx_store::digest::sha256(&[i]);
+            sbx_model::Layer {
+                digest: d.clone(),
+                diff_id: d,
+                size: 1,
+                compression: sbx_model::Compression::Gzip,
+            }
+        })
+        .collect();
+    let mut record: sbx_store::ImageRecord = serde_json::from_slice(&Env::record(&id)).unwrap();
+    record.layers = layers.clone();
+    std::fs::create_dir_all(layout.image_dir(&id)).unwrap();
+    std::fs::write(
+        layout.image_record(&id),
+        serde_json::to_vec(&record).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(layout.image_lock(&id), b"").unwrap();
+    layers
+        .iter()
+        .map(|l| {
+            let p = layout.layer_disk(&l.diff_id, RootfsFormat::Erofs);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, b"layer").unwrap();
+            p
+        })
+        .collect()
+}
+
+#[cfg(unix)]
+#[test]
+fn start_attaches_the_bottom_layer_then_scratch_then_the_upper_layers() {
+    let e = Env::new("stack3");
+    let disks = layered_image(&e, 3);
+    assert_eq!(e.rt.layer_disks(), 7);
+    let s = block_on(e.rt.create(e.spec(&["true"]))).unwrap();
+    let main = block_on(s.start(IoMode::default())).unwrap();
+    assert_eq!(block_on(main.wait()).unwrap(), 0);
+    let got = &e.fake.launches()[0].disks;
+    let roles: Vec<(PathBuf, DiskRole, bool)> = got
+        .iter()
+        .map(|d| (d.path.clone(), d.role, d.readonly))
+        .collect();
+    let scratch = e.rt.paths(s.id()).scratch();
+    assert_eq!(
+        roles,
+        [
+            (disks[0].clone(), DiskRole::Rootfs, true),
+            (scratch, DiskRole::Scratch, false),
+            (disks[1].clone(), DiskRole::Rootfs, true),
+            (disks[2].clone(), DiskRole::Rootfs, true),
+        ]
+    );
+}
+
+#[test]
+fn create_needs_the_stack_for_the_disks_the_executor_has() {
+    // 디스크 둘(층 하나와 scratch)인 실행기에는 층 셋을 합친 것이 있어야 한다. 관리 쪽이 만들지 않았으면 만들지 못한다.
+    let mut caps = FakeExecutor::basic().capabilities();
+    caps.max_disks = 2;
+    let e = Env::with("stack1", FakeExecutor::new(caps));
+    layered_image(&e, 3);
+    assert_eq!(e.rt.layer_disks(), 1);
+    assert!(matches!(
+        block_on(e.rt.create(e.spec(&["true"]))),
+        Err(RuntimeError::RootfsNotPrepared { .. })
+    ));
 }
 
 #[cfg(unix)]
@@ -506,6 +617,57 @@ fn bind_mount_is_shared_live() {
     );
 }
 
+/// 호스트에서 고친 공유 폴더의 파일을 게스트가 알림 연산(수정 시각을 그대로 다시 쓴다)으로 알리고, 그 연산이 남긴 호스트
+/// 사건은 되돌려 보내지 않는다. fake 게스트의 경로는 호스트 경로이므로 그 연산은 호스트 파일의 ctime만 바꾼다. 읽기 전용
+/// 공유는 보지 않는다.
+#[cfg(unix)]
+#[test]
+fn host_edits_in_a_live_share_are_passed_to_the_guest_once() {
+    use std::os::unix::fs::MetadataExt;
+    let e = Env::new("watch");
+    let (rw, ro) = (e.root.join("rw"), e.root.join("ro"));
+    std::fs::create_dir(&rw).unwrap();
+    std::fs::create_dir(&ro).unwrap();
+    e.prepare_image();
+    let mut spec = e.spec(&["sleep", "30"]);
+    spec.mounts = [(&rw, "g-rw", false), (&ro, "g-ro", true)]
+        .into_iter()
+        .map(|(h, g, readonly)| Mount {
+            source: h.clone(),
+            destination: e.root.join(g).display().to_string(),
+            kind: MountKind::Bind,
+            readonly,
+        })
+        .collect();
+    let s = block_on(e.rt.create(spec)).unwrap();
+    let _main = block_on(s.start(IoMode::default())).unwrap();
+    // 감시는 공유를 마운트한 뒤 열린다. FSEvents는 연 직후의 사건을 놓칠 수 있다.
+    std::thread::sleep(Duration::from_millis(500));
+    let ctime = |p: &Path| {
+        let m = std::fs::metadata(p).unwrap();
+        (m.ctime(), m.ctime_nsec())
+    };
+    let (f, g) = (rw.join("app.js"), ro.join("app.js"));
+    std::fs::write(&f, b"1").unwrap();
+    std::fs::write(&g, b"1").unwrap();
+    let (written, written_ro) = (ctime(&f), ctime(&g));
+    let modified = std::fs::metadata(&f).unwrap().modified().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while ctime(&f) == written {
+        assert!(Instant::now() < deadline, "the guest was not told");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // 내용과 수정 시각은 그대로이고, 되돌아오는 고리가 없다(ctime이 더 바뀌지 않는다).
+    assert_eq!(std::fs::read(&f).unwrap(), b"1");
+    assert_eq!(std::fs::metadata(&f).unwrap().modified().unwrap(), modified);
+    std::thread::sleep(crate::watch::MAX_WAIT * 3);
+    let told = ctime(&f);
+    std::thread::sleep(crate::watch::MAX_WAIT * 3);
+    assert_eq!(ctime(&f), told, "the change bounced back and forth");
+    assert_eq!(ctime(&g), written_ro, "a read-only share was watched");
+    block_on(s.stop(None, Duration::from_secs(5))).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn network_allow_list_is_enforced_through_the_guest_proxy() {
@@ -697,7 +859,12 @@ fn trapping(sig: &str, code: i32) -> Vec<String> {
     vec![
         "sh".into(),
         "-c".into(),
-        format!("trap '' TERM; trap 'exit {code}' {sig}; echo ready; while :; do sleep 0.02; done"),
+        // 바쁜 루프가 아니라 1초짜리 sleep을 기다린다(wait는 트랩한 시그널에 곧바로 돌아온다). 부모(이 테스트
+        // 프로세스)가 사라지면 스스로 끝난다.
+        format!(
+            "trap '' TERM; trap 'exit {code}' {sig}; echo ready; \
+             while kill -0 $PPID 2>/dev/null; do sleep 1 >/dev/null 2>&1 & wait $!; done"
+        ),
     ]
 }
 
@@ -1099,4 +1266,448 @@ fn published_ports_reach_a_service_inside_and_close_on_stop() {
         .to_string();
     assert!(err.contains("can't listen"), "{err}");
     let _ = std::fs::remove_dir_all(&e.root);
+}
+
+/// 투명 TCP(fake 실행기의 흉내로): 허용된 이름은 가짜 주소와 듣는 소켓을 받고, 그 연결은 이름으로 호스트 확인을
+/// 지난다. 허용하지 않은 이름은 NXDOMAIN이고 호스트는 그 이름을 풀지 않는다. 모두 `events/network`에 남는다.
+#[cfg(unix)]
+#[test]
+fn transparent_tcp_resolves_from_the_list_and_passes_names_to_the_host_check() {
+    use std::io::Read;
+    use std::net::{Ipv4Addr, SocketAddrV4};
+
+    use sbx_executor_fake::probe;
+
+    let pid = std::process::id();
+    let ok = format!("ok-{pid}.invalid");
+    let blocked = format!("blocked-{pid}.invalid");
+    let e = Env::new("transp");
+    e.prepare_image();
+    let mut spec = e.spec(&["sh", "-c", "sleep 30"]);
+    spec.network = NetworkPolicy::Allow(
+        [
+            format!("{ok}:5432"),
+            format!("*.wild-{pid}.invalid:443"),
+            format!("any-{pid}.invalid:*"),
+            "203.0.113.7:22".into(),
+            "127.0.0.1:9".into(),
+        ]
+        .iter()
+        .map(|r| r.parse().unwrap())
+        .collect(),
+    );
+    let s = block_on(e.rt.create(spec)).unwrap();
+    let _main = block_on(s.start(IoMode::default())).unwrap();
+    let dir = sbx_executor_fake::net_dir(
+        &e.root
+            .join("d/sandboxes")
+            .join(s.id().as_str())
+            .join("scratch.img"),
+    );
+    let resolv = std::fs::read_to_string(dir.join("etc/resolv.conf")).unwrap();
+    assert!(resolv.ends_with("\nnameserver 127.0.0.1\n"), "{resolv}");
+
+    // 허용하지 않은 이름: 곧바로 NXDOMAIN. 호스트는 풀어 보지 않았다.
+    let r = probe::lookup(&dir, &blocked, 1).unwrap();
+    assert_eq!((r.rcode, r.addrs.len()), (3, 0));
+    assert!(!egress::was_resolved(&blocked));
+
+    // 허용된 이름: 가짜 주소. AAAA는 이름은 있고 레코드는 없다.
+    let r = probe::lookup(&dir, &ok, 1).unwrap();
+    assert_eq!(r.rcode, 0);
+    let ip = r.addrs[0];
+    assert!(sbx_guest_proto::in_fake_range(ip), "{ip}");
+    assert_eq!(
+        probe::lookup(&dir, &ok, 28).unwrap(),
+        probe::Reply {
+            rcode: 0,
+            addrs: vec![]
+        }
+    );
+    assert!(probe::route(&dir, SocketAddrV4::new(ip, 5432)).is_some());
+    assert!(probe::route(&dir, SocketAddrV4::new(ip, 5433)).is_none());
+    assert!(!egress::was_resolved(&ok), "a lookup resolves nothing");
+
+    // 그 주소로 붙으면 호스트가 이름으로 확인한다(.invalid는 풀리지 않아 거부, 프로그램은 닫힌 연결을 본다).
+    let mut c = probe::connect(&dir, &ok, 5432).unwrap();
+    let mut got = Vec::new();
+    let _ = c.read_to_end(&mut got);
+    assert!(got.is_empty());
+
+    // 와일드카드는 이름마다 다른 주소, 접미사 자체는 아니다.
+    let a = probe::lookup(&dir, &format!("a.wild-{pid}.invalid"), 1)
+        .unwrap()
+        .addrs;
+    let b = probe::lookup(&dir, &format!("b.wild-{pid}.invalid"), 1)
+        .unwrap()
+        .addrs;
+    assert!(a.len() == 1 && b.len() == 1 && a != b, "{a:?} {b:?}");
+    assert!(probe::route(&dir, SocketAddrV4::new(b[0], 443)).is_some());
+    assert_eq!(
+        probe::lookup(&dir, &format!("wild-{pid}.invalid"), 1)
+            .unwrap()
+            .rcode,
+        3
+    );
+    // 포트가 *인 규칙만 맞은 이름: 주소는 있고 듣는 곳은 없다(프록시로만).
+    let any = probe::lookup(&dir, &format!("any-{pid}.invalid"), 1)
+        .unwrap()
+        .addrs;
+    assert_eq!(any.len(), 1);
+    assert!(probe::route(&dir, SocketAddrV4::new(any[0], 80)).is_none());
+    // IP 규칙: 그 주소에서 듣는다. 루프백 주소 규칙은 게스트 자신이라 듣지 않는다.
+    assert!(probe::route(&dir, "203.0.113.7:22".parse().unwrap()).is_some());
+    assert!(probe::route(&dir, "127.0.0.1:9".parse().unwrap()).is_none());
+    // localhost는 호스트에 묻지 않는다.
+    let r = probe::lookup(&dir, "localhost", 1).unwrap();
+    assert_eq!(r.addrs, vec![Ipv4Addr::LOCALHOST]);
+
+    let log = network_log(&e.root.join("d"));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let events = loop {
+        let mut r = log.reader(sbx_events::Start::Beginning).unwrap();
+        let mut all = Vec::new();
+        while let Some(ev) = r.next_event().unwrap() {
+            all.push(ev);
+        }
+        if all
+            .iter()
+            .any(|ev| ev.action == "refuse" && ev.attributes.contains_key("port"))
+            || Instant::now() > deadline
+        {
+            break all;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let find = |action: &str, host: &str| {
+        events
+            .iter()
+            .find(|ev| {
+                ev.action == action && ev.attributes.get("host").map(String::as_str) == Some(host)
+            })
+            .unwrap_or_else(|| panic!("no {action} {host} in {events:?}"))
+    };
+    assert_eq!(
+        find("proxy_only", &format!("any-{pid}.invalid")).attributes["port"],
+        "*"
+    );
+    assert!(find("proxy_only", "127.0.0.1").attributes["reason"].contains("sandbox itself"));
+    assert_eq!(find("lookup", &ok).attributes["ports"], "5432");
+    let refused = find("refuse", &blocked);
+    assert_eq!(refused.attributes["via"], "dns");
+    assert!(!refused.attributes.contains_key("port"));
+    let passed = events
+        .iter()
+        .find(|ev| {
+            ev.action == "refuse" && ev.attributes.get("port").map(String::as_str) == Some("5432")
+        })
+        .unwrap_or_else(|| panic!("{events:?}"));
+    assert_eq!(passed.attributes["host"], ok);
+    assert!(
+        passed.attributes["reason"].contains("resolve"),
+        "{passed:?}"
+    );
+    assert!(!events.iter().any(|ev| ev.action == "notice"), "{events:?}");
+    // 연결은 이름으로 확인했다(호스트가 그때 처음 이름을 푼다). 거부된 이름은 끝까지 풀지 않았다.
+    assert!(egress::was_resolved(&ok));
+    assert!(!egress::was_resolved(&blocked));
+    block_on(s.stop(None, Duration::from_secs(5))).unwrap();
+    let _ = std::fs::remove_dir_all(&e.root);
+}
+
+/// 닫힌 네트워크에서 `record_names`(빌드 VM): 어느 이름도 열리지 않지만(NXDOMAIN), 물은 이름은 거부로 남는다.
+/// 그것이 빌드의 "열려면 --allow" 안내의 재료다. `record_names`가 없으면 물어도 남는 것이 없다.
+#[cfg(unix)]
+#[test]
+fn a_closed_network_can_record_the_names_it_refuses() {
+    use sbx_executor_fake::probe;
+
+    let pid = std::process::id();
+    let e = Env::new("recnames");
+    e.prepare_image();
+    let mut ids = Vec::new();
+    for record in [true, false] {
+        let mut spec = e.spec(&["sh", "-c", "sleep 30"]);
+        spec.record_names = record;
+        let s = block_on(e.rt.create(spec)).unwrap();
+        let _main = block_on(s.start(IoMode::default())).unwrap();
+        let dir = sbx_executor_fake::net_dir(
+            &e.root
+                .join("d/sandboxes")
+                .join(s.id().as_str())
+                .join("scratch.img"),
+        );
+        let name = format!("{record}-{pid}.invalid");
+        if record {
+            let r = probe::lookup(&dir, &name, 1).unwrap();
+            assert_eq!((r.rcode, r.addrs.len()), (3, 0));
+        } else {
+            // 투명 TCP를 켜지 않았다: 이름을 물을 곳도 없다.
+            assert!(!dir.join("etc/resolv.conf").exists());
+        }
+        ids.push((s, name));
+    }
+    let events = network_events(&e, |all| all.iter().any(|ev| ev.action == "refuse"));
+    let refused: Vec<(&str, &str)> = events
+        .iter()
+        .filter(|ev| ev.action == "refuse")
+        .map(|ev| (ev.id.as_str(), ev.attributes["host"].as_str()))
+        .collect();
+    assert_eq!(refused, [(ids[0].0.id().as_str(), ids[0].1.as_str())]);
+    assert!(!egress::was_resolved(&ids[0].1));
+    for (s, _) in ids {
+        block_on(s.stop(None, Duration::from_secs(5))).unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&e.root);
+}
+
+/// 네트워크 기록을 `until`이 참일 때까지(최대 10초) 읽는다.
+fn network_events(e: &Env, until: impl Fn(&[sbx_events::Event]) -> bool) -> Vec<sbx_events::Event> {
+    let log = network_log(&e.root.join("d"));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let mut r = log.reader(sbx_events::Start::Beginning).unwrap();
+        let mut all = Vec::new();
+        while let Some(ev) = r.next_event().unwrap() {
+            all.push(ev);
+        }
+        if until(&all) || Instant::now() > deadline {
+            return all;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// `--connect`(fake 실행기의 흉내로): 잇는 샌드박스 안에서 프록시를 모르는 클라이언트가 이름으로 대상의 포트에 닿아
+/// 바이트를 주고받는다. 열지 않은 포트, 다른 샌드박스, 바깥 이름은 닿지 않는다. 대상이 멈추면 그 연결만 곧바로
+/// 거부되어 기록되고, 다시 시작하면 다음 연결은 된다. 범위(`connect_scope`)와 전송량 상한도 본다.
+#[cfg(unix)]
+#[test]
+fn connect_reaches_one_port_of_another_sandbox_at_each_connection() {
+    use std::io::{Read, Write};
+    use std::net::SocketAddrV4;
+
+    use sbx_executor_fake::probe;
+    use sbx_model::ConnectRule;
+
+    let e = Env::new("connect");
+    e.prepare_image();
+    // fake 게스트는 호스트에서 돈다: 대상 안의 서비스 흉내(받은 것을 그대로 돌려준다)를 호스트 포트에 띄운다.
+    let service = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = service.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for s in service.incoming() {
+            let Ok(mut s) = s else { return };
+            std::thread::spawn(move || {
+                let mut b = [0u8; 4096];
+                while let Ok(n) = s.read(&mut b) {
+                    if n == 0 || s.write_all(&b[..n]).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    let start = |name: &str, f: &dyn Fn(&mut SandboxSpec)| {
+        let mut spec = e.spec(&["sleep", "30"]);
+        spec.name = Some(name.into());
+        f(&mut spec);
+        let s = block_on(e.rt.create(spec)).unwrap();
+        let main = block_on(s.start(IoMode::default())).unwrap();
+        (s, main)
+    };
+    let (db, _db_main) = start("db", &|_| {});
+    let (_other, _other_main) = start("other", &|_| {});
+    let rule = |target: &str, port: u16| ConnectRule {
+        name: target.into(),
+        target: target.into(),
+        port,
+    };
+    let (app, _app_main) = start("app", &|s| s.connect = vec![rule("db", port)]);
+    let dir = sbx_executor_fake::net_dir(&e.rt.paths(app.id()).scratch());
+    // 잇기만으로 투명 TCP가 켜진다. 프록시는 없다.
+    assert!(
+        std::fs::read_to_string(dir.join("etc/resolv.conf"))
+            .unwrap()
+            .ends_with("nameserver 127.0.0.1\n")
+    );
+    assert_eq!(e.state(&app).egress_port, None);
+
+    let ip = probe::lookup(&dir, "db", 1).unwrap().addrs[0];
+    assert!(probe::route(&dir, SocketAddrV4::new(ip, port)).is_some());
+    assert!(
+        probe::route(&dir, SocketAddrV4::new(ip, port.wrapping_add(1))).is_none(),
+        "a port that was not connected is not listened for"
+    );
+    for name in ["other", "app", "example.com"] {
+        assert_eq!(probe::lookup(&dir, name, 1).unwrap().rcode, 3, "{name}");
+    }
+    let echo = |payload: &[u8]| -> Vec<u8> {
+        let mut c = probe::connect(&dir, "db", port).unwrap();
+        c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        c.write_all(payload).unwrap();
+        c.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut got = Vec::new();
+        let _ = c.read_to_end(&mut got);
+        got
+    };
+    assert_eq!(echo(b"hello"), b"hello");
+    let events = network_events(&e, |all| all.iter().any(|ev| ev.action == "close"));
+    let by = |action: &str| {
+        events
+            .iter()
+            .find(|ev| {
+                ev.action == action && ev.attributes.get("host").map(String::as_str) == Some("db")
+            })
+            .unwrap_or_else(|| panic!("no {action} in {events:?}"))
+            .clone()
+    };
+    let connect = by("connect");
+    assert_eq!(connect.id, app.id().as_str());
+    assert_eq!(connect.attributes["target"], "db");
+    assert_eq!(connect.attributes["target_id"], db.id().as_str());
+    assert_eq!(connect.attributes["port"], port.to_string());
+    let close = by("close");
+    assert_eq!(
+        (
+            close.attributes["sent"].as_str(),
+            close.attributes["received"].as_str()
+        ),
+        ("5", "5")
+    );
+    assert_eq!(by("lookup").attributes["target"], "db");
+
+    // 대상이 멈추면 그 연결만 곧바로 끊기고 이유가 남는다.
+    block_on(db.stop(None, Duration::from_secs(5))).unwrap();
+    e.wait_state(&db, State::Stopped);
+    let t = Instant::now();
+    assert!(echo(b"x").is_empty());
+    assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+    let refused_conn =
+        |ev: &sbx_events::Event| ev.action == "refuse" && ev.attributes.contains_key("port");
+    let events = network_events(&e, |all| all.iter().any(refused_conn));
+    let refused = events
+        .iter()
+        .find(|ev| refused_conn(ev))
+        .unwrap_or_else(|| panic!("{events:?}"));
+    assert_eq!(
+        refused.attributes.get("target_id").map(String::as_str),
+        Some(db.id().as_str()),
+        "{refused:?}"
+    );
+    assert!(
+        refused.attributes["reason"].contains("not running"),
+        "{refused:?}"
+    );
+
+    // 다시 시작하면 다음 연결은 새 제어 소켓으로 간다.
+    let _db_again = block_on(db.start(IoMode::default())).unwrap();
+    assert_eq!(echo(b"again"), b"again");
+
+    // 범위: 대상이 라벨을 갖지 않으면 만들 수 없다.
+    let mut scoped = e.spec(&["sleep", "30"]);
+    scoped.connect = vec![rule("db", port)];
+    scoped.connect_scope.insert("owner".into(), "mcp".into());
+    let err = block_on(e.rt.create(scoped.clone()))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("lacks the label owner=mcp"), "{err}");
+    // 없는 대상도 만들 수 없다.
+    scoped.connect = vec![rule("nothing", port)];
+    scoped.connect_scope.clear();
+    let err = block_on(e.rt.create(scoped)).unwrap_err().to_string();
+    assert!(err.contains("no sandbox nothing"), "{err}");
+
+    // 전송량 상한은 잇는 쪽의 것이다: 넘으면 그 연결을 끊는다.
+    let (limited, _limited_main) = start("limited", &|s| {
+        s.connect = vec![rule("db", port)];
+        s.egress_limit_bytes = Some(3);
+    });
+    let dir = sbx_executor_fake::net_dir(&e.rt.paths(limited.id()).scratch());
+    let mut c = probe::connect(&dir, "db", port).unwrap();
+    c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let _ = c.write_all(b"hello");
+    let mut got = Vec::new();
+    let _ = c.read_to_end(&mut got);
+    assert!(got.len() < 5, "{got:?}");
+    let events = network_events(&e, |all| {
+        all.iter()
+            .any(|ev| ev.action == "close" && ev.id == limited.id().as_str())
+    });
+    let close = events
+        .iter()
+        .find(|ev| ev.action == "close" && ev.id == limited.id().as_str())
+        .unwrap();
+    assert_eq!(close.attributes["limit"], "3");
+    let moved: u64 = close.attributes["sent"].parse::<u64>().unwrap()
+        + close.attributes["received"].parse::<u64>().unwrap();
+    assert!(moved <= 3, "{close:?}");
+
+    // 대상 안의 나가는 연결 프록시에는 잇지 않는다(대상의 허용 목록을 빌려 쓰지 못한다).
+    let (proxied, _proxied_main) = start("proxied", &|s| {
+        s.network = NetworkPolicy::Allow(vec!["example.invalid:443".parse().unwrap()]);
+    });
+    let proxy = e.state(&proxied).egress_port.unwrap();
+    let (borrower, _borrower_main) =
+        start("borrower", &|s| s.connect = vec![rule("proxied", proxy)]);
+    let dir = sbx_executor_fake::net_dir(&e.rt.paths(borrower.id()).scratch());
+    let mut c = probe::connect(&dir, "proxied", proxy).unwrap();
+    let mut got = Vec::new();
+    let _ = c.read_to_end(&mut got);
+    assert!(got.is_empty());
+    let events = network_events(&e, |all| {
+        all.iter()
+            .any(|ev| ev.id == borrower.id().as_str() && refused_conn(ev))
+    });
+    let r = events
+        .iter()
+        .find(|ev| ev.id == borrower.id().as_str() && refused_conn(ev))
+        .unwrap();
+    assert!(
+        r.attributes["reason"].contains("outgoing-connection proxy"),
+        "{r:?}"
+    );
+    let _ = std::fs::remove_dir_all(&e.root);
+}
+
+/// fake 게스트의 시계 파일(호스트 시계는 건드리지 않는다).
+fn clock_file(e: &Env, s: &Sandbox) -> PathBuf {
+    sbx_executor_fake::clock_file(&e.rt.paths(s.id()).scratch())
+}
+
+/// 게스트 시계가 호스트와 `within` 안으로 맞을 때까지 기다린다.
+fn wait_clock(file: &Path, within: Duration) -> sbx_executor_fake::clock::State {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let st = sbx_executor_fake::clock::read(file).unwrap();
+        if u128::from(st.offset.unsigned_abs()) <= within.as_nanos() {
+            return st;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the guest clock is still off: {st:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn the_guest_clock_is_set_from_the_host_without_holding_up_the_start() {
+    let e = Env::new("clock");
+    let s = e.sandbox(&["sh", "-c", "echo up; sleep 30"]);
+    let file = clock_file(&e, &s);
+    // 부팅한 게스트 시계가 한 시간 늦다.
+    sbx_executor_fake::clock::skew(&file, -3_600_000_000_000).unwrap();
+    let mut main = block_on(s.start(IoMode::default())).unwrap();
+    let st = wait_clock(&file, Duration::from_millis(50));
+    assert_eq!(st.steps, 1, "{st:?}");
+    // 기본 프로세스는 아무것도 보지 못한다.
+    assert_eq!(
+        block_on(main.next()),
+        Some(Output::Stdout(b"up\n".to_vec()))
+    );
+    block_on(s.stop(None, Duration::from_secs(5))).unwrap();
+    let log = std::fs::read_to_string(s.log_dir().join("executor.log")).unwrap_or_default();
+    assert!(!log.contains("guest clock"), "{log}");
 }
