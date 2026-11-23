@@ -1,5 +1,5 @@
 {
-  "expires": 1797425865,
+  "expires": 1798037978,
   "releases": [
     {
       "advisory": null,
@@ -36,5 +36,5 @@
     }
   ],
   "schema": 1,
-  "serial": 1794833865
+  "serial": 1795445978
 }
